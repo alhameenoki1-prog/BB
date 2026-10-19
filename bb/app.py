@@ -483,7 +483,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def recipients_page(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
         return await render(request, "recipients.html", user, recent=await ws.recent_recipients(),
-                            max_rows=recipients_mod.MAX_ROWS)
+                            sectors=await ws.sector_breakdown(), max_rows=recipients_mod.MAX_ROWS)
 
     @app.post("/recipients")
     async def recipients_upload(user: dict = Depends(current_user),

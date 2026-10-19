@@ -43,6 +43,7 @@ class SmtpImapProvider(MailProvider):
         self.smtp_port = int(getattr(env, "smtp_port", 587) or 587)
         self.smtp_user = getattr(env, "smtp_username", "")
         self.smtp_pass = getattr(env, "smtp_password", "")
+        self.reply_to = (getattr(env, "smtp_reply_to", "") or "").strip()
         self.imap_host = getattr(env, "imap_host", "") or self.smtp_host
         self.imap_port = int(getattr(env, "imap_port", 993) or 993)
         self.imap_user = getattr(env, "imap_username", "") or self.smtp_user
@@ -67,6 +68,8 @@ class SmtpImapProvider(MailProvider):
         msg["Subject"] = subject
         message_id = make_msgid(domain=(persona.email or self.smtp_user).split("@")[-1])
         msg["Message-ID"] = message_id
+        if self.reply_to:
+            msg["Reply-To"] = self.reply_to
         if in_reply_to:
             msg["In-Reply-To"] = in_reply_to
             msg["References"] = in_reply_to

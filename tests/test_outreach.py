@@ -176,7 +176,7 @@ async def test_writer_inquiry_mode_and_throttle(state):
     assert all("hello" == q["subject"] for q in queued)
     personal = [p for p in brain.prompts if "Write ONE cold email" in p]
     assert len(personal) == 2 and all("OUTREACH MODE: INQUIRY" in p for p in personal)
-    sequence = [p for p in brain.prompts if "Write ONE cold email" not in p]
+    sequence = [p for p in brain.prompts if "3-email" in p]
     assert sequence and all("OUTREACH MODE: INQUIRY" in p for p in sequence)
 
     # Backlog is full: the next cycle makes no model calls at all.
@@ -184,3 +184,135 @@ async def test_writer_inquiry_mode_and_throttle(state):
     await writer.run()
     assert len(brain.prompts) == calls
     assert (await state.count_prospects_by_status()).get("new") == 1
+
+
+# ── sectors, role tiers, and one email per segment ──
+
+
+class _ClassifyingBrain(_Brain):
+    """Answers classification with sectors by domain, and sequences/drafts
+    like _Brain. Records how many personal drafts were requested."""
+
+    async def think_json(self, prompt, **kw):
+        if "Sort these contacts" in prompt:
+            self.prompts.append(prompt)
+            import json as _json
+            contacts = _json.loads(prompt.split("CONTACTS (JSON): ", 1)[1].split("\n\nReturn ONLY", 1)[0])
+            out = []
+            for c in contacts:
+                if c["title"] == "Receptionist":
+                    continue  # left out on purpose: exercises the deterministic fallback
+                if "build" in c["domain"]:
+                    out.append({"id": c["id"], "sector": "Construction", "tier": "executive", "department": "leadership"})
+                elif "wealth" in c["domain"]:
+                    out.append({"id": c["id"], "sector": "financial_advisory", "tier": "manager", "department": "finance"})
+                # the receptionist is deliberately left out → deterministic fallback
+            return out
+        return await super().think_json(prompt, **kw)
+
+
+def _people():
+    return [
+        Prospect(id="b1", first_name="Ann", last_name="Lee", email="ann@bigbuild.com", email_status="provided",
+                 title="Managing Director", company="Big Build"),
+        Prospect(id="b2", first_name="Bo", last_name="Ng", email="bo@fastbuild.com", email_status="provided",
+                 title="Owner", company="Fast Build"),
+        Prospect(id="w1", first_name="Cy", last_name="Oh", email="cy@truewealth.com", email_status="provided",
+                 title="Portfolio Manager", company="True Wealth"),
+        Prospect(id="r1", first_name="", last_name="", email="info@bigbuild.com", email_status="provided",
+                 title="Receptionist", company="Big Build"),
+    ]
+
+
+def test_tier_of_reads_titles_and_shared_inboxes():
+    t = Writer.tier_of
+    assert t(Prospect(title="Chief Financial Officer")) == "executive"
+    assert t(Prospect(title="VP Sales")) == "executive"
+    assert t(Prospect(title="Operations Manager")) == "manager"
+    assert t(Prospect(title="Executive Assistant")) == "admin"
+    assert t(Prospect(title="", email="info@acme.com")) == "admin"
+    assert t(Prospect(title="Senior Engineer")) == "individual"
+    assert t(Prospect(seniority="c_suite", title="")) == "executive"  # scout-sourced values
+
+
+@pytest.mark.asyncio
+async def test_segment_mode_sorts_then_writes_one_sequence_per_segment(state):
+    cfg = _config(mode="inquiry", intent="get quotes for an extension", personalize_each=False)
+    brain = _ClassifyingBrain()
+    writer = Writer(brain, state, cfg, EnvConfig())
+    for p in _people():
+        await state.add_prospect(p)
+    await writer.run()
+
+    # Everyone is sorted: two builders (executive), one advisor (manager), and
+    # the receptionist fell back to the deterministic rule.
+    rows = {}
+    async with state._connect() as db:
+        async with db.execute("SELECT id, industry, seniority, department FROM prospects") as cur:
+            for r in await cur.fetchall():
+                rows[r[0]] = r[1:]
+    assert rows["b1"] == ("construction", "executive", "leadership")
+    assert rows["w1"] == ("financial_advisory", "manager", "finance")
+    assert rows["r1"][:2] == ("other", "admin")
+    # The company picked up the sector too.
+    async with state._connect() as db:
+        async with db.execute("SELECT industry FROM companies") as cur:
+            assert set(r[0] for r in await cur.fetchall()) <= {"", "construction", "financial_advisory"}
+
+    campaigns = await state.get_campaigns_by_status("draft")
+    names = sorted(c.name for c in campaigns)
+    assert names == ["construction · executive", "financial_advisory · manager", "other · admin"]
+    # One sequence call per segment, no per-person drafts, one classify call.
+    assert len([p for p in brain.prompts if "Sort these contacts" in p]) == 1
+    sequences = [p for p in brain.prompts if "3-email" in p]
+    assert len(sequences) == 3
+    assert not [p for p in brain.prompts if "Write ONE cold email" in p]
+    exec_prompt = next(p for p in sequences if "works in construction" in p)
+    assert "executives" in exec_prompt and "one decision or a short call" in exec_prompt
+    admin_prompt = next(p for p in sequences if "readers are admins" in p)
+    assert "pass it on" in admin_prompt and "Do not pitch" in admin_prompt
+    assert all("OUTREACH MODE: INQUIRY" in p for p in sequences)
+    # Nothing staged yet: the sender stages segment templates on its cycle.
+    assert await state.count_outbox_queued() == 0
+    assert (await state.count_prospects_by_status()).get("queued") == 4
+
+    # Already-sorted contacts are not sent for classification again.
+    await writer.run()
+    assert len([p for p in brain.prompts if "Sort these contacts" in p]) == 1
+
+
+@pytest.mark.asyncio
+async def test_per_person_mode_still_classifies_and_drafts_each(state):
+    cfg = _config(personalize_each=True)
+    cfg.channels.email.max_daily_sends = 10
+    brain = _ClassifyingBrain()
+    writer = Writer(brain, state, cfg, EnvConfig())
+    for p in _people():
+        await state.add_prospect(p)
+    await writer.run()
+    personal = [p for p in brain.prompts if "Write ONE cold email" in p]
+    assert len(personal) == 4
+    assert await state.count_outbox_queued() == 4
+
+
+@pytest.mark.asyncio
+async def test_smtp_reply_to_header(monkeypatch):
+    from types import SimpleNamespace
+
+    import harvey.integrations.smtp_mail as smtp_mod
+
+    sent = {}
+
+    async def fake_send(msg, **kw):
+        sent["msg"] = msg
+
+    monkeypatch.setattr(smtp_mod.aiosmtplib, "send", fake_send)
+    cfg = _config()
+    env = SimpleNamespace(smtp_host="smtp.x", smtp_port=587, smtp_username="me@x.com", smtp_password="p",
+                          smtp_reply_to="replies@x.com", imap_host="", imap_port=993,
+                          imap_username="", imap_password="")
+    result = await smtp_mod.SmtpImapProvider(cfg, env).send_email("to@y.com", "s", "b")
+    assert result.ok and sent["msg"]["Reply-To"] == "replies@x.com"
+    env.smtp_reply_to = ""
+    await smtp_mod.SmtpImapProvider(cfg, env).send_email("to@y.com", "s", "b")
+    assert sent["msg"]["Reply-To"] is None

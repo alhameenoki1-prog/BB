@@ -25,6 +25,42 @@ logger = logging.getLogger("harvey.writer")
 # small — the rest of the 'new' pool is picked up on later cycles.
 NATIVE_BATCH_CAP = 8
 LEGACY_BATCH_CAP = 50
+# Segment mode (outreach.personalize_each: false): one sequence per
+# sector × role segment, sent to everyone in it, so a segment can be large.
+SEGMENT_BATCH_CAP = 250
+SEGMENT_ROOM = 500  # contacts considered per cycle in segment mode
+CLASSIFY_BATCH = 25  # contacts per classification call
+
+# The sector vocabulary the classifier sorts contacts into. Closed, so
+# segments line up across uploads; "other" is the catch-all.
+SECTORS = (
+    "construction", "real_estate", "architecture_engineering", "financial_advisory", "banking",
+    "insurance", "accounting", "legal", "healthcare", "education", "hr_recruiting",
+    "marketing_agency", "software", "it_services", "manufacturing", "logistics", "retail",
+    "ecommerce", "hospitality", "nonprofit", "government", "media", "energy", "consulting",
+    "agriculture", "automotive", "other",
+)
+TIERS = ("executive", "manager", "individual", "admin")
+DEPARTMENTS = ("leadership", "finance", "hr", "operations", "sales", "marketing", "engineering",
+               "admin", "other")
+# How the position changes the message: the same ask is phrased for who reads it.
+TIER_GUIDANCE = {
+    "executive": ("Executives, owners and partners decide. Be brief, lead with the specific "
+                  "thing you want from their business, and ask for one decision or a short call."),
+    "manager": ("Managers run the work. Be practical: what you need, roughly when, and what "
+                "you'd give them; ask one concrete question about how they'd take it on."),
+    "individual": ("Specialists do the work. Speak to their craft, say what you need, and ask "
+                   "how their team usually takes on a request like yours."),
+    "admin": ("Assistants, office managers and shared inboxes route mail. In two or three "
+              "lines, say what you're looking for and ask who handles requests like this and "
+              "whether they can pass it on. Do not pitch; make forwarding easy."),
+}
+# Scout-sourced seniority values map onto the four tiers.
+_SENIORITY_TO_TIER = {
+    "c_suite": "executive", "vp": "executive", "director": "executive", "owner": "executive",
+    "founder": "executive", "partner": "executive", "executive": "executive",
+    "manager": "manager", "admin": "admin", "individual": "individual",
+}
 
 
 class Writer:
@@ -74,10 +110,14 @@ class Writer:
         # Native mode drafts cost a model call each, so never write more
         # than about two days of sends ahead of the sender: a 10,000-row
         # upload is worked through at the daily limit, not drafted at once.
+        # Segment mode writes one sequence per segment, so it can look
+        # further ahead.
         if self.is_native:
             max_daily = int(self.config.channels.email.max_daily_sends or 0)
             # No daily limit: keep roughly a day of 15-minute cycles ahead.
             ahead = 2 * max(1, max_daily) if max_daily else 200
+            if not self.personalize_each:
+                ahead = max(ahead, SEGMENT_ROOM)
             backlog = await self.state.count_outbox_queued()
             room = max(0, ahead - backlog)
             if room == 0:
@@ -89,7 +129,12 @@ class Writer:
                 return
             prospects_with_email = prospects_with_email[:room]
 
-        # Batch prospects into campaign groups (by industry/title for relevance)
+        # Sort newcomers into sector × role before grouping, so every
+        # campaign is one sector and one tier and the writing can speak to
+        # what that business does and who is reading.
+        await self._classify(prospects_with_email)
+
+        # Batch prospects into campaign groups (by sector and role tier)
         batches = self._group_prospects(prospects_with_email)
 
         for batch_name, prospects in batches.items():
@@ -123,8 +168,9 @@ class Writer:
                 await self.state.update_prospect_status(p.id, "queued")
 
             # Native providers: replace the shared template for email 1 with
-            # a per-prospect draft grounded in that company's actual facts.
-            if self.is_native:
+            # a per-prospect draft grounded in that company's actual facts —
+            # unless the operator chose one email per segment.
+            if self.is_native and self.personalize_each:
                 await self._personalize_first_emails(campaign_id, prospects)
 
             await self.state.log_action(
@@ -320,6 +366,7 @@ Pricing: {self.config.product.pricing}"""
         if self.skills:
             prompt += "\n\n" + self.skills
         prompt += self._outreach_block()
+        prompt += self._segment_block(prospects)
 
         prompt += f"""
 
@@ -400,21 +447,137 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             logger.warning(f"Writer: Expected 3 emails, got {len(steps)}.")
         return steps
 
+    @property
+    def personalize_each(self) -> bool:
+        outreach = getattr(self.config, "outreach", None)
+        return bool(getattr(outreach, "personalize_each", True))
+
+    @staticmethod
+    def tier_of(prospect) -> str:
+        """The role tier a contact reads as: executive | manager | individual | admin."""
+        seniority = (prospect.seniority or "").strip().lower()
+        if seniority in _SENIORITY_TO_TIER:
+            return _SENIORITY_TO_TIER[seniority]
+        title = (prospect.title or "").lower()
+        local = (prospect.email or "").split("@")[0].lower()
+        if any(w in title for w in ("assistant", "receptionist", "front desk", "office manager",
+                                    "secretary", "coordinator", "administrator")) \
+                or local in ("info", "hello", "contact", "admin", "office", "enquiries", "inquiries"):
+            return "admin"
+        if any(w in title for w in ("chief", "ceo", "cfo", "coo", "cto", "founder", "owner", "partner",
+                                    "president", "vp", "vice president", "director", "head of",
+                                    "managing", "principal")):
+            return "executive"
+        if "manager" in title or "lead" in title or "supervisor" in title:
+            return "manager"
+        return "individual"
+
+    async def _classify(self, prospects: list):
+        """Ask the brain which sector and role tier each unsorted contact
+        belongs to, in batches, and record it on the prospect (and the
+        company's industry when it has none)."""
+        unsorted = [p for p in prospects if not p.industry or not p.seniority]
+        if not unsorted:
+            return
+        sorted_count = 0
+        for start in range(0, len(unsorted), CLASSIFY_BATCH):
+            batch = unsorted[start:start + CLASSIFY_BATCH]
+            rows = []
+            for p in batch:
+                company = None
+                if p.company_id:
+                    try:
+                        company = await self.state.get_company(p.company_id)
+                    except Exception:
+                        company = None
+                rows.append({
+                    "id": p.id, "name": p.full_name(), "title": p.title,
+                    "company": p.company or (company.name if company else ""),
+                    "domain": company.domain if company else (p.email.split("@")[-1] if p.email else ""),
+                    "about": ((company.description or "") if company else "")[:300],
+                    "notes": (p.personalization_notes or "")[:300],
+                })
+            prompt = (
+                "Sort these contacts by the SECTOR their company works in and the ROLE TIER of the "
+                "person, from the facts given (title, company, domain, what the company says about "
+                "itself, notes). Use the domain and company name when the title is missing. Never "
+                "invent facts; when unsure, pick the closest sector and the tier the title implies.\n\n"
+                f"SECTORS (pick exactly one): {', '.join(SECTORS)}\n"
+                f"TIERS (pick exactly one): {', '.join(TIERS)} — executive = owners, partners, "
+                "C-level, VPs, directors; manager = runs a team or function; individual = a "
+                "specialist doing the work; admin = assistants, office managers, reception, shared "
+                "inboxes like info@.\n"
+                f"DEPARTMENTS (pick exactly one): {', '.join(DEPARTMENTS)}\n\n"
+                f"CONTACTS (JSON): {json.dumps(rows, ensure_ascii=False)}\n\n"
+                'Return ONLY a JSON array like [{"id": "...", "sector": "...", "tier": "...", '
+                '"department": "..."}] with one entry per contact id.'
+            )
+            result = await self.brain.think_json(
+                prompt, session_id="harvey-writer-classify", agent="writer", task="classify")
+            if not isinstance(result, list):
+                logger.warning("Writer: classification returned no usable list; will retry next cycle.")
+                continue
+            by_id = {p.id: p for p in batch}
+            seen = set()
+            for item in result:
+                if not isinstance(item, dict):
+                    continue
+                p = by_id.get(str(item.get("id") or ""))
+                if not p:
+                    continue
+                sector = str(item.get("sector") or "other").strip().lower().replace(" ", "_").replace("-", "_")
+                tier = str(item.get("tier") or "").strip().lower()
+                dept = str(item.get("department") or "other").strip().lower().replace(" ", "_")
+                sector = sector if sector in SECTORS else "other"
+                tier = tier if tier in TIERS else self.tier_of(p)
+                dept = dept if dept in DEPARTMENTS else "other"
+                await self.state.update_prospect_segment(p.id, industry=sector, seniority=tier, department=dept)
+                if p.company_id:
+                    await self.state.update_company_industry(p.company_id, sector)
+                p.industry, p.seniority, p.department = sector, tier, dept
+                seen.add(p.id)
+                sorted_count += 1
+            # Anyone the model skipped gets a deterministic fallback so the
+            # same contacts are not re-sent for classification every cycle.
+            for p in batch:
+                if p.id not in seen:
+                    tier = self.tier_of(p)
+                    await self.state.update_prospect_segment(p.id, industry=p.industry or "other",
+                                                             seniority=tier)
+                    p.industry, p.seniority = p.industry or "other", tier
+        if sorted_count:
+            logger.info(f"Writer: sorted {sorted_count} contact(s) into sectors and role tiers.")
+            await self.state.log_action(action_type="classify", agent="writer",
+                                        details={"sorted": sorted_count})
+
     def _group_prospects(self, prospects: list) -> dict[str, list]:
-        """Group prospects into campaign batches by industry/title combo."""
+        """Group prospects into campaign batches: one sector, one role tier."""
         batches: dict[str, list] = {}
-
         for prospect in prospects:
-            # Group by industry + rough title category
-            industry = prospect.industry or "general"
-            key = f"{industry}-outreach"
+            sector = (prospect.industry or "other").lower()
+            key = f"{sector} · {self.tier_of(prospect)}"
+            batches.setdefault(key, []).append(prospect)
 
-            if key not in batches:
-                batches[key] = []
-            batches[key].append(prospect)
-
-        # Cap batch size. Native mode stays small because email 1 is drafted
-        # per prospect (one Claude call each); leftovers ride the next cycle.
-        # Small segments also outperform blasts on deliverability.
-        cap = NATIVE_BATCH_CAP if self.is_native else LEGACY_BATCH_CAP
+        # Cap batch size. Per-person mode stays small because email 1 is
+        # drafted per prospect (one model call each); leftovers ride the
+        # next cycle. Segment mode writes once per segment, so it can be big.
+        if not self.is_native:
+            cap = LEGACY_BATCH_CAP
+        elif self.personalize_each:
+            cap = NATIVE_BATCH_CAP
+        else:
+            cap = SEGMENT_BATCH_CAP
         return {key: group[:cap] for key, group in batches.items()}
+
+    def _segment_block(self, prospects: list) -> str:
+        """Who this campaign is for: the sector and the role tier, and how
+        the position changes the message."""
+        if not prospects:
+            return ""
+        sector = (prospects[0].industry or "other").replace("_", " ")
+        tier = self.tier_of(prospects[0])
+        return (
+            f"\n\nSEGMENT: everyone in this campaign works in {sector}, and the readers are "
+            f"{tier}s. {TIER_GUIDANCE[tier]} Write for what a {sector} business does; the merge "
+            "fields fill in the person and company."
+        )

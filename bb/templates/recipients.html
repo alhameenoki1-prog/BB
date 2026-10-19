@@ -16,6 +16,24 @@
     </form>
   </div>
   <div class="card">
+    <h2>Sectors and roles</h2>
+    {% if sectors.rows %}
+    <p class="muted small">Sorted by the AI from each company and title. One email is written per sector and role, phrased for who reads it.</p>
+    <table>
+      <thead><tr><th>Sector</th><th>Contacts</th><th>Who</th></tr></thead>
+      <tbody>{% for s in sectors.rows %}
+      <tr><td><b>{{ s.sector | capitalize }}</b></td><td>{{ s.total }}</td>
+        <td>{% for tier, n in s.tiers.items() %}<span class="tag {{ 'accent' if tier == 'executive' else ('warn' if tier == 'admin' else '') }}" style="margin:0 4px 4px 0">{{ n }} {{ tier }}{{ 's' if n != 1 else '' }}</span>{% endfor %}</td></tr>
+      {% endfor %}</tbody>
+    </table>
+    {% if sectors.unsorted %}<p class="tiny" style="margin-top:8px">{{ sectors.unsorted }} not sorted yet; the worker sorts newcomers on its next cycle.</p>{% endif %}
+    {% elif sectors.total %}
+    <div class="empty">{{ icon('spark') }}<div>{{ sectors.total }} contact{{ 's' if sectors.total != 1 else '' }} waiting to be sorted into sectors. Start the worker and it happens on the first cycle.</div></div>
+    {% else %}
+    <div class="empty">{{ icon('spark') }}<div>Once you upload a list, the AI sorts each company into a sector (construction, banking, HR, …) and each person into a role, and you'll see the breakdown here.</div></div>
+    {% endif %}
+  </div>
+  <div class="card">
     <h2>Recently added</h2>
     {% if recent %}
     <table>

@@ -734,6 +734,31 @@ class StateManager:
             )
             await db.commit()
 
+    async def update_prospect_segment(self, prospect_id: str, *, industry: str = "",
+                                      seniority: str = "", department: str = ""):
+        """Record which sector / role tier / department a contact belongs to
+        (the writer's classification step), leaving blanks untouched."""
+        sets, params = ["updated_at = ?"], [_utcnow().isoformat()]
+        for column, value in (("industry", industry), ("seniority", seniority),
+                              ("department", department)):
+            if value:
+                sets.append(f"{column} = ?")
+                params.append(value)
+        params.append(prospect_id)
+        async with self._connect() as db:
+            await db.execute(f"UPDATE prospects SET {', '.join(sets)} WHERE id = ?", params)
+            await db.commit()
+
+    async def update_company_industry(self, company_id: str, industry: str):
+        if not (company_id and industry):
+            return
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE companies SET industry = ?, updated_at = ? WHERE id = ? "
+                "AND (industry IS NULL OR industry = '')",
+                (industry, _utcnow().isoformat(), company_id))
+            await db.commit()
+
     async def get_prospect_by_email(self, email: str) -> Prospect | None:
         """Look up a prospect by email address (indexed, case-insensitive)."""
         email = _norm(email)

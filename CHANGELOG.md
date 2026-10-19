@@ -9,6 +9,20 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Sectors, role tiers, and one email per segment.** Before writing, the
+  writer sorts unsorted contacts (in batches of 25, one model call each)
+  into a fixed sector vocabulary (construction, financial_advisory,
+  banking, hr_recruiting, …) and a role tier (executive, manager,
+  individual, admin), recorded on the prospect and the company. Campaigns
+  are one sector × one tier, and the sequence prompt says how the position
+  changes the message (an owner gets a short ask for a decision; a shared
+  inbox gets a two-line request to pass it on). With
+  `outreach.personalize_each: false` (the web app's default) one sequence
+  is written per segment and sent to everyone in it with merge fields; the
+  per-person first email remains the default for the CLI. The Recipients
+  page shows the sector × role breakdown.
+- **SMTP Reply-To.** `SMTP_REPLY_TO` (the Mailbox page's Reply-To field)
+  sets the header on outgoing SMTP mail.
 - **`brain.provider: openai` — any OpenAI-compatible endpoint.** Set
   `brain.base_url` and `brain.model` and put the key in `LLM_API_KEY` (none
   needed for a local server such as Ollama). Works with OpenAI, Google

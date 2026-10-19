@@ -64,7 +64,7 @@ ATTACH_POLICIES = {"first_reply": "With my first reply to each person",
                    "every_reply": "With every reply", "never": "Never"}
 MAX_ATTACHMENT_TOTAL = 20 * 1024 * 1024  # Gmail's hard limit is 25 MB per message
 SMTP_FIELDS = ("smtp_host", "smtp_port", "smtp_username", "smtp_password",
-               "imap_host", "imap_port", "imap_username", "imap_password", "from_email")
+               "imap_host", "imap_port", "imap_username", "imap_password", "from_email", "reply_to")
 
 COMMON_TIMEZONES = (
     "UTC", "Europe/London", "Europe/Paris", "Europe/Berlin", "Africa/Lagos", "Africa/Nairobi",
@@ -327,6 +327,7 @@ class Workspace:
             "intent": outreach.get("intent", ""),
             "reply_instructions": outreach.get("reply_instructions", ""),
             "attach_on": outreach.get("attach_on", "first_reply"),
+            "writing": "person" if outreach.get("personalize_each", False) else "segment",
         }
 
     def write_profile(self, form: dict) -> dict:
@@ -407,6 +408,8 @@ class Workspace:
                 "reply_instructions": str(form.get("reply_instructions", "") or "").strip(),
                 "reply_attachments": [a["name"] for a in self.attachments()],
                 "attach_on": text("attach_on") or "first_reply",
+                # Web default: one email per sector × role segment, sent in bulk.
+                "personalize_each": text("writing") == "person",
             },
         }
         HarveyConfig(**cfg)  # raises pydantic.ValidationError with the field
@@ -563,6 +566,27 @@ class Workspace:
         out["not_sent"] = out["waiting"] + out["queued"]
         return out
 
+    async def sector_breakdown(self) -> dict:
+        """Contacts per sector and role tier (the writer's classification),
+        plus how many are still unsorted."""
+        if not await self._table_exists("prospects"):
+            return {"rows": [], "unsorted": 0, "total": 0}
+        rows = await self._query(
+            "SELECT industry, seniority, COUNT(*) AS n FROM prospects "
+            "WHERE industry != '' GROUP BY industry, seniority ORDER BY n DESC")
+        by_sector: dict[str, dict] = {}
+        for r in rows:
+            entry = by_sector.setdefault(r["industry"], {"sector": r["industry"].replace("_", " "),
+                                                         "total": 0, "tiers": {}})
+            entry["total"] += r["n"]
+            tier = r["seniority"] or "individual"
+            entry["tiers"][tier] = entry["tiers"].get(tier, 0) + r["n"]
+        unsorted = await self._query("SELECT COUNT(*) AS n FROM prospects WHERE industry = '' OR industry IS NULL")
+        total = await self._query("SELECT COUNT(*) AS n FROM prospects")
+        return {"rows": sorted(by_sector.values(), key=lambda e: -e["total"]),
+                "unsorted": unsorted[0]["n"] if unsorted else 0,
+                "total": total[0]["n"] if total else 0}
+
     async def recent_recipients(self, limit: int = 50) -> list[dict]:
         if not await self._table_exists("prospects"):
             return []
@@ -642,6 +666,8 @@ class Workspace:
                 "IMAP_USERNAME": s["imap_username"] or s["smtp_username"],
                 "IMAP_PASSWORD": s["imap_password"] or s["smtp_password"],
             })
+            if s.get("reply_to"):
+                env["SMTP_REPLY_TO"] = s["reply_to"]
         return env
 
     def start_worker(self) -> tuple[bool, str]:

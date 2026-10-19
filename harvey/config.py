@@ -184,6 +184,10 @@ class OutreachConfig(BaseModel):
     # File names under HARVEY_HOME/attachments sent with replies.
     reply_attachments: list[str] = []
     attach_on: str = "first_reply"  # first_reply | every_reply | never
+    # True: one model-written email per person (slower, most personal).
+    # False: contacts are sorted into sector × role segments and one email
+    # is written per segment, then sent to everyone in it with merge fields.
+    personalize_each: bool = True
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -392,6 +396,7 @@ class EnvConfig(BaseModel):
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_password: str = ""
+    smtp_reply_to: str = ""  # optional Reply-To header on outgoing SMTP mail
     imap_host: str = ""
     imap_port: int = 993
     imap_username: str = ""
@@ -509,6 +514,7 @@ def load_env() -> EnvConfig:
         smtp_port=int(os.getenv("SMTP_PORT", "587").strip() or 587),
         smtp_username=os.getenv("SMTP_USERNAME", "").strip(),
         smtp_password=os.getenv("SMTP_PASSWORD", "").strip(),
+        smtp_reply_to=os.getenv("SMTP_REPLY_TO", "").strip(),
         imap_host=os.getenv("IMAP_HOST", "").strip(),
         imap_port=int(os.getenv("IMAP_PORT", "993").strip() or 993),
         imap_username=os.getenv("IMAP_USERNAME", "").strip(),

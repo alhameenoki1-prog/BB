@@ -168,6 +168,10 @@ def test_profile_writes_a_valid_harvey_config(client):
     assert loaded.outreach.mode == "inquiry" and "family portfolio" in loaded.outreach.intent
     assert loaded.outreach.reply_instructions == "Offer a call on Tuesday afternoons."
     assert loaded.outreach.attach_on == "first_reply" and loaded.outreach.reply_attachments == []
+    assert loaded.outreach.personalize_each is False  # web default: one email per segment
+    client.post("/profile", data={**PROFILE, "writing": "person"})
+    assert HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach.personalize_each is True
+    client.post("/profile", data=PROFILE)
     assert loaded.product.key_benefits == ["Saves a day a month", "No setup"]
     assert loaded.icp.auto_prospect is False  # unchecked box: only the uploaded list
     assert loaded.channels.email.provider == "gmail"
@@ -239,6 +243,13 @@ def test_recipient_upload_creates_prospects_and_companies(client):
     assert summary["recipients"] == 3 and summary["waiting"] == 3 and summary["not_sent"] == 3
     page = client.get("/recipients")
     assert "jane@acme.com" in page.text and "Beta Industries" in page.text
+    assert "waiting to be sorted" in page.text
+    db.execute("UPDATE prospects SET industry = 'construction', seniority = 'executive' WHERE email = 'jane@acme.com'")
+    db.execute("UPDATE prospects SET industry = 'construction', seniority = 'admin' WHERE email = 'sam@beta.io'")
+    db.commit()
+    page = client.get("/recipients")
+    assert "Construction" in page.text and "1 executive" in page.text and "1 admin" in page.text
+    assert "1 not sorted yet" in page.text
 
 
 def test_pasted_addresses_without_a_header(client):
@@ -430,7 +441,7 @@ def test_mailbox_smtp_settings(client, monkeypatch):
     assert "Not%20saved" in bad.headers["location"] and not ws.smtp_configured()
     ok = client.post("/mailbox/smtp", data={"smtp_host": "smtp.example.com", "smtp_port": "465",
                                             "smtp_username": "me@example.com", "smtp_password": "app-pass",
-                                            "imap_host": "imap.example.com"})
+                                            "imap_host": "imap.example.com", "reply_to": "replies@example.com"})
     assert "Mailbox%20saved" in ok.headers["location"]
     assert ws.smtp_configured() and ws.mail_provider() == "smtp" and ws.sending_address() == "me@example.com"
     # harvey.yaml follows: provider smtp, persona sends from the mailbox.
@@ -450,6 +461,8 @@ def test_mailbox_smtp_settings(client, monkeypatch):
     assert env["SMTP_HOST"] == "smtp.example.com" and env["SMTP_PORT"] == "465"
     assert env["IMAP_HOST"] == "imap.example.com" and env["IMAP_USERNAME"] == "me@example.com"
     assert env["IMAP_PASSWORD"] == "app-pass" and env["ANTHROPIC_API_KEY"] == "sk-ant-user-key-2"
+    assert env["SMTP_REPLY_TO"] == "replies@example.com"
+    assert "replies@example.com" in client.get("/mailbox").text
 
     # A blank password on re-save keeps the stored one; removing clears it.
     client.post("/mailbox/smtp", data={"smtp_host": "smtp.example.com", "smtp_username": "me@example.com",

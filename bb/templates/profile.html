@@ -14,6 +14,12 @@
   <textarea name="intent" placeholder="e.g. I'm looking for a financial advisor to manage a family portfolio, or I want quotes for a two-storey extension in Lagos, or I'd like to partner on distribution in West Africa.">{{ profile.intent }}</textarea>
 </div>
 <div class="card">
+  <h2>How the emails are written</h2>
+  <p class="muted small">Either way, every contact is first sorted by the sector their company works in (construction, financial advisory, banking, HR, …) and by who they are (executive, manager, specialist, admin or shared inbox), and the message is shaped for both: an owner gets a short ask for a decision, an assistant gets a two-line request to pass it on.</p>
+  <label class="choice"><input type="radio" name="writing" value="segment" {{ 'checked' if profile.writing != 'person' else '' }}><span><b>One email per sector and role, sent to everyone in it</b><span class="small muted">Fast and cheap: one AI call writes the email for, say, “construction · executives”, then it goes to all of them with their name and company filled in.</span></span></label>
+  <label class="choice"><input type="radio" name="writing" value="person" {{ 'checked' if profile.writing == 'person' else '' }}><span><b>One email per person</b><span class="small muted">Slower and uses more AI calls: each first email is written from that company's website and your notes. Follow-ups are still per segment.</span></span></label>
+</div>
+<div class="card">
   <h2>Who you are</h2>
   <div class="row">
     <div><label>Your name *</label><input type="text" name="name" value="{{ profile.name }}" required></div>
