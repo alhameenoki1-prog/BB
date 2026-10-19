@@ -101,6 +101,14 @@ def estimate_cost_usd(model: str, input_tokens: int = 0, output_tokens: int = 0,
     )
 
 
+def anthropic_headers(workspace_id: str | None = None) -> dict:
+    """Extra headers for every Anthropic request. Only the workspace id so
+    far, from the argument or ``ANTHROPIC_WORKSPACE_ID``."""
+    workspace = (workspace_id if workspace_id is not None
+                 else os.getenv("ANTHROPIC_WORKSPACE_ID", "")).strip()
+    return {"anthropic-workspace-id": workspace} if workspace else {}
+
+
 class _NoQuota:
     """Quota reader for the API provider: there is no subscription window to
     read, so the budget gate falls through to the spend cap and call count."""
@@ -221,9 +229,11 @@ class Brain:
     @staticmethod
     def _make_client():
         """An Anthropic client that leaves retries to Brain.think (so every
-        attempt is logged and bounded the same way as Codex)."""
+        attempt is logged and bounded the same way as Codex). A key that is
+        not scoped to a workspace (``sk-ant-usr-…``) needs the workspace
+        named on every request: ``ANTHROPIC_WORKSPACE_ID``."""
         try:
-            return anthropic.AsyncAnthropic(max_retries=0)
+            return anthropic.AsyncAnthropic(max_retries=0, default_headers=anthropic_headers())
         except Exception as e:
             # Credentials are checked in preflight; a client that can't even
             # be built (bad base URL, broken env) is reported there too.

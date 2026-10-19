@@ -898,3 +898,14 @@ def test_cli_status_hides_another_providers_pause(monkeypatch, tmp_path, capsys)
                       config=BrainConfig(provider="codex", model="gpt-5.5"),
                       setting=_STALE_CODEX_PAUSE)
     assert "Codex PAUSED" in out
+
+
+def test_anthropic_headers_carry_the_workspace(monkeypatch):
+    from harvey.brain import anthropic_headers
+
+    monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID", raising=False)
+    assert anthropic_headers() == {}
+    assert anthropic_headers("wrkspc_1") == {"anthropic-workspace-id": "wrkspc_1"}
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", " wrkspc_2 ")
+    assert anthropic_headers() == {"anthropic-workspace-id": "wrkspc_2"}
+    assert anthropic_headers("") == {}      # an explicit blank wins over the environment

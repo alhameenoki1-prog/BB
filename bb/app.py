@@ -40,10 +40,13 @@ def _redirect(url: str, msg: str = "", error: str = "") -> RedirectResponse:
     return RedirectResponse(url, status_code=303)
 
 
-async def check_anthropic_key(key: str) -> tuple[bool, str]:
+async def check_anthropic_key(key: str, workspace_id: str = "") -> tuple[bool, str]:
     """Is this the user's working Anthropic key? Listing models costs
-    nothing and fails fast on a bad key."""
+    nothing and fails fast on a bad key. ``workspace_id`` is only needed for
+    a key that is not scoped to a workspace (sk-ant-usr-…)."""
     import anthropic
+
+    from harvey.brain import anthropic_headers
 
     if not key.startswith("sk-ant-"):
         return False, "Anthropic keys start with sk-ant-. Copy the whole key from console.anthropic.com."
@@ -60,7 +63,8 @@ async def check_anthropic_key(key: str) -> tuple[bool, str]:
         return str(getattr(e, "message", "") or e)[:200]
 
     try:
-        client = anthropic.AsyncAnthropic(api_key=key, max_retries=0, timeout=20)
+        client = anthropic.AsyncAnthropic(api_key=key, max_retries=0, timeout=20,
+                                          default_headers=anthropic_headers(workspace_id))
         await client.models.list(limit=1)
     except anthropic.AuthenticationError:
         return False, "Anthropic rejected that key."
@@ -68,6 +72,11 @@ async def check_anthropic_key(key: str) -> tuple[bool, str]:
         return False, "That key is not allowed to use the API (check its permissions in the Console)."
     except anthropic.BadRequestError as e:
         message = said(e)
+        if "workspace" in message.lower():
+            return False, ("This key is not tied to a workspace, so Anthropic needs the workspace ID with it. "
+                           "Paste the ID from console.anthropic.com → Settings → Workspaces into the "
+                           "Workspace ID box below, or create the key inside a workspace "
+                           "(API keys → Create key → pick a workspace) and paste that key instead.")
         if "credit" in message.lower() or "billing" in message.lower():
             return False, ("The key is valid, but the Anthropic account has no credit, so every call "
                            "would fail. Add prepaid credit at console.anthropic.com → Settings → "
@@ -354,9 +363,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/apikey")
     async def apikey_save(user: dict = Depends(current_user), provider: str = Form(""),
-                          api_key: str = Form(""), model: str = Form(""), base_url: str = Form("")):
+                          api_key: str = Form(""), model: str = Form(""), base_url: str = Form(""),
+                          workspace_id: str = Form("")):
         ws = workspace_for(user)
         key = api_key.strip()
+        workspace_id = workspace_id.strip()
         if not provider:
             provider = "anthropic" if key.startswith("sk-ant-") else "gemini"
         if provider not in LLM_PRESETS:
@@ -370,7 +381,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if provider == "anthropic":
             if not key:
                 return _redirect("/apikey", error="Paste your Anthropic key first.")
-            ok, detail = await check_anthropic_key(key)
+            ok, detail = await check_anthropic_key(key, workspace_id)
         else:
             if not key and not preset.get("no_key"):
                 return _redirect("/apikey", error=f"Paste your {preset['label']} key first.")
@@ -379,7 +390,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ok, detail = await check_openai_compatible(base_url, key, model)
         if not ok:
             return _redirect("/apikey", error=detail)
-        ws.save_llm(provider, key, model=model, base_url=base_url)
+        ws.save_llm(provider, key, model=model, base_url=base_url, workspace_id=workspace_id)
         restarted = await ws.restart_worker_if_running("the new AI provider")
         return _redirect("/apikey", msg=f"{preset['label']} saved and verified ({model or 'default model'})."
                          + (" The worker was restarted to use it." if restarted else ""))

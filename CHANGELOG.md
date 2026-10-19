@@ -9,6 +9,13 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Anthropic user-scoped keys.** A key that is not tied to a workspace
+  (`sk-ant-usr-…`) needs the workspace named on every request:
+  `ANTHROPIC_WORKSPACE_ID` in `.env`, or the Workspace ID box on the web
+  app's AI provider page. The key check explains this, and says what
+  Anthropic said (no credit, a sign-in token, anything else) instead of
+  the exception class.
+
 - **Dashboard controls.** *Pause for edits* stops the worker and shows a
   Resume button (nothing revives it meanwhile); saving the profile or AI
   provider restarts a running worker so the change applies at once; *Start

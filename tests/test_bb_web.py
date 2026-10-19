@@ -386,7 +386,7 @@ def test_gmail_connect_needs_a_server_client(tmp_path):
 # ── worker process ──
 
 
-async def _accept_key(key):
+async def _accept_key(key, workspace_id=""):
     return (True, "Key accepted.") if key.startswith("sk-ant-") else (False, "Anthropic rejected that key.")
 
 
@@ -413,6 +413,22 @@ def test_ai_provider_anthropic_is_checked_and_stored_per_user(client, monkeypatc
     user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
     ws = Workspace(client.settings, user)
     assert ws.anthropic_key() == "sk-ant-abcdefghijklmnop" and ws.llm()["provider"] == "anthropic"
+    assert ws.llm()["workspace_id"] == ""
+
+    # A user-scoped key with its workspace: the id is checked with the key and handed to the worker.
+    seen = {}
+    async def accept_with_workspace(key, workspace_id=""):
+        seen["ws"] = workspace_id
+        return True, "Key accepted."
+    monkeypatch.setattr("bb.app.check_anthropic_key", accept_with_workspace)
+    ok = client.post("/apikey", data={"provider": "anthropic", "api_key": "sk-ant-usr-xyz",
+                                       "workspace_id": " wrkspc_01ABC "})
+    assert "saved" in ok.headers["location"] and seen["ws"] == "wrkspc_01ABC"
+    assert ws.llm()["workspace_id"] == "wrkspc_01ABC"
+    assert ws.worker_env()["ANTHROPIC_WORKSPACE_ID"] == "wrkspc_01ABC"
+    assert "wrkspc_01ABC" in client.get("/apikey").text
+    client.post("/apikey", data={"provider": "anthropic", "api_key": "sk-ant-abcdefghijklmnop"})
+    assert ws.llm()["workspace_id"] == "" and "ANTHROPIC_WORKSPACE_ID" not in ws.worker_env()
     assert oct(ws.secrets_file.stat().st_mode)[-3:] == "600"
     page = client.get("/apikey")
     assert "Anthropic Claude" in page.text and "sk-ant-abcdefghijklmnop" not in page.text  # masked
@@ -454,6 +470,13 @@ async def test_anthropic_key_check_explains_what_anthropic_said(monkeypatch):
     monkeypatch.setattr(anthropic, "AsyncAnthropic", fake_client(400, other))
     ok, detail = await check_anthropic_key("sk-ant-api03-" + "x" * 40)
     assert not ok and detail == "Anthropic refused the request: limit: must be <= 1000"
+
+    unscoped = {"type": "error", "error": {"type": "invalid_request_error", "message":
+                "This API key is not scoped to a workspace, so this request must include the "
+                "anthropic-workspace-id header with the ID of the workspace to use."}}
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", fake_client(400, unscoped))
+    ok, detail = await check_anthropic_key("sk-ant-usr-" + "x" * 40)
+    assert not ok and "Workspace ID box" in detail and "Settings → Workspaces" in detail
 
     outage = {"type": "error", "error": {"type": "api_error", "message": "Overloaded"}}
     monkeypatch.setattr(anthropic, "AsyncAnthropic", fake_client(500, outage))

@@ -19,6 +19,9 @@
       <label>API key <span class="muted" style="font-weight:400" id="key-hint">{{ '(blank keeps the saved one)' if llm.api_key else '' }}</span></label>
       <input type="password" name="api_key" placeholder="paste your key" autocomplete="off" id="key-input">
       <div class="hint" id="key-link"></div>
+      <div id="workspace-wrap"><label>Workspace ID <span class="muted" style="font-weight:400">(only for keys that start with sk-ant-usr-)</span></label>
+      <input type="text" name="workspace_id" id="workspace-input" value="{{ llm.workspace_id }}" placeholder="wrkspc_…" autocomplete="off">
+      <div class="hint">A key created inside a workspace (sk-ant-api…) needs nothing here. A user key that is not tied to a workspace does: copy the ID from console.anthropic.com → Settings → Workspaces.</div></div>
       <label>Model</label>
       <input type="text" name="model" id="model-input" value="{{ llm.model }}" placeholder="model name">
       <div class="hint">Prefilled with a sensible choice for the provider; change it if you know a better one.</div>
@@ -44,6 +47,7 @@
     const form = document.getElementById('llm-form');
     const model = document.getElementById('model-input'), base = document.getElementById('base-input');
     const link = document.getElementById('key-link'), keyInput = document.getElementById('key-input'), baseWrap = document.getElementById('base-wrap');
+    const workspaceWrap = document.getElementById('workspace-wrap');
     const saved = {provider: {{ llm.provider | tojson }}, model: {{ llm.model | tojson }}, base: {{ llm.base_url | tojson }}};
     function apply(radio, keepSaved) {
       const isSaved = keepSaved && radio.value === saved.provider;
@@ -53,6 +57,7 @@
       keyInput.placeholder = radio.dataset.nokey ? 'not needed for this provider' : 'paste your key';
       baseWrap.style.display = (radio.value === 'custom' || radio.value === 'ollama') ? '' : 'none';
       if (radio.value === 'anthropic') baseWrap.style.display = 'none';
+      workspaceWrap.style.display = radio.value === 'anthropic' ? '' : 'none';
     }
     form.querySelectorAll('input[name=provider]').forEach(r => r.addEventListener('change', () => apply(r, false)));
     const checked = form.querySelector('input[name=provider]:checked');

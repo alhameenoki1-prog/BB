@@ -428,6 +428,7 @@ class EnvConfig(BaseModel):
     # Brain (brain.provider: claude). Read by the Anthropic SDK from the
     # environment; kept here so setup and status can report on it.
     anthropic_api_key: str = ""
+    anthropic_workspace_id: str = ""  # only for keys not scoped to a workspace (sk-ant-usr-…)
     # Brain (brain.provider: openai): key for the OpenAI-compatible endpoint.
     llm_api_key: str = ""
     instantly_api_key: str = ""
@@ -552,6 +553,7 @@ def load_env() -> EnvConfig:
     load_dotenv()
     env = EnvConfig(
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", "").strip(),
+        anthropic_workspace_id=os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip(),
         llm_api_key=(os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip(),
         instantly_api_key=os.getenv("INSTANTLY_API_KEY", "").strip(),
         dataforseo_login=os.getenv("DATAFORSEO_LOGIN", "").strip(),

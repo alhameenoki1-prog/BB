@@ -193,12 +193,14 @@ class Workspace:
             "provider": provider,
             "label": preset["label"] if provider else "",
             "api_key": api_key,
+            "workspace_id": str(s.get("anthropic_workspace_id") or ""),
             "base_url": str(s.get("llm_base_url") or preset["base_url"] or ""),
             "model": str(s.get("llm_model") or preset["model"] or ""),
             "free": bool(preset.get("free")),
         }
 
-    def save_llm(self, provider: str, api_key: str, model: str = "", base_url: str = ""):
+    def save_llm(self, provider: str, api_key: str, model: str = "", base_url: str = "",
+                 workspace_id: str = ""):
         if provider not in LLM_PRESETS:
             raise ValueError("Choose a provider from the list.")
         preset = LLM_PRESETS[provider]
@@ -207,11 +209,13 @@ class Workspace:
             llm_model=(model or preset["model"]).strip(),
             llm_base_url=(base_url or preset["base_url"]).strip().rstrip("/"),
             anthropic_api_key=api_key.strip() if provider == "anthropic" else "",
+            anthropic_workspace_id=workspace_id.strip() if provider == "anthropic" else "",
         )
         self.rewrite_config()
 
     def clear_llm(self):
-        self.save_secrets(llm_provider="", llm_api_key="", llm_model="", llm_base_url="", anthropic_api_key="")
+        self.save_secrets(llm_provider="", llm_api_key="", llm_model="", llm_base_url="",
+                          anthropic_api_key="", anthropic_workspace_id="")
 
     def llm_configured(self) -> bool:
         llm = self.llm()
@@ -727,7 +731,7 @@ class Workspace:
                "PYTHONUNBUFFERED": "1"}
         for key in list(env):
             if key.startswith("BB_") or key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-                                                 "ANTHROPIC_PROFILE"):
+                                                 "ANTHROPIC_PROFILE", "ANTHROPIC_WORKSPACE_ID"):
                 env.pop(key)
         for key in ("SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
                     "IMAP_HOST", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD"):
@@ -738,6 +742,8 @@ class Workspace:
         env.pop("OPENAI_API_KEY", None)
         if llm["provider"] == "anthropic":
             env["ANTHROPIC_API_KEY"] = llm["api_key"]
+            if llm["workspace_id"]:
+                env["ANTHROPIC_WORKSPACE_ID"] = llm["workspace_id"]
         elif llm["api_key"]:
             env["LLM_API_KEY"] = llm["api_key"]
         if self.mail_provider() == "smtp":

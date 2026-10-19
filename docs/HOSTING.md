@@ -177,6 +177,18 @@ reset it from the same page.
    total recipients, refreshed every 30 seconds. **Replies** lists everyone
    who answered; **Outbox** holds emails awaiting approval.
 
+## Anthropic keys
+
+Two kinds of key come out of console.anthropic.com. A key created inside a
+workspace starts with `sk-ant-api` and works on its own. A user key that
+is not tied to a workspace starts with `sk-ant-usr-` and Anthropic refuses
+it with "This API key is not scoped to a workspace" until the workspace
+is named: paste the ID from Console → Settings → Workspaces into the
+Workspace ID box on the AI provider page (or set `ANTHROPIC_WORKSPACE_ID`
+for the CLI). Either kind also needs prepaid credit on the account
+(Console → Settings → Billing); without it Anthropic answers "credit
+balance is too low" and the page says so.
+
 ## Connecting a mailbox (what to tell your users)
 
 The Mailbox page has these instructions built in, with buttons that fill
