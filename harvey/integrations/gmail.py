@@ -29,6 +29,7 @@ from harvey.integrations.mail_provider import (
     InboundMessage,
     MailProvider,
     SendResult,
+    attach_files,
     looks_like_bounce,
 )
 
@@ -135,6 +136,7 @@ class GmailProvider(MailProvider):
         body: str,
         thread_ref: str = "",
         in_reply_to: str = "",
+        attachments: list | None = None,
     ) -> SendResult:
         msg = EmailMessage()
         persona = self.config.persona
@@ -145,6 +147,7 @@ class GmailProvider(MailProvider):
             msg["In-Reply-To"] = in_reply_to
             msg["References"] = in_reply_to
         msg.set_content(body)
+        attach_files(msg, attachments)
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         payload: dict = {"raw": raw}

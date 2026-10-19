@@ -77,8 +77,10 @@ class MailProvider(ABC):
         body: str,
         thread_ref: str = "",
         in_reply_to: str = "",
+        attachments: list | None = None,
     ) -> SendResult:
-        """Send one plain-text email. Reply threading when refs are given."""
+        """Send one plain-text email. Reply threading when refs are given.
+        ``attachments`` are filesystem paths to attach (see attach_files)."""
 
     @abstractmethod
     async def get_replies(self, limit: int = 50) -> list[InboundMessage]:
@@ -87,6 +89,29 @@ class MailProvider(ABC):
     @abstractmethod
     async def test_connection(self) -> tuple[bool, str]:
         """Cheap end-to-end credential check. Returns (ok, detail)."""
+
+
+def attach_files(msg, attachments: list | None) -> list[str]:
+    """Attach each readable path to an EmailMessage with a guessed MIME
+    type. Returns the names attached; unreadable paths are logged and
+    skipped rather than failing the send."""
+    import logging
+    import mimetypes
+    from pathlib import Path
+
+    attached = []
+    for raw in attachments or []:
+        path = Path(raw)
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            logging.getLogger("harvey.mail").warning(f"Attachment {path.name} skipped: {e}")
+            continue
+        ctype, _ = mimetypes.guess_type(path.name)
+        maintype, _, subtype = (ctype or "application/octet-stream").partition("/")
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=path.name)
+        attached.append(path.name)
+    return attached
 
 
 def get_mail_provider(config, env) -> MailProvider | None:

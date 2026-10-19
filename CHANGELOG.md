@@ -9,6 +9,28 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Inquiry mode (`outreach.mode: inquiry`).** The sender is the prospective
+  client or partner: each email is written from what the recipient's
+  business does and asks for that (a financial advisor about taking you on,
+  a builder about a job, a studio about working together), with
+  `outreach.intent` saying what you want in your words. The default `offer`
+  mode is unchanged.
+- **Auto-replies follow your instructions and carry your files.**
+  `outreach.reply_instructions` is injected into every reply the handler
+  drafts; `outreach.reply_attachments` (file names under
+  `HARVEY_HOME/attachments`) are attached to the first reply in each
+  conversation, every reply, or never (`outreach.attach_on`). The outbox
+  gained `attachments_json`; Gmail and SMTP providers attach files
+  (Microsoft 365 logs and sends without, for now).
+- **The writer drafts about two days ahead of the sender**
+  (`2 × max_daily_sends` queued), so a 10,000-row list is worked through at
+  the daily limit instead of being written at once.
+- **Web app: users bring their own Anthropic key** (verified against the
+  API, stored in their workspace, billed to them), connect **any mailbox
+  over its own SMTP/IMAP** as an alternative to Gmail OAuth, set what they
+  want from recipients and how replies are answered, and upload
+  attachments for replies. A Mac quick-start and tunnel instructions were
+  added to docs/HOSTING.md.
 - **BB, a hosted multi-user web app (`bb/`).** `python -m bb` (the Docker
   image's default) serves a site where an admin creates logins (no
   self-registration) and each user gets an isolated Harvey: their own

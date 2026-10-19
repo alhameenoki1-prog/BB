@@ -24,6 +24,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 HARVEY_HOME = Path(os.environ.get("HARVEY_HOME") or PROJECT_ROOT).expanduser().resolve()
 
 DATA_DIR = HARVEY_HOME / "data"
+# Files the operator wants sent with replies (outreach.reply_attachments).
+ATTACHMENTS_DIR = HARVEY_HOME / "attachments"
 CONFIG_FILE = HARVEY_HOME / "harvey.yaml"
 LOCAL_CONFIG_FILE = HARVEY_HOME / "harvey.local.yaml"
 ENV_FILE = HARVEY_HOME / ".env"

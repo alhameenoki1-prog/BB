@@ -16,8 +16,9 @@
 <div class="card" style="margin-top:18px">
   <h2>Getting started</h2>
   <ol class="steps">
-    <li>{{ '✅' if summary.configured else '⬜' }} <a href="/profile">Tell BB who you are</a> — your name, company, LinkedIn and what you're reaching out about.</li>
-    <li>{{ '✅' if summary.gmail else '⬜' }} <a href="/gmail">Connect your Gmail</a> — emails go out from your own address and replies land in your inbox.</li>
+    <li>{{ '✅' if summary.api_key else '⬜' }} <a href="/apikey">Add your Anthropic API key</a> — the writing runs on your own account and is billed to you.</li>
+    <li>{{ '✅' if summary.configured else '⬜' }} <a href="/profile">Tell BB who you are</a> — your name, company, LinkedIn, what you want from the people you write to, and how replies should be answered.</li>
+    <li>{{ '✅' if summary.gmail else '⬜' }} <a href="/mailbox">Connect your mailbox</a> — Gmail in one click, or any mailbox's SMTP/IMAP settings. Emails go out from your own address.</li>
     <li>{{ '✅' if summary.recipients else '⬜' }} <a href="/recipients">Upload the people you want to reach</a> — a CSV with their emails (up to 10,000).</li>
     <li>{{ '✅' if summary.worker_running else '⬜' }} Start the worker below. It researches each person, writes their email, sends at a safe pace, and watches for replies.</li>
   </ol>

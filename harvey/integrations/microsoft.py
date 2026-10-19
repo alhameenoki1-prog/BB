@@ -220,10 +220,15 @@ class MicrosoftProvider(MailProvider):
         body: str,
         thread_ref: str = "",
         in_reply_to: str = "",
+        attachments: list | None = None,
     ) -> SendResult:
         """Draft, then send, so the RFC Message-ID is known (bounces and
         replies are matched on it). A reply is drafted with createReply on
         the prospect's message, which sets In-Reply-To/References."""
+        if attachments:
+            logger.warning(
+                "Microsoft 365 provider: attachments are not supported yet; "
+                f"sending to {to_email} without {len(attachments)} file(s).")
         content = {
             "subject": subject,
             "body": {"contentType": "Text", "content": body},

@@ -466,6 +466,18 @@ class Handler:
             await self.state.set_setting(KILL_SWITCH_KEY, reason)
             logger.error(f"Handler: KILL SWITCH ENGAGED — {reason}")
 
+    async def _reply_attachments(self, convo) -> list[str]:
+        """Files the operator wants sent with this reply (outreach.reply_
+        attachments): on the first reply of a conversation, every reply,
+        or never."""
+        outreach = getattr(self.config, "outreach", None)
+        if not outreach or not outreach.reply_attachments or outreach.attach_on == "never":
+            return []
+        if outreach.attach_on == "every_reply":
+            return list(outreach.reply_attachments)
+        prior = await self.state.count_outbox_for_conversation(convo.id, kind="reply")
+        return list(outreach.reply_attachments) if prior == 0 else []
+
     async def _queue_native_reply(
         self, response: str, prospect, convo, reply_meta: dict, intent: str
     ):
@@ -476,6 +488,7 @@ class Handler:
         subject = reply_meta.get("subject", "")
         if subject and not subject.lower().startswith("re:"):
             subject = f"Re: {subject}"
+        attachments = await self._reply_attachments(convo)
 
         item_id = await self.state.add_outbox_item(
             prospect_id=prospect.id,
@@ -489,6 +502,7 @@ class Handler:
             provider=self.provider.name if self.provider else "",
             thread_ref=reply_meta.get("thread_ref", ""),
             in_reply_to=reply_meta.get("message_id", ""),
+            attachments=attachments,
         )
         if item_id:
             mode = "queued for your approval" if require_approval else "queued to send"
@@ -588,6 +602,28 @@ Respond with ONLY the category label, nothing else."""
 
         return current_stage
 
+    def _outreach_context(self, attachments: list[str]) -> str:
+        """The operator's own framing for replies: inquiry mode, standing
+        instructions, and the files that ride along."""
+        outreach = getattr(self.config, "outreach", None)
+        persona = self.config.persona
+        parts = []
+        if outreach and outreach.mode == "inquiry":
+            intent = outreach.intent or "to work with them as a client or partner"
+            parts.append(
+                f"CONTEXT: {persona.name} is the prospective client or partner here, not a "
+                f"vendor. What {persona.name} wants from this person: {intent}. Move toward "
+                "getting that (details, a quote, availability, a call); do not sell anything.")
+        if outreach and outreach.reply_instructions.strip():
+            parts.append(
+                f"STANDING INSTRUCTIONS FROM {persona.name} FOR EVERY REPLY (follow them "
+                f"unless they conflict with a stop rule above):\n{outreach.reply_instructions.strip()}")
+        if attachments:
+            parts.append(
+                f"ATTACHED TO THIS REPLY: {', '.join(attachments)}. Refer to the attachment "
+                "in one short, natural sentence so they know to open it.")
+        return ("\n\n" + "\n\n".join(parts)) if parts else ""
+
     async def _generate_response(
         self, intent: str, reply_text: str, prospect, convo: Conversation
     ) -> str:
@@ -651,6 +687,7 @@ Write a reply that:"""
 - Makes it easy for them to refer (one-line ask)
 - Under 50 words"""
 
+        prompt += self._outreach_context(await self._reply_attachments(convo))
         prompt += "\n\nWrite ONLY the email body. No subject line, no greeting label, no signature block, no markdown."
 
         response = await self.brain.think(

@@ -13,9 +13,11 @@ from pathlib import Path
 from harvey.paths import PROJECT_ROOT
 
 # Environment variables handed to every per-user worker process. Users never
-# see or set these; the site operator does, once, on the server.
+# see or set these; the site operator does, once, on the server. The
+# Anthropic key is NOT among them: each user supplies their own (stored in
+# their workspace), so model usage is billed to them, never to the site.
 WORKER_ENV_KEYS = (
-    "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BASE_URL",
     "GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET",
     "REOON_API_KEY", "ZEROBOUNCE_API_KEY", "HUNTER_API_KEY",
     "SERPER_API_KEY", "PRECLEARED_API_KEY",
@@ -33,7 +35,6 @@ class Settings:
         self.admin_password = get("BB_ADMIN_PASSWORD")
         self.gmail_client_id = get("GMAIL_CLIENT_ID").strip()
         self.gmail_client_secret = get("GMAIL_CLIENT_SECRET").strip()
-        self.anthropic_api_key = get("ANTHROPIC_API_KEY").strip()
         self.default_model = get("BB_DEFAULT_MODEL").strip()
         self.default_daily_cost_usd = float(get("BB_DEFAULT_DAILY_COST_USD", "5") or 5)
         self.session_days = int(get("BB_SESSION_DAYS", "14") or 14)
@@ -74,10 +75,9 @@ class Settings:
     def problems(self) -> list[str]:
         """Server configuration gaps worth showing the admin."""
         out = []
-        if not self.anthropic_api_key:
-            out.append("ANTHROPIC_API_KEY is not set: workers cannot write emails.")
         if not (self.gmail_client_id and self.gmail_client_secret):
-            out.append("GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET are not set: users cannot connect Gmail.")
+            out.append("GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET are not set: users cannot connect "
+                       "Gmail with one click (they can still use their mailbox's SMTP settings).")
         if not self.secure_cookies and "localhost" not in self.base_url and "127.0.0.1" not in self.base_url:
             out.append("BB_BASE_URL is not https: session cookies travel in clear text.")
         return out

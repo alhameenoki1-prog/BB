@@ -71,6 +71,21 @@ class Writer:
             )
             return
 
+        # Native mode drafts cost a model call each, so never write more
+        # than about two days of sends ahead of the sender: a 10,000-row
+        # upload is worked through at the daily limit, not drafted at once.
+        if self.is_native:
+            max_daily = max(1, int(self.config.channels.email.max_daily_sends or 0))
+            backlog = await self.state.count_outbox_queued()
+            room = max(0, 2 * max_daily - backlog)
+            if room == 0:
+                logger.info(
+                    f"Writer: {backlog} email(s) already written and waiting; "
+                    f"drafting more once the sender catches up ({max_daily}/day)."
+                )
+                return
+            prospects_with_email = prospects_with_email[:room]
+
         # Batch prospects into campaign groups (by industry/title for relevance)
         batches = self._group_prospects(prospects_with_email)
 
@@ -168,6 +183,30 @@ class Writer:
                 f"({'awaiting approval' if require_approval else 'approved'})."
             )
 
+    def _outreach_block(self) -> str:
+        """Inquiry mode: the sender is the prospective client or partner,
+        and each email asks for what THIS recipient's business does."""
+        outreach = getattr(self.config, "outreach", None)
+        if not outreach or outreach.mode != "inquiry":
+            return ""
+        persona = self.config.persona
+        intent = outreach.intent.strip() or "to work with them as a client or partner"
+        return f"""
+
+OUTREACH MODE: INQUIRY. You are NOT selling anything. {persona.name} is writing as a
+prospective client or partner. What {persona.name} wants from the recipient: {intent}.
+- Work out from the facts what this person's business actually does, and ask for THAT.
+  A financial advisor is asked about taking {persona.name} on as a client. A construction
+  company is asked about a job {persona.name} wants done. A supplier, agency or studio is
+  asked about working together. If the facts don't say what they do, ask what they handle
+  before asking for anything.
+- Say the specific thing you want in one plain sentence, then ask ONE practical question
+  (availability, how they usually start, what they'd need from you).
+- Do not describe or pitch "{self.config.product.name}" as a product. Who you are takes
+  half a sentence at most.
+- Never invent a project detail, budget, timeline or location that isn't in the facts or
+  in what {persona.name} wants."""
+
     async def _write_personal_email(self, prospect) -> dict | None:
         """One grounded draft for one person. Facts in, one email out."""
         facts = [
@@ -195,6 +234,8 @@ class Writer:
                 )
         if prospect.personalization_notes:
             facts.append(f"- Research notes: {prospect.personalization_notes}")
+        if prospect.linkedin_url:
+            facts.append(f"- LinkedIn: {prospect.linkedin_url}")
 
         prompt = self.brain.load_prompt(
             "writer",
@@ -209,6 +250,7 @@ class Writer:
         ) or ""
         if self.skills:
             prompt += "\n\n" + self.skills
+        prompt += self._outreach_block()
 
         prompt += f"""
 
@@ -274,6 +316,7 @@ Pricing: {self.config.product.pricing}"""
         # Inject email framework skills
         if self.skills:
             prompt += "\n\n" + self.skills
+        prompt += self._outreach_block()
 
         prompt += f"""
 

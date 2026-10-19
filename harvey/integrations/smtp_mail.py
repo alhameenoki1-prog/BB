@@ -24,6 +24,7 @@ from email.utils import make_msgid, parseaddr
 import aiosmtplib
 
 from harvey.integrations.mail_provider import (
+    attach_files,
     InboundMessage,
     MailProvider,
     SendResult,
@@ -57,6 +58,7 @@ class SmtpImapProvider(MailProvider):
         body: str,
         thread_ref: str = "",
         in_reply_to: str = "",
+        attachments: list | None = None,
     ) -> SendResult:
         persona = self.config.persona
         msg = EmailMessage()
@@ -69,6 +71,7 @@ class SmtpImapProvider(MailProvider):
             msg["In-Reply-To"] = in_reply_to
             msg["References"] = in_reply_to
         msg.set_content(body)
+        attach_files(msg, attachments)
 
         try:
             await aiosmtplib.send(

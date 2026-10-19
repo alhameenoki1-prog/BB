@@ -413,6 +413,10 @@ MIGRATIONS: list[str] = [
     -- so one subscription's budget never consumes the other's.
     ALTER TABLE usage_log ADD COLUMN codex_calls INTEGER DEFAULT 0;
     """,
+    # ── v12: files sent with an outbox item (names under HARVEY_HOME/attachments) ──
+    """
+    ALTER TABLE outbox ADD COLUMN attachments_json TEXT DEFAULT '[]';
+    """,
 ]
 
 BRAIN_PROVIDERS = ("claude", "codex")
@@ -828,6 +832,7 @@ class StateManager:
         provider: str = "",
         thread_ref: str = "",
         in_reply_to: str = "",
+        attachments: list[str] | None = None,
     ) -> str | None:
         """Queue one outgoing email. Returns its id, or None when the
         (campaign, prospect, step) slot already exists — the double-send guard."""
@@ -837,12 +842,13 @@ class StateManager:
                 """INSERT OR IGNORE INTO outbox
                    (id, campaign_id, prospect_id, conversation_id, step, kind,
                     to_email, subject, body, status, send_at, provider,
-                    thread_ref, in_reply_to)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    thread_ref, in_reply_to, attachments_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     item_id, campaign_id, prospect_id, conversation_id,
                     int(step), kind, _norm(to_email), subject, body,
                     status, send_at, provider, thread_ref, in_reply_to,
+                    json.dumps(list(attachments or [])),
                 ),
             )
             await db.commit()
@@ -931,6 +937,29 @@ class StateManager:
             )
             await db.commit()
             return cursor.rowcount
+
+    async def count_outbox_queued(self, kind: str = "sequence") -> int:
+        """Emails written but not yet sent (awaiting approval or scheduled).
+        The writer keeps this to a couple of days of sends."""
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM outbox WHERE status IN ('pending_review', 'approved') "
+                "AND kind = ?", (kind,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return int(row[0] or 0) if row else 0
+
+    async def count_outbox_for_conversation(self, conversation_id: str, kind: str = "reply") -> int:
+        """How many replies have been queued or sent in this conversation."""
+        if not conversation_id:
+            return 0
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM outbox WHERE conversation_id = ? AND kind = ? "
+                "AND status != 'rejected'", (conversation_id, kind)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return int(row[0] or 0) if row else 0
 
     async def count_outbox_sent(self) -> int:
         async with self._connect() as db:

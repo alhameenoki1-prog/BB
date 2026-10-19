@@ -28,7 +28,7 @@ def _settings(tmp_path, **extra) -> Settings:
     env = {
         "BB_HOME": str(tmp_path / "bb"), "BB_BASE_URL": "http://testserver",
         "BB_SECRET_KEY": "test-secret", "BB_ADMIN_EMAIL": ADMIN["email"],
-        "BB_ADMIN_PASSWORD": ADMIN["password"], "ANTHROPIC_API_KEY": "sk-ant-test",
+        "BB_ADMIN_PASSWORD": ADMIN["password"],
         "GMAIL_CLIENT_ID": "cid.apps.googleusercontent.com", "GMAIL_CLIENT_SECRET": "csec",
         **extra,
     }
@@ -72,6 +72,8 @@ def _as_user(client):
 
 
 PROFILE = {
+    "mode": "inquiry", "intent": "find a financial advisor for a family portfolio",
+    "reply_instructions": "Offer a call on Tuesday afternoons.", "attach_on": "first_reply",
     "name": "Jane Doe", "company": "Acme Research", "role": "Founder",
     "linkedin": "https://linkedin.com/in/janedoe", "email": "jane@acme-research.com",
     "tone": "friendly and direct", "offer_name": "Acme Insights",
@@ -161,7 +163,11 @@ def test_profile_writes_a_valid_harvey_config(client):
     ws = Workspace(client.settings, user)
     cfg = yaml.safe_load(ws.config_file.read_text())
     loaded = HarveyConfig(**cfg)
-    assert loaded.persona.name == "Jane Doe" and loaded.persona.email == "jane@acme-research.com"
+    assert loaded.persona.name == "Jane Doe"
+    assert loaded.persona.email == "jane@acme-research.com"  # nothing connected yet: the typed one
+    assert loaded.outreach.mode == "inquiry" and "family portfolio" in loaded.outreach.intent
+    assert loaded.outreach.reply_instructions == "Offer a call on Tuesday afternoons."
+    assert loaded.outreach.attach_on == "first_reply" and loaded.outreach.reply_attachments == []
     assert loaded.product.key_benefits == ["Saves a day a month", "No setup"]
     assert loaded.icp.auto_prospect is False  # unchecked box: only the uploaded list
     assert loaded.channels.email.provider == "gmail"
@@ -172,6 +178,7 @@ def test_profile_writes_a_valid_harvey_config(client):
     assert loaded.brain.provider == "claude"
     knowledge = (ws.skills_dir / "product_knowledge.md").read_text()
     assert "Acme Insights" in knowledge and "Saves a day a month" in knowledge
+    assert "family portfolio" in knowledge and "nothing is being sold" in knowledge
     # The form round-trips.
     page = client.get("/profile")
     assert "Jane Doe" in page.text and "Acme Insights" in page.text
@@ -313,6 +320,7 @@ def test_gmail_connect_round_trip(client, monkeypatch):
     assert "did%20not%20match" in bad.headers["location"]
     ok = client.get("/gmail/callback", params={"code": "the-code", "state": state})
     assert "connected%20as%20jane.sends%40gmail.com" in ok.headers["location"]
+    assert ok.headers["location"].startswith("/mailbox")
 
     user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
     ws = Workspace(client.settings, user)
@@ -321,9 +329,11 @@ def test_gmail_connect_round_trip(client, monkeypatch):
     assert ws.gmail_account()["email"] == "jane.sends@gmail.com"
     # The persona now sends from the connected mailbox.
     assert yaml.safe_load(ws.config_file.read_text())["persona"]["email"] == "jane.sends@gmail.com"
-    page = client.get("/gmail")
+    assert client.get("/gmail").headers["location"] == "/mailbox"  # old address still works
+    page = client.get("/mailbox")
     assert "Connected" in page.text and "jane.sends@gmail.com" in page.text
-    assert client.get("/api/summary").json()["gmail"] is True
+    summary = client.get("/api/summary").json()
+    assert summary["gmail"] is True and summary["mailbox"] == "gmail"
 
     assert client.post("/gmail/disconnect").status_code == 303
     assert not ws.gmail_token_file.exists() and client.get("/api/summary").json()["gmail"] is False
@@ -340,6 +350,104 @@ def test_gmail_connect_needs_a_server_client(tmp_path):
 # ── worker process ──
 
 
+async def _accept_key(key):
+    return (True, "Key accepted.") if key.startswith("sk-ant-") else (False, "Anthropic rejected that key.")
+
+
+async def _smtp_ok(smtp):
+    return (True, f"SMTP and IMAP OK for {smtp['smtp_username']}") if smtp["smtp_password"] != "bad" \
+        else (False, "login failed")
+
+
+def test_api_key_is_checked_and_stored_per_user(client, monkeypatch):
+    _as_user(client)
+    monkeypatch.setattr("bb.app.check_anthropic_key", _accept_key)
+    page = client.get("/apikey")
+    assert "No key yet" in page.text
+    assert "start%20with%20sk-ant-" in client.post("/apikey", data={"api_key": "nope"}).headers["location"] \
+        or "rejected" in client.post("/apikey", data={"api_key": "nope"}).headers["location"]
+    assert "Key%20saved" in client.post("/apikey", data={"api_key": "sk-ant-abcdefghijklmnop"}).headers["location"]
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    assert ws.anthropic_key() == "sk-ant-abcdefghijklmnop"
+    assert oct(ws.secrets_file.stat().st_mode)[-3:] == "600"
+    page = client.get("/apikey")
+    assert "Key saved" in page.text and "sk-ant-abcdefghijklmnop" not in page.text  # masked
+    assert client.get("/api/summary").json()["api_key"] is True
+    assert "removed" in client.post("/apikey/remove").headers["location"]
+    assert ws.anthropic_key() == "" and client.get("/api/summary").json()["api_key"] is False
+
+
+def test_mailbox_smtp_settings(client, monkeypatch):
+    _as_user(client)
+    monkeypatch.setattr("bb.app.test_smtp", _smtp_ok)
+    client.post("/profile", data=PROFILE)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    page = client.get("/mailbox")
+    assert "SMTP" in page.text and "not set up" in page.text
+
+    bad = client.post("/mailbox/smtp", data={"smtp_host": "smtp.example.com", "smtp_username": "me@example.com",
+                                             "smtp_password": "bad"})
+    assert "Not%20saved" in bad.headers["location"] and not ws.smtp_configured()
+    ok = client.post("/mailbox/smtp", data={"smtp_host": "smtp.example.com", "smtp_port": "465",
+                                            "smtp_username": "me@example.com", "smtp_password": "app-pass",
+                                            "imap_host": "imap.example.com"})
+    assert "Mailbox%20saved" in ok.headers["location"]
+    assert ws.smtp_configured() and ws.mail_provider() == "smtp" and ws.sending_address() == "me@example.com"
+    # harvey.yaml follows: provider smtp, persona sends from the mailbox.
+    cfg = yaml.safe_load(ws.config_file.read_text())
+    assert cfg["channels"]["email"]["provider"] == "smtp" and cfg["persona"]["email"] == "me@example.com"
+    page = client.get("/mailbox")
+    assert "me@example.com" in page.text and "app-pass" not in page.text
+
+    # The worker gets the mailbox credentials, and only this user's.
+    seen = {}
+    monkeypatch.setattr("bb.app.check_anthropic_key", _accept_key)
+    client.post("/apikey", data={"api_key": "sk-ant-user-key-2"})
+    monkeypatch.setattr(ws_mod.subprocess, "Popen", lambda cmd, **kw: seen.update(kw) or _FakeProc())
+    monkeypatch.setattr(ws_mod.os, "kill", lambda pid, sig: None)
+    assert "Started" in client.post("/worker/start").headers["location"]
+    env = seen["env"]
+    assert env["SMTP_HOST"] == "smtp.example.com" and env["SMTP_PORT"] == "465"
+    assert env["IMAP_HOST"] == "imap.example.com" and env["IMAP_USERNAME"] == "me@example.com"
+    assert env["IMAP_PASSWORD"] == "app-pass" and env["ANTHROPIC_API_KEY"] == "sk-ant-user-key-2"
+
+    # A blank password on re-save keeps the stored one; removing clears it.
+    client.post("/mailbox/smtp", data={"smtp_host": "smtp.example.com", "smtp_username": "me@example.com",
+                                       "smtp_password": "", "smtp_port": "587"})
+    assert ws.smtp_settings()["smtp_password"] == "app-pass" and ws.smtp_settings()["smtp_port"] == "587"
+    assert "removed" in client.post("/mailbox/smtp/remove").headers["location"]
+    assert not ws.smtp_configured()
+
+
+def test_attachments_upload_and_delete(client):
+    _as_user(client)
+    client.post("/profile", data=PROFILE)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    r = client.post("/attachments", files=[("files", ("My Brief (v2).pdf", b"%PDF", "application/pdf")),
+                                            ("files", ("../../evil.sh", b"#!/bin/sh", "text/plain"))])
+    assert r.status_code == 303 and "Added" in r.headers["location"]
+    names = [a["name"] for a in ws.attachments()]
+    assert names == ["My Brief (v2).pdf", "evil.sh"] or set(names) == {"My Brief (v2).pdf", "evil.sh"}
+    assert not (ws.root / "evil.sh").exists()  # stayed inside attachments/
+    cfg = yaml.safe_load(ws.config_file.read_text())
+    assert set(cfg["outreach"]["reply_attachments"]) == {"My Brief (v2).pdf", "evil.sh"}
+    page = client.get("/profile")
+    assert "My Brief (v2).pdf" in page.text
+    assert client.get("/api/summary").json()["attachments"] == 2
+
+    client.post("/attachments/evil.sh/delete")
+    assert [a["name"] for a in ws.attachments()] == ["My Brief (v2).pdf"]
+    assert yaml.safe_load(ws.config_file.read_text())["outreach"]["reply_attachments"] == ["My Brief (v2).pdf"]
+    # Saving the profile keeps the folder as the source of truth.
+    client.post("/profile", data={**PROFILE, "attach_on": "every_reply"})
+    cfg = yaml.safe_load(ws.config_file.read_text())
+    assert cfg["outreach"]["reply_attachments"] == ["My Brief (v2).pdf"] and cfg["outreach"]["attach_on"] == "every_reply"
+    assert client.post("/attachments", files=[("files", ("", b"", "text/plain"))]).headers["location"].startswith("/profile?error")
+
+
 class _FakeProc:
     def __init__(self):
         self.pid = 4242
@@ -350,10 +458,14 @@ def test_worker_start_stop(client, monkeypatch):
     user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
     ws = Workspace(client.settings, user)
 
+    assert "API%20key%20first" in client.post("/worker/start").headers["location"]
+    monkeypatch.setattr("bb.app.check_anthropic_key", _accept_key)
+    assert "Key%20saved" in client.post("/apikey", data={"api_key": "sk-ant-user-key-1"}).headers["location"]
     assert "profile%20first" in client.post("/worker/start").headers["location"]
     client.post("/profile", data=PROFILE)
-    assert "Gmail%20first" in client.post("/worker/start").headers["location"]
+    assert "mailbox%20first" in client.post("/worker/start").headers["location"]
     gmail_oauth.save_token(ws, {"refresh_token": "rt"}, "jane@acme-research.com")
+    ws.set_mail_provider("gmail")
 
     seen = {}
 
@@ -382,7 +494,8 @@ def test_worker_start_stop(client, monkeypatch):
     assert seen["cmd"] == [sys.executable, "-m", "harvey.main"]
     env = seen["kwargs"]["env"]
     assert env["HARVEY_HOME"] == str(ws.root)
-    assert env["ANTHROPIC_API_KEY"] == "sk-ant-test" and env["GMAIL_CLIENT_ID"].startswith("cid")
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-user-key-1"  # the user's, never the site's
+    assert env["GMAIL_CLIENT_ID"].startswith("cid") and "SMTP_HOST" not in env
     assert not any(k.startswith("BB_") for k in env)
     assert seen["kwargs"]["start_new_session"] is True
     assert ws.pid_file.read_text() == "4242" and ws.autostart_file.exists()

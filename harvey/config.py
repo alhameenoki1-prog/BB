@@ -161,6 +161,57 @@ class ComplianceConfig(BaseModel):
     precleared: PreclearedConfig = PreclearedConfig()
 
 
+OUTREACH_MODES = ("offer", "inquiry")
+ATTACH_POLICIES = ("first_reply", "every_reply", "never")
+
+
+class OutreachConfig(BaseModel):
+    """What kind of email this is, and how replies are answered.
+
+    ``offer`` (the default): you have something to sell or propose; email 1
+    makes an observation and asks a question, later emails introduce it.
+    ``inquiry``: you are the prospective client or partner. Each email is
+    written from what the recipient's business does: a financial advisor is
+    asked about becoming a client, a builder about a job, an agency about a
+    partnership. ``intent`` says in your words what you want from them.
+    """
+
+    mode: str = "offer"
+    intent: str = ""
+    # Standing instructions for every auto-reply ("offer a 20-minute call
+    # on Tuesdays", "never discuss budget by email", ...).
+    reply_instructions: str = ""
+    # File names under HARVEY_HOME/attachments sent with replies.
+    reply_attachments: list[str] = []
+    attach_on: str = "first_reply"  # first_reply | every_reply | never
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _valid_mode(cls, v) -> str:
+        v = str(v or "offer").strip().lower()
+        if v not in OUTREACH_MODES:
+            raise ValueError(f"'{v}' is not an outreach mode. Use one of: {', '.join(OUTREACH_MODES)}.")
+        return v
+
+    @field_validator("attach_on", mode="before")
+    @classmethod
+    def _valid_attach_on(cls, v) -> str:
+        v = str(v or "first_reply").strip().lower()
+        if v not in ATTACH_POLICIES:
+            raise ValueError(f"'{v}' is not an attachment policy. Use one of: {', '.join(ATTACH_POLICIES)}.")
+        return v
+
+    @field_validator("reply_attachments", mode="before")
+    @classmethod
+    def _plain_names(cls, v) -> list[str]:
+        names = []
+        for name in (v or []):
+            name = str(name).strip()
+            if name and "/" not in name and "\\" not in name and not name.startswith("."):
+                names.append(name)
+        return names
+
+
 class QuietHoursConfig(BaseModel):
     start: str = "22:00"
     end: str = "07:00"
@@ -295,6 +346,7 @@ class HarveyConfig(BaseModel):
     usage: UsageConfig = UsageConfig()
     brain: BrainConfig = BrainConfig()
     compliance: ComplianceConfig = ComplianceConfig()
+    outreach: OutreachConfig = OutreachConfig()
 
 
 class EnvConfig(BaseModel):

@@ -29,6 +29,29 @@ logger = logging.getLogger("harvey.sender")
 # Max sends drained per heartbeat cycle — spreads volume through the day
 # instead of bursting the daily cap in one minute.
 MAX_SENDS_PER_CYCLE = 8
+
+
+def _attachment_paths(raw) -> list:
+    """Outbox attachments_json → existing files under HARVEY_HOME/attachments.
+    Names only, never paths, so a row can't point outside that folder."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    from harvey.paths import ATTACHMENTS_DIR
+
+    try:
+        names = _json.loads(raw) if raw else []
+    except (TypeError, ValueError):
+        return []
+    paths = []
+    for name in names if isinstance(names, list) else []:
+        name = _Path(str(name)).name
+        candidate = ATTACHMENTS_DIR / name
+        if name and candidate.is_file():
+            paths.append(candidate)
+        else:
+            logger.warning(f"Sender: attachment {name!r} is missing; sending without it.")
+    return paths
 SEND_JITTER_SECONDS = (4, 15)
 
 # Prospect pipeline statuses that mean "stop emailing this person".
@@ -526,10 +549,15 @@ class Sender:
                     continue
                 receipt_id = clearance.receipt_id
 
+            send_kwargs = {}
+            files = _attachment_paths(item.get("attachments_json"))
+            if files:
+                send_kwargs["attachments"] = files
             result = await self.provider.send_email(
                 item["to_email"], item["subject"], item["body"],
                 thread_ref=item.get("thread_ref", ""),
                 in_reply_to=item.get("in_reply_to", ""),
+                **send_kwargs,
             )
             if not result.ok:
                 await self.state.update_outbox_item(

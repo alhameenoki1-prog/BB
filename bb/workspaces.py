@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -29,6 +30,16 @@ logger = logging.getLogger("bb.workspaces")
 TONES = ("professional, consultative, confident", "friendly and direct", "warm and curious",
          "formal", "casual")
 GOALS = {"book_call": "Book a call", "get_reply": "Get a reply", "start_trial": "Start a trial"}
+OUTREACH_MODES = {
+    "inquiry": "I want something from them (hire them, buy from them, partner with them)",
+    "offer": "I have something to offer them (a product, a service, a proposal)",
+}
+ATTACH_POLICIES = {"first_reply": "With my first reply to each person",
+                   "every_reply": "With every reply", "never": "Never"}
+MAX_ATTACHMENT_TOTAL = 20 * 1024 * 1024  # Gmail's hard limit is 25 MB per message
+SMTP_FIELDS = ("smtp_host", "smtp_port", "smtp_username", "smtp_password",
+               "imap_host", "imap_port", "imap_username", "imap_password", "from_email")
+
 COMMON_TIMEZONES = (
     "UTC", "Europe/London", "Europe/Paris", "Europe/Berlin", "Africa/Lagos", "Africa/Nairobi",
     "Africa/Johannesburg", "Asia/Dubai", "Asia/Kolkata", "Asia/Singapore", "Asia/Tokyo",
@@ -63,11 +74,120 @@ class Workspace:
         self.autostart_file = self.data_dir / "worker.autostart"
         self.gmail_token_file = self.data_dir / "gmail_token.json"
         self.gmail_account_file = self.data_dir / "gmail_account.json"
+        self.secrets_file = self.data_dir / "secrets.json"
+        self.mailbox_file = self.data_dir / "mailbox.json"
+        self.attachments_dir = self.root / "attachments"
 
     def ensure(self):
-        for d in (self.root, self.data_dir, self.skills_dir):
+        for d in (self.root, self.data_dir, self.skills_dir, self.attachments_dir):
             d.mkdir(parents=True, exist_ok=True)
         return self
+
+    # ── per-user secrets (their own Anthropic key, their mailbox password) ──
+
+    def secrets(self) -> dict:
+        try:
+            data = json.loads(self.secrets_file.read_text())
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save_secrets(self, **updates):
+        self.ensure()
+        data = {**self.secrets(), **{k: v for k, v in updates.items() if v is not None}}
+        self.secrets_file.write_text(json.dumps(data, indent=2))
+        try:
+            self.secrets_file.chmod(0o600)
+        except OSError:
+            pass
+
+    def anthropic_key(self) -> str:
+        return str(self.secrets().get("anthropic_api_key") or "")
+
+    @staticmethod
+    def mask(secret: str) -> str:
+        secret = secret or ""
+        return (secret[:7] + "…" + secret[-4:]) if len(secret) > 14 else ("•" * len(secret))
+
+    # ── mailbox: Gmail (OAuth) or the mailbox's own SMTP/IMAP ──
+
+    def mail_provider(self) -> str:
+        try:
+            data = json.loads(self.mailbox_file.read_text())
+            provider = str(data.get("provider") or "")
+        except (OSError, ValueError, AttributeError):
+            provider = ""
+        if provider in ("gmail", "smtp"):
+            return provider
+        return "smtp" if self.smtp_configured() and not self.gmail_connected() else "gmail"
+
+    def set_mail_provider(self, provider: str):
+        if provider not in ("gmail", "smtp"):
+            raise ValueError("Choose gmail or smtp.")
+        self.ensure()
+        self.mailbox_file.write_text(json.dumps({"provider": provider}))
+
+    def smtp_settings(self) -> dict:
+        secrets = self.secrets()
+        return {k: secrets.get(k, "") for k in SMTP_FIELDS}
+
+    def smtp_configured(self) -> bool:
+        s = self.smtp_settings()
+        return bool(s["smtp_host"] and s["smtp_username"] and s["smtp_password"])
+
+    def mailbox_connected(self) -> bool:
+        return self.gmail_connected() if self.mail_provider() == "gmail" else self.smtp_configured()
+
+    def sending_address(self) -> str:
+        if self.mail_provider() == "gmail":
+            return self.gmail_account().get("email", "")
+        s = self.smtp_settings()
+        return s["from_email"] or s["smtp_username"]
+
+    # ── attachments sent with replies ──
+
+    @staticmethod
+    def safe_filename(name: str) -> str:
+        name = Path(str(name or "")).name
+        name = re.sub(r"[^A-Za-z0-9._ ()-]+", "_", name).strip(" ._")
+        return name[:120]
+
+    def attachments(self) -> list[dict]:
+        if not self.attachments_dir.is_dir():
+            return []
+        out = []
+        for path in sorted(self.attachments_dir.iterdir()):
+            if path.is_file() and not path.name.startswith("."):
+                out.append({"name": path.name, "size": path.stat().st_size})
+        return out
+
+    def add_attachment(self, filename: str, data: bytes) -> str:
+        name = self.safe_filename(filename)
+        if not name:
+            raise ValueError("That file has no usable name.")
+        total = sum(a["size"] for a in self.attachments() if a["name"] != name) + len(data)
+        if total > MAX_ATTACHMENT_TOTAL:
+            raise ValueError("Attachments would exceed 20 MB in total; email providers reject that.")
+        self.ensure()
+        (self.attachments_dir / name).write_bytes(data)
+        self._sync_attachments_into_config()
+        return name
+
+    def remove_attachment(self, name: str):
+        safe = self.safe_filename(name)
+        try:
+            (self.attachments_dir / safe).unlink()
+        except FileNotFoundError:
+            pass
+        self._sync_attachments_into_config()
+
+    def _sync_attachments_into_config(self):
+        """harvey.yaml lists the files to attach; keep it equal to the folder."""
+        cfg = self.config()
+        if not cfg:
+            return
+        cfg.setdefault("outreach", {})["reply_attachments"] = [a["name"] for a in self.attachments()]
+        self.config_file.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
 
     # ── configuration (harvey.yaml) ──
 
@@ -96,11 +216,12 @@ class Workspace:
         email = (cfg.get("channels") or {}).get("email") or {}
         usage = cfg.get("usage") or {}
         quiet = usage.get("quiet_hours") or {}
+        outreach = cfg.get("outreach") or {}
         return {
             "name": persona.get("name", ""),
             "company": persona.get("company", ""),
             "role": persona.get("role", ""),
-            "email": persona.get("email", "") or self.gmail_account().get("email", ""),
+            "email": persona.get("email", "") or self.sending_address(),
             "linkedin": persona.get("linkedin", ""),
             "tone": persona.get("tone", TONES[0]),
             "offer_name": product.get("name", ""),
@@ -122,6 +243,10 @@ class Workspace:
             "timezone": quiet.get("timezone", "UTC"),
             "max_daily_cost_usd": float(usage.get("max_daily_cost_usd",
                                                   self.settings.default_daily_cost_usd)),
+            "mode": outreach.get("mode", "inquiry"),
+            "intent": outreach.get("intent", ""),
+            "reply_instructions": outreach.get("reply_instructions", ""),
+            "attach_on": outreach.get("attach_on", "first_reply"),
         }
 
     def write_profile(self, form: dict) -> dict:
@@ -140,9 +265,10 @@ class Workspace:
         company = text("company")
         if not name or not company:
             raise ValueError("Your name and company are required.")
-        gmail_email = self.gmail_account().get("email", "")
-        persona_email = text("email") or gmail_email
+        # The address Harvey sends from must be the connected mailbox.
+        persona_email = self.sending_address() or text("email")
         benefits = _split_lines(form.get("benefits", ""))
+        mode = text("mode") or "inquiry"
         cfg = {
             "persona": {
                 "name": name, "company": company, "role": text("role"),
@@ -175,7 +301,7 @@ class Workspace:
             "channels": {
                 "email": {
                     "enabled": True,
-                    "provider": "gmail",
+                    "provider": self.mail_provider(),
                     "max_daily_sends": max(0, int(text("max_daily_sends", "30") or 30)),
                     "require_approval": flag("require_approval"),
                     "send_to_risky": False,
@@ -195,6 +321,13 @@ class Workspace:
             },
             "brain": {"provider": "claude", **({"model": self.settings.default_model}
                                                if self.settings.default_model else {})},
+            "outreach": {
+                "mode": mode,
+                "intent": text("intent"),
+                "reply_instructions": str(form.get("reply_instructions", "") or "").strip(),
+                "reply_attachments": [a["name"] for a in self.attachments()],
+                "attach_on": text("attach_on") or "first_reply",
+            },
         }
         HarveyConfig(**cfg)  # raises pydantic.ValidationError with the field
         self.ensure()
@@ -202,17 +335,38 @@ class Workspace:
         self._write_product_knowledge(cfg)
         return cfg
 
+    def rewrite_config(self) -> dict | None:
+        """Re-run write_profile with the current values (after the mailbox or
+        attachments change) so harvey.yaml stays in step. No-op until the
+        profile has been filled in once."""
+        if not self.is_configured():
+            return None
+        prof = self.profile()
+        form = {**prof, "auto_prospect": "on" if prof["auto_prospect"] else "",
+                "require_approval": "on" if prof["require_approval"] else ""}
+        try:
+            return self.write_profile(form)
+        except Exception as e:  # a stale config must never break a mailbox change
+            logger.warning("Could not rewrite harvey.yaml for %s: %s", self.user["email"], e)
+            return None
+
     def _write_product_knowledge(self, cfg: dict):
         """What the writer and handler know about the sender. The trainer
         produces a richer version from a website; this one is built from
         the form so a user is never writing with an empty skill."""
         persona, product = cfg["persona"], cfg["product"]
         offer = product["offer"]
+        outreach = cfg.get("outreach") or {}
         lines = [
             f"# {product['name']} — what {persona['name']} is reaching out about",
             "",
             f"**Sender:** {persona['name']}, {persona['role'] or 'contact'} at {persona['company']}.",
             f"**LinkedIn:** {persona['linkedin']}" if persona.get("linkedin") else "",
+            "",
+            ("## What the sender wants from each recipient\n"
+             + (outreach.get("intent") or "To work with them as a client or partner.")
+             + "\nEach email asks for what THAT recipient's business does; nothing is being sold.")
+            if outreach.get("mode") == "inquiry" else "",
             "",
             "## What it is",
             product["description"] or "(no description given)",
@@ -286,7 +440,9 @@ class Workspace:
             "bounced": 0, "outbox_pending": 0, "outbox_scheduled": 0, "outbox_sent": 0,
             "outbox_failed": 0, "outbox_rejected": 0, "replies": 0, "open_replies": 0,
             "sent_today": 0, "sending_paused": "", "worker_running": bool(self.worker_running()),
-            "configured": self.is_configured(), "gmail": self.gmail_connected(),
+            "configured": self.is_configured(), "gmail": self.mailbox_connected(),
+            "mailbox": self.mail_provider(), "api_key": bool(self.anthropic_key()),
+            "attachments": len(self.attachments()),
         }
         if not await self._table_exists("prospects"):
             return out
@@ -381,15 +537,33 @@ class Workspace:
         env = {**os.environ, **self.settings.worker_env(), "HARVEY_HOME": str(self.root),
                "PYTHONUNBUFFERED": "1"}
         for key in list(env):
-            if key.startswith("BB_"):
+            if key.startswith("BB_") or key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                                                 "ANTHROPIC_PROFILE"):
                 env.pop(key)
+        for key in ("SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
+                    "IMAP_HOST", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD"):
+            env.pop(key, None)
+        # The user's own key: model usage is billed to them, never to the site.
+        env["ANTHROPIC_API_KEY"] = self.anthropic_key()
+        if self.mail_provider() == "smtp":
+            s = self.smtp_settings()
+            env.update({
+                "SMTP_HOST": s["smtp_host"], "SMTP_PORT": str(s["smtp_port"] or 587),
+                "SMTP_USERNAME": s["smtp_username"], "SMTP_PASSWORD": s["smtp_password"],
+                "IMAP_HOST": s["imap_host"] or s["smtp_host"],
+                "IMAP_PORT": str(s["imap_port"] or 993),
+                "IMAP_USERNAME": s["imap_username"] or s["smtp_username"],
+                "IMAP_PASSWORD": s["imap_password"] or s["smtp_password"],
+            })
         return env
 
     def start_worker(self) -> tuple[bool, str]:
+        if not self.anthropic_key():
+            return False, "Add your Anthropic API key first."
         if not self.is_configured():
             return False, "Fill in your profile first."
-        if not self.gmail_connected():
-            return False, "Connect your Gmail first."
+        if not self.mailbox_connected():
+            return False, "Connect your mailbox first."
         if pid := self.worker_running():
             return True, f"Already running (pid {pid})."
         self.ensure()

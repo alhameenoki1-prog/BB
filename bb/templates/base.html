@@ -65,7 +65,8 @@
     <a href="/outbox" class="{{ 'active' if request.url.path.startswith('/outbox') else '' }}">Outbox</a>
     <a href="/replies" class="{{ 'active' if request.url.path.startswith('/replies') else '' }}">Replies</a>
     <a href="/profile" class="{{ 'active' if request.url.path.startswith('/profile') else '' }}">Profile</a>
-    <a href="/gmail" class="{{ 'active' if request.url.path.startswith('/gmail') else '' }}">Gmail</a>
+    <a href="/mailbox" class="{{ 'active' if request.url.path.startswith('/mailbox') or request.url.path.startswith('/gmail') else '' }}">Mailbox</a>
+    <a href="/apikey" class="{{ 'active' if request.url.path.startswith('/apikey') else '' }}">AI key</a>
     {% if user.role == 'admin' %}<a href="/admin/users" class="{{ 'active' if request.url.path.startswith('/admin') else '' }}">Users</a>{% endif %}
   </nav>
   <form method="post" action="/logout"><span class="muted small">{{ user.email }}</span> <button class="secondary small" type="submit">Sign out</button></form>

@@ -19,7 +19,8 @@ from pydantic import ValidationError
 from bb import gmail_oauth, recipients as recipients_mod
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
-from bb.workspaces import COMMON_TIMEZONES, GOALS, TONES, Workspace, all_workspaces
+from bb.workspaces import (ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, OUTREACH_MODES, TONES,
+                           Workspace, all_workspaces)
 
 logger = logging.getLogger("bb.app")
 
@@ -37,6 +38,45 @@ def _redirect(url: str, msg: str = "", error: str = "") -> RedirectResponse:
     if params:
         url += ("&" if "?" in url else "?") + "&".join(params)
     return RedirectResponse(url, status_code=303)
+
+
+async def check_anthropic_key(key: str) -> tuple[bool, str]:
+    """Is this the user's working Anthropic key? Listing models costs
+    nothing and fails fast on a bad key."""
+    import anthropic
+
+    if not key.startswith("sk-ant-"):
+        return False, "Anthropic keys start with sk-ant-. Copy the whole key from console.anthropic.com."
+    try:
+        client = anthropic.AsyncAnthropic(api_key=key, max_retries=0, timeout=20)
+        await client.models.list(limit=1)
+    except anthropic.AuthenticationError:
+        return False, "Anthropic rejected that key."
+    except anthropic.PermissionDeniedError:
+        return False, "That key is not allowed to use the API (check its permissions in the Console)."
+    except Exception as e:  # network, proxy, outage
+        return False, f"Could not reach Anthropic to check the key: {type(e).__name__}."
+    return True, "Key accepted."
+
+
+async def test_smtp(smtp: dict) -> tuple[bool, str]:
+    """Log in to the mailbox's SMTP and IMAP servers with the given settings,
+    exactly as the worker will."""
+    from types import SimpleNamespace
+
+    from harvey.integrations.smtp_mail import SmtpImapProvider
+
+    env = SimpleNamespace(
+        smtp_host=smtp["smtp_host"], smtp_port=int(smtp["smtp_port"] or 587),
+        smtp_username=smtp["smtp_username"], smtp_password=smtp["smtp_password"],
+        imap_host=smtp["imap_host"] or smtp["smtp_host"], imap_port=int(smtp["imap_port"] or 993),
+        imap_username=smtp["imap_username"] or smtp["smtp_username"],
+        imap_password=smtp["imap_password"] or smtp["smtp_password"],
+    )
+    try:
+        return await SmtpImapProvider(None, env).test_connection()
+    except Exception as e:
+        return False, f"Connection failed: {e}"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -181,11 +221,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ── profile ──
 
+    def _profile_ctx(ws: Workspace, profile: dict) -> dict:
+        return dict(profile=profile, tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES,
+                    modes=OUTREACH_MODES, policies=ATTACH_POLICIES, attachments=ws.attachments())
+
     @app.get("/profile", response_class=HTMLResponse)
     async def profile_page(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
-        return await render(request, "profile.html", user, profile=ws.profile(), tones=TONES,
-                            goals=GOALS, timezones=COMMON_TIMEZONES)
+        return await render(request, "profile.html", user, **_profile_ctx(ws, ws.profile()))
 
     @app.post("/profile")
     async def profile_save(request: Request, user: dict = Depends(current_user)):
@@ -196,29 +239,150 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValidationError as e:
             first = e.errors()[0]
             detail = f"{'.'.join(str(p) for p in first['loc'])}: {first['msg']}"
-            return await render(request, "profile.html", user, profile={**ws.profile(), **form},
-                                tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES,
+            return await render(request, "profile.html", user,
+                                **_profile_ctx(ws, {**ws.profile(), **form}),
                                 error=f"Could not save: {detail}")
         except ValueError as e:
-            return await render(request, "profile.html", user, profile={**ws.profile(), **form},
-                                tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES, error=str(e))
+            return await render(request, "profile.html", user,
+                                **_profile_ctx(ws, {**ws.profile(), **form}), error=str(e))
         return _redirect("/profile", msg="Profile saved. Restart the worker to apply changes."
                          if ws.worker_running() else "Profile saved.")
 
-    # ── Gmail ──
+    # ── the user's own Anthropic key ──
 
-    @app.get("/gmail", response_class=HTMLResponse)
-    async def gmail_page(request: Request, user: dict = Depends(current_user)):
+    @app.get("/apikey", response_class=HTMLResponse)
+    async def apikey_page(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
-        return await render(request, "gmail.html", user, connected=ws.gmail_connected(),
-                            account=ws.gmail_account(),
-                            configured=bool(settings.gmail_client_id and settings.gmail_client_secret),
+        key = ws.anthropic_key()
+        return await render(request, "apikey.html", user, has_key=bool(key), masked=ws.mask(key))
+
+    @app.post("/apikey")
+    async def apikey_save(user: dict = Depends(current_user), api_key: str = Form("")):
+        key = api_key.strip()
+        if not key:
+            return _redirect("/apikey", error="Paste your key first.")
+        ok, detail = await check_anthropic_key(key)
+        if not ok:
+            return _redirect("/apikey", error=detail)
+        ws = workspace_for(user)
+        ws.save_secrets(anthropic_api_key=key)
+        return _redirect("/apikey", msg="Key saved and verified."
+                         + (" Restart the worker to use it." if ws.worker_running() else ""))
+
+    @app.post("/apikey/remove")
+    async def apikey_remove(user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        if ws.worker_running():
+            await ws.stop_worker()
+        ws.save_secrets(anthropic_api_key="")
+        return _redirect("/apikey", msg="Key removed. The worker was stopped.")
+
+    # ── mailbox: Gmail (OAuth) or the mailbox's own SMTP/IMAP ──
+
+    @app.get("/mailbox", response_class=HTMLResponse)
+    async def mailbox_page(request: Request, user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        smtp = ws.smtp_settings()
+        return await render(request, "mailbox.html", user, provider=ws.mail_provider(),
+                            gmail_connected=ws.gmail_connected(), account=ws.gmail_account(),
+                            gmail_available=bool(settings.gmail_client_id and settings.gmail_client_secret),
+                            smtp={**smtp, "smtp_password": "", "imap_password": ""},
+                            smtp_configured=ws.smtp_configured(),
+                            smtp_masked=ws.mask(smtp["smtp_password"]),
                             redirect_uri=gmail_oauth.redirect_uri(settings))
+
+    @app.get("/gmail")
+    async def gmail_page_moved():
+        return _redirect("/mailbox")
+
+    @app.post("/mailbox/provider")
+    async def mailbox_choose(user: dict = Depends(current_user), provider: str = Form("gmail")):
+        ws = workspace_for(user)
+        try:
+            ws.set_mail_provider(provider)
+        except ValueError as e:
+            return _redirect("/mailbox", error=str(e))
+        ws.rewrite_config()
+        label = "Gmail" if provider == "gmail" else "your mailbox's SMTP/IMAP settings"
+        return _redirect("/mailbox", msg=f"Emails will go through {label}."
+                         + (" Restart the worker to apply." if ws.worker_running() else ""))
+
+    @app.post("/mailbox/smtp")
+    async def mailbox_smtp_save(request: Request, user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        form = dict(await request.form())
+        current = ws.smtp_settings()
+        smtp = {}
+        for key in current:
+            value = str(form.get(key, "") or "").strip()
+            # Blank password fields keep the stored password.
+            smtp[key] = value or (current[key] if key.endswith("password") else "")
+        if not (smtp["smtp_host"] and smtp["smtp_username"] and smtp["smtp_password"]):
+            return _redirect("/mailbox", error="SMTP server, username and password are required.")
+        for port in ("smtp_port", "imap_port"):
+            if smtp[port] and not str(smtp[port]).isdigit():
+                return _redirect("/mailbox", error=f"{port.replace('_', ' ')} must be a number.")
+        ok, detail = await test_smtp(smtp)
+        if not ok:
+            return _redirect("/mailbox", error=f"Not saved: {detail}")
+        ws.save_secrets(**smtp)
+        ws.set_mail_provider("smtp")
+        ws.rewrite_config()
+        return _redirect("/mailbox", msg=f"Mailbox saved. {detail}")
+
+    @app.post("/mailbox/smtp/test")
+    async def mailbox_smtp_test(user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        if not ws.smtp_configured():
+            return _redirect("/mailbox", error="No SMTP settings saved yet.")
+        ok, detail = await test_smtp(ws.smtp_settings())
+        return _redirect("/mailbox", msg=detail if ok else "", error="" if ok else detail)
+
+    @app.post("/mailbox/smtp/remove")
+    async def mailbox_smtp_remove(user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        if ws.worker_running() and ws.mail_provider() == "smtp":
+            await ws.stop_worker()
+        ws.save_secrets(**{k: "" for k in ws.smtp_settings()})
+        if ws.gmail_connected():
+            ws.set_mail_provider("gmail")
+        ws.rewrite_config()
+        return _redirect("/mailbox", msg="SMTP settings removed.")
+
+    # ── attachments sent with replies ──
+
+    @app.post("/attachments")
+    async def attachments_upload(request: Request, user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        form = await request.form()
+        added = []
+        for upload in form.getlist("files"):
+            # A file input left empty arrives as a blank string or a nameless part.
+            if not isinstance(upload, UploadFile) or not upload.filename:
+                continue
+            data = await upload.read()
+            if not data:
+                continue
+            try:
+                added.append(ws.add_attachment(upload.filename, data))
+            except ValueError as e:
+                return _redirect("/profile", error=str(e))
+        if not added:
+            return _redirect("/profile", error="Choose at least one file.")
+        return _redirect("/profile", msg=f"Added {', '.join(added)}. They go out with your replies.")
+
+    @app.post("/attachments/{name}/delete")
+    async def attachments_delete(name: str, user: dict = Depends(current_user)):
+        workspace_for(user).remove_attachment(name)
+        return _redirect("/profile", msg="Attachment removed.")
+
+    # ── Gmail OAuth (the site's Google client) ──
 
     @app.post("/gmail/connect")
     async def gmail_connect(user: dict = Depends(current_user)):
         if not (settings.gmail_client_id and settings.gmail_client_secret):
-            return _redirect("/gmail", error="The site has no Google OAuth client configured yet.")
+            return _redirect("/mailbox", error="The site has no Google OAuth client configured yet. "
+                                               "Use your mailbox's SMTP settings instead.")
         nonce = secrets.token_urlsafe(16)
         state = gmail_oauth.sign_state(settings.secret_key(), user["id"], nonce)
         response = RedirectResponse(
@@ -233,42 +397,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                              code: str = "", state: str = "", error: str = ""):
         nonce = request.cookies.get(GMAIL_NONCE_COOKIE, "")
         if error:
-            return _redirect("/gmail", error=f"Google said: {error}")
+            return _redirect("/mailbox", error=f"Google said: {error}")
         if not gmail_oauth.verify_state(settings.secret_key(), user["id"], nonce, state):
-            return _redirect("/gmail", error="The sign-in did not match this session. Try again.")
+            return _redirect("/mailbox", error="The sign-in did not match this session. Try again.")
         ws = workspace_for(user)
         try:
             data = await gmail_oauth.exchange_code(settings, code)
             email = await gmail_oauth.account_email(data.get("access_token", ""))
         except Exception as e:
-            return _redirect("/gmail", error=str(e))
+            return _redirect("/mailbox", error=str(e))
         gmail_oauth.save_token(ws, data, email)
-        # The persona's address must be the mailbox Harvey sends from.
-        cfg = ws.config()
-        if cfg and (cfg.get("persona") or {}).get("email") != email:
-            prof = ws.profile()
-            prof["email"] = email
-            try:
-                ws.write_profile({**prof, "auto_prospect": "on" if prof["auto_prospect"] else "",
-                                  "require_approval": "on" if prof["require_approval"] else ""})
-            except (ValueError, ValidationError):
-                pass
-        response = _redirect("/gmail", msg=f"Gmail connected as {email}.")
+        ws.set_mail_provider("gmail")
+        ws.rewrite_config()  # the persona sends from the connected mailbox
+        response = _redirect("/mailbox", msg=f"Gmail connected as {email}.")
         response.delete_cookie(GMAIL_NONCE_COOKIE, path="/gmail")
         return response
 
     @app.post("/gmail/disconnect")
     async def gmail_disconnect(user: dict = Depends(current_user)):
         ws = workspace_for(user)
-        if ws.worker_running():
+        if ws.worker_running() and ws.mail_provider() == "gmail":
             await ws.stop_worker()
         ws.disconnect_gmail()
-        return _redirect("/gmail", msg="Gmail disconnected.")
+        if ws.smtp_configured():
+            ws.set_mail_provider("smtp")
+        ws.rewrite_config()
+        return _redirect("/mailbox", msg="Gmail disconnected.")
 
     @app.post("/gmail/test")
     async def gmail_test(user: dict = Depends(current_user)):
         ok, detail = await gmail_oauth.test_connection(settings, workspace_for(user))
-        return _redirect("/gmail", msg=detail if ok else "", error="" if ok else detail)
+        return _redirect("/mailbox", msg=detail if ok else "", error="" if ok else detail)
 
     # ── recipients ──
 
