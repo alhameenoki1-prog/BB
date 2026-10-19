@@ -1,60 +1,74 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
-<h1>Dashboard</h1>
-{% for p in problems %}<div class="msg err">Server setup: {{ p }}</div>{% endfor %}
-
-<div class="grid">
-  <div class="stat good"><div class="n">{{ summary.replies }}</div><div class="l">Replies received</div></div>
-  <div class="stat"><div class="n">{{ summary.sent }}</div><div class="l">Emails sent</div></div>
-  <div class="stat warn"><div class="n">{{ summary.not_sent }}</div><div class="l">Not sent yet</div></div>
-  <div class="stat"><div class="n">{{ summary.outbox_pending }}</div><div class="l">Waiting for your approval</div></div>
-  <div class="stat bad"><div class="n">{{ summary.bounced }}</div><div class="l">Bounced</div></div>
-  <div class="stat"><div class="n">{{ summary.recipients }}</div><div class="l">Recipients on your list</div></div>
-</div>
-
-<div class="card" style="margin-top:18px">
-  <h2>Getting started</h2>
-  <ol class="steps">
-    <li>{{ '✅' if summary.api_key else '⬜' }} <a href="/apikey">Add your Anthropic API key</a> — the writing runs on your own account and is billed to you.</li>
-    <li>{{ '✅' if summary.configured else '⬜' }} <a href="/profile">Tell BB who you are</a> — your name, company, LinkedIn, what you want from the people you write to, and how replies should be answered.</li>
-    <li>{{ '✅' if summary.gmail else '⬜' }} <a href="/mailbox">Connect your mailbox</a> — Gmail in one click, or any mailbox's SMTP/IMAP settings. Emails go out from your own address.</li>
-    <li>{{ '✅' if summary.recipients else '⬜' }} <a href="/recipients">Upload the people you want to reach</a> — a CSV with their emails (up to 10,000).</li>
-    <li>{{ '✅' if summary.worker_running else '⬜' }} Start the worker below. It researches each person, writes their email, sends at a safe pace, and watches for replies.</li>
-  </ol>
-</div>
-
-<div class="card">
-  <h2>Worker</h2>
-  <p class="muted small">The worker is your personal copy of the engine. It wakes up every 15 minutes, writes emails for new recipients, sends what is due (inside your sending hours and daily limit), and reads replies. Changes to your profile apply after a restart.</p>
+{% set done = (1 if summary.api_key else 0) + (1 if summary.configured else 0) + (1 if summary.gmail else 0) + (1 if summary.recipients else 0) + (1 if summary.worker_running else 0) %}
+<div class="page-head">
+  <div><div class="eyebrow">Overview</div><h1>{{ 'Good to see you' if done == 5 else 'Let’s get you sending' }}</h1>
+    <p class="lead">{% if done == 5 %}Your worker is researching, writing and sending one email per person, and watching for replies.{% else %}{{ 5 - done }} step{{ 's' if 5 - done != 1 else '' }} left before your first email goes out.{% endif %}</p></div>
   <div class="actions">
     {% if summary.worker_running %}
-      <span class="pill good">Running</span>
-      <form class="inline" method="post" action="/worker/stop"><button class="secondary" type="submit">Stop worker</button></form>
+      <form class="inline" method="post" action="/worker/stop"><button class="secondary" type="submit">{{ icon('stop', 15) }} Stop worker</button></form>
     {% else %}
-      <span class="pill">Stopped</span>
-      <form class="inline" method="post" action="/worker/start"><button type="submit">Start worker</button></form>
-    {% endif %}
-    {% if summary.sending_paused %}
-      <span class="pill warn">Sending paused</span>
-      <form class="inline" method="post" action="/sending/resume"><button class="secondary" type="submit">Resume sending</button></form>
-    {% else %}
-      <form class="inline" method="post" action="/sending/pause"><button class="danger" type="submit">Pause all sending</button></form>
+      <form class="inline" method="post" action="/worker/start"><button type="submit">{{ icon('play', 15) }} Start worker</button></form>
     {% endif %}
   </div>
-  {% if summary.sending_paused %}<p class="small muted">Reason: {{ summary.sending_paused }}</p>{% endif %}
+</div>
+{% for p in problems %}<div class="card flat" style="border-color:var(--bad);color:var(--bad)">Server setup: {{ p }}</div>{% endfor %}
+
+<div class="grid">
+  <div class="stat hero"><div class="l">Replies received</div><div class="n">{{ summary.replies }}</div><div class="sub">{{ summary.open_replies }} open conversation{{ 's' if summary.open_replies != 1 else '' }}</div></div>
+  <div class="stat"><div class="l">Emails sent</div><div class="n">{{ summary.sent }}</div><div class="sub">{{ summary.sent_today }} today</div></div>
+  <div class="stat warn"><div class="l">Not sent yet</div><div class="n">{{ summary.not_sent }}</div><div class="sub">{{ summary.outbox_pending }} awaiting your approval</div></div>
+  <div class="stat bad"><div class="l">Bounced</div><div class="n">{{ summary.bounced }}</div><div class="sub">invalid addresses</div></div>
+  <div class="stat"><div class="l">Recipients</div><div class="n">{{ summary.recipients }}</div><div class="sub">on your list</div></div>
 </div>
 
-<div class="card">
-  <h2>Pipeline</h2>
-  <table>
-    <tr><th>Stage</th><th>Count</th><th>Meaning</th></tr>
-    <tr><td>Waiting for an email</td><td>{{ summary.waiting }}</td><td class="muted">Uploaded; the worker hasn't written to them yet.</td></tr>
-    <tr><td>Written, in the outbox</td><td>{{ summary.queued }}</td><td class="muted">{{ summary.outbox_pending }} awaiting approval, {{ summary.outbox_scheduled }} scheduled.</td></tr>
-    <tr><td>Sent</td><td>{{ summary.sent }}</td><td class="muted">{{ summary.outbox_sent }} messages delivered to Gmail in total.</td></tr>
-    <tr><td>Replied</td><td>{{ summary.replied }}</td><td class="muted">{{ summary.open_replies }} conversations open. <a href="/replies">Read them</a>.</td></tr>
-    <tr><td>Failed / rejected</td><td>{{ summary.outbox_failed + summary.outbox_rejected }}</td><td class="muted">Blocked by a check, or rejected by you in the outbox.</td></tr>
-  </table>
+<div class="two" style="margin-top:18px">
+  <div class="card">
+    <h2>Getting started</h2>
+    <div class="progress"><i style="width:{{ done * 20 }}%"></i></div>
+    <ol class="steps">
+      <li class="{{ 'done' if summary.api_key else '' }}"><span class="tick">{{ icon('check', 13) }}</span><div><b><a href="/apikey">Add your Anthropic API key</a></b><span class="small">The writing runs on your own account and is billed to you.</span></div></li>
+      <li class="{{ 'done' if summary.configured else '' }}"><span class="tick">{{ icon('check', 13) }}</span><div><b><a href="/profile">Tell BB who you are</a></b><span class="small">Your name, company, LinkedIn, what you want from the people you write to, and how replies should be answered.</span></div></li>
+      <li class="{{ 'done' if summary.gmail else '' }}"><span class="tick">{{ icon('check', 13) }}</span><div><b><a href="/mailbox">Connect your mailbox</a></b><span class="small">Gmail in one click, or any mailbox’s SMTP/IMAP settings. Emails go out from your own address.</span></div></li>
+      <li class="{{ 'done' if summary.recipients else '' }}"><span class="tick">{{ icon('check', 13) }}</span><div><b><a href="/recipients">Upload the people you want to reach</a></b><span class="small">A CSV with their emails, up to 10,000 at a time.</span></div></li>
+      <li class="{{ 'done' if summary.worker_running else '' }}"><span class="tick">{{ icon('check', 13) }}</span><div><b>Start the worker</b><span class="small">It researches each person, writes their email, sends at a safe pace, and watches for replies.</span></div></li>
+    </ol>
+  </div>
+  <div>
+    <div class="card">
+      <h2>Worker</h2>
+      <p class="muted small">Your personal copy of the engine. Every 15 minutes it writes emails for new recipients, sends what is due inside your sending hours and daily limit, and reads replies. Profile changes apply after a restart.</p>
+      <div class="actions" style="margin-top:14px">
+        {% if summary.worker_running %}<span class="tag good"><i class="dot" style="width:7px;height:7px;border-radius:50%;background:currentColor"></i> Running</span>{% else %}<span class="tag">Stopped</span>{% endif %}
+        {% if summary.sending_paused %}
+          <span class="tag warn">Sending paused</span>
+          <form class="inline" method="post" action="/sending/resume"><button class="secondary small" type="submit">{{ icon('play', 14) }} Resume sending</button></form>
+        {% else %}
+          <form class="inline" method="post" action="/sending/pause"><button class="danger small" type="submit">{{ icon('pause', 14) }} Pause all sending</button></form>
+        {% endif %}
+      </div>
+      {% if summary.sending_paused %}<p class="tiny" style="margin-top:8px">Reason: {{ summary.sending_paused }}</p>{% endif %}
+    </div>
+    <div class="card">
+      <h2>Pipeline</h2>
+      {% set total = summary.recipients if summary.recipients else 1 %}
+      <div class="bar">
+        <i style="width:{{ (summary.waiting / total * 100) | round(1) }}%;background:var(--ink-3)"></i>
+        <i style="width:{{ (summary.queued / total * 100) | round(1) }}%;background:var(--warn)"></i>
+        <i style="width:{{ (summary.sent / total * 100) | round(1) }}%;background:var(--accent-2)"></i>
+        <i style="width:{{ (summary.replied / total * 100) | round(1) }}%;background:var(--good)"></i>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--ink-3)"></i>{{ summary.waiting }} waiting for an email</span>
+        <span><i style="background:var(--warn)"></i>{{ summary.queued }} written, in the outbox</span>
+        <span><i style="background:var(--accent-2)"></i>{{ summary.sent }} sent</span>
+        <span><i style="background:var(--good)"></i>{{ summary.replied }} replied</span>
+      </div>
+      <p class="tiny" style="margin-top:10px">{{ summary.outbox_pending }} awaiting approval · {{ summary.outbox_scheduled }} scheduled · {{ summary.outbox_failed + summary.outbox_rejected }} failed or rejected · <a href="/replies">read replies</a></p>
+    </div>
+  </div>
 </div>
 
 {% if logs %}

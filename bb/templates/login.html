@@ -1,15 +1,18 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Sign in{% endblock %}
-{% block content %}
-<div class="card" style="max-width:420px;margin:60px auto">
-  <h1>BB Outreach</h1>
-  <p class="muted">Sign in with the email and password you were given.</p>
+{% block auth %}
+<div class="auth-card">
+  <div class="brand" style="padding:0 0 22px"><div class="mark"></div><div><b>BB Outreach</b><span>one email per person</span></div></div>
+  <h1 style="font-size:26px">Welcome back</h1>
+  <p class="muted" style="margin-top:6px">Sign in with the email and password you were given.</p>
+  {% if error %}<p class="tag bad" style="margin-top:12px">{{ error }}</p>{% endif %}
   <form method="post" action="/login">
     <label for="email">Email</label>
     <input id="email" name="email" type="email" autocomplete="username" required autofocus>
     <label for="password">Password</label>
     <input id="password" name="password" type="password" autocomplete="current-password" required>
-    <p><button type="submit">Sign in</button></p>
+    <p style="margin-top:22px"><button type="submit" style="width:100%;justify-content:center">Sign in {{ icon('arrow', 16) }}</button></p>
   </form>
 </div>
 {% endblock %}

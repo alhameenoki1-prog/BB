@@ -385,7 +385,7 @@ def test_mailbox_smtp_settings(client, monkeypatch):
     user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
     ws = Workspace(client.settings, user)
     page = client.get("/mailbox")
-    assert "SMTP" in page.text and "not set up" in page.text
+    assert "SMTP" in page.text and "Not set up" in page.text
 
     bad = client.post("/mailbox/smtp", data={"smtp_host": "smtp.example.com", "smtp_username": "me@example.com",
                                              "smtp_password": "bad"})

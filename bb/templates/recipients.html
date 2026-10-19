@@ -1,34 +1,36 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Recipients{% endblock %}
 {% block content %}
-<h1>Recipients</h1>
-<div class="card">
-  <h2>Upload a list</h2>
-  <p class="muted small">A CSV with a header row. Recognised columns: <code>email</code> (required), <code>first_name</code>, <code>last_name</code> or <code>name</code>, <code>company</code>, <code>title</code>, <code>linkedin</code>, <code>website</code>, <code>notes</code>. Up to {{ "{:,}".format(max_rows) }} rows per upload; duplicates are skipped. Each person is researched from their company website and notes before their email is written.</p>
-  <form method="post" action="/recipients" enctype="multipart/form-data">
-    <label>CSV file</label>
-    <input type="file" name="file" accept=".csv,text/csv,text/plain">
-    <label>…or paste rows here (one per line; a header line is optional)</label>
-    <textarea name="pasted" placeholder="email,first_name,last_name,company,title,linkedin&#10;jane@acme.com,Jane,Doe,Acme,Head of Growth,https://linkedin.com/in/janedoe"></textarea>
-    <p><button type="submit">Add recipients</button></p>
-  </form>
-</div>
-<div class="card">
-  <h2>Recently added</h2>
-  {% if recent %}
-  <table>
-    <tr><th>Name</th><th>Email</th><th>Company</th><th>Title</th><th>Status</th></tr>
-    {% for r in recent %}
-    <tr>
-      <td>{{ (r.first_name ~ ' ' ~ r.last_name).strip() or '—' }}</td>
-      <td>{{ r.email }}</td>
-      <td>{{ r.company or '—' }}</td>
-      <td>{{ r.title or '—' }}</td>
-      <td><span class="pill {{ 'good' if r.status in ('contacted','replied','interested','meeting') else '' }}">{{ r.status }}</span></td>
-    </tr>
-    {% endfor %}
-  </table>
-  <p class="small muted">Showing the latest {{ recent | length }}. Totals are on the dashboard.</p>
-  {% else %}<p class="muted">Nobody yet.</p>{% endif %}
+<div class="page-head"><div><div class="eyebrow">People</div><h1>Recipients</h1><p class="lead">Each person is researched from their company website and your notes before their email is written. No bulk blasts: one email, one person.</p></div></div>
+<div class="two">
+  <div class="card">
+    <h2>Upload a list</h2>
+    <p class="muted small">A CSV with a header row. Recognised columns: <code>email</code> (required), <code>first_name</code>, <code>last_name</code> or <code>name</code>, <code>company</code>, <code>title</code>, <code>linkedin</code>, <code>website</code>, <code>notes</code>. Up to {{ "{:,}".format(max_rows) }} rows per upload; duplicates are skipped.</p>
+    <form method="post" action="/recipients" enctype="multipart/form-data">
+      <label>CSV file</label>
+      <input type="file" name="file" accept=".csv,text/csv,text/plain">
+      <label>…or paste rows here <span class="muted" style="font-weight:400">(one per line; a header line is optional)</span></label>
+      <textarea name="pasted" placeholder="email,first_name,last_name,company,title,linkedin&#10;jane@acme.com,Jane,Doe,Acme,Head of Growth,https://linkedin.com/in/janedoe"></textarea>
+      <p class="actions" style="margin-top:14px"><button type="submit">{{ icon('upload', 15) }} Add recipients</button></p>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Recently added</h2>
+    {% if recent %}
+    <table>
+      <thead><tr><th>Name</th><th>Email</th><th>Company</th><th>Status</th></tr></thead>
+      <tbody>{% for r in recent %}
+      <tr>
+        <td><b>{{ (r.first_name ~ ' ' ~ r.last_name).strip() or '—' }}</b>{% if r.title %}<div class="tiny">{{ r.title }}</div>{% endif %}</td>
+        <td class="muted">{{ r.email }}</td>
+        <td>{{ r.company or '—' }}</td>
+        <td><span class="tag {{ 'good' if r.status in ('contacted','replied','interested','meeting') else ('warn' if r.status == 'queued' else '') }}">{{ r.status }}</span></td>
+      </tr>
+      {% endfor %}</tbody>
+    </table>
+    <p class="tiny" style="margin-top:10px">Showing the latest {{ recent | length }}. Totals are on the dashboard.</p>
+    {% else %}<div class="empty">{{ icon('users') }}<div>Nobody yet. Upload a CSV to begin.</div></div>{% endif %}
+  </div>
 </div>
 {% endblock %}

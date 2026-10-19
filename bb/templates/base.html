@@ -1,106 +1,228 @@
+{% from "_icons.html" import icon %}
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>{% block title %}BB{% endblock %} · BB Outreach</title>
 <style>
-  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --muted:#5c6673; --line:#e3e6ea; --accent:#1f6feb; --good:#1a7f37; --bad:#b42318; --warn:#9a6700; }
-  * { box-sizing:border-box; }
-  body { margin:0; font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  :root {
+    --bg:#f5f5f7; --surface:#ffffff; --surface-2:#fbfbfd; --fill:#f2f2f5; --fill-2:#e8e8ed;
+    --ink:#1d1d1f; --ink-2:#6e6e73; --ink-3:#a1a1a6; --line:rgba(0,0,0,.08); --line-2:rgba(0,0,0,.14);
+    --accent:#0071e3; --accent-2:#0a84ff; --accent-soft:rgba(0,113,227,.10);
+    --good:#1f9d4d; --good-soft:rgba(52,199,89,.14); --warn:#b26a00; --warn-soft:rgba(255,159,10,.16);
+    --bad:#d62d20; --bad-soft:rgba(255,59,48,.12);
+    --shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 24px -12px rgba(0,0,0,.18);
+    --shadow-lg:0 2px 6px rgba(0,0,0,.05), 0 24px 48px -16px rgba(0,0,0,.25);
+    --r:18px; --r-sm:12px; --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Inter","Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#000; --surface:#1c1c1e; --surface-2:#161618; --fill:#2c2c2e; --fill-2:#3a3a3c;
+      --ink:#f5f5f7; --ink-2:#a1a1a6; --ink-3:#6e6e73; --line:rgba(255,255,255,.10); --line-2:rgba(255,255,255,.18);
+      --accent:#0a84ff; --accent-2:#409cff; --accent-soft:rgba(10,132,255,.18);
+      --good:#30d158; --good-soft:rgba(48,209,88,.16); --warn:#ffd60a; --warn-soft:rgba(255,214,10,.14);
+      --bad:#ff453a; --bad-soft:rgba(255,69,58,.16);
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.8);
+      --shadow-lg:0 2px 6px rgba(0,0,0,.5), 0 24px 48px -16px rgba(0,0,0,.9);
+    }
+  }
+  *,*::before,*::after { box-sizing:border-box; }
+  html { -webkit-text-size-adjust:100%; }
+  body { margin:0; font:15px/1.5 var(--sans); color:var(--ink); background:var(--bg); -webkit-font-smoothing:antialiased; }
   a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
-  header.top { background:#fff; border-bottom:1px solid var(--line); }
-  header.top .in { max-width:1080px; margin:0 auto; padding:10px 16px; display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
-  header.top .brand { font-weight:700; letter-spacing:.3px; }
-  header.top nav a { color:var(--ink); margin-right:14px; font-weight:500; }
-  header.top nav a.active { color:var(--accent); }
-  header.top form { margin-left:auto; }
-  .banner { background:#0f172a; color:#fff; }
-  .banner .in { max-width:1080px; margin:0 auto; padding:8px 16px; display:flex; gap:22px; flex-wrap:wrap; font-size:14px; }
-  .banner b { font-size:16px; }
-  .banner .dim { opacity:.7; }
-  main { max-width:1080px; margin:0 auto; padding:20px 16px 48px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 20px; margin-bottom:18px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
-  .stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
-  .stat .n { font-size:28px; font-weight:700; line-height:1.1; }
-  .stat .l { color:var(--muted); font-size:13px; }
-  .stat.good .n { color:var(--good); } .stat.bad .n { color:var(--bad); } .stat.warn .n { color:var(--warn); }
-  h1 { font-size:22px; margin:0 0 14px; } h2 { font-size:17px; margin:0 0 10px; }
-  .muted { color:var(--muted); } .small { font-size:13px; }
-  .msg { padding:10px 14px; border-radius:8px; margin-bottom:16px; border:1px solid; }
-  .msg.ok { background:#eaf7ee; border-color:#bfe3c9; color:#135c2a; }
-  .msg.err { background:#fdecec; border-color:#f3bcbc; color:#8a1c1c; }
-  label { display:block; font-weight:600; font-size:13px; margin:12px 0 4px; }
+  h1,h2,h3 { margin:0; font-weight:600; letter-spacing:-.02em; }
+  h1 { font-size:30px; line-height:1.15; } h2 { font-size:19px; margin-bottom:12px; } h3 { font-size:15px; }
+  p { margin:0 0 10px; } p:last-child { margin-bottom:0; }
+  code { font-family:var(--mono); font-size:.9em; background:var(--fill); padding:2px 6px; border-radius:6px; }
+  .muted { color:var(--ink-2); } .small { font-size:13px; } .tiny { font-size:12px; color:var(--ink-3); }
+  .ic { vertical-align:-3px; flex:none; }
+
+  /* ── shell ── */
+  .shell { display:grid; grid-template-columns:248px 1fr; min-height:100vh; }
+  .side { position:sticky; top:0; height:100vh; padding:22px 14px; display:flex; flex-direction:column; gap:6px;
+          background:color-mix(in srgb, var(--surface) 70%, transparent); backdrop-filter:saturate(180%) blur(20px);
+          -webkit-backdrop-filter:saturate(180%) blur(20px); border-right:1px solid var(--line); }
+  .brand { display:flex; align-items:center; gap:10px; padding:4px 10px 18px; }
+  .brand .mark { width:30px; height:30px; border-radius:9px; background:linear-gradient(135deg,#0a84ff,#5e5ce6 60%,#bf5af2); box-shadow:0 6px 14px -6px rgba(94,92,230,.7); }
+  .brand b { font-size:16px; letter-spacing:-.02em; }
+  .brand span { display:block; font-size:11px; color:var(--ink-3); letter-spacing:.02em; text-transform:uppercase; }
+  .nav a { display:flex; align-items:center; gap:11px; padding:9px 12px; border-radius:11px; color:var(--ink-2); font-weight:500; transition:background .15s, color .15s; }
+  .nav a:hover { background:var(--fill); color:var(--ink); text-decoration:none; }
+  .nav a.active { background:var(--accent-soft); color:var(--accent); }
+  .nav a .ic { color:inherit; opacity:.9; }
+  .nav .sep { margin:10px 12px 6px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-3); }
+  .side .me { margin-top:auto; padding:12px; border-top:1px solid var(--line); display:flex; align-items:center; gap:10px; }
+  .side .me .av { width:32px; height:32px; border-radius:50%; background:var(--fill-2); display:grid; place-items:center; font-weight:600; font-size:13px; color:var(--ink-2); }
+  .side .me .who { min-width:0; flex:1; } .side .me .who b { display:block; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .side .me form button { background:none; border:0; color:var(--ink-3); cursor:pointer; padding:6px; border-radius:8px; }
+  .side .me form button:hover { background:var(--fill); color:var(--ink); }
+  main { padding:30px clamp(18px, 4vw, 48px) 64px; max-width:1180px; width:100%; }
+
+  /* ── page header + live strip ── */
+  .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:18px; flex-wrap:wrap; margin-bottom:22px; }
+  .eyebrow { font-size:12px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-3); margin-bottom:6px; }
+  .lead { color:var(--ink-2); max-width:62ch; margin-top:6px; }
+  .live { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:26px; }
+  .live .pill { display:inline-flex; align-items:center; gap:8px; padding:7px 13px; border-radius:999px; background:var(--surface); border:1px solid var(--line); font-size:13px; color:var(--ink-2); box-shadow:var(--shadow); }
+  .live .pill b { color:var(--ink); font-variant-numeric:tabular-nums; font-size:14px; }
+  .live .dot { width:7px; height:7px; border-radius:50%; background:var(--good); box-shadow:0 0 0 0 rgba(52,199,89,.5); animation:pulse 2.2s infinite; }
+  .live .dot.off { background:var(--ink-3); animation:none; box-shadow:none; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(52,199,89,.45)} 70%{box-shadow:0 0 0 7px rgba(52,199,89,0)} 100%{box-shadow:0 0 0 0 rgba(52,199,89,0)} }
+
+  /* ── cards + stats ── */
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:var(--r); padding:22px 24px; margin-bottom:18px; box-shadow:var(--shadow); }
+  .card.flat { box-shadow:none; background:var(--surface-2); }
+  .grid { display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); }
+  .stat { background:var(--surface); border:1px solid var(--line); border-radius:var(--r); padding:18px 20px; box-shadow:var(--shadow); position:relative; overflow:hidden; }
+  .stat .l { font-size:13px; color:var(--ink-2); font-weight:500; }
+  .stat .n { font-size:36px; font-weight:700; letter-spacing:-.03em; line-height:1.1; margin-top:6px; font-variant-numeric:tabular-nums; }
+  .stat.hero .n { background:linear-gradient(135deg,var(--accent-2),#5e5ce6); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .stat.good .n { color:var(--good); } .stat.warn .n { color:var(--warn); } .stat.bad .n { color:var(--bad); }
+  .stat .sub { font-size:12px; color:var(--ink-3); margin-top:4px; }
+  .two { display:grid; gap:18px; grid-template-columns:1fr 1fr; } @media (max-width:900px){ .two { grid-template-columns:1fr; } }
+
+  /* ── steps ── */
+  .steps { list-style:none; margin:0; padding:0; display:grid; gap:10px; }
+  .steps li { display:flex; gap:14px; align-items:flex-start; padding:12px 14px; border-radius:var(--r-sm); background:var(--surface-2); border:1px solid var(--line); }
+  .steps .tick { width:26px; height:26px; border-radius:50%; display:grid; place-items:center; flex:none; border:1.5px solid var(--line-2); color:transparent; font-size:12px; }
+  .steps li.done .tick { background:var(--good); border-color:var(--good); color:#fff; }
+  .steps li.done { opacity:.72; }
+  .steps b { display:block; } .steps .small { color:var(--ink-2); }
+  .progress { height:6px; border-radius:999px; background:var(--fill); overflow:hidden; margin:10px 0 16px; }
+  .progress i { display:block; height:100%; background:linear-gradient(90deg,var(--accent-2),#5e5ce6); border-radius:999px; transition:width .5s; }
+
+  /* ── buttons ── */
+  button, .btn { display:inline-flex; align-items:center; gap:8px; padding:10px 18px; border-radius:999px; border:1px solid transparent; background:var(--accent); color:#fff; font:inherit; font-size:14px; font-weight:600; cursor:pointer; line-height:1.2; transition:transform .08s, filter .15s, background .15s; text-decoration:none; }
+  button:hover, .btn:hover { filter:brightness(1.07); text-decoration:none; } button:active, .btn:active { transform:scale(.98); }
+  button:focus-visible, .btn:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline:3px solid var(--accent-soft); outline-offset:1px; }
+  .secondary { background:var(--fill); color:var(--ink); } .secondary:hover { background:var(--fill-2); filter:none; }
+  .ghost { background:transparent; color:var(--accent); border-color:var(--line-2); } .ghost:hover { background:var(--accent-soft); filter:none; }
+  .danger { background:var(--bad-soft); color:var(--bad); } .danger:hover { filter:none; background:rgba(255,59,48,.2); }
+  .small-btn, button.small { padding:6px 12px; font-size:13px; }
+  form.inline { display:inline; } .actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+
+  /* ── forms ── */
+  label { display:block; font-weight:600; font-size:13px; margin:14px 0 6px; color:var(--ink); }
+  .hint { font-size:12px; color:var(--ink-3); margin-top:5px; }
   input[type=text], input[type=email], input[type=password], input[type=number], input[type=url], input[type=time], select, textarea {
-    width:100%; padding:9px 10px; border:1px solid #cfd4da; border-radius:8px; font:inherit; background:#fff; }
-  textarea { min-height:90px; }
-  .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:0 16px; }
-  .check { display:flex; align-items:center; gap:8px; font-weight:500; margin:10px 0; }
-  .check input { width:auto; }
-  button, .btn { display:inline-block; padding:9px 14px; border-radius:8px; border:1px solid var(--accent); background:var(--accent); color:#fff; font:inherit; font-weight:600; cursor:pointer; }
-  button.secondary, .btn.secondary { background:#fff; color:var(--ink); border-color:#cfd4da; }
-  button.danger { background:#fff; color:var(--bad); border-color:#e7b3b3; }
-  button.small { padding:5px 10px; font-size:13px; }
-  form.inline { display:inline; }
+    width:100%; padding:11px 13px; border:1px solid transparent; border-radius:var(--r-sm); font:inherit; background:var(--fill); color:var(--ink); transition:background .15s, border-color .15s, box-shadow .15s; }
+  input:focus, select:focus, textarea:focus { background:var(--surface); border-color:var(--accent); box-shadow:0 0 0 4px var(--accent-soft); outline:none; }
+  input[readonly] { color:var(--ink-2); }
+  textarea { min-height:104px; resize:vertical; }
+  input[type=file] { padding:10px; background:var(--fill); border-radius:var(--r-sm); width:100%; }
+  .row { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:0 18px; }
+  .check { display:flex; align-items:flex-start; gap:10px; font-weight:500; margin:12px 0; font-size:14px; line-height:1.4; }
+  .check input { width:18px; height:18px; margin-top:2px; accent-color:var(--accent); }
+  .choice { display:flex; gap:12px; align-items:flex-start; padding:14px 16px; border-radius:var(--r-sm); border:1px solid var(--line); background:var(--surface-2); margin:8px 0; cursor:pointer; }
+  .choice:has(input:checked) { border-color:var(--accent); background:var(--accent-soft); }
+  .choice input { margin-top:3px; accent-color:var(--accent); }
+  .choice b { display:block; }
+
+  /* ── status + tables ── */
+  .tag { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; background:var(--fill); color:var(--ink-2); }
+  .tag.good { background:var(--good-soft); color:var(--good); } .tag.bad { background:var(--bad-soft); color:var(--bad); } .tag.warn { background:var(--warn-soft); color:var(--warn); } .tag.accent { background:var(--accent-soft); color:var(--accent); }
   table { width:100%; border-collapse:collapse; font-size:14px; }
-  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.4px; }
-  .pill { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; background:#eef1f5; color:#333; }
-  .pill.good { background:#e3f5e8; color:var(--good);} .pill.bad { background:#fde8e8; color:var(--bad);} .pill.warn { background:#fff4d6; color:var(--warn);}
-  pre.log { background:#0f172a; color:#d7dee8; padding:12px; border-radius:8px; font-size:12px; overflow:auto; max-height:320px; }
-  .steps li { margin:6px 0; }
-  .actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
-  .email-body { white-space:pre-wrap; background:#fafbfc; border:1px solid var(--line); border-radius:8px; padding:10px; font-size:14px; }
-  @media (max-width:640px){ header.top form { margin-left:0; } }
+  th { text-align:left; padding:8px 10px; font-size:11px; letter-spacing:.07em; text-transform:uppercase; color:var(--ink-3); font-weight:600; border-bottom:1px solid var(--line); }
+  td { padding:11px 10px; border-bottom:1px solid var(--line); vertical-align:top; } tr:last-child td { border-bottom:0; }
+  tbody tr:hover td { background:var(--surface-2); }
+  .empty { text-align:center; padding:34px 16px; color:var(--ink-2); }
+  .empty .ic { width:34px; height:34px; color:var(--ink-3); margin-bottom:8px; }
+  pre.log { background:#0b0b0f; color:#c9d1d9; padding:14px 16px; border-radius:var(--r-sm); font:12px/1.55 var(--mono); overflow:auto; max-height:320px; margin:0; }
+  .email { white-space:pre-wrap; background:var(--surface-2); border:1px solid var(--line); border-radius:var(--r-sm); padding:14px 16px; font-size:14px; line-height:1.55; }
+  .segs { display:flex; gap:6px; flex-wrap:wrap; }
+  .segs a { padding:7px 14px; border-radius:999px; background:var(--fill); color:var(--ink-2); font-weight:500; font-size:13px; }
+  .segs a.on { background:var(--ink); color:var(--bg); } .segs a:hover { text-decoration:none; }
+  .bar { display:flex; height:10px; border-radius:999px; overflow:hidden; background:var(--fill); margin:8px 0 12px; }
+  .bar i { display:block; height:100%; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:13px; color:var(--ink-2); }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:-1px; }
+
+  /* ── toasts ── */
+  .toasts { position:fixed; top:18px; right:18px; z-index:50; display:grid; gap:8px; max-width:min(440px, calc(100vw - 36px)); }
+  .toast { display:flex; gap:10px; align-items:flex-start; padding:12px 14px; border-radius:14px; background:var(--surface); border:1px solid var(--line); box-shadow:var(--shadow-lg); font-size:14px; animation:slide .35s cubic-bezier(.2,.8,.2,1); }
+  .toast.ok { border-left:4px solid var(--good); } .toast.err { border-left:4px solid var(--bad); }
+  .toast button { background:none; border:0; color:var(--ink-3); padding:0; margin-left:auto; }
+  @keyframes slide { from { transform:translateY(-10px); opacity:0 } to { transform:none; opacity:1 } }
+
+  /* ── login ── */
+  body.auth { display:grid; place-items:center; min-height:100vh; background:radial-gradient(1200px 600px at 20% -10%, rgba(10,132,255,.18), transparent 60%), radial-gradient(900px 500px at 100% 100%, rgba(191,90,242,.16), transparent 60%), var(--bg); }
+  .auth-card { width:min(420px, calc(100vw - 32px)); background:var(--surface); border:1px solid var(--line); border-radius:24px; padding:34px 32px; box-shadow:var(--shadow-lg); }
+
+  @media (max-width: 860px) {
+    .shell { grid-template-columns:1fr; }
+    .side { position:sticky; top:0; height:auto; flex-direction:row; align-items:center; flex-wrap:wrap; gap:4px; padding:10px 12px; z-index:10; }
+    .brand { padding:4px 8px; } .brand span { display:none; }
+    .nav { display:flex; gap:2px; overflow-x:auto; flex:1; min-width:0; scrollbar-width:none; -webkit-overflow-scrolling:touch; padding:2px; } .nav::-webkit-scrollbar { display:none; } .nav a { padding:8px 11px; font-size:13px; flex:none; } .nav a span.t { display:none; } .nav .sep { display:none; }
+    .side .me { margin:0 0 0 auto; padding:0; border:0; } .side .me .who { display:none; }
+    main { padding:18px 16px 48px; } h1 { font-size:24px; } .stat .n { font-size:28px; }
+  }
 </style>
 </head>
-<body>
+<body class="{% if not user %}auth{% endif %}">
 {% if user %}
-<header class="top"><div class="in">
-  <span class="brand">BB Outreach</span>
-  <nav>
-    <a href="/" class="{{ 'active' if request.url.path == '/' else '' }}">Dashboard</a>
-    <a href="/recipients" class="{{ 'active' if request.url.path.startswith('/recipients') else '' }}">Recipients</a>
-    <a href="/outbox" class="{{ 'active' if request.url.path.startswith('/outbox') else '' }}">Outbox</a>
-    <a href="/replies" class="{{ 'active' if request.url.path.startswith('/replies') else '' }}">Replies</a>
-    <a href="/profile" class="{{ 'active' if request.url.path.startswith('/profile') else '' }}">Profile</a>
-    <a href="/mailbox" class="{{ 'active' if request.url.path.startswith('/mailbox') or request.url.path.startswith('/gmail') else '' }}">Mailbox</a>
-    <a href="/apikey" class="{{ 'active' if request.url.path.startswith('/apikey') else '' }}">AI key</a>
-    {% if user.role == 'admin' %}<a href="/admin/users" class="{{ 'active' if request.url.path.startswith('/admin') else '' }}">Users</a>{% endif %}
-  </nav>
-  <form method="post" action="/logout"><span class="muted small">{{ user.email }}</span> <button class="secondary small" type="submit">Sign out</button></form>
-</div></header>
-{% if summary %}
-<div class="banner" id="banner"><div class="in">
-  <span><b data-k="replies">{{ summary.replies }}</b> replies <span class="dim">(<span data-k="open_replies">{{ summary.open_replies }}</span> open)</span></span>
-  <span><b data-k="sent">{{ summary.sent }}</b> sent <span class="dim">(<span data-k="sent_today">{{ summary.sent_today }}</span> today)</span></span>
-  <span><b data-k="not_sent">{{ summary.not_sent }}</b> not sent yet</span>
-  <span><b data-k="bounced">{{ summary.bounced }}</b> bounced</span>
-  <span><b data-k="recipients">{{ summary.recipients }}</b> recipients</span>
-  <span class="dim" data-k="worker">{{ 'Worker running' if summary.worker_running else 'Worker stopped' }}{{ ' · sending paused' if summary.sending_paused else '' }}</span>
-</div></div>
-<script>
-  // Keep the banner live without a page reload.
-  setInterval(async () => {
-    try {
-      const r = await fetch('/api/summary', {credentials: 'same-origin'});
-      if (!r.ok) return;
-      const s = await r.json();
-      document.querySelectorAll('#banner [data-k]').forEach(el => {
-        const k = el.dataset.k;
-        if (k === 'worker') el.textContent = (s.worker_running ? 'Worker running' : 'Worker stopped') + (s.sending_paused ? ' · sending paused' : '');
-        else if (k in s) el.textContent = s[k];
-      });
-    } catch (e) {}
-  }, 30000);
-</script>
+<div class="shell">
+  <aside class="side">
+    <div class="brand"><div class="mark"></div><div><b>BB Outreach</b><span>one email per person</span></div></div>
+    <nav class="nav">
+      {% set path = request.url.path %}
+      <a href="/" class="{{ 'active' if path == '/' else '' }}">{{ icon('home') }}<span class="t">Dashboard</span></a>
+      <a href="/recipients" class="{{ 'active' if path.startswith('/recipients') else '' }}">{{ icon('users') }}<span class="t">Recipients</span></a>
+      <a href="/outbox" class="{{ 'active' if path.startswith('/outbox') else '' }}">{{ icon('send') }}<span class="t">Outbox</span></a>
+      <a href="/replies" class="{{ 'active' if path.startswith('/replies') else '' }}">{{ icon('chat') }}<span class="t">Replies</span></a>
+      <div class="sep">Setup</div>
+      <a href="/profile" class="{{ 'active' if path.startswith('/profile') else '' }}">{{ icon('person') }}<span class="t">Profile</span></a>
+      <a href="/mailbox" class="{{ 'active' if path.startswith('/mailbox') or path.startswith('/gmail') else '' }}">{{ icon('mail') }}<span class="t">Mailbox</span></a>
+      <a href="/apikey" class="{{ 'active' if path.startswith('/apikey') else '' }}">{{ icon('key') }}<span class="t">AI key</span></a>
+      {% if user.role == 'admin' %}<div class="sep">Admin</div>
+      <a href="/admin/users" class="{{ 'active' if path.startswith('/admin') else '' }}">{{ icon('shield') }}<span class="t">Users</span></a>{% endif %}
+    </nav>
+    <div class="me">
+      <div class="av">{{ user.email[0] | upper }}</div>
+      <div class="who"><b>{{ user.email }}</b><span class="tiny">{{ user.role }}</span></div>
+      <form method="post" action="/logout" title="Sign out"><button type="submit" aria-label="Sign out">{{ icon('logout') }}</button></form>
+    </div>
+  </aside>
+  <main>
+    {% if summary %}
+    <div class="live" id="live" aria-live="polite">
+      <span class="pill"><i class="dot {{ '' if summary.worker_running else 'off' }}" data-k="dot"></i><span data-k="worker">{{ 'Working' if summary.worker_running else 'Worker stopped' }}{{ ' · sending paused' if summary.sending_paused else '' }}</span></span>
+      <span class="pill">{{ icon('chat', 14) }}<b data-k="replies">{{ summary.replies }}</b> replies</span>
+      <span class="pill">{{ icon('send', 14) }}<b data-k="sent">{{ summary.sent }}</b> sent · <b data-k="sent_today">{{ summary.sent_today }}</b> today</span>
+      <span class="pill">{{ icon('clock', 14) }}<b data-k="not_sent">{{ summary.not_sent }}</b> waiting</span>
+      <span class="pill">{{ icon('users', 14) }}<b data-k="recipients">{{ summary.recipients }}</b> recipients</span>
+      <span class="pill">{{ icon('x', 14) }}<b data-k="bounced">{{ summary.bounced }}</b> bounced</span>
+    </div>
+    <script>
+      setInterval(async () => {
+        try {
+          const r = await fetch('/api/summary', {credentials: 'same-origin'});
+          if (!r.ok) return;
+          const s = await r.json();
+          document.querySelectorAll('#live [data-k]').forEach(el => {
+            const k = el.dataset.k;
+            if (k === 'worker') el.textContent = (s.worker_running ? 'Working' : 'Worker stopped') + (s.sending_paused ? ' · sending paused' : '');
+            else if (k === 'dot') el.classList.toggle('off', !s.worker_running);
+            else if (k in s) el.textContent = s[k];
+          });
+        } catch (e) {}
+      }, 30000);
+    </script>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+{% else %}
+{% block auth %}{% endblock %}
 {% endif %}
+{% if msg or error %}
+<div class="toasts">
+  {% if msg %}<div class="toast ok">{{ icon('check', 16) }}<span>{{ msg }}</span><button onclick="this.parentNode.remove()" aria-label="Dismiss">{{ icon('x', 14) }}</button></div>{% endif %}
+  {% if error %}<div class="toast err">{{ icon('x', 16) }}<span>{{ error }}</span><button onclick="this.parentNode.remove()" aria-label="Dismiss">{{ icon('x', 14) }}</button></div>{% endif %}
+</div>
+<script>setTimeout(() => document.querySelectorAll('.toast.ok').forEach(t => t.style.opacity = '0'), 7000);</script>
 {% endif %}
-<main>
-  {% if msg %}<div class="msg ok">{{ msg }}</div>{% endif %}
-  {% if error %}<div class="msg err">{{ error }}</div>{% endif %}
-  {% block content %}{% endblock %}
-</main>
 </body>
 </html>

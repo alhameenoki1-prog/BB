@@ -1,34 +1,38 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Outbox{% endblock %}
 {% block content %}
-<h1>Outbox</h1>
-<p class="actions">
-  {% for s, label in [('pending_review','Awaiting approval'),('approved','Scheduled'),('sent','Sent'),('failed','Failed'),('rejected','Rejected')] %}
-    <a class="btn secondary {{ '' if s != status else 'active' }}" href="/outbox?status={{ s }}" {% if s == status %}style="border-color:var(--accent);color:var(--accent)"{% endif %}>{{ label }}</a>
-  {% endfor %}
+<div class="page-head">
+  <div><div class="eyebrow">Mail</div><h1>Outbox</h1><p class="lead">Every email the worker has written, before and after it goes out.</p></div>
   {% if status == 'pending_review' and items %}
-    <form class="inline" method="post" action="/outbox/approve-all" onsubmit="return confirm('Approve all {{ items|length }} emails?')"><button type="submit">Approve all</button></form>
+    <form class="inline" method="post" action="/outbox/approve-all" onsubmit="return confirm('Approve all {{ items|length }} emails?')"><button type="submit">{{ icon('check', 15) }} Approve all {{ items|length }}</button></form>
   {% endif %}
-</p>
+</div>
+<div class="segs" style="margin-bottom:18px">
+  {% for s, label in [('pending_review','Awaiting approval'),('approved','Scheduled'),('sent','Sent'),('failed','Failed'),('rejected','Rejected')] %}
+    <a class="{{ 'on' if s == status else '' }}" href="/outbox?status={{ s }}">{{ label }}</a>
+  {% endfor %}
+</div>
 {% if not items %}
-  <div class="card muted">Nothing here.{% if status == 'pending_review' %} If approval is on in your profile, written emails appear here before they go out. If it is off, they are sent automatically and show under Sent.{% endif %}</div>
+  <div class="card"><div class="empty">{{ icon('send') }}<div>Nothing here.{% if status == 'pending_review' %} If approval is on in your profile, written emails appear here before they go out. If it is off, they are sent automatically and show under Sent.{% endif %}</div></div></div>
 {% endif %}
 {% for it in items %}
 <div class="card">
   <div class="actions" style="justify-content:space-between">
-    <div><b>To:</b> {{ it.to_email }} {% if it.first_name or it.company %}<span class="muted">({{ (it.first_name ~ ' ' ~ (it.last_name or '')).strip() }}{{ ', ' ~ it.company if it.company else '' }})</span>{% endif %}
-      <span class="pill">{{ 'follow-up' if it.step and it.step > 1 else 'first email' }}{{ ' · step ' ~ it.step if it.step and it.step > 1 else '' }}</span>
-      {% if it.kind == 'reply' %}<span class="pill good">reply</span>{% endif %}</div>
-    <div class="small muted">{{ it.send_at or it.created_at }}</div>
+    <div><b>{{ (it.first_name ~ ' ' ~ (it.last_name or '')).strip() or it.to_email }}</b> <span class="muted">{{ it.to_email }}{{ ' · ' ~ it.company if it.company else '' }}</span></div>
+    <div class="actions">
+      {% if it.kind == 'reply' %}<span class="tag good">reply</span>{% else %}<span class="tag accent">{{ 'follow-up ' ~ it.step if it.step and it.step > 1 else 'first email' }}</span>{% endif %}
+      <span class="tiny">{{ it.send_at or it.created_at }}</span>
+    </div>
   </div>
-  <p style="margin:8px 0"><b>Subject:</b> {{ it.subject }}</p>
-  <div class="email-body">{{ it.body }}</div>
-  {% if it.error %}<p class="small" style="color:var(--bad)">{{ it.error }}</p>{% endif %}
+  <p style="margin:10px 0 8px"><b>{{ it.subject }}</b></p>
+  <div class="email">{{ it.body }}</div>
+  {% if it.error %}<p class="small" style="color:var(--bad);margin-top:8px">{{ it.error }}</p>{% endif %}
   {% if status == 'pending_review' %}
-  <p class="actions" style="margin-top:10px">
-    <form class="inline" method="post" action="/outbox/{{ it.id }}/approve"><button class="small" type="submit">Approve</button></form>
-    <form class="inline" method="post" action="/outbox/{{ it.id }}/reject"><button class="small danger" type="submit">Reject</button></form>
-  </p>
+  <div class="actions" style="margin-top:12px">
+    <form class="inline" method="post" action="/outbox/{{ it.id }}/approve"><button class="small" type="submit">{{ icon('check', 13) }} Approve</button></form>
+    <form class="inline" method="post" action="/outbox/{{ it.id }}/reject"><button class="small danger" type="submit">{{ icon('x', 13) }} Reject</button></form>
+  </div>
   {% endif %}
 </div>
 {% endfor %}

@@ -1,59 +1,63 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Mailbox{% endblock %}
 {% block content %}
-<h1>Your mailbox</h1>
-<p class="muted">Emails are sent from your own address and replies are read from its inbox. Nothing is sent on anyone's behalf but yours. Pick one of the two ways to connect.</p>
+<div class="page-head"><div><div class="eyebrow">Setup</div><h1>Your mailbox</h1><p class="lead">Emails are sent from your own address and replies are read from its inbox. Nothing is sent on anyone's behalf but yours.</p></div></div>
 
 <div class="card">
   <h2>Active connection</h2>
-  <form method="post" action="/mailbox/provider" class="actions">
-    <label class="check" style="margin:0"><input type="radio" name="provider" value="gmail" {{ 'checked' if provider == 'gmail' else '' }}> Gmail / Google Workspace {{ '(connected as ' ~ account.email ~ ')' if gmail_connected and account.email else ('(connected)' if gmail_connected else '(not connected)') }}</label>
-    <label class="check" style="margin:0"><input type="radio" name="provider" value="smtp" {{ 'checked' if provider == 'smtp' else '' }}> My mailbox's SMTP/IMAP {{ '(saved: ' ~ smtp.smtp_username ~ ')' if smtp_configured else '(not set up)' }}</label>
-    <button class="secondary small" type="submit">Use the selected one</button>
+  <form method="post" action="/mailbox/provider">
+    <label class="choice"><input type="radio" name="provider" value="gmail" {{ 'checked' if provider == 'gmail' else '' }}><span><b>Gmail / Google Workspace</b><span class="small muted">{{ 'Connected as ' ~ account.email if gmail_connected and account.email else ('Connected' if gmail_connected else 'Not connected') }}</span></span></label>
+    <label class="choice"><input type="radio" name="provider" value="smtp" {{ 'checked' if provider == 'smtp' else '' }}><span><b>My mailbox's SMTP/IMAP</b><span class="small muted">{{ 'Saved: ' ~ smtp.smtp_username if smtp_configured else 'Not set up' }}</span></span></label>
+    <p style="margin-top:10px"><button class="secondary small" type="submit">Use the selected one</button></p>
   </form>
 </div>
 
-<div class="card">
-  <h2>Option A — Gmail or Google Workspace, one click</h2>
-  {% if gmail_connected %}
-    <p><span class="pill good">Connected</span> {% if account.email %}as <b>{{ account.email }}</b>{% endif %}</p>
+<div class="two">
+  <div class="card">
+    <h2>Option A <span class="tiny" style="font-weight:400">Gmail or Google Workspace, one click</span></h2>
+    {% if gmail_connected %}
+      <p><span class="tag good">{{ icon('check', 13) }} Connected</span> {% if account.email %}as <b>{{ account.email }}</b>{% endif %}</p>
+      <div class="actions" style="margin-top:12px">
+        <form class="inline" method="post" action="/gmail/test"><button class="secondary small" type="submit">Test connection</button></form>
+        <form class="inline" method="post" action="/gmail/disconnect" onsubmit="return confirm('Disconnect Gmail?')"><button class="danger small" type="submit">Disconnect</button></form>
+      </div>
+    {% elif gmail_available %}
+      <p class="muted small">Google will ask you to allow BB to send and read mail as you. You can revoke it any time in your Google account.</p>
+      <form method="post" action="/gmail/connect" style="margin-top:12px"><button type="submit">{{ icon('mail', 15) }} Connect Gmail</button></form>
+    {% else %}
+      <p class="muted">Not available on this site yet (no Google sign-in configured). Use option B.</p>
+    {% endif %}
+  </div>
+  <div class="card">
+    <h2>Option B <span class="tiny" style="font-weight:400">any mailbox, with its own SMTP and IMAP settings</span></h2>
+    <p class="muted small">Works with Gmail (use an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">app password</a>), Microsoft 365 / Outlook (<code>smtp.office365.com</code> / <code>outlook.office365.com</code>, if your admin allows SMTP AUTH), Zoho, Fastmail, iCloud, your web host's mail, and most others. The password is stored in your workspace and only used to send and read your mail.</p>
+    {% if smtp_configured %}<p style="margin-top:10px"><span class="tag good">{{ icon('check', 13) }} Saved</span> {{ smtp.smtp_username }} via {{ smtp.smtp_host }}:{{ smtp.smtp_port or 587 }} · password <code>{{ smtp_masked }}</code></p>{% endif %}
+    <form method="post" action="/mailbox/smtp">
+      <div class="row">
+        <div><label>SMTP server *</label><input type="text" name="smtp_host" value="{{ smtp.smtp_host }}" placeholder="smtp.gmail.com" required></div>
+        <div><label>SMTP port</label><input type="number" name="smtp_port" value="{{ smtp.smtp_port or 587 }}"><div class="hint">587 (STARTTLS) or 465 (TLS)</div></div>
+        <div><label>Username *</label><input type="text" name="smtp_username" value="{{ smtp.smtp_username }}" placeholder="you@yourdomain.com" required></div>
+        <div><label>Password / app password {{ '(blank keeps the saved one)' if smtp_configured else '*' }}</label><input type="password" name="smtp_password" autocomplete="off" {{ '' if smtp_configured else 'required' }}></div>
+        <div><label>From address (if different)</label><input type="email" name="from_email" value="{{ smtp.from_email }}"></div>
+        <div><label>IMAP server (blank = same as SMTP)</label><input type="text" name="imap_host" value="{{ smtp.imap_host }}" placeholder="imap.gmail.com"></div>
+        <div><label>IMAP port</label><input type="number" name="imap_port" value="{{ smtp.imap_port or 993 }}"></div>
+        <div><label>IMAP username (blank = same)</label><input type="text" name="imap_username" value="{{ smtp.imap_username }}"></div>
+        <div><label>IMAP password (blank = same)</label><input type="password" name="imap_password" autocomplete="off"></div>
+      </div>
+      <p class="actions" style="margin-top:14px"><button type="submit">{{ icon('check', 15) }} Test and save</button></p>
+    </form>
+    {% if smtp_configured %}
     <div class="actions">
-      <form class="inline" method="post" action="/gmail/test"><button class="secondary" type="submit">Test connection</button></form>
-      <form class="inline" method="post" action="/gmail/disconnect" onsubmit="return confirm('Disconnect Gmail?')"><button class="danger" type="submit">Disconnect</button></form>
+      <form class="inline" method="post" action="/mailbox/smtp/test"><button class="secondary small" type="submit">Test saved settings</button></form>
+      <form class="inline" method="post" action="/mailbox/smtp/remove" onsubmit="return confirm('Remove the SMTP settings?')"><button class="danger small" type="submit">Remove</button></form>
     </div>
-  {% elif gmail_available %}
-    <p>Google will ask you to allow BB to send and read mail as you. You can revoke it any time in your Google account.</p>
-    <form method="post" action="/gmail/connect"><button type="submit">Connect Gmail</button></form>
-  {% else %}
-    <p class="muted">Not available on this site yet (no Google sign-in configured). Use option B.</p>
-  {% endif %}
-</div>
-
-<div class="card">
-  <h2>Option B — any mailbox, with its own SMTP and IMAP settings</h2>
-  <p class="muted small">Works with Gmail (use an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">app password</a>), Microsoft 365 / Outlook (<code>smtp.office365.com</code> / <code>outlook.office365.com</code>, if your admin allows SMTP AUTH), Zoho, Fastmail, iCloud, your web host's mail, and most others. These are your mailbox's own credentials; the password is stored in your workspace and only used to send and read your mail.</p>
-  {% if smtp_configured %}<p><span class="pill good">Saved</span> {{ smtp.smtp_username }} via {{ smtp.smtp_host }}:{{ smtp.smtp_port or 587 }} · password <code>{{ smtp_masked }}</code></p>{% endif %}
-  <form method="post" action="/mailbox/smtp">
-    <div class="row">
-      <div><label>SMTP server *</label><input type="text" name="smtp_host" value="{{ smtp.smtp_host }}" placeholder="smtp.gmail.com" required></div>
-      <div><label>SMTP port</label><input type="number" name="smtp_port" value="{{ smtp.smtp_port or 587 }}"><div class="small muted">587 (STARTTLS) or 465 (TLS)</div></div>
-      <div><label>Username *</label><input type="text" name="smtp_username" value="{{ smtp.smtp_username }}" placeholder="you@yourdomain.com" required></div>
-      <div><label>Password / app password {{ '(blank keeps the saved one)' if smtp_configured else '*' }}</label><input type="password" name="smtp_password" autocomplete="off" {{ '' if smtp_configured else 'required' }}></div>
-      <div><label>From address (if different from the username)</label><input type="email" name="from_email" value="{{ smtp.from_email }}"></div>
-      <div><label>IMAP server (blank = same as SMTP)</label><input type="text" name="imap_host" value="{{ smtp.imap_host }}" placeholder="imap.gmail.com"></div>
-      <div><label>IMAP port</label><input type="number" name="imap_port" value="{{ smtp.imap_port or 993 }}"></div>
-      <div><label>IMAP username (blank = same)</label><input type="text" name="imap_username" value="{{ smtp.imap_username }}"></div>
-      <div><label>IMAP password (blank = same)</label><input type="password" name="imap_password" autocomplete="off"></div>
-    </div>
-    <p class="actions"><button type="submit">Test and save</button>
-    {% if smtp_configured %}</form>
-      <form class="inline" method="post" action="/mailbox/smtp/test"><button class="secondary" type="submit">Test saved settings</button></form>
-      <form class="inline" method="post" action="/mailbox/smtp/remove" onsubmit="return confirm('Remove the SMTP settings?')"><button class="danger" type="submit">Remove</button></form>
-    {% else %}</form>{% endif %}</p>
+    {% endif %}
+  </div>
 </div>
 
 {% if user.role == 'admin' %}
-<div class="card small muted">
+<div class="card flat small muted">
   <b>Admin note:</b> option A needs a Google Cloud OAuth client of type <i>Web application</i> with redirect URI <code>{{ redirect_uri }}</code>, and Google's verification before non-test users can connect. Option B needs nothing from you.
 </div>
 {% endif %}

@@ -1,25 +1,30 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}AI key{% endblock %}
 {% block content %}
-<h1>Your Anthropic API key</h1>
-<div class="card">
-  <p>The emails are written and the replies answered by Claude, using <b>your own</b> Anthropic account. Usage is billed to you, directly by Anthropic, at a few cents per email. This site never uses its own key for your mail.</p>
-  <ol class="steps small">
-    <li>Go to <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com → API keys</a> and create a key.</li>
-    <li>Add some credit under <i>Billing</i> (a few dollars goes a long way).</li>
-    <li>Paste the key below. It is checked against Anthropic before it is saved, and stored only in your workspace.</li>
-  </ol>
-  {% if has_key %}
-    <p><span class="pill good">Key saved</span> <code>{{ masked }}</code></p>
-    <p class="muted small">Your daily spend cap is in your <a href="/profile">profile</a>. Paste a new key below to replace this one.</p>
-  {% else %}
-    <p><span class="pill warn">No key yet</span> — the worker cannot start without one.</p>
-  {% endif %}
-  <form method="post" action="/apikey">
-    <label>Anthropic API key</label>
-    <input type="password" name="api_key" placeholder="sk-ant-…" autocomplete="off" required>
-    <p class="actions"><button type="submit">{{ 'Replace key' if has_key else 'Save key' }}</button>
-    {% if has_key %}</form><form class="inline" method="post" action="/apikey/remove" onsubmit="return confirm('Remove your key? The worker stops.')"><button class="danger" type="submit">Remove key</button>{% endif %}</p>
-  </form>
+<div class="page-head"><div><div class="eyebrow">Setup</div><h1>Your Anthropic API key</h1><p class="lead">The emails are written and the replies answered by Claude, using <b>your own</b> Anthropic account. Usage is billed to you, directly by Anthropic, at a few cents per email. This site never uses its own key for your mail.</p></div></div>
+<div class="two">
+  <div class="card">
+    {% if has_key %}
+      <p><span class="tag good">{{ icon('check', 13) }} Key saved</span> <code>{{ masked }}</code></p>
+      <p class="muted small">Your daily spend cap is in your <a href="/profile">profile</a>. Paste a new key below to replace this one.</p>
+    {% else %}
+      <p><span class="tag warn">No key yet</span> <span class="muted small">— the worker cannot start without one.</span></p>
+    {% endif %}
+    <form method="post" action="/apikey">
+      <label>Anthropic API key</label>
+      <input type="password" name="api_key" placeholder="sk-ant-…" autocomplete="off" required>
+      <p class="actions" style="margin-top:14px"><button type="submit">{{ icon('key', 15) }} {{ 'Replace key' if has_key else 'Save key' }}</button></p>
+    </form>
+    {% if has_key %}<form method="post" action="/apikey/remove" onsubmit="return confirm('Remove your key? The worker stops.')"><button class="danger small" type="submit">{{ icon('trash', 13) }} Remove key</button></form>{% endif %}
+  </div>
+  <div class="card flat">
+    <h2>How to get one</h2>
+    <ol class="steps">
+      <li><span class="tick" style="color:var(--ink-3)">1</span><div><b>Create a key</b><span class="small">At <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com → API keys</a>.</span></div></li>
+      <li><span class="tick" style="color:var(--ink-3)">2</span><div><b>Add some credit</b><span class="small">Under <i>Billing</i>. A few dollars goes a long way.</span></div></li>
+      <li><span class="tick" style="color:var(--ink-3)">3</span><div><b>Paste it here</b><span class="small">It is checked against Anthropic before it is saved, and stored only in your workspace.</span></div></li>
+    </ol>
+  </div>
 </div>
 {% endblock %}

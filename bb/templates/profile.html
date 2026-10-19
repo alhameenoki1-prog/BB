@@ -1,14 +1,14 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Profile{% endblock %}
 {% block content %}
-<h1>Your profile</h1>
-<p class="muted">This is what every email is written from. Be specific: the more real detail here, the less generic the emails.</p>
+<div class="page-head"><div><div class="eyebrow">Setup</div><h1>Your profile</h1><p class="lead">Every email is written from this. Be specific: the more real detail here, the less generic the emails.</p></div></div>
 <form method="post" action="/profile">
 <div class="card">
   <h2>What you want from the people you write to</h2>
   <p class="muted small">Each email is written for one person from what their business does. In <b>inquiry</b> mode you are the customer or partner: a financial advisor is asked about taking you on, a builder about a job, a studio about working together. In <b>offer</b> mode you have something to propose to them.</p>
   {% for k, v in modes.items() %}
-  <label class="check"><input type="radio" name="mode" value="{{ k }}" {{ 'checked' if profile.mode == k else '' }}> <b>{{ k|capitalize }}</b> — {{ v }}</label>
+  <label class="choice"><input type="radio" name="mode" value="{{ k }}" {{ 'checked' if profile.mode == k else '' }}><span><b>{{ k|capitalize }}</b><span class="small muted">{{ v }}</span></span></label>
   {% endfor %}
   <label>In your words, what do you want from them?</label>
   <textarea name="intent" placeholder="e.g. I'm looking for a financial advisor to manage a family portfolio, or I want quotes for a two-storey extension in Lagos, or I'd like to partner on distribution in West Africa.">{{ profile.intent }}</textarea>
@@ -20,9 +20,8 @@
     <div><label>Company *</label><input type="text" name="company" value="{{ profile.company }}" required></div>
     <div><label>Your role / title</label><input type="text" name="role" value="{{ profile.role }}" placeholder="Founder, Researcher, Head of Partnerships…"></div>
     <div><label>LinkedIn URL</label><input type="url" name="linkedin" value="{{ profile.linkedin }}" placeholder="https://linkedin.com/in/…"></div>
-    <div><label>Email you send from</label><input type="email" name="email" value="{{ profile.email }}" placeholder="Filled in when you connect your mailbox" readonly><div class="small muted">Set by the <a href="/mailbox">mailbox</a> you connect.</div></div>
-    <div><label>Tone</label>
-      <select name="tone">{% for t in tones %}<option value="{{ t }}" {{ 'selected' if t == profile.tone else '' }}>{{ t }}</option>{% endfor %}</select></div>
+    <div><label>Email you send from</label><input type="email" name="email" value="{{ profile.email }}" placeholder="Filled in when you connect your mailbox" readonly><div class="hint">Set by the <a href="/mailbox">mailbox</a> you connect.</div></div>
+    <div><label>Tone</label><select name="tone">{% for t in tones %}<option value="{{ t }}" {{ 'selected' if t == profile.tone else '' }}>{{ t }}</option>{% endfor %}</select></div>
   </div>
 </div>
 <div class="card">
@@ -35,61 +34,59 @@
   <textarea name="benefits" placeholder="Saves finance teams a day a month&#10;Works with the tools they already use">{{ profile.benefits }}</textarea>
   <div class="row">
     <div><label>Pricing (optional)</label><input type="text" name="pricing" value="{{ profile.pricing }}" placeholder="e.g. from $99/month, or leave blank"></div>
-    <div><label>What a good outcome looks like</label>
-      <select name="goal">{% for k, v in goals.items() %}<option value="{{ k }}" {{ 'selected' if k == profile.goal else '' }}>{{ v }}</option>{% endfor %}</select></div>
+    <div><label>What a good outcome looks like</label><select name="goal">{% for k, v in goals.items() %}<option value="{{ k }}" {{ 'selected' if k == profile.goal else '' }}>{{ v }}</option>{% endfor %}</select></div>
     <div><label>Booking link (if you want them to book a call)</label><input type="url" name="booking_url" value="{{ profile.booking_url }}" placeholder="https://cal.com/you/15min"></div>
     <div><label>Call length</label><input type="text" name="meeting_duration" value="{{ profile.meeting_duration }}"></div>
   </div>
 </div>
 <div class="card">
-  <h2>Who you're writing to (optional, helps the writing)</h2>
+  <h2>Who you're writing to <span class="tiny" style="font-weight:400">optional, helps the writing</span></h2>
   <div class="row">
     <div><label>Industries</label><input type="text" name="industries" value="{{ profile.industries }}" placeholder="SaaS, Logistics, Universities"></div>
     <div><label>Typical job titles</label><input type="text" name="titles" value="{{ profile.titles }}" placeholder="Head of Growth, Professor, Recruiter"></div>
     <div><label>Company size</label><input type="text" name="company_size" value="{{ profile.company_size }}" placeholder="10-200 employees"></div>
     <div><label>Regions</label><input type="text" name="geography" value="{{ profile.geography }}" placeholder="United Kingdom, Nigeria"></div>
   </div>
-  <label class="check"><input type="checkbox" name="auto_prospect" {{ 'checked' if profile.auto_prospect else '' }}> Also let the worker find new businesses on its own when my list runs out (off = only email the people I upload)</label>
+  <label class="check"><input type="checkbox" name="auto_prospect" {{ 'checked' if profile.auto_prospect else '' }}> Also let the worker find new businesses on its own when my list runs out <span class="muted">(off = only email the people I upload)</span></label>
 </div>
 <div class="card">
   <h2>Sending</h2>
   <div class="row">
-    <div><label>Max emails per day</label><input type="number" name="max_daily_sends" min="0" max="500" value="{{ profile.max_daily_sends }}"><div class="small muted">Free Gmail: stay around 20–40. Google Workspace: 50–150 after warm-up. Higher gets the account flagged.</div></div>
-    <div><label>Daily AI spend cap (USD)</label><input type="number" step="0.5" min="0" name="max_daily_cost_usd" value="{{ profile.max_daily_cost_usd }}"><div class="small muted">Writing and reply handling cost a few cents per email. 0 = no cap.</div></div>
+    <div><label>Max emails per day</label><input type="number" name="max_daily_sends" min="0" max="500" value="{{ profile.max_daily_sends }}"><div class="hint">Free Gmail: stay around 20–40. Google Workspace: 50–150 after warm-up. Higher gets the account flagged.</div></div>
+    <div><label>Daily AI spend cap (USD)</label><input type="number" step="0.5" min="0" name="max_daily_cost_usd" value="{{ profile.max_daily_cost_usd }}"><div class="hint">Writing and reply handling cost a few cents per email. 0 = no cap.</div></div>
     <div><label>Don't send before</label><input type="time" name="quiet_end" value="{{ profile.quiet_end }}"></div>
     <div><label>Don't send after</label><input type="time" name="quiet_start" value="{{ profile.quiet_start }}"></div>
-    <div><label>Your time zone</label>
-      <select name="timezone">{% for tz in timezones %}<option value="{{ tz }}" {{ 'selected' if tz == profile.timezone else '' }}>{{ tz }}</option>{% endfor %}</select></div>
+    <div><label>Your time zone</label><select name="timezone">{% for tz in timezones %}<option value="{{ tz }}" {{ 'selected' if tz == profile.timezone else '' }}>{{ tz }}</option>{% endfor %}</select></div>
   </div>
-  <label class="check"><input type="checkbox" name="require_approval" {{ 'checked' if profile.require_approval else '' }}> Let me approve each email in the Outbox before it is sent (off = fully automatic)</label>
+  <label class="check"><input type="checkbox" name="require_approval" {{ 'checked' if profile.require_approval else '' }}> Let me approve each email in the Outbox before it is sent <span class="muted">(off = fully automatic)</span></label>
 </div>
 <div class="card">
   <h2>When someone replies</h2>
-  <p class="muted small">Replies are read and answered automatically (or wait in the Outbox if approval is on). Tell the assistant how you want them handled; it already never argues with a "no" and never answers legal or angry messages.</p>
+  <p class="muted small">Replies are read and answered automatically (or wait in the Outbox if approval is on). Tell the assistant how you want them handled; it already never argues with a “no” and never answers legal or angry messages.</p>
   <label>How should replies be answered?</label>
   <textarea name="reply_instructions" placeholder="e.g. Thank them, say I'm available for a call Tuesday to Thursday afternoons, ask what they'd need from me to put a proposal together, and mention the attached brochure. Never discuss budget by email.">{{ profile.reply_instructions }}</textarea>
   <label>Send my attachments</label>
   <select name="attach_on">{% for k, v in policies.items() %}<option value="{{ k }}" {{ 'selected' if k == profile.attach_on else '' }}>{{ v }}</option>{% endfor %}</select>
 </div>
-<p><button type="submit">Save profile</button></p>
+<p class="actions"><button type="submit">{{ icon('check', 15) }} Save profile</button></p>
 </form>
 
 <div class="card">
   <h2>Attachments for replies</h2>
-  <p class="muted small">Documents to send when someone responds: a brochure, a brief, a CV, a project outline. Up to 20 MB in total. They are attached according to the setting above and the reply mentions them.</p>
+  <p class="muted small">Documents to send when someone responds: a brochure, a brief, a CV, a project outline. Up to 20 MB in total. They are attached according to the setting above, and the reply mentions them.</p>
   {% if attachments %}
   <table>
-    <tr><th>File</th><th>Size</th><th></th></tr>
-    {% for a in attachments %}
-    <tr><td>{{ a.name }}</td><td class="muted">{{ (a.size / 1024) | round(1) }} KB</td>
-      <td><form class="inline" method="post" action="/attachments/{{ a.name }}/delete"><button class="small danger" type="submit">Remove</button></form></td></tr>
-    {% endfor %}
+    <thead><tr><th>File</th><th>Size</th><th></th></tr></thead>
+    <tbody>{% for a in attachments %}
+    <tr><td>{{ icon('file', 15) }} {{ a.name }}</td><td class="muted">{{ (a.size / 1024) | round(1) }} KB</td>
+      <td style="text-align:right"><form class="inline" method="post" action="/attachments/{{ a.name }}/delete"><button class="small danger" type="submit">{{ icon('trash', 13) }} Remove</button></form></td></tr>
+    {% endfor %}</tbody>
   </table>
-  {% else %}<p class="muted">None yet.</p>{% endif %}
-  <form method="post" action="/attachments" enctype="multipart/form-data">
+  {% else %}<div class="empty">{{ icon('file') }}<div>No attachments yet.</div></div>{% endif %}
+  <form method="post" action="/attachments" enctype="multipart/form-data" style="margin-top:12px">
     <label>Add files</label>
     <input type="file" name="files" multiple>
-    <p><button class="secondary" type="submit">Upload</button></p>
+    <p style="margin-top:12px"><button class="secondary" type="submit">{{ icon('upload', 15) }} Upload</button></p>
   </form>
 </div>
 {% endblock %}
