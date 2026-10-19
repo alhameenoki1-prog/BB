@@ -358,7 +358,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         added = []
         for upload in form.getlist("files"):
             # A file input left empty arrives as a blank string or a nameless part.
-            if not isinstance(upload, UploadFile) or not upload.filename:
+            if not hasattr(upload, "read") or not getattr(upload, "filename", ""):
                 continue
             data = await upload.read()
             if not data:
