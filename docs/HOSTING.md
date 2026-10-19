@@ -81,9 +81,10 @@ steps) or move to a server as below.
 - A **Google Cloud OAuth client** so users can connect Gmail in one click
   (below). Optional: users can always connect a mailbox with its own
   SMTP/IMAP settings instead.
-- Nothing from Anthropic: **each user adds their own API key** on the
-  **AI key** page, and their model usage is billed to them. The key is
-  checked against Anthropic when saved and stored only in their workspace.
+- Nothing from an AI vendor: **each user picks their own AI provider** on
+  the **AI provider** page (free tiers from Google Gemini or Groq, or a paid
+  Anthropic/OpenAI account) and pastes their own key. It is checked when
+  saved and stored only in their workspace; the site is never billed.
 
 ## 1. Google OAuth client
 
@@ -123,7 +124,7 @@ GMAIL_CLIENT_SECRET=...
 Optional: `REOON_API_KEY` / `ZEROBOUNCE_API_KEY` (email verification for
 workers that prospect on their own), `BB_DEFAULT_DAILY_COST_USD`,
 `BB_DEFAULT_MODEL`. `ANTHROPIC_API_KEY` is not used by the web app's
-workers; users bring their own.
+workers; users bring their own provider and key.
 
 ## 3. Run
 
@@ -151,8 +152,11 @@ reset it from the same page.
 
 ## What a user does
 
-1. **AI key**: paste their own Anthropic API key. It is verified and kept in
-   their workspace; the writing is billed to them.
+1. **AI provider**: pick one and paste their own key. Google Gemini and
+   Groq have free tiers (so this can cost them nothing), OpenRouter has
+   free models, Ollama runs free on the hosting machine, and Anthropic or
+   OpenAI are paid to the user's own account. The key is verified against
+   the provider and kept in their workspace.
 2. **Profile**: what they want from the people they write to (*inquiry*
    mode: hire them, buy from them, partner with them; or *offer* mode),
    name, company, role, LinkedIn, how many emails a day, sending hours,
@@ -192,12 +196,13 @@ A 10,000-row upload is accepted; 10,000 sends is a schedule, not a day.
 Google caps free Gmail at 500 and Workspace at 2,000 messages a day, and
 cold email anywhere near that gets the account flagged. Safe is roughly
 20–40 a day from free Gmail and 50–150 from a warmed-up Workspace mailbox on
-a secondary domain. The profile's "max emails per day" is the control: the
-worker sends up to 8 emails every 15-minute cycle inside the sending hours
-until the day's maximum is reached (a 12-hour window allows up to about
-380 a day), writes emails only about two days ahead of what it can send
-(so a big upload does not run up the AI bill in one go), and stops itself
-when bounces pass 5% of sends.
+a secondary domain. The profile's "max emails per day" is the control
+(0 = no limit, so only the mailbox's own ceiling applies): the worker sends
+up to 8 emails every 15-minute cycle inside the sending hours until the
+day's maximum is reached (a 12-hour window allows up to about 380 a day),
+writes emails only a day or two ahead of what it can send, and stops
+itself when bounces pass 5% of sends. Free AI tiers have hourly request
+limits; when one is hit the worker pauses and resumes on its own.
 
 ## Security notes
 

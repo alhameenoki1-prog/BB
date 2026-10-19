@@ -19,8 +19,8 @@ from pydantic import ValidationError
 from bb import gmail_oauth, recipients as recipients_mod
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
-from bb.workspaces import (ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, OUTREACH_MODES, TONES,
-                           Workspace, all_workspaces)
+from bb.workspaces import (ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, LLM_PRESETS, OUTREACH_MODES,
+                           TONES, Workspace, all_workspaces)
 
 logger = logging.getLogger("bb.app")
 
@@ -57,6 +57,35 @@ async def check_anthropic_key(key: str) -> tuple[bool, str]:
     except Exception as e:  # network, proxy, outage
         return False, f"Could not reach Anthropic to check the key: {type(e).__name__}."
     return True, "Key accepted."
+
+
+async def check_openai_compatible(base_url: str, api_key: str, model: str) -> tuple[bool, str]:
+    """Does this endpoint answer with this key? Listing models is free on
+    every OpenAI-compatible API; the model name is checked against the list
+    when the list is readable, and only warned about otherwise."""
+    import httpx
+
+    base_url = (base_url or "").strip().rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        return False, "The API address must start with https:// (or http:// for a local server)."
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(f"{base_url}/models", headers=headers)
+    except httpx.HTTPError as e:
+        return False, f"Could not reach {base_url}: {type(e).__name__}."
+    if resp.status_code in (401, 403):
+        return False, "That provider rejected the key."
+    if resp.status_code >= 400:
+        return False, f"{base_url} answered {resp.status_code}: {resp.text[:160]}"
+    try:
+        ids = {m.get("id") for m in (resp.json().get("data") or []) if isinstance(m, dict)}
+    except ValueError:
+        ids = set()
+    if ids and model and model not in ids:
+        return False, (f"Connected, but the model '{model}' is not in this provider's list. "
+                       "Pick one of: " + ", ".join(sorted(str(i) for i in ids)[:12]) + "…")
+    return True, "Connected."
 
 
 async def test_smtp(smtp: dict) -> tuple[bool, str]:
@@ -253,20 +282,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/apikey", response_class=HTMLResponse)
     async def apikey_page(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
-        key = ws.anthropic_key()
-        return await render(request, "apikey.html", user, has_key=bool(key), masked=ws.mask(key))
+        llm = ws.llm()
+        return await render(request, "apikey.html", user, presets=LLM_PRESETS, llm=llm,
+                            configured=ws.llm_configured(), masked=ws.mask(llm["api_key"]))
 
     @app.post("/apikey")
-    async def apikey_save(user: dict = Depends(current_user), api_key: str = Form("")):
+    async def apikey_save(user: dict = Depends(current_user), provider: str = Form(""),
+                          api_key: str = Form(""), model: str = Form(""), base_url: str = Form("")):
+        ws = workspace_for(user)
         key = api_key.strip()
-        if not key:
-            return _redirect("/apikey", error="Paste your key first.")
-        ok, detail = await check_anthropic_key(key)
+        if not provider:
+            provider = "anthropic" if key.startswith("sk-ant-") else "gemini"
+        if provider not in LLM_PRESETS:
+            return _redirect("/apikey", error="Choose a provider from the list.")
+        preset = LLM_PRESETS[provider]
+        current = ws.llm()
+        if not key and current["provider"] == provider and current["api_key"]:
+            key = current["api_key"]  # blank keeps the saved key
+        model = (model or preset["model"]).strip()
+        base_url = (base_url or preset["base_url"]).strip().rstrip("/")
+        if provider == "anthropic":
+            if not key:
+                return _redirect("/apikey", error="Paste your Anthropic key first.")
+            ok, detail = await check_anthropic_key(key)
+        else:
+            if not key and not preset.get("no_key"):
+                return _redirect("/apikey", error=f"Paste your {preset['label']} key first.")
+            if not model:
+                return _redirect("/apikey", error="Enter a model name.")
+            ok, detail = await check_openai_compatible(base_url, key, model)
         if not ok:
             return _redirect("/apikey", error=detail)
-        ws = workspace_for(user)
-        ws.save_secrets(anthropic_api_key=key)
-        return _redirect("/apikey", msg="Key saved and verified."
+        ws.save_llm(provider, key, model=model, base_url=base_url)
+        return _redirect("/apikey", msg=f"{preset['label']} saved and verified ({model or 'default model'})."
                          + (" Restart the worker to use it." if ws.worker_running() else ""))
 
     @app.post("/apikey/remove")
@@ -274,8 +322,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace_for(user)
         if ws.worker_running():
             await ws.stop_worker()
-        ws.save_secrets(anthropic_api_key="")
-        return _redirect("/apikey", msg="Key removed. The worker was stopped.")
+        ws.clear_llm()
+        return _redirect("/apikey", msg="AI provider removed. The worker was stopped.")
 
     # ── mailbox: Gmail (OAuth) or the mailbox's own SMTP/IMAP ──
 

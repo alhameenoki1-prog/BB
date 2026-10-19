@@ -40,20 +40,9 @@
   </div>
 </div>
 <div class="card">
-  <h2>Who you're writing to <span class="tiny" style="font-weight:400">optional, helps the writing</span></h2>
-  <div class="row">
-    <div><label>Industries</label><input type="text" name="industries" value="{{ profile.industries }}" placeholder="SaaS, Logistics, Universities"></div>
-    <div><label>Typical job titles</label><input type="text" name="titles" value="{{ profile.titles }}" placeholder="Head of Growth, Professor, Recruiter"></div>
-    <div><label>Company size</label><input type="text" name="company_size" value="{{ profile.company_size }}" placeholder="10-200 employees"></div>
-    <div><label>Regions</label><input type="text" name="geography" value="{{ profile.geography }}" placeholder="United Kingdom, Nigeria"></div>
-  </div>
-  <label class="check"><input type="checkbox" name="auto_prospect" {{ 'checked' if profile.auto_prospect else '' }}> Also let the worker find new businesses on its own when my list runs out <span class="muted">(off = only email the people I upload)</span></label>
-</div>
-<div class="card">
   <h2>Sending</h2>
   <div class="row">
-    <div><label>Max emails per day</label><input type="number" name="max_daily_sends" min="0" max="500" value="{{ profile.max_daily_sends }}"><div class="hint">Free Gmail: stay around 20–40. Google Workspace: 50–150 after warm-up. Higher gets the account flagged.</div></div>
-    <div><label>Daily AI spend cap (USD)</label><input type="number" step="0.5" min="0" name="max_daily_cost_usd" value="{{ profile.max_daily_cost_usd }}"><div class="hint">Writing and reply handling cost a few cents per email. 0 = no cap.</div></div>
+    <div><label>Max emails per day <span class="muted" style="font-weight:400">(0 = no limit)</span></label><input type="number" name="max_daily_sends" min="0" max="5000" value="{{ profile.max_daily_sends }}"><div class="hint">With no limit, your mailbox's own ceiling applies: Google allows 500 a day on free Gmail and 2,000 on Workspace. Cold email near those numbers gets an account flagged, so a new mailbox is safer around 30–50.</div></div>
     <div><label>Don't send before</label><input type="time" name="quiet_end" value="{{ profile.quiet_end }}"></div>
     <div><label>Don't send after</label><input type="time" name="quiet_start" value="{{ profile.quiet_start }}"></div>
     <div><label>Your time zone</label><select name="timezone">{% for tz in timezones %}<option value="{{ tz }}" {{ 'selected' if tz == profile.timezone else '' }}>{{ tz }}</option>{% endfor %}</select></div>

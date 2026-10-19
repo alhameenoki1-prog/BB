@@ -14,8 +14,8 @@
 </div>
 
 <div class="two">
-  <div class="card">
-    <h2>Option A <span class="tiny" style="font-weight:400">Gmail or Google Workspace, one click</span></h2>
+{% if gmail_available %}  <div class="card">
+    <h2>{{ "Option A" if gmail_available else "Option B" }} <span class="tiny" style="font-weight:400">Gmail or Google Workspace, one click</span></h2>
     {% if gmail_connected %}
       <p><span class="tag good">{{ icon('check', 13) }} Connected</span> {% if account.email %}as <b>{{ account.email }}</b>{% endif %}</p>
       <div class="actions" style="margin-top:12px">
@@ -26,11 +26,12 @@
       <p class="muted small">Google will ask you to allow BB to send and read mail as you. You can revoke it any time in your Google account.</p>
       <form method="post" action="/gmail/connect" style="margin-top:12px"><button type="submit">{{ icon('mail', 15) }} Connect Gmail</button></form>
     {% else %}
-      <p class="muted">Not available on this site yet (no Google sign-in configured). Use option B.</p>
+      <p class="muted small">One-click Gmail is not switched on for this site yet, so use your mailbox's SMTP/IMAP settings (Gmail works there with an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">app password</a>: Google account → Security → 2-Step Verification → App passwords).</p>
+      {% if user.role == 'admin' %}<div class="card flat small" style="margin:12px 0 0"><b>To switch it on (admin):</b> in Google Cloud Console create an OAuth client of type <i>Web application</i> with redirect URI <code>{{ redirect_uri }}</code>, enable the Gmail API, then start the site with <code>GMAIL_CLIENT_ID</code> and <code>GMAIL_CLIENT_SECRET</code> set. Until Google verifies the app, only accounts you list as test users can connect.</div>{% endif %}
     {% endif %}
   </div>
   <div class="card">
-    <h2>Option B <span class="tiny" style="font-weight:400">any mailbox, with its own SMTP and IMAP settings</span></h2>
+    <h2>{{ "Option B" if gmail_available else "Option A" }} <span class="tiny" style="font-weight:400">any mailbox, with its own SMTP and IMAP settings</span></h2>
     <p class="muted small">Works with Gmail (use an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">app password</a>), Microsoft 365 / Outlook (<code>smtp.office365.com</code> / <code>outlook.office365.com</code>, if your admin allows SMTP AUTH), Zoho, Fastmail, iCloud, your web host's mail, and most others. The password is stored in your workspace and only used to send and read your mail.</p>
     {% if smtp_configured %}<p style="margin-top:10px"><span class="tag good">{{ icon('check', 13) }} Saved</span> {{ smtp.smtp_username }} via {{ smtp.smtp_host }}:{{ smtp.smtp_port or 587 }} · password <code>{{ smtp_masked }}</code></p>{% endif %}
     <form method="post" action="/mailbox/smtp">
@@ -55,6 +56,49 @@
     {% endif %}
   </div>
 </div>
+{% else %}  <div class="card">
+    <h2>{{ "Option B" if gmail_available else "Option A" }} <span class="tiny" style="font-weight:400">any mailbox, with its own SMTP and IMAP settings</span></h2>
+    <p class="muted small">Works with Gmail (use an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">app password</a>), Microsoft 365 / Outlook (<code>smtp.office365.com</code> / <code>outlook.office365.com</code>, if your admin allows SMTP AUTH), Zoho, Fastmail, iCloud, your web host's mail, and most others. The password is stored in your workspace and only used to send and read your mail.</p>
+    {% if smtp_configured %}<p style="margin-top:10px"><span class="tag good">{{ icon('check', 13) }} Saved</span> {{ smtp.smtp_username }} via {{ smtp.smtp_host }}:{{ smtp.smtp_port or 587 }} · password <code>{{ smtp_masked }}</code></p>{% endif %}
+    <form method="post" action="/mailbox/smtp">
+      <div class="row">
+        <div><label>SMTP server *</label><input type="text" name="smtp_host" value="{{ smtp.smtp_host }}" placeholder="smtp.gmail.com" required></div>
+        <div><label>SMTP port</label><input type="number" name="smtp_port" value="{{ smtp.smtp_port or 587 }}"><div class="hint">587 (STARTTLS) or 465 (TLS)</div></div>
+        <div><label>Username *</label><input type="text" name="smtp_username" value="{{ smtp.smtp_username }}" placeholder="you@yourdomain.com" required></div>
+        <div><label>Password / app password {{ '(blank keeps the saved one)' if smtp_configured else '*' }}</label><input type="password" name="smtp_password" autocomplete="off" {{ '' if smtp_configured else 'required' }}></div>
+        <div><label>From address (if different)</label><input type="email" name="from_email" value="{{ smtp.from_email }}"></div>
+        <div><label>IMAP server (blank = same as SMTP)</label><input type="text" name="imap_host" value="{{ smtp.imap_host }}" placeholder="imap.gmail.com"></div>
+        <div><label>IMAP port</label><input type="number" name="imap_port" value="{{ smtp.imap_port or 993 }}"></div>
+        <div><label>IMAP username (blank = same)</label><input type="text" name="imap_username" value="{{ smtp.imap_username }}"></div>
+        <div><label>IMAP password (blank = same)</label><input type="password" name="imap_password" autocomplete="off"></div>
+      </div>
+      <p class="actions" style="margin-top:14px"><button type="submit">{{ icon('check', 15) }} Test and save</button></p>
+    </form>
+    {% if smtp_configured %}
+    <div class="actions">
+      <form class="inline" method="post" action="/mailbox/smtp/test"><button class="secondary small" type="submit">Test saved settings</button></form>
+      <form class="inline" method="post" action="/mailbox/smtp/remove" onsubmit="return confirm('Remove the SMTP settings?')"><button class="danger small" type="submit">Remove</button></form>
+    </div>
+    {% endif %}
+  </div>
+</div>
+  <div class="card">
+    <h2>{{ "Option A" if gmail_available else "Option B" }} <span class="tiny" style="font-weight:400">Gmail or Google Workspace, one click</span></h2>
+    {% if gmail_connected %}
+      <p><span class="tag good">{{ icon('check', 13) }} Connected</span> {% if account.email %}as <b>{{ account.email }}</b>{% endif %}</p>
+      <div class="actions" style="margin-top:12px">
+        <form class="inline" method="post" action="/gmail/test"><button class="secondary small" type="submit">Test connection</button></form>
+        <form class="inline" method="post" action="/gmail/disconnect" onsubmit="return confirm('Disconnect Gmail?')"><button class="danger small" type="submit">Disconnect</button></form>
+      </div>
+    {% elif gmail_available %}
+      <p class="muted small">Google will ask you to allow BB to send and read mail as you. You can revoke it any time in your Google account.</p>
+      <form method="post" action="/gmail/connect" style="margin-top:12px"><button type="submit">{{ icon('mail', 15) }} Connect Gmail</button></form>
+    {% else %}
+      <p class="muted small">One-click Gmail is not switched on for this site yet, so use your mailbox's SMTP/IMAP settings (Gmail works there with an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">app password</a>: Google account → Security → 2-Step Verification → App passwords).</p>
+      {% if user.role == 'admin' %}<div class="card flat small" style="margin:12px 0 0"><b>To switch it on (admin):</b> in Google Cloud Console create an OAuth client of type <i>Web application</i> with redirect URI <code>{{ redirect_uri }}</code>, enable the Gmail API, then start the site with <code>GMAIL_CLIENT_ID</code> and <code>GMAIL_CLIENT_SECRET</code> set. Until Google verifies the app, only accounts you list as test users can connect.</div>{% endif %}
+    {% endif %}
+  </div>
+{% endif %}
 
 {% if user.role == 'admin' %}
 <div class="card flat small muted">

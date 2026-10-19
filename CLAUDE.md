@@ -58,8 +58,8 @@ People will ask "how does this work?" — explain it simply:
 
 BB is a second way to run everything: a website where an admin creates logins
 and each user gets their own isolated Harvey (`HARVEY_HOME` = their workspace
-under `BB_HOME/workspaces/<id>`). Each user adds **their own Anthropic key**
-(never the site's), connects Gmail via the web OAuth flow or any mailbox's
+under `BB_HOME/workspaces/<id>`). Each user picks **their own AI provider and key**
+(Gemini/Groq free tiers, Ollama, or paid Anthropic/OpenAI; never the site's), connects Gmail via the web OAuth flow or any mailbox's
 own SMTP/IMAP settings, fills a profile that becomes their `harvey.yaml`
 (including `outreach:` — inquiry vs offer mode, what they want from
 recipients, how replies are answered, attachments for replies), uploads
@@ -258,7 +258,7 @@ Users will come back with questions and tasks. Common ones:
 
 ### Architecture
 - **Heartbeat loop** (`main.py`): Every cycle → check quiet hours → check budget → decide → act → log → sleep
-- **Brain** (`brain.py`): Calls Claude through the Anthropic API with the official SDK (`anthropic.AsyncAnthropic`): one `messages.create` per prompt, no tools, a fixed system prompt that marks quoted content as data, bounded retries, and a server-side refusal fallback on supported models. Records exact per-call tokens and an estimated cost into `usage_events`; `usage.max_daily_cost_usd` caps the day. `brain.provider: codex` swaps in the isolated Codex runtime (`codex.py`) instead
+- **Brain** (`brain.py`): Calls Claude through the Anthropic API with the official SDK (`anthropic.AsyncAnthropic`): one `messages.create` per prompt, no tools, a fixed system prompt that marks quoted content as data, bounded retries, and a server-side refusal fallback on supported models. Records exact per-call tokens and an estimated cost into `usage_events`; `usage.max_daily_cost_usd` caps the day. `brain.provider: codex` swaps in the isolated Codex runtime (`codex.py`) instead, and `brain.provider: openai` posts to any OpenAI-compatible `/chat/completions` endpoint at `brain.base_url` (OpenAI, Gemini, Groq, OpenRouter, Ollama; key in `LLM_API_KEY`)
 - **State** (`state.py`): SQLite at `data/harvey.db` with tables for companies, prospects, campaigns, conversations, actions, usage
 - **Usage tracking** (`brain.py`, `state.py`): per-call attribution (agent/task/model/tokens/estimated cost) for Harvey's own model calls only. Claude is budgeted in dollars (`usage.max_daily_cost_usd`); Codex against the ChatGPT plan's real quota windows (`usage.max_daily_claude_percent`), falling back to a daily call count when they can't be read. Dashboard has a Usage tab; CLI has `harvey usage`.
 - **Skills** (`skills/`): Markdown knowledge files injected into agent prompts

@@ -1,12 +1,18 @@
 """Brain — Harvey's thinking engine.
 
-Two providers, fixed per Brain. A failing provider never falls back to the
-other one.
+Three providers, fixed per Brain. A failing provider never falls back to
+another one.
 
 ``claude`` (default) calls Claude directly through the Anthropic API with
 the official SDK. It needs ``ANTHROPIC_API_KEY`` in ``.env`` and is billed
 per token; every call's exact token usage and an estimated cost land in the
 ``usage_events`` ledger, and ``usage.max_daily_cost_usd`` caps the spend.
+
+``openai`` posts to any OpenAI-compatible ``/chat/completions`` endpoint
+(``brain.base_url``): OpenAI, Google Gemini, Groq, OpenRouter, Together, a
+local Ollama. Key in ``LLM_API_KEY`` (none needed for a local server).
+Several of these have free tiers, which is how a hosted install can cost
+its users nothing.
 
 ``codex`` runs on the operator's ChatGPT subscription through an isolated
 Codex runtime (see harvey/codex.py).
@@ -21,6 +27,7 @@ import time
 from pathlib import Path
 
 import anthropic
+import httpx
 
 from harvey.state import StateManager
 
@@ -113,7 +120,25 @@ class _ProviderError(Exception):
         self.kind = kind
 
 
-PROVIDER_LABELS = {"claude": "Claude", "codex": "Codex"}
+PROVIDER_LABELS = {"claude": "Claude", "codex": "Codex", "openai": "LLM API"}
+
+# ── OpenAI-compatible endpoints ──
+OPENAI_MAX_TOKENS = 4096
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal")
+# A 4xx whose text contains one of these means the account or free tier is
+# out of allowance: pause like a usage limit instead of retrying every cycle.
+_OUT_OF_ALLOWANCE_MARKERS = ("quota", "billing", "insufficient", "credit", "exceeded your current")
+
+
+def _is_local_url(url: str) -> bool:
+    from urllib.parse import urlparse
+    host = (urlparse(url or "").hostname or "").lower()
+    return host in _LOCAL_HOSTS
+
+
+def llm_api_key() -> str:
+    """Key for the OpenAI-compatible provider, from the environment."""
+    return (os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
 
 # Settings key holding the brain's last health transition, for `harvey
 # status` and the dashboard: {"provider", "status": "ok"|"paused", "reason",
@@ -172,6 +197,7 @@ class Brain:
         self.model = self.config.model
         self.codex = None
         self.client = None
+        self.http = None  # openai: an httpx.AsyncClient, created on first use
         # Provider health: a persistent failure pauses calls until the
         # operator acts (or, for usage limits, until the pause runs out).
         self.unavailable = ""
@@ -186,6 +212,8 @@ class Brain:
                 model=self.model, reasoning_effort=self.config.reasoning_effort
             )
             self.quota = CodexQuotaClient(self.codex)
+        elif self.provider == "openai":
+            self.quota = _NoQuota()
         else:
             self.client = client if client is not None else self._make_client()
             self.quota = _NoQuota()
@@ -203,7 +231,16 @@ class Brain:
             return None
 
     def _missing_credentials(self) -> str:
-        """Why Claude can't be called yet ("" when it can)."""
+        """Why the API provider can't be called yet ("" when it can)."""
+        if self.provider == "openai":
+            if not self.config.base_url:
+                return "brain.base_url is not set (the OpenAI-compatible API root)."
+            if not self.model:
+                return "brain.model is not set; the endpoint needs a model name."
+            if not llm_api_key() and not _is_local_url(self.config.base_url):
+                return ("LLM_API_KEY is not set. Add the key for your provider to .env "
+                        "and restart Harvey.")
+            return ""
         if self.client is None:
             return "The Anthropic client could not be created; check ANTHROPIC_API_KEY in .env."
         if not (getattr(self.client, "api_key", None) or getattr(self.client, "auth_token", None)):
@@ -217,6 +254,8 @@ class Brain:
         re-checked once the operator changes it."""
         if self.provider == "codex":
             return self.codex.fingerprint()
+        if self.provider == "openai":
+            return ("openai", hash(llm_api_key()), self.config.base_url, self.model)
         key = getattr(self.client, "api_key", None) or getattr(self.client, "auth_token", None) or ""
         return ("anthropic", hash(key), self.model)
 
@@ -399,10 +438,157 @@ class Brain:
                 prompt, session_id=session_id, timeout=timeout,
                 max_retries=max_retries, agent=agent, task=task,
             )
+        if self.provider == "openai":
+            return await self._think_openai(
+                prompt, session_id=session_id, timeout=timeout,
+                max_retries=max_retries, agent=agent, task=task,
+            )
         return await self._think_claude(
             prompt, session_id=session_id, timeout=timeout,
             max_retries=max_retries, agent=agent, task=task,
         )
+
+    def _http_client(self) -> httpx.AsyncClient:
+        if self.http is None:
+            self.http = httpx.AsyncClient()
+        return self.http
+
+    async def _think_openai(
+        self,
+        prompt: str,
+        session_id: str | None,
+        timeout: float,
+        max_retries: int,
+        agent: str,
+        task: str,
+    ) -> str:
+        """One chat-completions call per attempt against brain.base_url."""
+        paused = self.paused_reason
+        if paused:
+            logger.debug(f"LLM call skipped: {paused}")
+            return ""
+        missing = self._missing_credentials()
+        if missing:
+            await self._mark_unavailable(_ProviderError(missing, "auth"))
+            logger.error(missing)
+            return ""
+
+        base_url = self.config.base_url
+        url = f"{base_url}/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        key = llm_api_key()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": CLAUDE_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        }
+        # OpenAI's newer models reject max_tokens in favour of
+        # max_completion_tokens; everyone else still speaks max_tokens.
+        if "api.openai.com" in base_url:
+            body["max_completion_tokens"] = OPENAI_MAX_TOKENS
+            if self.config.reasoning_effort:
+                body["reasoning_effort"] = self.config.reasoning_effort
+        else:
+            body["max_tokens"] = OPENAI_MAX_TOKENS
+
+        logger.debug(f"Brain call via {base_url} (label={session_id}): {prompt[:100]}...")
+        last_error = ""
+        retry_after = 0.0
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                delay = max(RETRY_BASE_DELAY * (2 ** (attempt - 1)), retry_after)
+                logger.info(f"Retrying LLM call in {delay:.0f}s (attempt {attempt + 1}/{max_retries + 1})...")
+                await asyncio.sleep(delay)
+                retry_after = 0.0
+            started = time.monotonic()
+            try:
+                resp = await self._http_client().post(url, json=body, headers=headers, timeout=timeout)
+            except httpx.HTTPError as e:
+                last_error = f"{type(e).__name__}: {e}"
+                logger.warning(f"LLM call failed, will retry: {last_error[:200]}")
+                continue
+            except Exception as e:
+                logger.error(f"LLM call failed unexpectedly ({type(e).__name__}).")
+                return ""
+
+            text_body = resp.text[:300].replace("\n", " ")
+            if resp.status_code == 429:
+                last_error = f"rate limited: {text_body}"
+                try:
+                    retry_after = float(resp.headers.get("retry-after", "0") or 0)
+                except ValueError:
+                    retry_after = 0.0
+                logger.warning(f"LLM call rate limited by {base_url}: {text_body}")
+                continue
+            if resp.status_code in (401, 403):
+                await self._mark_unavailable(_ProviderError(
+                    f"{base_url} rejected the key ({resp.status_code}): {text_body} "
+                    "Check LLM_API_KEY in .env.", "auth"))
+                logger.error(self.unavailable)
+                return ""
+            if resp.status_code == 404:
+                await self._mark_unavailable(_ProviderError(
+                    f"{base_url} has no model {self.model!r} or no /chat/completions route "
+                    f"({text_body}). Check brain.base_url and brain.model.", "setup"))
+                logger.error(self.unavailable)
+                return ""
+            if resp.status_code >= 500:
+                last_error = f"{resp.status_code}: {text_body}"
+                logger.warning(f"LLM endpoint error, will retry: {last_error}")
+                continue
+            if resp.status_code >= 400:
+                lowered = text_body.lower()
+                if any(m in lowered for m in _OUT_OF_ALLOWANCE_MARKERS):
+                    logger.error(f"LLM provider is out of allowance: {text_body}")
+                    await self._start_usage_pause()
+                    return ""
+                logger.error(f"LLM endpoint rejected the request ({resp.status_code}): {text_body}")
+                return ""
+
+            try:
+                data = resp.json()
+                choice = (data.get("choices") or [{}])[0]
+                content = (choice.get("message") or {}).get("content")
+                if isinstance(content, list):  # some servers return content parts
+                    content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+                text = str(content or "").strip()
+            except (ValueError, AttributeError, IndexError) as e:
+                logger.error(f"LLM endpoint returned an unreadable response: {e}")
+                return ""
+
+            duration_ms = int((time.monotonic() - started) * 1000)
+            if self.unavailable:
+                await self._mark_available()
+            try:
+                await self.state.increment_usage(provider="openai")
+            except Exception as e:
+                logger.warning(f"Failed to record usage counter: {e}")
+            try:
+                usage = data.get("usage") or {}
+                label = session_id or ""
+                if not agent and label.startswith("harvey-"):
+                    agent = label[len("harvey-"):].split("-")[0]
+                await self.state.record_usage_event(
+                    agent=agent, task=task or label, session_id=str(data.get("id") or ""),
+                    model=str(data.get("model") or self.model),
+                    input_tokens=int(usage.get("prompt_tokens") or 0),
+                    output_tokens=int(usage.get("completion_tokens") or 0),
+                    duration_ms=duration_ms, num_turns=1, cost_usd=0.0,
+                    source="chat_completions", provider="openai",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record usage event: {e}")
+            if choice.get("finish_reason") == "length":
+                logger.warning(f"LLM response hit the {OPENAI_MAX_TOKENS}-token cap and may be truncated.")
+            logger.debug(f"Brain response: {text[:200]}...")
+            return text
+
+        logger.error(f"LLM call failed after {max_retries + 1} attempts. Last error: {last_error[:200]}")
+        return ""
 
     async def _think_claude(
         self,

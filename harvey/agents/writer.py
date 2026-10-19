@@ -75,13 +75,16 @@ class Writer:
         # than about two days of sends ahead of the sender: a 10,000-row
         # upload is worked through at the daily limit, not drafted at once.
         if self.is_native:
-            max_daily = max(1, int(self.config.channels.email.max_daily_sends or 0))
+            max_daily = int(self.config.channels.email.max_daily_sends or 0)
+            # No daily limit: keep roughly a day of 15-minute cycles ahead.
+            ahead = 2 * max(1, max_daily) if max_daily else 200
             backlog = await self.state.count_outbox_queued()
-            room = max(0, 2 * max_daily - backlog)
+            room = max(0, ahead - backlog)
             if room == 0:
                 logger.info(
                     f"Writer: {backlog} email(s) already written and waiting; "
-                    f"drafting more once the sender catches up ({max_daily}/day)."
+                    f"drafting more once the sender catches up "
+                    f"({f'{max_daily}/day' if max_daily else 'no daily limit'})."
                 )
                 return
             prospects_with_email = prospects_with_email[:room]

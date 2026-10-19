@@ -273,10 +273,12 @@ class UsageConfig(BaseModel):
         return v
 
 
-BRAIN_PROVIDERS = ("claude", "codex")
+BRAIN_PROVIDERS = ("claude", "codex", "openai")
 CODEX_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
-REASONING_EFFORTS = {"claude": CLAUDE_EFFORTS, "codex": CODEX_REASONING_EFFORTS}
+OPENAI_EFFORTS = ("low", "medium", "high")
+REASONING_EFFORTS = {"claude": CLAUDE_EFFORTS, "codex": CODEX_REASONING_EFFORTS,
+                     "openai": OPENAI_EFFORTS}
 
 # Model names go into an API request or a CLI, so they must look like a
 # model name and never like a flag ("-x") or anything a shell would treat
@@ -289,13 +291,19 @@ class BrainConfig(BaseModel):
 
     ``claude`` (default) calls Claude through the Anthropic API with the key
     in ``ANTHROPIC_API_KEY`` (billed per token; the model defaults to
-    ``claude-opus-5-5``). ``codex`` runs Codex on your ChatGPT plan. There is
-    never an automatic fallback between them, and ``model`` only affects
-    Harvey — your own Codex settings are never read or changed.
+    ``claude-opus-5-5``). ``codex`` runs Codex on your ChatGPT plan.
+    ``openai`` talks to any OpenAI-compatible chat-completions endpoint
+    (``base_url``: OpenAI, Google Gemini, Groq, OpenRouter, Together, a local
+    Ollama, ...) with the key in ``LLM_API_KEY``; several of those have free
+    tiers. There is never an automatic fallback between providers, and
+    ``model`` only affects Harvey — your own Codex settings are never read
+    or changed.
     """
 
     provider: str = "claude"
     model: str = ""  # empty = the provider's default
+    # openai only: the API root, e.g. https://api.groq.com/openai/v1
+    base_url: str = ""
     # Thinking depth. Claude: low | medium | high | xhigh | max (empty = the
     # model's default). Codex: minimal | low | medium | high | xhigh.
     reasoning_effort: str = ""
@@ -327,6 +335,14 @@ class BrainConfig(BaseModel):
     def _valid_effort(cls, v) -> str:
         return str(v or "").strip().lower()
 
+    @field_validator("base_url", mode="before")
+    @classmethod
+    def _valid_base_url(cls, v) -> str:
+        v = str(v or "").strip().rstrip("/")
+        if v and not (v.startswith("https://") or v.startswith("http://")):
+            raise ValueError("base_url must start with https:// (or http:// for a local server).")
+        return v
+
     @model_validator(mode="after")
     def _effort_matches_provider(self):
         allowed = REASONING_EFFORTS[self.provider]
@@ -335,6 +351,9 @@ class BrainConfig(BaseModel):
                 f"'{self.reasoning_effort}' is not a valid reasoning effort for "
                 f"{self.provider}. Use one of: {', '.join(allowed)}."
             )
+        if self.provider == "openai" and not self.base_url:
+            raise ValueError("brain.base_url is required for provider openai "
+                             "(e.g. https://api.openai.com/v1).")
         return self
 
 
@@ -353,6 +372,8 @@ class EnvConfig(BaseModel):
     # Brain (brain.provider: claude). Read by the Anthropic SDK from the
     # environment; kept here so setup and status can report on it.
     anthropic_api_key: str = ""
+    # Brain (brain.provider: openai): key for the OpenAI-compatible endpoint.
+    llm_api_key: str = ""
     instantly_api_key: str = ""
     # Discovery providers
     dataforseo_login: str = ""
@@ -471,6 +492,7 @@ def load_env() -> EnvConfig:
     load_dotenv()
     env = EnvConfig(
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", "").strip(),
+        llm_api_key=(os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip(),
         instantly_api_key=os.getenv("INSTANTLY_API_KEY", "").strip(),
         dataforseo_login=os.getenv("DATAFORSEO_LOGIN", "").strip(),
         dataforseo_password=os.getenv("DATAFORSEO_PASSWORD", "").strip(),

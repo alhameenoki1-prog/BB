@@ -175,7 +175,7 @@
       <div class="sep">Setup</div>
       <a href="/profile" class="{{ 'active' if path.startswith('/profile') else '' }}">{{ icon('person') }}<span class="t">Profile</span></a>
       <a href="/mailbox" class="{{ 'active' if path.startswith('/mailbox') or path.startswith('/gmail') else '' }}">{{ icon('mail') }}<span class="t">Mailbox</span></a>
-      <a href="/apikey" class="{{ 'active' if path.startswith('/apikey') else '' }}">{{ icon('key') }}<span class="t">AI key</span></a>
+      <a href="/apikey" class="{{ 'active' if path.startswith('/apikey') else '' }}">{{ icon('key') }}<span class="t">AI provider</span></a>
       {% if user.role == 'admin' %}<div class="sep">Admin</div>
       <a href="/admin/users" class="{{ 'active' if path.startswith('/admin') else '' }}">{{ icon('shield') }}<span class="t">Users</span></a>{% endif %}
     </nav>

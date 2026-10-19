@@ -359,23 +359,61 @@ async def _smtp_ok(smtp):
         else (False, "login failed")
 
 
-def test_api_key_is_checked_and_stored_per_user(client, monkeypatch):
+async def _endpoint_ok(base_url, api_key, model):
+    if api_key == "bad":
+        return False, "That provider rejected the key."
+    return True, "Connected."
+
+
+def test_ai_provider_anthropic_is_checked_and_stored_per_user(client, monkeypatch):
     _as_user(client)
     monkeypatch.setattr("bb.app.check_anthropic_key", _accept_key)
     page = client.get("/apikey")
-    assert "No key yet" in page.text
-    assert "start%20with%20sk-ant-" in client.post("/apikey", data={"api_key": "nope"}).headers["location"] \
-        or "rejected" in client.post("/apikey", data={"api_key": "nope"}).headers["location"]
-    assert "Key%20saved" in client.post("/apikey", data={"api_key": "sk-ant-abcdefghijklmnop"}).headers["location"]
+    assert "Not set up yet" in page.text and "free tier" in page.text
+    bad = client.post("/apikey", data={"provider": "anthropic", "api_key": "nope"})
+    assert "rejected" in bad.headers["location"]
+    ok = client.post("/apikey", data={"api_key": "sk-ant-abcdefghijklmnop"})  # provider inferred from the key
+    assert "Anthropic%20Claude%20saved" in ok.headers["location"]
     user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
     ws = Workspace(client.settings, user)
-    assert ws.anthropic_key() == "sk-ant-abcdefghijklmnop"
+    assert ws.anthropic_key() == "sk-ant-abcdefghijklmnop" and ws.llm()["provider"] == "anthropic"
     assert oct(ws.secrets_file.stat().st_mode)[-3:] == "600"
     page = client.get("/apikey")
-    assert "Key saved" in page.text and "sk-ant-abcdefghijklmnop" not in page.text  # masked
+    assert "Anthropic Claude" in page.text and "sk-ant-abcdefghijklmnop" not in page.text  # masked
     assert client.get("/api/summary").json()["api_key"] is True
+    assert ws.brain_section() == {"provider": "claude"}
     assert "removed" in client.post("/apikey/remove").headers["location"]
     assert ws.anthropic_key() == "" and client.get("/api/summary").json()["api_key"] is False
+
+
+def test_ai_provider_free_endpoint(client, monkeypatch):
+    _as_user(client)
+    monkeypatch.setattr("bb.app.check_openai_compatible", _endpoint_ok)
+    client.post("/profile", data=PROFILE)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    assert "key%20first" in client.post("/apikey", data={"provider": "gemini"}).headers["location"]
+    assert "rejected" in client.post("/apikey", data={"provider": "gemini", "api_key": "bad"}).headers["location"]
+    r = client.post("/apikey", data={"provider": "gemini", "api_key": "AIza-free-key"})
+    assert "Google%20Gemini%20saved" in r.headers["location"]
+    llm = ws.llm()
+    assert llm["provider"] == "gemini" and llm["model"] == "gemini-2.5-flash"
+    assert llm["base_url"].startswith("https://generativelanguage.googleapis.com") and llm["free"]
+    assert ws.llm_configured() and ws.anthropic_key() == ""
+    # harvey.yaml now points the worker at the endpoint, and the env carries the key.
+    cfg = HarveyConfig(**yaml.safe_load(ws.config_file.read_text()))
+    assert cfg.brain.provider == "openai" and cfg.brain.model == "gemini-2.5-flash"
+    assert cfg.brain.base_url == llm["base_url"]
+    env = ws.worker_env()
+    assert env["LLM_API_KEY"] == "AIza-free-key" and "ANTHROPIC_API_KEY" not in env
+    # A blank key on re-save keeps the stored one; a custom model is kept.
+    client.post("/apikey", data={"provider": "gemini", "api_key": "", "model": "gemini-2.5-pro"})
+    assert ws.llm()["api_key"] == "AIza-free-key" and ws.llm()["model"] == "gemini-2.5-pro"
+    # Ollama needs no key at all.
+    r = client.post("/apikey", data={"provider": "ollama", "api_key": "", "model": "llama3.1"})
+    assert "Ollama" in r.headers["location"] and ws.llm_configured() and ws.llm()["api_key"] == ""
+    assert "LLM_API_KEY" not in ws.worker_env()
+    assert "Set%20up%20your%20AI%20provider" not in client.post("/worker/start").headers["location"]
 
 
 def test_mailbox_smtp_settings(client, monkeypatch):
@@ -458,9 +496,9 @@ def test_worker_start_stop(client, monkeypatch):
     user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
     ws = Workspace(client.settings, user)
 
-    assert "API%20key%20first" in client.post("/worker/start").headers["location"]
+    assert "AI%20provider%20first" in client.post("/worker/start").headers["location"]
     monkeypatch.setattr("bb.app.check_anthropic_key", _accept_key)
-    assert "Key%20saved" in client.post("/apikey", data={"api_key": "sk-ant-user-key-1"}).headers["location"]
+    assert "saved%20and%20verified" in client.post("/apikey", data={"api_key": "sk-ant-user-key-1"}).headers["location"]
     assert "profile%20first" in client.post("/worker/start").headers["location"]
     client.post("/profile", data=PROFILE)
     assert "mailbox%20first" in client.post("/worker/start").headers["location"]

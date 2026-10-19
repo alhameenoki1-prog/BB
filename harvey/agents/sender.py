@@ -455,7 +455,9 @@ class Sender:
 
         max_daily = self.config.channels.email.max_daily_sends
         sent_today = await self.state.count_outbox_sent_today()
-        budget = min(MAX_SENDS_PER_CYCLE, max_daily - sent_today)
+        # 0 means no daily limit: the provider's own ceiling is the only one.
+        budget = (MAX_SENDS_PER_CYCLE if max_daily == 0
+                  else min(MAX_SENDS_PER_CYCLE, max_daily - sent_today))
         if budget <= 0:
             logger.info(f"Sender: daily send cap reached ({sent_today}/{max_daily}).")
             return
@@ -610,4 +612,4 @@ class Sender:
 
         if sent:
             logger.info(f"Sender: {sent} email(s) sent this cycle "
-                        f"({sent_today + sent}/{max_daily} today).")
+                        f"({sent_today + sent}/{max_daily or 'no limit'} today).")

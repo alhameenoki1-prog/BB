@@ -1,30 +1,62 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
-{% block title %}AI key{% endblock %}
+{% block title %}AI provider{% endblock %}
 {% block content %}
-<div class="page-head"><div><div class="eyebrow">Setup</div><h1>Your Anthropic API key</h1><p class="lead">The emails are written and the replies answered by Claude, using <b>your own</b> Anthropic account. Usage is billed to you, directly by Anthropic, at a few cents per email. This site never uses its own key for your mail.</p></div></div>
+<div class="page-head"><div><div class="eyebrow">Setup</div><h1>Your AI provider</h1><p class="lead">The emails are written and replies answered by an AI model of your choice, using <b>your own</b> account with that provider. Several have free tiers, so this can cost you nothing. This site never uses its own key for your mail.</p></div></div>
 <div class="two">
   <div class="card">
-    {% if has_key %}
-      <p><span class="tag good">{{ icon('check', 13) }} Key saved</span> <code>{{ masked }}</code></p>
-      <p class="muted small">Your daily spend cap is in your <a href="/profile">profile</a>. Paste a new key below to replace this one.</p>
+    {% if configured %}
+      <p><span class="tag good">{{ icon('check', 13) }} {{ llm.label }}</span> <span class="muted small">model <code>{{ llm.model or 'default' }}</code>{% if llm.api_key %} · key <code>{{ masked }}</code>{% endif %}</span></p>
     {% else %}
-      <p><span class="tag warn">No key yet</span> <span class="muted small">— the worker cannot start without one.</span></p>
+      <p><span class="tag warn">Not set up yet</span> <span class="muted small">— the worker cannot start without an AI provider.</span></p>
     {% endif %}
-    <form method="post" action="/apikey">
-      <label>Anthropic API key</label>
-      <input type="password" name="api_key" placeholder="sk-ant-…" autocomplete="off" required>
-      <p class="actions" style="margin-top:14px"><button type="submit">{{ icon('key', 15) }} {{ 'Replace key' if has_key else 'Save key' }}</button></p>
+    <form method="post" action="/apikey" id="llm-form">
+      <label>Provider</label>
+      {% for k, p in presets.items() %}
+      <label class="choice"><input type="radio" name="provider" value="{{ k }}" data-model="{{ p.model }}" data-base="{{ p.base_url }}" data-key="{{ p.key_url }}" data-nokey="{{ '1' if p.no_key else '' }}" {{ 'checked' if (llm.provider or 'gemini') == k else '' }}>
+        <span><b>{{ p.label }} {% if p.free %}<span class="tag good" style="margin-left:6px">free tier</span>{% endif %}</b><span class="small muted">{{ p.note }}</span></span></label>
+      {% endfor %}
+      <label>API key <span class="muted" style="font-weight:400" id="key-hint">{{ '(blank keeps the saved one)' if llm.api_key else '' }}</span></label>
+      <input type="password" name="api_key" placeholder="paste your key" autocomplete="off" id="key-input">
+      <div class="hint" id="key-link"></div>
+      <label>Model</label>
+      <input type="text" name="model" id="model-input" value="{{ llm.model }}" placeholder="model name">
+      <div class="hint">Prefilled with a sensible choice for the provider; change it if you know a better one.</div>
+      <div id="base-wrap"><label>API address</label>
+      <input type="url" name="base_url" id="base-input" value="{{ llm.base_url }}" placeholder="https://…/v1">
+      <div class="hint">Only change this for a custom provider.</div></div>
+      <p class="actions" style="margin-top:14px"><button type="submit">{{ icon('check', 15) }} Test and save</button></p>
     </form>
-    {% if has_key %}<form method="post" action="/apikey/remove" onsubmit="return confirm('Remove your key? The worker stops.')"><button class="danger small" type="submit">{{ icon('trash', 13) }} Remove key</button></form>{% endif %}
+    {% if configured %}<form method="post" action="/apikey/remove" onsubmit="return confirm('Remove your AI provider? The worker stops.')"><button class="danger small" type="submit">{{ icon('trash', 13) }} Remove</button></form>{% endif %}
   </div>
   <div class="card flat">
-    <h2>How to get one</h2>
+    <h2>Which one?</h2>
     <ol class="steps">
-      <li><span class="tick" style="color:var(--ink-3)">1</span><div><b>Create a key</b><span class="small">At <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com → API keys</a>.</span></div></li>
-      <li><span class="tick" style="color:var(--ink-3)">2</span><div><b>Add some credit</b><span class="small">Under <i>Billing</i>. A few dollars goes a long way.</span></div></li>
-      <li><span class="tick" style="color:var(--ink-3)">3</span><div><b>Paste it here</b><span class="small">It is checked against Anthropic before it is saved, and stored only in your workspace.</span></div></li>
+      <li><span class="tick" style="color:var(--ink-3)">1</span><div><b>Want it free?</b><span class="small">Google Gemini or Groq. Make a free account, create a key, paste it. Free tiers have hourly limits, so on a big list the worker may pause and resume; it handles that itself.</span></div></li>
+      <li><span class="tick" style="color:var(--ink-3)">2</span><div><b>Want the best writing?</b><span class="small">Anthropic Claude. Paid per email (a few cents), billed to your Anthropic account.</span></div></li>
+      <li><span class="tick" style="color:var(--ink-3)">3</span><div><b>Want it fully private?</b><span class="small">Ollama runs a model on the machine hosting this site. No key, no bill, no data leaves the computer.</span></div></li>
     </ol>
+    <p class="tiny" style="margin-top:12px">Whatever you choose, the key is checked before it is saved and stored only in your workspace.</p>
   </div>
 </div>
+<script>
+  (function () {
+    const form = document.getElementById('llm-form');
+    const model = document.getElementById('model-input'), base = document.getElementById('base-input');
+    const link = document.getElementById('key-link'), keyInput = document.getElementById('key-input'), baseWrap = document.getElementById('base-wrap');
+    const saved = {provider: {{ llm.provider | tojson }}, model: {{ llm.model | tojson }}, base: {{ llm.base_url | tojson }}};
+    function apply(radio, keepSaved) {
+      const isSaved = keepSaved && radio.value === saved.provider;
+      model.value = isSaved && saved.model ? saved.model : radio.dataset.model;
+      base.value = isSaved && saved.base ? saved.base : radio.dataset.base;
+      link.innerHTML = radio.dataset.key ? 'Get a key: <a href="' + radio.dataset.key + '" target="_blank" rel="noopener">' + radio.dataset.key + '</a>' : '';
+      keyInput.placeholder = radio.dataset.nokey ? 'not needed for this provider' : 'paste your key';
+      baseWrap.style.display = (radio.value === 'custom' || radio.value === 'ollama') ? '' : 'none';
+      if (radio.value === 'anthropic') baseWrap.style.display = 'none';
+    }
+    form.querySelectorAll('input[name=provider]').forEach(r => r.addEventListener('change', () => apply(r, false)));
+    const checked = form.querySelector('input[name=provider]:checked');
+    if (checked) apply(checked, true);
+  })();
+</script>
 {% endblock %}

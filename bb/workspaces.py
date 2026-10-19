@@ -34,6 +34,32 @@ OUTREACH_MODES = {
     "inquiry": "I want something from them (hire them, buy from them, partner with them)",
     "offer": "I have something to offer them (a product, a service, a proposal)",
 }
+# AI providers a user can bring. Model names are suggestions the user can
+# edit; the endpoint and key page are what matter.
+LLM_PRESETS = {
+    "gemini": {"label": "Google Gemini", "note": "Free tier, no card needed. Good default.",
+               "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+               "model": "gemini-2.5-flash", "key_url": "https://aistudio.google.com/apikey", "free": True},
+    "groq": {"label": "Groq", "note": "Free tier, very fast open models.",
+             "base_url": "https://api.groq.com/openai/v1", "model": "llama-3.3-70b-versatile",
+             "key_url": "https://console.groq.com/keys", "free": True},
+    "openrouter": {"label": "OpenRouter", "note": "Hundreds of models; the ones ending in :free cost nothing.",
+                   "base_url": "https://openrouter.ai/api/v1",
+                   "model": "meta-llama/llama-3.3-70b-instruct:free",
+                   "key_url": "https://openrouter.ai/keys", "free": True},
+    "ollama": {"label": "Ollama on this computer", "note": "Free and private; needs Ollama running where the site runs.",
+               "base_url": "http://localhost:11434/v1", "model": "llama3.1",
+               "key_url": "https://ollama.com/download", "free": True, "no_key": True},
+    "openai": {"label": "OpenAI", "note": "Paid, billed to your OpenAI account.",
+               "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini",
+               "key_url": "https://platform.openai.com/api-keys", "free": False},
+    "anthropic": {"label": "Anthropic Claude", "note": "Paid, billed to your Anthropic account. Strongest writing.",
+                  "base_url": "", "model": "", "key_url": "https://console.anthropic.com/settings/keys",
+                  "free": False},
+    "custom": {"label": "Another OpenAI-compatible API", "note": "Any endpoint that speaks /chat/completions.",
+               "base_url": "", "model": "", "key_url": "", "free": False},
+}
+
 ATTACH_POLICIES = {"first_reply": "With my first reply to each person",
                    "every_reply": "With every reply", "never": "Never"}
 MAX_ATTACHMENT_TOTAL = 20 * 1024 * 1024  # Gmail's hard limit is 25 MB per message
@@ -102,7 +128,61 @@ class Workspace:
             pass
 
     def anthropic_key(self) -> str:
-        return str(self.secrets().get("anthropic_api_key") or "")
+        """The Anthropic key when that is the chosen provider ("" otherwise)."""
+        llm = self.llm()
+        return llm["api_key"] if llm["provider"] == "anthropic" else ""
+
+    # ── the user's AI provider ──
+
+    def llm(self) -> dict:
+        s = self.secrets()
+        provider = str(s.get("llm_provider") or "")
+        if not provider and s.get("anthropic_api_key"):  # saved before presets existed
+            provider = "anthropic"
+        preset = LLM_PRESETS.get(provider, LLM_PRESETS["custom"])
+        api_key = str(s.get("llm_api_key") or (s.get("anthropic_api_key") if provider == "anthropic" else "") or "")
+        return {
+            "provider": provider,
+            "label": preset["label"] if provider else "",
+            "api_key": api_key,
+            "base_url": str(s.get("llm_base_url") or preset["base_url"] or ""),
+            "model": str(s.get("llm_model") or preset["model"] or ""),
+            "free": bool(preset.get("free")),
+        }
+
+    def save_llm(self, provider: str, api_key: str, model: str = "", base_url: str = ""):
+        if provider not in LLM_PRESETS:
+            raise ValueError("Choose a provider from the list.")
+        preset = LLM_PRESETS[provider]
+        self.save_secrets(
+            llm_provider=provider, llm_api_key=api_key.strip(),
+            llm_model=(model or preset["model"]).strip(),
+            llm_base_url=(base_url or preset["base_url"]).strip().rstrip("/"),
+            anthropic_api_key=api_key.strip() if provider == "anthropic" else "",
+        )
+        self.rewrite_config()
+
+    def clear_llm(self):
+        self.save_secrets(llm_provider="", llm_api_key="", llm_model="", llm_base_url="", anthropic_api_key="")
+
+    def llm_configured(self) -> bool:
+        llm = self.llm()
+        if not llm["provider"]:
+            return False
+        if llm["provider"] == "anthropic":
+            return bool(llm["api_key"])
+        needs_key = not LLM_PRESETS[llm["provider"]].get("no_key")
+        return bool(llm["base_url"] and llm["model"] and (llm["api_key"] or not needs_key))
+
+    def brain_section(self) -> dict:
+        llm = self.llm()
+        if llm["provider"] == "anthropic" or not llm["provider"]:
+            section = {"provider": "claude"}
+            model = llm["model"] or self.settings.default_model
+            if model:
+                section["model"] = model
+            return section
+        return {"provider": "openai", "base_url": llm["base_url"], "model": llm["model"]}
 
     @staticmethod
     def mask(secret: str) -> str:
@@ -236,7 +316,7 @@ class Workspace:
             "company_size": icp.get("company_size", ""),
             "geography": ", ".join(icp.get("geography") or []),
             "auto_prospect": bool(icp.get("auto_prospect", False)),
-            "max_daily_sends": int(email.get("max_daily_sends", 30)),
+            "max_daily_sends": int(email.get("max_daily_sends", 0)),
             "require_approval": bool(email.get("require_approval", False)),
             "quiet_start": quiet.get("start", "20:00"),
             "quiet_end": quiet.get("end", "08:00"),
@@ -302,7 +382,7 @@ class Workspace:
                 "email": {
                     "enabled": True,
                     "provider": self.mail_provider(),
-                    "max_daily_sends": max(0, int(text("max_daily_sends", "30") or 30)),
+                    "max_daily_sends": max(0, int(text("max_daily_sends", "0") or 0)),  # 0 = no limit
                     "require_approval": flag("require_approval"),
                     "send_to_risky": False,
                     "max_bounce_rate": 0.05,
@@ -310,7 +390,8 @@ class Workspace:
                 "linkedin": {"enabled": False},
             },
             "usage": {
-                "max_daily_cost_usd": max(0.0, float(text("max_daily_cost_usd", "5") or 0)),
+                # No spend cap by default: the user's provider bills (or doesn't) them directly.
+                "max_daily_cost_usd": max(0.0, float(text("max_daily_cost_usd", "0") or 0)),
                 "max_daily_claude_percent": 80,
                 "heartbeat_interval_minutes": 15,
                 "quiet_hours": {
@@ -319,8 +400,7 @@ class Workspace:
                     "timezone": text("timezone") or "UTC",
                 },
             },
-            "brain": {"provider": "claude", **({"model": self.settings.default_model}
-                                               if self.settings.default_model else {})},
+            "brain": self.brain_section(),
             "outreach": {
                 "mode": mode,
                 "intent": text("intent"),
@@ -441,7 +521,8 @@ class Workspace:
             "outbox_failed": 0, "outbox_rejected": 0, "replies": 0, "open_replies": 0,
             "sent_today": 0, "sending_paused": "", "worker_running": bool(self.worker_running()),
             "configured": self.is_configured(), "gmail": self.mailbox_connected(),
-            "mailbox": self.mail_provider(), "api_key": bool(self.anthropic_key()),
+            "mailbox": self.mail_provider(), "api_key": self.llm_configured(),
+            "llm": self.llm()["label"],
             "attachments": len(self.attachments()),
         }
         if not await self._table_exists("prospects"):
@@ -543,8 +624,14 @@ class Workspace:
         for key in ("SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
                     "IMAP_HOST", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD"):
             env.pop(key, None)
-        # The user's own key: model usage is billed to them, never to the site.
-        env["ANTHROPIC_API_KEY"] = self.anthropic_key()
+        # The user's own provider and key: usage is theirs, never the site's.
+        llm = self.llm()
+        env.pop("LLM_API_KEY", None)
+        env.pop("OPENAI_API_KEY", None)
+        if llm["provider"] == "anthropic":
+            env["ANTHROPIC_API_KEY"] = llm["api_key"]
+        elif llm["api_key"]:
+            env["LLM_API_KEY"] = llm["api_key"]
         if self.mail_provider() == "smtp":
             s = self.smtp_settings()
             env.update({
@@ -558,8 +645,8 @@ class Workspace:
         return env
 
     def start_worker(self) -> tuple[bool, str]:
-        if not self.anthropic_key():
-            return False, "Add your Anthropic API key first."
+        if not self.llm_configured():
+            return False, "Set up your AI provider first."
         if not self.is_configured():
             return False, "Fill in your profile first."
         if not self.mailbox_connected():

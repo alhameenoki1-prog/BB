@@ -9,6 +9,15 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **`brain.provider: openai` — any OpenAI-compatible endpoint.** Set
+  `brain.base_url` and `brain.model` and put the key in `LLM_API_KEY` (none
+  needed for a local server such as Ollama). Works with OpenAI, Google
+  Gemini, Groq, OpenRouter, Together and others; calls are counted in a new
+  `openai_calls` column. The web app's "AI provider" page offers these as
+  presets, several with free tiers, so a hosted install can cost its users
+  nothing. Daily sending can be unlimited (`max_daily_sends: 0`), the web
+  profile no longer asks for a target audience or a spend cap, and the
+  Mailbox page leads with SMTP when one-click Gmail isn't configured.
 - **Inquiry mode (`outreach.mode: inquiry`).** The sender is the prospective
   client or partner: each email is written from what the recipient's
   business does and asks for that (a financial advisor about taking you on,
