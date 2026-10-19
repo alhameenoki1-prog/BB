@@ -29,8 +29,10 @@ from harvey.integrations.mail_provider import (
     InboundMessage,
     MailProvider,
     SendResult,
+    add_deliverability_headers,
     attach_files,
     looks_like_bounce,
+    set_body,
 )
 
 logger = logging.getLogger("harvey.gmail")
@@ -146,7 +148,8 @@ class GmailProvider(MailProvider):
         if in_reply_to:
             msg["In-Reply-To"] = in_reply_to
             msg["References"] = in_reply_to
-        msg.set_content(body)
+        add_deliverability_headers(msg, persona.email, self.config)
+        set_body(msg, body, getattr(self.config, "outreach", None))
         attach_files(msg, attachments)
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()

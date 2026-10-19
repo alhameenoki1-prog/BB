@@ -29,6 +29,12 @@ logger = logging.getLogger("harvey.sender")
 # Max sends drained per heartbeat cycle — spreads volume through the day
 # instead of bursting the daily cap in one minute.
 MAX_SENDS_PER_CYCLE = 8
+# Warm-up ramp for a mailbox new to cold outreach: this many on day one,
+# then WARMUP_STEP more each day until the configured daily cap (or, with
+# no cap, until the ramp no longer binds). Mailbox providers watch a
+# sudden jump in volume more closely than anything else.
+WARMUP_START = 20
+WARMUP_STEP = 10
 
 
 def _attachment_paths(raw) -> list:
@@ -72,6 +78,33 @@ SENDABLE_STATUSES = {"new", "queued"}
 # "provided" = supplied by the operator (web upload): sends like verified.
 SENDABLE_EMAIL_STATUSES = {"verified", "provided"}
 SENDABLE_EMAIL_STATUSES_WITH_RISKY = {"verified", "provided", "risky"}
+
+
+
+def daily_allowance(first_sent_at, now, max_daily: int, ramp: bool) -> int:
+    """How many emails may go out today. 0 means no limit.
+
+    With the warm-up ramp on, a mailbox starts at WARMUP_START a day and
+    gains WARMUP_STEP a day, counted from its first send. The ramp never
+    raises the configured cap; with no cap it stops binding once it has
+    climbed past a few hundred a day (by then the mailbox has a history).
+    """
+    if not ramp:
+        return max(0, int(max_daily))
+    if not first_sent_at:
+        day = 0
+    else:
+        try:
+            first = datetime.fromisoformat(str(first_sent_at).replace("Z", ""))
+        except ValueError:
+            first = now
+        if first.tzinfo is not None:
+            first = first.astimezone(timezone.utc).replace(tzinfo=None)
+        day = max(0, (now.date() - first.date()).days)
+    ramped = WARMUP_START + WARMUP_STEP * day
+    if max_daily > 0:
+        return min(max_daily, ramped)
+    return 0 if ramped >= 500 else ramped
 
 
 class Sender:
@@ -446,6 +479,7 @@ class Sender:
 
     async def _drain_due(self):
         """Send due, approved outbox items through the provider."""
+        # (allowance and per-cycle size come from channels.email)
         if not self.provider.is_configured():
             logger.warning(
                 f"Sender: mail provider '{self.provider.name}' is not configured "
@@ -453,13 +487,22 @@ class Sender:
             )
             return
 
-        max_daily = self.config.channels.email.max_daily_sends
+        email_cfg = self.config.channels.email
+        max_daily = email_cfg.max_daily_sends
         sent_today = await self.state.count_outbox_sent_today()
+        per_cycle = int(getattr(email_cfg, "sends_per_cycle", MAX_SENDS_PER_CYCLE) or
+                        MAX_SENDS_PER_CYCLE)
+        allowance = daily_allowance(
+            await self.state.first_outbox_sent_at(),
+            datetime.now(timezone.utc).replace(tzinfo=None),
+            max_daily, bool(getattr(email_cfg, "warmup_ramp", False)),
+        )
         # 0 means no daily limit: the provider's own ceiling is the only one.
-        budget = (MAX_SENDS_PER_CYCLE if max_daily == 0
-                  else min(MAX_SENDS_PER_CYCLE, max_daily - sent_today))
+        budget = per_cycle if allowance == 0 else min(per_cycle, allowance - sent_today)
         if budget <= 0:
-            logger.info(f"Sender: daily send cap reached ({sent_today}/{max_daily}).")
+            logger.info(
+                f"Sender: daily send allowance reached ({sent_today}/{allowance}"
+                f"{' warm-up' if allowance != max_daily else ''}).")
             return
 
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()

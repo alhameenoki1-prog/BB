@@ -997,6 +997,16 @@ class StateManager:
             ) as cursor:
                 return (await cursor.fetchone())[0]
 
+    async def first_outbox_sent_at(self) -> str | None:
+        """When this mailbox sent its first email through Harvey (ISO), or
+        None. The warm-up ramp counts days from here."""
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT MIN(sent_at) FROM outbox WHERE status = 'sent' AND sent_at IS NOT NULL"
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row and row[0] else None
+
     async def count_outbox_sent_today(self) -> int:
         async with self._connect() as db:
             async with db.execute(

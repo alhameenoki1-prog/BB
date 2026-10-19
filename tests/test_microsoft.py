@@ -542,3 +542,170 @@ async def test_bad_later_page_holds_sends_and_handles_nothing(graph, tmp_path, o
     assert not await state.is_reply_processed("m3")
     assert (await state.get_prospect(pid)).status == "contacted"
     assert len(await state.get_outbox(status="approved")) == 1
+
+
+# ── Admin app (client credentials) provider ──
+
+from harvey.integrations.microsoft import MicrosoftAppProvider  # noqa: E402
+
+
+class AppEnv:
+    m365_client_id = "app-client"
+    m365_tenant_id = "tenant-xyz"
+    m365_client_secret = "s3cret"
+    m365_mailbox = "Outreach@Corp.example"
+
+
+class AppGraph(Graph):
+    """The same fake, keyed on /users/<mailbox> instead of /me."""
+
+    USER = "/v1.0/users/outreach@corp.example"
+
+    def __init__(self):
+        super().__init__()
+        self.original_paths = []
+
+    def __call__(self, request):
+        path = request.url.path
+        self.original_paths.append(path)
+        if path.startswith(self.USER):
+            # Rewrite to the /me shape the base fake understands, then swap back.
+            rewritten = request.url.copy_with(path="/v1.0/me" + path[len(self.USER):])
+            request = httpx.Request(request.method, rewritten, headers=request.headers,
+                                    content=request.content)
+            if path.endswith("/attachments") and request.method == "POST":
+                self.requests.append(request)
+                return httpx.Response(201, json={"id": "att1"})
+        response = super().__call__(request)
+        if response.status_code >= 400:
+            return response
+        if request.url.host == "login.microsoftonline.com":
+            return httpx.Response(200, json={"access_token": "app-token", "expires_in": 3599})
+        if request.url.path == "/v1.0/me" and request.method == "GET":
+            return httpx.Response(200, json={"mail": "outreach@corp.example"})
+        return response
+
+    def _inbox_page(self, request):
+        resp = super()._inbox_page(request)
+        body = resp.json()
+        if "@odata.nextLink" in body:
+            body["@odata.nextLink"] = body["@odata.nextLink"].replace("/v1.0/me/", "/v1.0/users/outreach@corp.example/")
+        return httpx.Response(resp.status_code, json=body)
+
+
+class _Outreach:
+    signature_html = 'Jane<br><a href="https://corp.example">corp.example</a>{{logo}}'
+    signature_text = ""
+    signature_image = "logo.png"
+
+
+class _Config:
+    def __init__(self, email="outreach@corp.example", outreach=None):
+        self.persona = type("P", (), {"email": email})()
+        self.outreach = outreach
+
+
+def app_provider(graph, config=None):
+    return MicrosoftAppProvider(config=config, env=AppEnv(), transport=httpx.MockTransport(graph))
+
+
+@pytest.mark.asyncio
+async def test_app_provider_uses_client_credentials_and_the_named_mailbox():
+    graph = AppGraph()
+    p = app_provider(graph, _Config())
+    assert p.is_configured() and p.mailbox == "outreach@corp.example"
+    assert not MicrosoftAppProvider(None, Env()).is_configured()  # no secret / mailbox
+    result = await p.send_email("jane@acme.com", "booking", "Hi Jane.")
+    assert result.ok and result.message_id == "<draft1@sender.example>"
+
+    [login] = [r for r in graph.requests if r.url.host == "login.microsoftonline.com"]
+    assert login.url.path == "/tenant-xyz/oauth2/v2.0/token"
+    form = dict(x.split("=", 1) for x in login.content.decode().split("&"))
+    assert form["grant_type"] == "client_credentials" and form["client_secret"] == "s3cret"
+    assert form["scope"] == "https%3A%2F%2Fgraph.microsoft.com%2F.default"
+    # No identity lookup needed: the mailbox is the configured one, under /users/.
+    assert graph.calls() == [("POST", "/v1.0/me/messages"), ("POST", "/v1.0/me/messages/draft1/send")]
+    assert all(x.startswith("/v1.0/users/outreach@corp.example/") for x in graph.original_paths
+               if not x.startswith("/tenant-xyz/"))
+    body = json.loads([r for r in graph.requests if r.method == "POST" and r.url.path.endswith("/messages")][0].content)
+    assert body["body"] == {"contentType": "Text", "content": "Hi Jane."}
+
+    # Token is cached across calls.
+    await p.send_email("x@acme.com", "s", "b")
+    assert len([r for r in graph.requests if r.url.host == "login.microsoftonline.com"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_app_provider_refuses_a_mailbox_that_is_not_the_persona():
+    graph = AppGraph()
+    result = await app_provider(graph, _Config(email="someone@corp.example")).send_email("j@a.com", "s", "b")
+    assert not result.ok and "persona.email" in result.error
+    assert graph.calls() == []
+
+
+@pytest.mark.asyncio
+async def test_app_provider_sends_html_signature_and_attachments(tmp_path, monkeypatch):
+    import harvey.paths
+    monkeypatch.setattr(harvey.paths, "SIGNATURE_DIR", tmp_path)
+    (tmp_path / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+    brief = tmp_path / "brief.pdf"
+    brief.write_bytes(b"%PDF-1.4 brief")
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"0" * (microsoft.MAX_GRAPH_ATTACHMENT + 1))
+
+    graph = AppGraph()
+    p = app_provider(graph, _Config(outreach=_Outreach()))
+    result = await p.send_email("jane@acme.com", "hello", "Hi Jane,\n\nOne question.",
+                                attachments=[str(brief), str(big), str(tmp_path / "missing.txt")])
+    assert result.ok
+    posts = [r for r in graph.requests if r.method == "POST" and r.url.host == "graph.microsoft.com"]
+    draft = json.loads(posts[0].content)
+    assert draft["body"]["contentType"] == "HTML"
+    assert 'href="https://corp.example"' in draft["body"]["content"]
+    assert 'src="cid:signature-image"' in draft["body"]["content"]
+    attachments = [json.loads(r.content) for r in posts if r.url.path.endswith("/attachments")]
+    assert [a["name"] for a in attachments] == ["logo.png", "brief.pdf"]   # oversized + missing skipped
+    assert attachments[0]["isInline"] is True and attachments[0]["contentId"] == "signature-image"
+    assert attachments[1]["contentType"] == "application/pdf"
+    import base64
+    assert base64.b64decode(attachments[1]["contentBytes"]) == b"%PDF-1.4 brief"
+    assert [r.url.path for r in posts][-1] == "/v1.0/me/messages/draft1/send"  # attachments before send
+
+
+@pytest.mark.asyncio
+async def test_app_provider_reads_the_mailbox_inbox_and_pages():
+    graph = AppGraph()
+    graph.inbox = [message(i) for i in range(1, 4)] + [message(9, sender="outreach@corp.example")]
+    p = app_provider(graph, _Config())
+    replies = await p.get_replies(limit=2)
+    assert [m.provider_id for m in replies] == ["m1", "m2", "m3"]  # own mail dropped, both pages read
+    inbox_paths = [x for x in graph.original_paths if x.endswith("/inbox/messages")]
+    assert len(inbox_paths) == 2
+    assert all(x == "/v1.0/users/outreach@corp.example/mailFolders/inbox/messages" for x in inbox_paths)
+
+
+@pytest.mark.asyncio
+async def test_app_provider_test_connection_explains_failures():
+    ok, detail = await MicrosoftAppProvider(None, Env()).test_connection()
+    assert not ok and "M365_CLIENT_SECRET" in detail and "M365_MAILBOX" in detail
+
+    graph = AppGraph()
+    ok, detail = await app_provider(graph, _Config()).test_connection()
+    assert ok and "outreach@corp.example" in detail
+
+    graph = AppGraph()
+    graph.fail[("GET", "/inbox/messages")] = 403
+    ok, detail = await app_provider(graph, _Config()).test_connection()
+    assert not ok and "Grant admin consent" in detail
+
+    graph = AppGraph()
+    graph.fail[("GET", "/me")] = 404  # the fake sees the rewritten /me path
+    ok, detail = await app_provider(graph, _Config()).test_connection()
+    assert not ok and "M365_MAILBOX" in detail
+
+
+def test_next_link_check_follows_the_mailbox_path():
+    link = "https://graph.microsoft.com/v1.0/users/outreach@corp.example/mailFolders/inbox/messages?%24skip=2"
+    assert microsoft._checked_next_link(link, "/users/outreach@corp.example") == link
+    with pytest.raises(GraphError):
+        microsoft._checked_next_link(link)  # the /me provider must not follow it

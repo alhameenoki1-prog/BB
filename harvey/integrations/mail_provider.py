@@ -91,6 +91,99 @@ class MailProvider(ABC):
         """Cheap end-to-end credential check. Returns (ok, detail)."""
 
 
+_TAG_RE = None
+
+
+def html_to_text(html: str) -> str:
+    """A readable plain-text version of signature HTML: line breaks kept,
+    links shown as 'text (url)', tags dropped."""
+    import html as _html
+    import re
+
+    text = html or ""
+    text = re.sub(r"(?is)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?is)</(p|div|tr|li|h\d)>", "\n", text)
+    text = re.sub(r'(?is)<a\s[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+                  lambda m: f"{re.sub(r'<[^>]+>', '', m.group(2)).strip()} ({m.group(1)})"
+                  if re.sub(r'<[^>]+>', '', m.group(2)).strip() else m.group(1), text)
+    text = re.sub(r"(?is)<img[^>]*>", "", text)
+    text = re.sub(r"(?s)<[^>]+>", "", text)
+    text = _html.unescape(text)
+    lines = [ln.strip() for ln in text.splitlines()]
+    return "\n".join(ln for ln in lines if ln).strip()
+
+
+def render_parts(body: str, outreach) -> tuple[str, str, object]:
+    """(plain_text, html_or_empty, signature_image_path_or_None) for one
+    outgoing email: the model-written plain body plus the operator's
+    signature. HTML is produced only when a signature (or image) exists,
+    so a plain configuration still sends plain text."""
+    import html as _html
+    from pathlib import Path
+
+    from harvey.paths import SIGNATURE_DIR
+
+    sig_html = (getattr(outreach, "signature_html", "") or "").strip()
+    sig_text = (getattr(outreach, "signature_text", "") or "").strip() or html_to_text(sig_html)
+    image_name = Path(getattr(outreach, "signature_image", "") or "").name
+    image_path = SIGNATURE_DIR / image_name if image_name else None
+    if image_path is not None and not image_path.is_file():
+        image_path = None
+
+    plain = body.rstrip() + (f"\n\n-- \n{sig_text}" if sig_text else "")
+    if not sig_html and image_path is None:
+        return plain, "", None
+
+    paragraphs = [p.strip() for p in body.strip().split("\n\n") if p.strip()]
+    html_body = "".join(
+        "<p style=\"margin:0 0 14px\">" + _html.escape(p).replace("\n", "<br>") + "</p>"
+        for p in paragraphs)
+    img_tag = ('<img src="cid:signature-image" alt="" '
+               'style="max-width:320px;height:auto;display:block;margin-top:6px">'
+               if image_path is not None else "")
+    if "{{logo}}" in sig_html:
+        sig_html = sig_html.replace("{{logo}}", img_tag)
+    elif img_tag:
+        sig_html = sig_html + img_tag
+    html = (
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,'
+        'sans-serif;font-size:15px;line-height:1.5;color:#1d1d1f">'
+        f"{html_body}"
+        '<div style="margin-top:18px;font-size:14px;color:#3a3a3c">'
+        f"{sig_html}</div></div>"
+    )
+    return plain, html, image_path
+
+
+def set_body(msg, body: str, outreach) -> None:
+    """Put the body (and signature) on an EmailMessage: text only, or
+    text + HTML alternative with the signature image embedded inline."""
+    import mimetypes
+
+    plain, html, image_path = render_parts(body, outreach)
+    msg.set_content(plain)
+    if html:
+        msg.add_alternative(html, subtype="html")
+        if image_path is not None:
+            ctype, _ = mimetypes.guess_type(image_path.name)
+            maintype, _, subtype = (ctype or "image/png").partition("/")
+            try:
+                msg.get_payload()[1].add_related(
+                    image_path.read_bytes(), maintype=maintype, subtype=subtype,
+                    cid="<signature-image>", filename=image_path.name)
+            except OSError:
+                pass
+
+
+def add_deliverability_headers(msg, from_email: str, config) -> None:
+    """List-Unsubscribe (mailto) so Gmail/Yahoo treat the mail as compliant
+    bulk and show an Unsubscribe link instead of guessing; a reply with
+    'unsubscribe' in the subject is honoured by the handler's opt-out rule."""
+    email_cfg = getattr(getattr(config, "channels", None), "email", None)
+    if from_email and getattr(email_cfg, "list_unsubscribe", True):
+        msg["List-Unsubscribe"] = f"<mailto:{from_email}?subject=unsubscribe>"
+
+
 def attach_files(msg, attachments: list | None) -> list[str]:
     """Attach each readable path to an EmailMessage with a guessed MIME
     type. Returns the names attached; unreadable paths are logged and
@@ -126,4 +219,7 @@ def get_mail_provider(config, env) -> MailProvider | None:
     if provider == "microsoft":
         from harvey.integrations.microsoft import MicrosoftProvider
         return MicrosoftProvider(config, env)
+    if provider == "microsoft_app":
+        from harvey.integrations.microsoft import MicrosoftAppProvider
+        return MicrosoftAppProvider(config, env)
     return None

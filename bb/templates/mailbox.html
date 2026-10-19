@@ -9,6 +9,7 @@
   <form method="post" action="/mailbox/provider">
     <label class="choice"><input type="radio" name="provider" value="gmail" {{ 'checked' if provider == 'gmail' else '' }}><span><b>Gmail / Google Workspace</b><span class="small muted">{{ 'Connected as ' ~ account.email if gmail_connected and account.email else ('Connected' if gmail_connected else 'Not connected') }}</span></span></label>
     <label class="choice"><input type="radio" name="provider" value="smtp" {{ 'checked' if provider == 'smtp' else '' }}><span><b>My mailbox's SMTP/IMAP</b><span class="small muted">{{ 'Saved: ' ~ smtp.smtp_username if smtp_configured else 'Not set up' }}</span></span></label>
+    <label class="choice"><input type="radio" name="provider" value="microsoft_app" {{ 'checked' if provider == 'microsoft_app' else '' }}><span><b>Microsoft 365 admin app</b><span class="small muted">{{ 'Saved: ' ~ m365.m365_mailbox if m365_configured else 'Not set up' }}</span></span></label>
     <p style="margin-top:10px"><button class="secondary small" type="submit">Use the selected one</button></p>
   </form>
 </div>
@@ -164,6 +165,65 @@
   </div>
 {% endif %}
 
+<div class="card" id="m365">
+  <h2>Option C <span class="tiny" style="font-weight:400">Microsoft 365 admin app — high volume, no sign-in per user</span></h2>
+  <p class="muted small">For a Microsoft 365 tenant you administer. An app you register in Microsoft Entra sends and reads mail as one mailbox through Microsoft Graph. No app passwords, no IMAP, and no SMTP AUTH toggle. Exchange Online allows a mailbox 10,000 recipients a day and 30 messages a minute, so the <b>Fast</b> speed on your profile works here. Replies are read from the same mailbox.</p>
+  <details class="howto" {{ '' if m365_configured else 'open' }}><summary><b>How to register the app</b> <span class="muted small">(admin, about five minutes)</span></summary>
+    <ol>
+      <li>Go to <a href="https://entra.microsoft.com" target="_blank" rel="noopener">entra.microsoft.com</a> → <b>Applications → App registrations → New registration</b>. Name it anything (say, “BB outreach”), keep <i>Accounts in this organizational directory only</i>, no redirect URI. Register.</li>
+      <li>On the app's <b>Overview</b> copy the <b>Application (client) ID</b> and the <b>Directory (tenant) ID</b> into the form below.</li>
+      <li><b>API permissions → Add a permission → Microsoft Graph → Application permissions</b>: tick <code>Mail.Send</code> and <code>Mail.ReadWrite</code>. Then press <b>Grant admin consent for &lt;your org&gt;</b> and confirm. Both rows must show a green tick.</li>
+      <li><b>Certificates &amp; secrets → New client secret</b>. Pick an expiry (24 months is the longest), press Add, and copy the <b>Value</b> column right away — it is shown once.</li>
+      <li>Enter the mailbox the emails come from (a real licensed user or shared mailbox in this tenant, e.g. <code>outreach@yourcompany.com</code>). Your profile's sending address becomes this.</li>
+      <li>Optional but recommended: limit the app to that one mailbox with an <a href="https://learn.microsoft.com/graph/auth-limit-mailbox-access" target="_blank" rel="noopener">application access policy</a>, so the secret can't read any other inbox.</li>
+    </ol>
+    <p class="small muted">Personal outlook.com / hotmail.com accounts have no tenant admin and can't use this. For those, see the Outlook instructions under Option B.</p>
+  </details>
+  {% if m365_configured %}<p style="margin-top:10px"><span class="tag good">{{ icon('check', 13) }} Saved</span> {{ m365.m365_mailbox }} · tenant <code>{{ m365.m365_tenant_id }}</code> · secret <code>{{ m365_masked }}</code></p>{% endif %}
+  <form method="post" action="/mailbox/m365">
+    <div class="row">
+      <div><label>Directory (tenant) ID *</label><input type="text" name="m365_tenant_id" value="{{ m365.m365_tenant_id }}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required></div>
+      <div><label>Application (client) ID *</label><input type="text" name="m365_client_id" value="{{ m365.m365_client_id }}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required></div>
+      <div><label>Client secret value {{ '(blank keeps the saved one)' if m365_configured else '*' }}</label><input type="password" name="m365_client_secret" autocomplete="off" {{ '' if m365_configured else 'required' }}></div>
+      <div><label>Mailbox to send from *</label><input type="email" name="m365_mailbox" value="{{ m365.m365_mailbox }}" placeholder="outreach@yourcompany.com" required></div>
+    </div>
+    <p style="margin-top:12px"><button type="submit">{{ icon('check', 15) }} Test and save</button> <span class="muted small">The connection is tested before anything is saved.</span></p>
+  </form>
+  {% if m365_configured %}
+  <div class="actions" style="margin-top:8px">
+    <form class="inline" method="post" action="/mailbox/m365/test"><button class="secondary small" type="submit">Test saved settings</button></form>
+    <form class="inline" method="post" action="/mailbox/m365/remove" onsubmit="return confirm('Remove the Microsoft 365 settings?')"><button class="danger small" type="submit">Remove</button></form>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card" id="deliverability">
+  <h2>Deliverability <span class="tiny" style="font-weight:400">why emails get blocked, and how to stop it</span></h2>
+  {% if report %}
+    <p class="small"><b>{{ sending }}</b> · domain <code>{{ report.domain }}</code> · {{ report.score }} of {{ report.checks|length }} checks pass</p>
+    {% if report.public %}<div class="card flat small" style="margin:10px 0"><b>This is a shared public mailbox domain.</b> Google and Microsoft sign its mail for you, so the checks below pass, but cold email from a free address is filtered harder than mail from your own domain. If you can, send from a mailbox on a domain you own (Google Workspace or Microsoft 365, about $6–7 a month).</div>{% endif %}
+    <table>
+      <thead><tr><th>Check</th><th>Result</th><th>What it means</th></tr></thead>
+      <tbody>{% for c in report.checks %}
+      <tr><td><b>{{ c.name }}</b></td><td>{% if c.ok %}<span class="tag good">{{ icon('check', 12) }} OK</span>{% else %}<span class="tag bad">Missing</span>{% endif %}</td>
+        <td class="small">{{ c.detail }}{% if not c.ok and c.fix %}<div class="hint">{{ c.fix }}</div>{% endif %}</td></tr>
+      {% endfor %}</tbody>
+    </table>
+  {% else %}
+    <p class="muted small">Connect a mailbox above and this card checks its domain's SPF, DKIM, DMARC and MX records every time you open the page.</p>
+  {% endif %}
+  <details class="howto" style="margin-top:12px"><summary><b>What else keeps cold email out of spam</b></summary>
+    <ol>
+      <li><b>Send from a domain you own</b>, with SPF, DKIM and DMARC published (the table above). This is the single biggest factor. A free gmail.com or outlook.com address can't be fixed beyond this.</li>
+      <li><b>Warm the mailbox up.</b> A new address that sends 500 emails on day one gets blocked. BB ramps a fresh mailbox from 20 a day, adding 10 a day (switch off on your profile if the mailbox already has a history). Keep an eye on bounces: over a few percent and the worker stops sending on its own.</li>
+      <li><b>Keep the first email plain.</b> No tracking links, no images, one link at most. BB only switches to an HTML email when you add a signature, and the signature image is embedded rather than fetched from the web.</li>
+      <li><b>Make it easy to opt out.</b> Every email carries a List-Unsubscribe header that mailbox providers look for, and a plain “just reply and I'll stop” line costs nothing.</li>
+      <li><b>Send to real addresses only.</b> Bounces hurt more than anything. Upload lists you trust, and remove anyone who bounced before re-uploading.</li>
+      <li><b>Volume and pace.</b> Under 50 a day from a fresh mailbox, a few hundred from an aged one. The Gentle and Normal speeds spread sends across the day; Fast is for Microsoft 365 or a Workspace mailbox with a track record.</li>
+    </ol>
+  </details>
+</div>
+
 <style>
   details.howto { border:1px solid var(--line); border-radius:var(--r-sm); padding:10px 14px; margin:8px 0; background:var(--surface-2); }
   details.howto summary { cursor:pointer; list-style:none; } details.howto summary::-webkit-details-marker { display:none; }
@@ -182,7 +242,7 @@
 </script>
 {% if user.role == 'admin' %}
 <div class="card flat small muted">
-  <b>Admin note:</b> option A needs a Google Cloud OAuth client of type <i>Web application</i> with redirect URI <code>{{ redirect_uri }}</code>, and Google's verification before non-test users can connect. Option B needs nothing from you.
+  <b>Admin note:</b> option A needs a Google Cloud OAuth client of type <i>Web application</i> with redirect URI <code>{{ redirect_uri }}</code>, and Google's verification before non-test users can connect. Option B needs nothing from you. Option C needs a Microsoft 365 tenant where you (or the user) can grant admin consent.
 </div>
 {% endif %}
 {% endblock %}

@@ -64,7 +64,13 @@ own SMTP/IMAP settings, fills a profile that becomes their `harvey.yaml`
 (including `outreach:` — inquiry vs offer mode, what they want from
 recipients, how replies are answered, attachments for replies), uploads
 recipients (stored with `email_status: provided`, which sends), and runs a
-worker process. Start it with `python -m bb` (needs `BB_BASE_URL`,
+worker process. Per-user settings also cover speed (1/2/5-minute cycles via
+`heartbeat_interval_minutes` + `channels.email.sends_per_cycle`), a warm-up
+ramp, the writing style (`outreach.style`), an email signature with an
+inline image (`outreach.signature_html/_image`), and a Microsoft 365
+admin-app mailbox (`channels.email.provider: microsoft_app`, Graph client
+credentials). The Mailbox page runs SPF/DKIM/DMARC/MX checks
+(`bb/deliverability.py`). Start it with `python -m bb` (needs `BB_BASE_URL`,
 `BB_ADMIN_EMAIL`, `BB_ADMIN_PASSWORD`; `GMAIL_CLIENT_ID`/`SECRET` of a *Web
 application* OAuth client are optional). Deployment and Mac quick-start:
 `docs/HOSTING.md`. Code: `bb/app.py` (routes),

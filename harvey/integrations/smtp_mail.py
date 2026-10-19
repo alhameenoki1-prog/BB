@@ -24,7 +24,9 @@ from email.utils import make_msgid, parseaddr
 import aiosmtplib
 
 from harvey.integrations.mail_provider import (
+    add_deliverability_headers,
     attach_files,
+    set_body,
     InboundMessage,
     MailProvider,
     SendResult,
@@ -73,7 +75,8 @@ class SmtpImapProvider(MailProvider):
         if in_reply_to:
             msg["In-Reply-To"] = in_reply_to
             msg["References"] = in_reply_to
-        msg.set_content(body)
+        add_deliverability_headers(msg, persona.email or self.smtp_user, self.config)
+        set_body(msg, body, getattr(self.config, "outreach", None))
         attach_files(msg, attachments)
 
         try:

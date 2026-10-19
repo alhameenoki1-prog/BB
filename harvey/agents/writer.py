@@ -256,6 +256,40 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
 - Never invent a project detail, budget, timeline or location that isn't in the facts or
   in what {persona.name} wants."""
 
+    @property
+    def style(self) -> str:
+        outreach = getattr(self.config, "outreach", None)
+        return (getattr(outreach, "style", "") or "concise").strip().lower()
+
+    def _style_block(self) -> str:
+        """How much room and warmth the writer gets. 'concise' is the
+        classic sub-75-word cold email; 'engaging' is a longer, more human
+        note built to earn a reply."""
+        if self.style != "engaging":
+            return ""
+        return """
+
+STYLE: ENGAGING. Write like a real person who is genuinely curious about this
+recipient, not like a template. The reader should feel the email was written for
+them alone and want to answer it.
+- Open with the one most specific, true thing you know about THEM (from the
+  facts), said in your own words. Never open with "I hope this finds you well",
+  "My name is" or "I came across".
+- Show you understood what they do and why it matters, in one or two sentences.
+  Make a small, concrete connection to what the sender wants.
+- Ask ONE easy question that is quick to answer and invites a conversation
+  (an opinion, a yes/no about fit, how they usually start). Not "are you free
+  for a call".
+- Warm, direct, a touch of personality. Short paragraphs. No bullet points,
+  no bold, no exclamation marks, no flattery.
+- Make it easy to reply: tell them a one-line answer is fine."""
+
+    @property
+    def _length_rule(self) -> str:
+        if self.style == "engaging":
+            return "Between 90 and 130 words"
+        return "Under 75 words"
+
     async def _write_personal_email(self, prospect) -> dict | None:
         """One grounded draft for one person. Facts in, one email out."""
         facts = [
@@ -300,6 +334,7 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
         if self.skills:
             prompt += "\n\n" + self.skills
         prompt += self._outreach_block()
+        prompt += self._style_block()
 
         prompt += f"""
 
@@ -312,7 +347,7 @@ or anything else:
 {chr(10).join(facts)}
 
 Requirements:
-- Under 75 words. One specific observation from the FACTS above, one
+- {self._length_rule}. One specific observation from the FACTS above, one
   question. No pitch, no product name.
 - Write the actual text (no merge variables — you know their name/company).
 - Subject: lowercase, 2-5 words.
@@ -366,6 +401,7 @@ Pricing: {self.config.product.pricing}"""
         if self.skills:
             prompt += "\n\n" + self.skills
         prompt += self._outreach_block()
+        prompt += self._style_block()
         prompt += self._segment_block(prospects)
 
         prompt += f"""
@@ -374,8 +410,8 @@ Write a 3-email cold outreach sequence for prospects like these:
 {prospect_summary}
 
 Requirements:
-- Email 1: Personalized cold observation + one question. Under 75 words. No pitch.
-- Email 2: Follow-up 3 days later. Different angle, one concrete proof point. Under 75 words.
+- Email 1: Personalized cold observation + one question. {self._length_rule}. No pitch.
+- Email 2: Follow-up 3 days later. Different angle, one concrete proof point. {self._length_rule}.
 - Email 3: Break-up email 4 days after that. Under 40 words. Gracious, not guilt-tripping.
 - Use {{{{first_name}}}}, {{{{company}}}}, {{{{title}}}} as merge variables — every email
   must use at least one, and email 1 must reference something specific to

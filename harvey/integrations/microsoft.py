@@ -27,11 +27,13 @@ import hashlib
 import http.server
 import json
 import logging
+import mimetypes
 import secrets
 import socket
 import time
 import webbrowser
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 
@@ -41,6 +43,7 @@ from harvey.integrations.mail_provider import (
     MailProvider,
     SendResult,
     looks_like_bounce,
+    render_parts,
 )
 
 logger = logging.getLogger("harvey.microsoft")
@@ -48,8 +51,13 @@ logger = logging.getLogger("harvey.microsoft")
 TOKEN_FILE = DATA_DIR / "m365_token.json"
 GRAPH = "https://graph.microsoft.com/v1.0"
 GRAPH_HOST = "graph.microsoft.com"
-INBOX_MESSAGES = "/me/mailFolders/inbox/messages"
-INBOX_MESSAGES_PATH = "/v1.0" + INBOX_MESSAGES
+INBOX_MESSAGES = "/mailFolders/inbox/messages"
+# Application (admin-consented) access: one token for the tenant, mailbox
+# named in the path. Needs Mail.Send + Mail.ReadWrite *application*
+# permissions with admin consent.
+APP_SCOPE = "https://graph.microsoft.com/.default"
+# Graph refuses file attachments above 3 MB on a single POST.
+MAX_GRAPH_ATTACHMENT = 3 * 1024 * 1024
 # Inbox pages read per cycle (limit messages each). More than this and the
 # read fails, and sending is held, rather than acting on a partial inbox.
 MAX_INBOX_PAGES = 40
@@ -109,6 +117,9 @@ class MicrosoftProvider(MailProvider):
         self._access_token = ""
         self._access_expires = 0.0
         self._me = ""
+        # Graph path of the mailbox Harvey acts as: the signed-in user here,
+        # /users/<mailbox> for the admin-app provider below.
+        self._user_path = "/me"
 
     def is_configured(self) -> bool:
         return bool(self.client_id and _load_token())
@@ -196,7 +207,8 @@ class MicrosoftProvider(MailProvider):
 
     async def _my_address(self) -> str:
         if not self._me:
-            me = await self._request("GET", "/me", params={"$select": "mail,userPrincipalName"})
+            me = await self._request(
+                "GET", self._user_path, params={"$select": "mail,userPrincipalName"})
             self._me = (me.get("mail") or me.get("userPrincipalName") or "").lower()
         return self._me
 
@@ -225,24 +237,25 @@ class MicrosoftProvider(MailProvider):
         """Draft, then send, so the RFC Message-ID is known (bounces and
         replies are matched on it). A reply is drafted with createReply on
         the prospect's message, which sets In-Reply-To/References."""
-        if attachments:
-            logger.warning(
-                "Microsoft 365 provider: attachments are not supported yet; "
-                f"sending to {to_email} without {len(attachments)} file(s).")
+        plain, html, image_path = render_parts(
+            body, getattr(self.config, "outreach", None))
         content = {
             "subject": subject,
-            "body": {"contentType": "Text", "content": body},
+            "body": ({"contentType": "HTML", "content": html} if html
+                     else {"contentType": "Text", "content": plain}),
             "toRecipients": [{"emailAddress": {"address": to_email}}],
         }
+        graph_attachments = _graph_attachments(image_path if html else None, attachments)
         draft = None
         try:
             await self._check_identity()
             if thread_ref:
                 try:
                     draft = await self._request(
-                        "POST", f"/me/messages/{thread_ref}/createReply"
+                        "POST", f"{self._user_path}/messages/{thread_ref}/createReply"
                     )
-                    await self._request("PATCH", f"/me/messages/{draft['id']}", json=content)
+                    await self._request(
+                        "PATCH", f"{self._user_path}/messages/{draft['id']}", json=content)
                 except GraphError as e:
                     # Their message is gone (deleted/moved): send unthreaded.
                     logger.warning(f"Microsoft: createReply failed ({e}); sending as new.")
@@ -250,8 +263,13 @@ class MicrosoftProvider(MailProvider):
                         await self._delete_draft(draft["id"])
                     draft = None
             if draft is None:
-                draft = await self._request("POST", "/me/messages", json=content)
-            await self._request("POST", f"/me/messages/{draft['id']}/send")
+                draft = await self._request(
+                    "POST", f"{self._user_path}/messages", json=content)
+            for attachment in graph_attachments:
+                await self._request(
+                    "POST", f"{self._user_path}/messages/{draft['id']}/attachments",
+                    json=attachment)
+            await self._request("POST", f"{self._user_path}/messages/{draft['id']}/send")
         except (GraphError, KeyError) as e:
             if draft and draft.get("id"):
                 await self._delete_draft(draft["id"])
@@ -265,7 +283,7 @@ class MicrosoftProvider(MailProvider):
 
     async def _delete_draft(self, draft_id: str):
         try:
-            await self._request("DELETE", f"/me/messages/{draft_id}")
+            await self._request("DELETE", f"{self._user_path}/messages/{draft_id}")
         except GraphError as e:
             logger.warning(f"Microsoft: couldn't delete unsent draft {draft_id}: {e}")
 
@@ -277,7 +295,7 @@ class MicrosoftProvider(MailProvider):
         can't have stopped its follow-ups. Never returns a partial inbox."""
         me = await self._check_identity()
         since = (datetime.now(timezone.utc) - timedelta(days=REPLY_WINDOW_DAYS))
-        url = str(httpx.URL(f"{GRAPH}{INBOX_MESSAGES}", params={
+        url = str(httpx.URL(f"{GRAPH}{self._user_path}{INBOX_MESSAGES}", params={
             "$filter": f"receivedDateTime ge {since.strftime('%Y-%m-%dT%H:%M:%SZ')}",
             "$orderby": "receivedDateTime desc",
             "$top": str(max(1, int(limit))),
@@ -302,7 +320,7 @@ class MicrosoftProvider(MailProvider):
             next_link = data.get("@odata.nextLink")
             if next_link is None:
                 return out
-            url = _checked_next_link(next_link)
+            url = _checked_next_link(next_link, self._user_path)
             if url in seen_urls:
                 raise GraphError(f"inbox page {page}: @odata.nextLink repeats an earlier page")
             seen_urls.add(url)
@@ -369,7 +387,7 @@ class MicrosoftProvider(MailProvider):
         try:
             me = await self._check_identity()
             await self._request(
-                "GET", "/me/mailFolders/inbox/messages",
+                "GET", f"{self._user_path}{INBOX_MESSAGES}",
                 params={"$top": "1", "$select": "id"},
             )
         except GraphError as e:
@@ -377,7 +395,137 @@ class MicrosoftProvider(MailProvider):
         return True, f"Connected as {me}"
 
 
-def _checked_next_link(link) -> str:
+class MicrosoftAppProvider(MicrosoftProvider):
+    """Microsoft 365 through an admin-consented app (client credentials).
+
+    No browser sign-in and no per-user token: the tenant admin registers an
+    app, grants it Mail.Send + Mail.ReadWrite as *application* permissions
+    with admin consent, and creates a client secret. Harvey then sends and
+    reads as the one mailbox named in M365_MAILBOX. Exchange Online's own
+    ceiling applies (10,000 recipients a day per mailbox, 30 messages a
+    minute), which is far above what any cold-outreach mailbox should do.
+    """
+
+    name = "microsoft_app"
+
+    def __init__(self, config, env, transport=None):
+        super().__init__(config, env, transport)
+        self.client_secret = getattr(env, "m365_client_secret", "") or ""
+        self.mailbox = (getattr(env, "m365_mailbox", "") or "").strip().lower()
+        self.tenant = getattr(env, "m365_tenant_id", "") or ""
+        self._user_path = f"/users/{self.mailbox}"
+
+    def is_configured(self) -> bool:
+        return bool(self.client_id and self.client_secret and self.tenant and self.mailbox)
+
+    async def _token(self) -> str:
+        if self._access_token and time.time() < self._access_expires - 60:
+            return self._access_token
+        if not self.is_configured():
+            raise GraphError(
+                "Microsoft 365 app not configured: M365_TENANT_ID, M365_CLIENT_ID, "
+                "M365_CLIENT_SECRET and M365_MAILBOX are all needed.")
+        try:
+            async with self._client() as client:
+                resp = await client.post(_token_url(self.tenant), data={
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "grant_type": "client_credentials",
+                    "scope": APP_SCOPE,
+                })
+        except httpx.HTTPError as e:
+            raise GraphError(f"token request failed: {e}") from e
+        if resp.status_code != 200:
+            raise GraphError(
+                f"token request rejected ({resp.status_code}): {resp.text[:200]}. "
+                "Check the tenant ID, client ID and client secret (secrets expire)."
+            )
+        data = resp.json()
+        self._access_token = data.get("access_token", "")
+        self._access_expires = time.time() + float(data.get("expires_in", 3600))
+        if not self._access_token:
+            raise GraphError("token request returned no access token")
+        return self._access_token
+
+    async def _my_address(self) -> str:
+        return self.mailbox
+
+    async def _check_identity(self) -> str:
+        expected = (getattr(getattr(self.config, "persona", None), "email", "") or "").strip().lower()
+        if expected and self.mailbox != expected:
+            raise GraphError(
+                f"M365_MAILBOX is {self.mailbox}, but persona.email is {expected}. "
+                "They must be the same address."
+            )
+        return self.mailbox
+
+    async def test_connection(self) -> tuple[bool, str]:
+        missing = [name for name, value in (
+            ("M365_TENANT_ID", self.tenant), ("M365_CLIENT_ID", self.client_id),
+            ("M365_CLIENT_SECRET", self.client_secret), ("M365_MAILBOX", self.mailbox),
+        ) if not value]
+        if missing:
+            return False, "Missing: " + ", ".join(missing)
+        try:
+            await self._check_identity()
+            await self._request("GET", self._user_path, params={"$select": "mail"})
+            await self._request(
+                "GET", f"{self._user_path}{INBOX_MESSAGES}",
+                params={"$top": "1", "$select": "id"},
+            )
+        except GraphError as e:
+            text = str(e)
+            if "Graph 403" in text or "Graph 401" in text:
+                text += (" — grant the app Mail.Send and Mail.ReadWrite as APPLICATION "
+                         "permissions in Entra and press 'Grant admin consent'.")
+            elif "Graph 404" in text:
+                text += " — no mailbox with that address in this tenant (check M365_MAILBOX)."
+            return False, text[:400]
+        return True, f"Connected as {self.mailbox} (admin app)"
+
+
+def _graph_attachments(image_path, attachments) -> list[dict]:
+    """Graph fileAttachment objects: the inline signature image (by
+    contentId, so the HTML's cid: reference resolves) and the operator's
+    files. Files too big for one POST are skipped with a warning."""
+    out = []
+    if image_path is not None:
+        try:
+            data = Path(image_path).read_bytes()
+        except OSError as e:
+            logger.warning(f"Microsoft: signature image unreadable ({e}); sending without it.")
+        else:
+            ctype = mimetypes.guess_type(str(image_path))[0] or "image/png"
+            out.append({
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": Path(image_path).name,
+                "contentType": ctype,
+                "contentBytes": base64.b64encode(data).decode("ascii"),
+                "contentId": "signature-image",
+                "isInline": True,
+            })
+    for path in attachments or []:
+        path = Path(path)
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            logger.warning(f"Microsoft: attachment {path.name} unreadable ({e}); skipped.")
+            continue
+        if len(data) > MAX_GRAPH_ATTACHMENT:
+            logger.warning(
+                f"Microsoft: attachment {path.name} is over 3 MB; skipped "
+                "(Graph needs an upload session for that size).")
+            continue
+        out.append({
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": path.name,
+            "contentType": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+            "contentBytes": base64.b64encode(data).decode("ascii"),
+        })
+    return out
+
+
+def _checked_next_link(link, user_path: str = "/me") -> str:
     """Graph's @odata.nextLink, used whole (Microsoft: don't rebuild or
     edit $skip). It gets the bearer token, so it must point back at the
     inbox listing on Graph itself: https, graph.microsoft.com, the same
@@ -397,7 +545,7 @@ def _checked_next_link(link) -> str:
         or url.port not in (None, 443)
         or url.userinfo
         or url.fragment
-        or path.lower() != INBOX_MESSAGES_PATH.lower()
+        or path.lower() != ("/v1.0" + user_path + INBOX_MESSAGES).lower()
         or not url.query
     ):
         raise GraphError("@odata.nextLink rejected: not the Graph inbox listing")

@@ -40,8 +40,16 @@ def settings(tmp_path):
     return _settings(tmp_path)
 
 
+async def _dns_stub(domain):
+    return {"domain": domain, "public": domain == "gmail.com", "score": 1, "checks": [
+        {"name": "SPF", "ok": True, "detail": "v=spf1 ok", "fix": ""},
+        {"name": "DKIM", "ok": False, "detail": "No DKIM key found.", "fix": "Turn on DKIM at your provider."},
+    ]}
+
+
 @pytest.fixture
-def client(settings):
+def client(settings, monkeypatch):
+    monkeypatch.setattr("bb.app.check_domain", _dns_stub)  # never touch real DNS in tests
     with TestClient(create_app(settings), follow_redirects=False) as c:
         c.settings = settings
         yield c
@@ -656,3 +664,129 @@ async def test_model_check_accepts_gemini_style_prefixed_ids(monkeypatch):
     assert (await check_openai_compatible(base, "k", "models/gemini-2.5-pro")) == (True, "Connected.")
     ok, detail = await check_openai_compatible(base, "k", "gemini-9")
     assert not ok and "gemini-2.5-flash" in detail and "embedding" not in detail
+
+
+# ── speed, style, signature, Microsoft 365 admin app, deliverability ──
+
+
+def test_profile_speed_style_and_signature(client):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    page = client.get("/profile").text
+    assert "Writing style" in page and "Engaging" in page and "Email signature" in page
+    assert "Gentle" in page and "Fast" in page and "Warm this mailbox up" in page
+
+    r = client.post("/profile", data={**PROFILE, "speed": "fast", "style": "engaging", "warmup_ramp": "on",
+                                       "signature_html": 'Jane<br><a href="https://acme.test">acme.test</a>{{logo}}'})
+    assert r.status_code == 303
+    cfg = yaml.safe_load(ws.config_file.read_text())
+    assert cfg["usage"]["heartbeat_interval_minutes"] == 1
+    assert cfg["channels"]["email"]["sends_per_cycle"] == 25
+    assert cfg["channels"]["email"]["warmup_ramp"] is True
+    assert cfg["channels"]["email"]["list_unsubscribe"] is True
+    assert cfg["outreach"]["style"] == "engaging"
+    assert cfg["outreach"]["signature_html"].startswith("Jane<br>")
+    assert HarveyConfig(**cfg).outreach.style == "engaging"
+    prof = ws.profile()
+    assert prof["speed"] == "fast" and prof["style"] == "engaging" and prof["warmup_ramp"]
+    assert "acme.test" in client.get("/profile").text
+
+    # Unchecked warm-up on a save turns it off; a speed the form doesn't know falls back to normal.
+    client.post("/profile", data={**PROFILE, "speed": "warp", "style": "concise"})
+    cfg = yaml.safe_load(ws.config_file.read_text())
+    assert cfg["channels"]["email"]["warmup_ramp"] is False
+    assert cfg["usage"]["heartbeat_interval_minutes"] == 2 and cfg["outreach"]["style"] == "concise"
+
+    # Signature image: wrong type refused, good one stored and served, then removed.
+    bad = client.post("/signature/image", files={"image": ("logo.svg", b"<svg/>", "image/svg+xml")})
+    assert "PNG" in bad.headers["location"]
+    assert client.get("/signature/image").status_code == 404
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+    ok = client.post("/signature/image", files={"image": ("My Logo.png", png, "image/png")})
+    assert "saved" in ok.headers["location"]
+    assert ws.signature_image() == "My_Logo.png" or ws.signature_image().endswith(".png")
+    served = client.get("/signature/image")
+    assert served.status_code == 200 and served.content == png
+    assert yaml.safe_load(ws.config_file.read_text())["outreach"]["signature_image"] == ws.signature_image()
+    assert "embedded inline" in client.get("/profile").text
+    too_big = client.post("/signature/image", files={"image": ("big.png", b"0" * (ws_mod.MAX_SIGNATURE_IMAGE + 1), "image/png")})
+    assert "1%20MB" in too_big.headers["location"]
+    assert "removed" in client.post("/signature/image/delete").headers["location"]
+    assert ws.signature_image() == "" and client.get("/signature/image").status_code == 404
+    assert yaml.safe_load(ws.config_file.read_text())["outreach"]["signature_image"] == ""
+
+
+async def _m365_ok(settings_dict):
+    return True, f"Connected as {settings_dict['m365_mailbox']} (admin app)"
+
+
+async def _m365_bad(settings_dict):
+    return False, "Graph 403: grant admin consent"
+
+
+def test_mailbox_microsoft_admin_app(client, monkeypatch):
+    _as_user(client)
+    client.post("/profile", data=PROFILE)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    page = client.get("/mailbox").text
+    assert "Option C" in page and "Microsoft 365 admin app" in page and "Grant admin consent" in page
+    assert "Deliverability" in page and "Connect a mailbox above" in page
+
+    form = {"m365_tenant_id": "tenant-1", "m365_client_id": "client-1",
+            "m365_client_secret": "secret-1", "m365_mailbox": "Outreach@Corp.Example"}
+    missing = client.post("/mailbox/m365", data={**form, "m365_mailbox": ""})
+    assert "required" in missing.headers["location"] and not ws.m365_configured()
+    monkeypatch.setattr("bb.app.test_m365", _m365_bad)
+    bad = client.post("/mailbox/m365", data=form)
+    assert "Not%20saved" in bad.headers["location"] and not ws.m365_configured()
+
+    monkeypatch.setattr("bb.app.test_m365", _m365_ok)
+    ok = client.post("/mailbox/m365", data=form)
+    assert "Microsoft%20365%20saved" in ok.headers["location"]
+    assert ws.m365_configured() and ws.mail_provider() == "microsoft_app"
+    assert ws.sending_address() == "outreach@corp.example" and ws.mailbox_connected()
+    cfg = yaml.safe_load(ws.config_file.read_text())
+    assert cfg["channels"]["email"]["provider"] == "microsoft_app"
+    assert cfg["persona"]["email"] == "outreach@corp.example"
+    page = client.get("/mailbox").text
+    assert "outreach@corp.example" in page and "secret-1" not in page and "tenant-1" in page
+    # Deliverability card renders the (stubbed) DNS report for the sending domain.
+    assert "corp.example" in page and "No DKIM key found." in page and "Turn on DKIM" in page
+
+    # The worker gets the app credentials; nothing from SMTP/Gmail.
+    seen = {}
+    monkeypatch.setattr("bb.app.check_anthropic_key", _accept_key)
+    client.post("/apikey", data={"api_key": "sk-ant-user-key-3"})
+    monkeypatch.setattr(ws_mod.subprocess, "Popen", lambda cmd, **kw: seen.update(kw) or _FakeProc())
+    monkeypatch.setattr(ws_mod.os, "kill", lambda pid, sig: None)
+    assert "Started" in client.post("/worker/start").headers["location"]
+    env = seen["env"]
+    assert env["M365_TENANT_ID"] == "tenant-1" and env["M365_CLIENT_ID"] == "client-1"
+    assert env["M365_CLIENT_SECRET"] == "secret-1" and env["M365_MAILBOX"] == "outreach@corp.example"
+    assert "SMTP_HOST" not in env
+
+    # Blank secret keeps the saved one; test and remove work.
+    client.post("/mailbox/m365", data={**form, "m365_client_secret": ""})
+    assert ws.m365_settings()["m365_client_secret"] == "secret-1"
+    assert "Connected" in client.post("/mailbox/m365/test").headers["location"]
+    assert "removed" in client.post("/mailbox/m365/remove").headers["location"]
+    assert not ws.m365_configured() and not ws.mailbox_connected()
+
+
+@pytest.mark.asyncio
+async def test_m365_check_uses_the_app_provider(monkeypatch):
+    from bb.app import test_m365
+    import harvey.integrations.microsoft as ms
+
+    class Fake:
+        def __init__(self, config, env, transport=None):
+            Fake.env = env
+        async def test_connection(self):
+            return True, "Connected as outreach@corp.example (admin app)"
+
+    monkeypatch.setattr(ms, "MicrosoftAppProvider", Fake)
+    ok, detail = await test_m365({"m365_tenant_id": "t", "m365_client_id": "c",
+                                  "m365_client_secret": "s", "m365_mailbox": "outreach@corp.example"})
+    assert ok and "outreach@corp.example" in detail and Fake.env.m365_client_secret == "s"

@@ -90,12 +90,29 @@ class EmailChannelConfig(BaseModel):
     # Kill switch: pause all sending when bounces exceed this fraction of
     # sent mail (measured over the trailing sends). 0 disables the switch.
     max_bounce_rate: float = 0.05
+    # How many emails one heartbeat may send (with a few seconds between
+    # each). Together with usage.heartbeat_interval_minutes this is the speed.
+    sends_per_cycle: int = 8
+    # Warm-up: a mailbox that has never sent cold email starts at 20 a day
+    # and may send 10 more each day, up to max_daily_sends. Off = full speed
+    # from day one (fine for a mailbox that already sends a lot).
+    warmup_ramp: bool = False
+    # Add a List-Unsubscribe header (mailto) so Gmail/Yahoo show "Unsubscribe"
+    # and count the mail as compliant bulk rather than suspicious.
+    list_unsubscribe: bool = True
 
     @field_validator("max_daily_sends")
     @classmethod
     def _sends_non_negative(cls, v: int) -> int:
         if v < 0:
             raise ValueError("max_daily_sends must be >= 0")
+        return v
+
+    @field_validator("sends_per_cycle")
+    @classmethod
+    def _per_cycle_range(cls, v: int) -> int:
+        if not 1 <= v <= 100:
+            raise ValueError("sends_per_cycle must be between 1 and 100")
         return v
 
 
@@ -188,6 +205,16 @@ class OutreachConfig(BaseModel):
     # False: contacts are sorted into sector × role segments and one email
     # is written per segment, then sent to everyone in it with merge fields.
     personalize_each: bool = True
+    # "concise": the classic under-75-word observation + question.
+    # "engaging": 90–130 words with a hook, one useful detail, an
+    # easy-to-answer question and a PS — written to earn a reply.
+    style: str = "concise"
+    # Signature appended to every outgoing email. The HTML version (with
+    # links, and {{logo}} for the image) makes the mail multipart with a
+    # plain-text alternative; the text version is used when HTML is empty.
+    signature_html: str = ""
+    signature_text: str = ""
+    signature_image: str = ""  # file name under HARVEY_HOME/signature
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -196,6 +223,20 @@ class OutreachConfig(BaseModel):
         if v not in OUTREACH_MODES:
             raise ValueError(f"'{v}' is not an outreach mode. Use one of: {', '.join(OUTREACH_MODES)}.")
         return v
+
+    @field_validator("style", mode="before")
+    @classmethod
+    def _valid_style(cls, v) -> str:
+        v = str(v or "concise").strip().lower()
+        if v not in ("concise", "engaging"):
+            raise ValueError("outreach.style must be concise or engaging.")
+        return v
+
+    @field_validator("signature_image", mode="before")
+    @classmethod
+    def _plain_image_name(cls, v) -> str:
+        v = str(v or "").strip()
+        return "" if ("/" in v or "\\" in v or v.startswith(".")) else v
 
     @field_validator("attach_on", mode="before")
     @classmethod
@@ -401,9 +442,12 @@ class EnvConfig(BaseModel):
     imap_port: int = 993
     imap_username: str = ""
     imap_password: str = ""
-    # Microsoft 365 (channels.email.provider: microsoft)
+    # Microsoft 365 (channels.email.provider: microsoft — signed-in user, or
+    # microsoft_app — an admin-consented Azure app sending as one mailbox)
     m365_client_id: str = ""
     m365_tenant_id: str = ""
+    m365_client_secret: str = ""
+    m365_mailbox: str = ""
     # Optional: only used when compliance.precleared.enabled is true.
     precleared_api_key: str = ""
 
@@ -521,6 +565,8 @@ def load_env() -> EnvConfig:
         imap_password=os.getenv("IMAP_PASSWORD", "").strip(),
         m365_client_id=os.getenv("M365_CLIENT_ID", "").strip(),
         m365_tenant_id=os.getenv("M365_TENANT_ID", "").strip(),
+        m365_client_secret=os.getenv("M365_CLIENT_SECRET", "").strip(),
+        m365_mailbox=os.getenv("M365_MAILBOX", "").strip().lower(),
         precleared_api_key=os.getenv("PRECLEARED_API_KEY", "").strip(),
     )
     return env

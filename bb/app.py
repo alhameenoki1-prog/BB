@@ -12,15 +12,15 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
-from bb import gmail_oauth, recipients as recipients_mod
+from bb import deliverability, gmail_oauth, recipients as recipients_mod
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
 from bb.workspaces import (ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, LLM_PRESETS, OUTREACH_MODES,
-                           TONES, Workspace, all_workspaces)
+                           SPEEDS, STYLES, TONES, Workspace, all_workspaces)
 
 logger = logging.getLogger("bb.app")
 
@@ -93,6 +93,25 @@ async def check_openai_compatible(base_url: str, api_key: str, model: str) -> tu
         return False, (f"Connected, but the model '{model}' is not in this provider's list. "
                        "Pick one of: " + ", ".join(shown[:14]) + ("…" if len(shown) > 14 else ""))
     return True, "Connected."
+
+
+async def test_m365(settings_dict: dict) -> tuple[bool, str]:
+    """Sign in as the Azure app and read the mailbox, exactly as the worker will."""
+    from types import SimpleNamespace
+
+    from harvey.integrations.microsoft import MicrosoftAppProvider
+
+    env = SimpleNamespace(m365_tenant_id=settings_dict["m365_tenant_id"], m365_client_id=settings_dict["m365_client_id"],
+                          m365_client_secret=settings_dict["m365_client_secret"],
+                          m365_mailbox=settings_dict["m365_mailbox"])
+    try:
+        return await MicrosoftAppProvider(None, env).test_connection()
+    except Exception as e:
+        return False, f"Connection failed: {e}"
+
+
+async def check_domain(domain: str) -> dict:
+    return await deliverability.check_domain(domain)
 
 
 async def test_smtp(smtp: dict) -> tuple[bool, str]:
@@ -259,7 +278,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def _profile_ctx(ws: Workspace, profile: dict) -> dict:
         return dict(profile=profile, tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES,
-                    modes=OUTREACH_MODES, policies=ATTACH_POLICIES, attachments=ws.attachments())
+                    modes=OUTREACH_MODES, policies=ATTACH_POLICIES, attachments=ws.attachments(),
+                    speeds=SPEEDS, styles=STYLES, signature_image=ws.signature_image())
 
     @app.get("/profile", response_class=HTMLResponse)
     async def profile_page(request: Request, user: dict = Depends(current_user)):
@@ -338,13 +358,86 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def mailbox_page(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
         smtp = ws.smtp_settings()
+        m365 = ws.m365_settings()
+        sending = ws.sending_address()
+        domain = deliverability.domain_of(sending)
+        report = await check_domain(domain) if domain and ws.mailbox_connected() else None
         return await render(request, "mailbox.html", user, provider=ws.mail_provider(),
                             gmail_connected=ws.gmail_connected(), account=ws.gmail_account(),
                             gmail_available=bool(settings.gmail_client_id and settings.gmail_client_secret),
                             smtp={**smtp, "smtp_password": "", "imap_password": ""},
                             smtp_configured=ws.smtp_configured(),
                             smtp_masked=ws.mask(smtp["smtp_password"]),
+                            m365={**m365, "m365_client_secret": ""}, m365_configured=ws.m365_configured(),
+                            m365_masked=ws.mask(m365["m365_client_secret"]),
+                            sending=sending, report=report,
                             redirect_uri=gmail_oauth.redirect_uri(settings))
+
+    @app.post("/mailbox/m365")
+    async def mailbox_m365_save(request: Request, user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        form = dict(await request.form())
+        current = ws.m365_settings()
+        m365 = {}
+        for key in current:
+            value = str(form.get(key, "") or "").strip()
+            m365[key] = value or (current[key] if key == "m365_client_secret" else "")
+        m365["m365_mailbox"] = m365["m365_mailbox"].lower()
+        if not all(m365.values()):
+            return _redirect("/mailbox", error="Tenant ID, client ID, client secret and mailbox are all required.")
+        ok, detail = await test_m365(m365)
+        if not ok:
+            return _redirect("/mailbox", error=f"Not saved: {detail}")
+        ws.save_secrets(**m365)
+        ws.set_mail_provider("microsoft_app")
+        ws.rewrite_config()
+        return _redirect("/mailbox", msg=f"Microsoft 365 saved. {detail}")
+
+    @app.post("/mailbox/m365/test")
+    async def mailbox_m365_test(user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        if not ws.m365_configured():
+            return _redirect("/mailbox", error="No Microsoft 365 app settings saved yet.")
+        ok, detail = await test_m365(ws.m365_settings())
+        return _redirect("/mailbox", msg=detail if ok else "", error="" if ok else detail)
+
+    @app.post("/mailbox/m365/remove")
+    async def mailbox_m365_remove(user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        if ws.worker_running() and ws.mail_provider() == "microsoft_app":
+            await ws.stop_worker()
+        ws.save_secrets(**{k: "" for k in ws.m365_settings()})
+        ws.set_mail_provider("gmail" if ws.gmail_connected() else "smtp")
+        ws.rewrite_config()
+        return _redirect("/mailbox", msg="Microsoft 365 settings removed.")
+
+    # ── signature image ──
+
+    @app.post("/signature/image")
+    async def signature_image_upload(request: Request, user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        form = await request.form()
+        upload = form.get("image")
+        if not hasattr(upload, "read") or not getattr(upload, "filename", ""):
+            return _redirect("/profile", error="Choose an image file.")
+        try:
+            name = ws.set_signature_image(upload.filename, await upload.read())
+        except ValueError as e:
+            return _redirect("/profile", error=str(e))
+        return _redirect("/profile", msg=f"Signature image {name} saved. Use {{{{logo}}}} in the signature to place it.")
+
+    @app.get("/signature/image")
+    async def signature_image_get(user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        name = ws.signature_image()
+        if not name:
+            raise HTTPException(404)
+        return FileResponse(ws.signature_dir / name)
+
+    @app.post("/signature/image/delete")
+    async def signature_image_delete(user: dict = Depends(current_user)):
+        workspace_for(user).remove_signature_image()
+        return _redirect("/profile", msg="Signature image removed.")
 
     @app.get("/gmail")
     async def gmail_page_moved():

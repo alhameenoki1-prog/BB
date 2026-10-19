@@ -31,6 +31,13 @@
   </div>
 </div>
 <div class="card">
+  <h2>Writing style</h2>
+  <p class="muted small">How much room each email gets. “Engaging” reads like a note from a person who did their homework and is built to earn a reply; “Concise” is the classic short cold email.</p>
+  {% for k, v in styles.items() %}
+  <label class="choice"><input type="radio" name="style" value="{{ k }}" {{ 'checked' if profile.style == k else '' }}><span><b>{{ k|capitalize }}</b><span class="small muted">{{ v }}</span></span></label>
+  {% endfor %}
+</div>
+<div class="card">
   <h2>What you're reaching out about</h2>
   <label>Name of the thing (product, service, project, request)</label>
   <input type="text" name="offer_name" value="{{ profile.offer_name }}" placeholder="e.g. Acme Analytics, a research interview, a partnership">
@@ -54,6 +61,12 @@
     <div><label>Your time zone</label><select name="timezone">{% for tz in timezones %}<option value="{{ tz }}" {{ 'selected' if tz == profile.timezone else '' }}>{{ tz }}</option>{% endfor %}</select></div>
   </div>
   <label class="check"><input type="checkbox" name="require_approval" {{ 'checked' if profile.require_approval else '' }}> Let me approve each email in the Outbox before it is sent <span class="muted">(off = fully automatic)</span></label>
+  <label style="margin-top:14px">Speed</label>
+  {% for k, v in speeds.items() %}
+  <label class="choice"><input type="radio" name="speed" value="{{ k }}" {{ 'checked' if profile.speed == k else '' }}><span><b>{{ v.label }}</b><span class="small muted">{{ v.note }}</span></span></label>
+  {% endfor %}
+  <div class="hint">The worker wakes up this often, sends this many, reads replies, then waits. Gmail and most SMTP mailboxes throttle anything faster than Normal; Fast suits a Microsoft 365 admin app or an aged Workspace mailbox.</div>
+  <label class="check"><input type="checkbox" name="warmup_ramp" {{ 'checked' if profile.warmup_ramp else '' }}> Warm this mailbox up: start at 20 a day and add 10 a day <span class="muted">(switch off only for a mailbox that already sends plenty of mail)</span></label>
 </div>
 <div class="card">
   <h2>When someone replies</h2>
@@ -63,8 +76,28 @@
   <label>Send my attachments</label>
   <select name="attach_on">{% for k, v in policies.items() %}<option value="{{ k }}" {{ 'selected' if k == profile.attach_on else '' }}>{{ v }}</option>{% endfor %}</select>
 </div>
+<div class="card">
+  <h2>Email signature</h2>
+  <p class="muted small">Goes at the bottom of every email and reply. Plain text or HTML: links (<code>&lt;a href="…"&gt;</code>), line breaks (<code>&lt;br&gt;</code>), bold. Put <code>{{ '{{logo}}' }}</code> where the image should appear, or leave it out and the image goes last. Keep it short — a long signature with many links reads as marketing.</p>
+  <textarea name="signature_html" rows="5" placeholder="Ada Okafor&lt;br&gt;Founder, Okafor &amp; Co&lt;br&gt;&lt;a href=&quot;https://okafor.co&quot;&gt;okafor.co&lt;/a&gt; · &lt;a href=&quot;https://linkedin.com/in/ada&quot;&gt;LinkedIn&lt;/a&gt;&#10;{{ '{{logo}}' }}" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px">{{ profile.signature_html }}</textarea>
+  {% if signature_image %}<p class="small" style="margin-top:10px"><span class="tag good">{{ icon('check', 12) }} Image</span> {{ signature_image }} is embedded inline (manage it below).</p>{% endif %}
+</div>
 <p class="actions"><button type="submit">{{ icon('check', 15) }} Save profile</button></p>
 </form>
+
+<div class="card">
+  <h2>Signature image</h2>
+  <p class="muted small">A logo or headshot, PNG/JPG/GIF/WebP up to 1 MB, shown at most 320px wide. It is embedded in the email rather than loaded from the web, which spam filters prefer.</p>
+  {% if signature_image %}
+  <p><img src="/signature/image" alt="" style="max-width:240px;max-height:120px;border-radius:8px;border:1px solid var(--line)"></p>
+  <form class="inline" method="post" action="/signature/image/delete"><button class="small danger" type="submit">{{ icon('trash', 13) }} Remove {{ signature_image }}</button></form>
+  {% endif %}
+  <form method="post" action="/signature/image" enctype="multipart/form-data" style="margin-top:12px">
+    <label>{{ 'Replace image' if signature_image else 'Add image' }}</label>
+    <input type="file" name="image" accept="image/png,image/jpeg,image/gif,image/webp">
+    <p style="margin-top:12px"><button class="secondary" type="submit">{{ icon('upload', 15) }} Upload</button></p>
+  </form>
+</div>
 
 <div class="card">
   <h2>Attachments for replies</h2>

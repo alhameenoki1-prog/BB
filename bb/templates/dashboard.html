@@ -39,7 +39,7 @@
   <div>
     <div class="card">
       <h2>Worker</h2>
-      <p class="muted small">Your personal copy of the engine. Every 15 minutes it writes emails for new recipients, sends what is due inside your sending hours and daily limit, and reads replies. Profile changes apply after a restart.</p>
+      <p class="muted small">Your personal copy of the engine. Every cycle (1, 2 or 5 minutes, set by the speed on your profile) it writes emails for new recipients, sends what is due inside your sending hours and daily limit, and reads replies. Profile changes apply after a restart.</p>
       <div class="actions" style="margin-top:14px">
         {% if summary.worker_running %}<span class="tag good"><i class="dot" style="width:7px;height:7px;border-radius:50%;background:currentColor"></i> Running</span>{% else %}<span class="tag">Stopped</span>{% endif %}
         {% if summary.sending_paused %}

@@ -65,6 +65,19 @@ ATTACH_POLICIES = {"first_reply": "With my first reply to each person",
 MAX_ATTACHMENT_TOTAL = 20 * 1024 * 1024  # Gmail's hard limit is 25 MB per message
 SMTP_FIELDS = ("smtp_host", "smtp_port", "smtp_username", "smtp_password",
                "imap_host", "imap_port", "imap_username", "imap_password", "from_email", "reply_to")
+M365_FIELDS = ("m365_tenant_id", "m365_client_id", "m365_client_secret", "m365_mailbox")
+# How fast the worker runs: minutes between cycles and emails per cycle.
+SPEEDS = {
+    "gentle": {"label": "Gentle", "note": "8 emails every 5 minutes (about 95 an hour)", "interval": 5, "per_cycle": 8},
+    "normal": {"label": "Normal", "note": "10 emails every 2 minutes (about 300 an hour)", "interval": 2, "per_cycle": 10},
+    "fast": {"label": "Fast", "note": "25 emails every minute (about 1,500 an hour; needs a mailbox that allows it)", "interval": 1, "per_cycle": 25},
+}
+STYLES = {
+    "engaging": "Engaging: 90–130 words with a hook, one useful detail, an easy question and a PS",
+    "concise": "Concise: under 75 words, one observation and one question",
+}
+MAIL_PROVIDERS = ("gmail", "smtp", "microsoft_app")
+MAX_SIGNATURE_IMAGE = 1024 * 1024
 
 COMMON_TIMEZONES = (
     "UTC", "Europe/London", "Europe/Paris", "Europe/Berlin", "Africa/Lagos", "Africa/Nairobi",
@@ -103,11 +116,42 @@ class Workspace:
         self.secrets_file = self.data_dir / "secrets.json"
         self.mailbox_file = self.data_dir / "mailbox.json"
         self.attachments_dir = self.root / "attachments"
+        self.signature_dir = self.root / "signature"
 
     def ensure(self):
-        for d in (self.root, self.data_dir, self.skills_dir, self.attachments_dir):
+        for d in (self.root, self.data_dir, self.skills_dir, self.attachments_dir, self.signature_dir):
             d.mkdir(parents=True, exist_ok=True)
         return self
+
+    # ── signature image ──
+
+    def signature_image(self) -> str:
+        if not self.signature_dir.is_dir():
+            return ""
+        for path in sorted(self.signature_dir.iterdir()):
+            if path.is_file() and not path.name.startswith("."):
+                return path.name
+        return ""
+
+    def set_signature_image(self, filename: str, data: bytes) -> str:
+        name = self.safe_filename(filename)
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if ext not in ("png", "jpg", "jpeg", "gif", "webp"):
+            raise ValueError("Use a PNG, JPG, GIF or WebP image.")
+        if len(data) > MAX_SIGNATURE_IMAGE:
+            raise ValueError("Keep the signature image under 1 MB; large images hurt deliverability.")
+        self.ensure()
+        self.remove_signature_image()
+        (self.signature_dir / name).write_bytes(data)
+        self.rewrite_config()
+        return name
+
+    def remove_signature_image(self):
+        if self.signature_dir.is_dir():
+            for path in self.signature_dir.iterdir():
+                if path.is_file():
+                    path.unlink()
+        self.rewrite_config()
 
     # ── per-user secrets (their own Anthropic key, their mailbox password) ──
 
@@ -197,13 +241,15 @@ class Workspace:
             provider = str(data.get("provider") or "")
         except (OSError, ValueError, AttributeError):
             provider = ""
-        if provider in ("gmail", "smtp"):
+        if provider in MAIL_PROVIDERS:
             return provider
+        if self.m365_configured() and not self.gmail_connected():
+            return "microsoft_app"
         return "smtp" if self.smtp_configured() and not self.gmail_connected() else "gmail"
 
     def set_mail_provider(self, provider: str):
-        if provider not in ("gmail", "smtp"):
-            raise ValueError("Choose gmail or smtp.")
+        if provider not in MAIL_PROVIDERS:
+            raise ValueError("Choose gmail, smtp or microsoft_app.")
         self.ensure()
         self.mailbox_file.write_text(json.dumps({"provider": provider}))
 
@@ -215,12 +261,27 @@ class Workspace:
         s = self.smtp_settings()
         return bool(s["smtp_host"] and s["smtp_username"] and s["smtp_password"])
 
+    def m365_settings(self) -> dict:
+        secrets = self.secrets()
+        return {k: str(secrets.get(k, "") or "") for k in M365_FIELDS}
+
+    def m365_configured(self) -> bool:
+        return all(self.m365_settings().values())
+
     def mailbox_connected(self) -> bool:
-        return self.gmail_connected() if self.mail_provider() == "gmail" else self.smtp_configured()
+        provider = self.mail_provider()
+        if provider == "gmail":
+            return self.gmail_connected()
+        if provider == "microsoft_app":
+            return self.m365_configured()
+        return self.smtp_configured()
 
     def sending_address(self) -> str:
-        if self.mail_provider() == "gmail":
+        provider = self.mail_provider()
+        if provider == "gmail":
             return self.gmail_account().get("email", "")
+        if provider == "microsoft_app":
+            return self.m365_settings()["m365_mailbox"].lower()
         s = self.smtp_settings()
         return s["from_email"] or s["smtp_username"]
 
@@ -328,6 +389,12 @@ class Workspace:
             "reply_instructions": outreach.get("reply_instructions", ""),
             "attach_on": outreach.get("attach_on", "first_reply"),
             "writing": "person" if outreach.get("personalize_each", False) else "segment",
+            "style": outreach.get("style", "engaging"),
+            "signature_html": outreach.get("signature_html", ""),
+            "speed": next((k for k, v in SPEEDS.items()
+                           if v["interval"] == usage.get("heartbeat_interval_minutes")
+                           and v["per_cycle"] == email.get("sends_per_cycle")), "normal"),
+            "warmup_ramp": bool(email.get("warmup_ramp", True)),
         }
 
     def write_profile(self, form: dict) -> dict:
@@ -350,6 +417,8 @@ class Workspace:
         persona_email = self.sending_address() or text("email")
         benefits = _split_lines(form.get("benefits", ""))
         mode = text("mode") or "inquiry"
+        speed = SPEEDS.get(text("speed") or "normal", SPEEDS["normal"])
+        signature_html = str(form.get("signature_html", "") or "").strip()
         cfg = {
             "persona": {
                 "name": name, "company": company, "role": text("role"),
@@ -387,6 +456,11 @@ class Workspace:
                     "require_approval": flag("require_approval"),
                     "send_to_risky": False,
                     "max_bounce_rate": 0.05,
+                    "sends_per_cycle": speed["per_cycle"],
+                    # Checkbox: absent in the form means off; a brand-new form
+                    # (no key at all) defaults to on.
+                    "warmup_ramp": flag("warmup_ramp") if "warmup_ramp" in form or "speed" in form else True,
+                    "list_unsubscribe": True,
                 },
                 "linkedin": {"enabled": False},
             },
@@ -394,7 +468,7 @@ class Workspace:
                 # No spend cap by default: the user's provider bills (or doesn't) them directly.
                 "max_daily_cost_usd": max(0.0, float(text("max_daily_cost_usd", "0") or 0)),
                 "max_daily_claude_percent": 80,
-                "heartbeat_interval_minutes": 15,
+                "heartbeat_interval_minutes": speed["interval"],
                 "quiet_hours": {
                     "start": text("quiet_start") or "20:00",
                     "end": text("quiet_end") or "08:00",
@@ -410,6 +484,9 @@ class Workspace:
                 "attach_on": text("attach_on") or "first_reply",
                 # Web default: one email per sector × role segment, sent in bulk.
                 "personalize_each": text("writing") == "person",
+                "style": text("style") if text("style") in STYLES else "engaging",
+                "signature_html": signature_html,
+                "signature_image": self.signature_image(),
             },
         }
         HarveyConfig(**cfg)  # raises pydantic.ValidationError with the field
@@ -668,6 +745,12 @@ class Workspace:
             })
             if s.get("reply_to"):
                 env["SMTP_REPLY_TO"] = s["reply_to"]
+        for key in ("M365_TENANT_ID", "M365_CLIENT_ID", "M365_CLIENT_SECRET", "M365_MAILBOX"):
+            env.pop(key, None)
+        if self.mail_provider() == "microsoft_app":
+            m = self.m365_settings()
+            env.update({"M365_TENANT_ID": m["m365_tenant_id"], "M365_CLIENT_ID": m["m365_client_id"],
+                        "M365_CLIENT_SECRET": m["m365_client_secret"], "M365_MAILBOX": m["m365_mailbox"]})
         return env
 
     def start_worker(self) -> tuple[bool, str]:

@@ -9,6 +9,31 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Microsoft 365 admin-app provider** (`channels.email.provider:
+  microsoft_app`). Client-credentials sign-in with `M365_TENANT_ID`,
+  `M365_CLIENT_ID`, `M365_CLIENT_SECRET` and `M365_MAILBOX`; sends and
+  reads as that one mailbox under `/users/<mailbox>` on Microsoft Graph.
+  Both Microsoft providers now send file attachments and an HTML body.
+  The web app's Mailbox page has it as Option C with the Entra steps.
+- **Email signature.** `outreach.signature_html` (links, line breaks) with
+  an optional `outreach.signature_image` embedded inline by `cid:` and
+  placed with `{{logo}}`; plain-text mail gets a text rendering. Mail
+  stays plain text until a signature is set, then goes out as
+  multipart/alternative with the plain part alongside. Web app: Profile →
+  Email signature and Signature image.
+- **Engaging writing style.** `outreach.style: engaging` (the web app's
+  default) briefs the writer for a 90–130-word, personal, easy-to-answer
+  first email instead of the sub-75-word classic (`concise`).
+- **Speed and warm-up.** `channels.email.sends_per_cycle` (default 8)
+  replaces the fixed per-cycle size, and `channels.email.warmup_ramp`
+  ramps a mailbox from 20 a day up by 10 a day from its first send. The
+  web app's profile offers Gentle / Normal / Fast (1-, 2- or 5-minute
+  cycles) instead of the 15-minute heartbeat.
+- **Deliverability.** A `List-Unsubscribe` header on every outgoing email
+  (`channels.email.list_unsubscribe`), and a DNS check of the sending
+  domain's SPF, DKIM, DMARC and MX records on the web app's Mailbox page
+  with the exact record to add for each failure.
+
 - **Sectors, role tiers, and one email per segment.** Before writing, the
   writer sorts unsorted contacts (in batches of 25, one model call each)
   into a fixed sector vocabulary (construction, financial_advisory,

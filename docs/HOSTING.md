@@ -168,7 +168,7 @@ reset it from the same page.
    from its inbox; nobody else's address is ever used.
 4. **Recipients**: upload a CSV (up to 10,000 rows) with `email` and, ideally,
    `name`, `company`, `title`, `linkedin`, `website`, `notes`.
-5. **Start the worker**. Every 15 minutes it reads each new recipient's
+5. **Start the worker**. Every cycle (1, 2 or 5 minutes, per the speed on the profile) it reads each new recipient's
    company website, writes a one-to-one email from what that business does
    and what the user wants from them, sends what is due inside the daily
    limit and hours, reads replies, and answers them following the user's
@@ -190,7 +190,8 @@ and the 16-character app password as the password, and *Test and save*.
 Replies arrive in the same inbox and the worker reads and answers them.
 Servers: `smtp.gmail.com:587`, `imap.gmail.com:993`.
 
-**Outlook / Microsoft 365.** Sending works for work or school accounts
+**Outlook / Microsoft 365 over SMTP.** (If you administer the tenant, use
+Option C below instead.) Sending works for work or school accounts
 once the admin allows *Authenticated SMTP* on the mailbox (Microsoft 365
 admin center → Users → user → Mail → Manage email apps). Microsoft no
 longer allows password sign-in over IMAP, so the worker cannot read a
@@ -199,6 +200,32 @@ that mailbox's IMAP server, username and app password in the IMAP fields.
 Personal outlook.com and hotmail.com accounts cannot be used at all since
 Microsoft removed password sign-in for mail apps in 2024. Servers:
 `smtp.office365.com:587`, `outlook.office365.com:993`.
+
+**Microsoft 365 admin app (Option C, high volume).** If you administer a
+Microsoft 365 tenant, skip SMTP altogether: register an app in Microsoft
+Entra and the worker sends and reads mail as one mailbox through Microsoft
+Graph, with no app passwords, no IMAP and no SMTP AUTH toggle. Exchange
+Online allows each mailbox 10,000 recipients a day and 30 messages a
+minute, so this is the connection to use with the *Fast* speed. Steps
+(the Mailbox page repeats them):
+
+1. entra.microsoft.com → Applications → App registrations → New
+   registration. Any name, *Accounts in this organizational directory
+   only*, no redirect URI.
+2. Overview → copy the *Application (client) ID* and *Directory (tenant)
+   ID*.
+3. API permissions → Add a permission → Microsoft Graph → *Application
+   permissions* → `Mail.Send` and `Mail.ReadWrite` → *Grant admin consent*.
+4. Certificates & secrets → New client secret → copy the *Value* (shown
+   once; it expires, so note the date).
+5. On the Mailbox page, Option C: paste the three IDs and the mailbox to
+   send from (a licensed user or shared mailbox in that tenant), *Test and
+   save*. The user's sending address becomes that mailbox.
+6. Recommended: an [application access
+   policy](https://learn.microsoft.com/graph/auth-limit-mailbox-access)
+   so the app can reach only that one mailbox.
+
+Personal outlook.com accounts have no tenant and cannot use this.
 
 **Yahoo, iCloud, Zoho, Fastmail.** Each needs an app password from its
 security settings; the page's buttons fill in the servers. A mailbox from a
@@ -221,16 +248,53 @@ web host is usually `mail.yourdomain.com` on ports 587/465 (SMTP) and 993
 ## Sending limits, honestly
 
 A 10,000-row upload is accepted; 10,000 sends is a schedule, not a day.
-Google caps free Gmail at 500 and Workspace at 2,000 messages a day, and
-cold email anywhere near that gets the account flagged. Safe is roughly
-20–40 a day from free Gmail and 50–150 from a warmed-up Workspace mailbox on
-a secondary domain. The profile's "max emails per day" is the control
-(0 = no limit, so only the mailbox's own ceiling applies): the worker sends
-up to 8 emails every 15-minute cycle inside the sending hours until the
-day's maximum is reached (a 12-hour window allows up to about 380 a day),
-writes emails only a day or two ahead of what it can send, and stops
-itself when bounces pass 5% of sends. Free AI tiers have hourly request
-limits; when one is hit the worker pauses and resumes on its own.
+Google caps free Gmail at 500 and Workspace at 2,000 messages a day,
+Exchange Online allows 10,000 recipients a day, and cold email anywhere
+near those numbers gets the account flagged. Safe is roughly 20–40 a day
+from free Gmail, 50–150 from a warmed-up Workspace mailbox on a secondary
+domain, and a few hundred from a Microsoft 365 mailbox with a history.
+
+Three controls on the profile page:
+
+- **Max emails per day** (0 = no limit, so only the mailbox's own ceiling
+  applies).
+- **Speed**: how often the worker wakes up and how many it sends each
+  time. *Gentle* is 8 every 5 minutes, *Normal* 10 every 2 minutes,
+  *Fast* 25 every minute (about 1,500 an hour; Microsoft 365 admin app or
+  an aged Workspace mailbox only). Each cycle also reads and answers
+  replies, so replies are handled within a minute or two at any speed.
+- **Warm-up** (on by default): a mailbox new to the worker starts at 20 a
+  day and gains 10 a day, counted from its first send, never above the
+  daily max. Switch it off for a mailbox that already sends plenty of mail.
+
+The worker also writes emails only a day or two ahead of what it can send
+and stops itself when bounces pass 5% of sends. Free AI tiers have hourly
+request limits; when one is hit the worker pauses and resumes on its own.
+
+## Getting delivered (why mail gets blocked)
+
+The Mailbox page checks the sending domain's SPF, DKIM, DMARC and MX
+records every time it is opened and says exactly which record to add. The
+things that matter, in order:
+
+1. **Send from a domain you own**, with SPF, DKIM and DMARC published.
+   Gmail and Yahoo now reject unauthenticated bulk mail outright. A free
+   gmail.com or outlook.com address is signed by Google or Microsoft, but
+   shares its reputation with everyone else on that domain and is filtered
+   harder; the page says so when it sees one.
+2. **Warm up and pace.** The warm-up ramp and the speeds above exist for
+   this. A fresh mailbox that sends hundreds on day one is blocked within
+   hours.
+3. **Plain first emails.** The worker sends plain text unless a signature is
+   set, and then an HTML part with the plain text alongside. The signature
+   image is embedded (not loaded from a URL), and there is no tracking
+   pixel or link rewriting. Keep the signature to a name, a title and one
+   or two links.
+4. **An opt-out path.** Every email carries a `List-Unsubscribe` header
+   (`channels.email.list_unsubscribe`), which Gmail and Yahoo require from
+   bulk senders, and the reply handler stops a thread on any "no".
+5. **Clean lists.** Bounces damage reputation faster than anything else;
+   the worker trips its kill switch at 5% for that reason.
 
 ## Security notes
 
