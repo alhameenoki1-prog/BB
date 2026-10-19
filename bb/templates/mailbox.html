@@ -32,7 +32,38 @@
   </div>
   <div class="card">
     <h2>{{ "Option B" if gmail_available else "Option A" }} <span class="tiny" style="font-weight:400">any mailbox, with its own SMTP and IMAP settings</span></h2>
-    <p class="muted small">Works with Gmail (use an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">app password</a>), Microsoft 365 / Outlook (<code>smtp.office365.com</code> / <code>outlook.office365.com</code>, if your admin allows SMTP AUTH), Zoho, Fastmail, iCloud, your web host's mail, and most others. The password is stored in your workspace and only used to send and read your mail.</p>
+    <p class="muted small">Your mailbox's own server settings. The password is stored in your workspace and only used to send and read your mail.</p>
+    <p class="small" style="margin:10px 0 4px"><b>Fill in the servers for:</b></p>
+    <div class="actions" style="margin-bottom:6px">
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.gmail.com" data-sport="587" data-imap="imap.gmail.com" data-iport="993">Gmail / Google Workspace</button>
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.office365.com" data-sport="587" data-imap="outlook.office365.com" data-iport="993">Outlook / Microsoft 365</button>
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.mail.yahoo.com" data-sport="465" data-imap="imap.mail.yahoo.com" data-iport="993">Yahoo</button>
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.mail.me.com" data-sport="587" data-imap="imap.mail.me.com" data-iport="993">iCloud</button>
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.zoho.com" data-sport="465" data-imap="imap.zoho.com" data-iport="993">Zoho</button>
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.fastmail.com" data-sport="465" data-imap="imap.fastmail.com" data-iport="993">Fastmail</button>
+    </div>
+    <details class="howto"><summary><b>How to connect Gmail or Google Workspace</b> <span class="muted small">(about two minutes)</span></summary>
+      <ol class="small">
+        <li>Click <b>Gmail / Google Workspace</b> above to fill in the servers.</li>
+        <li>Open <a href="https://myaccount.google.com/security" target="_blank" rel="noopener">myaccount.google.com/security</a> and make sure <b>2-Step Verification</b> is turned on (app passwords need it).</li>
+        <li>Open <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>, type a name such as <i>BB Outreach</i>, and click <b>Create</b>. Google shows a 16-character password once; copy it.</li>
+        <li>Below, <b>Username</b> is your full Gmail address and <b>Password</b> is that 16-character app password (spaces don't matter). Leave the IMAP fields as filled in.</li>
+        <li>Click <b>Test and save</b>. Replies land in this same Gmail inbox, where the worker reads and answers them.</li>
+      </ol>
+      <p class="tiny">Google Workspace users: if "App passwords" is missing, your Workspace admin has turned it off (Admin console → Security → 2-Step Verification → allow users to create app passwords), or ask the admin to switch on one-click Gmail for this site.</p>
+    </details>
+    <details class="howto"><summary><b>How to connect Outlook or Microsoft 365</b> <span class="muted small">(sending works; reading replies needs one extra step)</span></summary>
+      <ol class="small">
+        <li>Click <b>Outlook / Microsoft 365</b> above to fill in the servers.</li>
+        <li><b>Work or school account (Microsoft 365):</b> your admin must allow <i>Authenticated SMTP</i> on your mailbox (Microsoft 365 admin center → Users → your user → <i>Mail</i> → <i>Manage email apps</i> → tick <i>Authenticated SMTP</i>). Then <b>Username</b> is your email address and <b>Password</b> is your normal password (or an app password if your organisation uses multi-factor sign-in).</li>
+        <li><b>Personal outlook.com / hotmail.com accounts:</b> Microsoft removed password sign-in for mail apps in 2024, so these can no longer be used here. Use a Gmail, Zoho or Fastmail mailbox instead.</li>
+        <li><b>Reading replies:</b> Microsoft also no longer allows password sign-in over IMAP, so the worker cannot read a Microsoft inbox. To keep automatic replies, set <b>Reply-To</b> to a mailbox that does allow IMAP (a Gmail with an app password works) and put that mailbox's server, username and app password in the <b>IMAP</b> fields. Replies then arrive there and the worker reads and answers them from your Outlook address.</li>
+        <li>Click <b>Test and save</b>. The test signs in to both servers, so it will tell you straight away if either step is missing.</li>
+      </ol>
+    </details>
+    <details class="howto"><summary><b>Yahoo, iCloud, Zoho, Fastmail, your web host</b></summary>
+      <p class="small">Yahoo and iCloud need an app password too (Yahoo: Account security → Generate app password; iCloud: appleid.apple.com → Sign-In and Security → App-Specific Passwords). Zoho and Fastmail take an app password from their security settings. For a mailbox from your web host, the servers are usually <code>mail.yourdomain.com</code> for both SMTP (port 587 or 465) and IMAP (port 993); your host's email settings page lists them.</p>
+    </details>
     {% if smtp_configured %}<p style="margin-top:10px"><span class="tag good">{{ icon('check', 13) }} Saved</span> {{ smtp.smtp_username }} via {{ smtp.smtp_host }}:{{ smtp.smtp_port or 587 }} · password <code>{{ smtp_masked }}</code></p>{% endif %}
     <form method="post" action="/mailbox/smtp">
       <div class="row">
@@ -59,7 +90,38 @@
 </div>
 {% else %}  <div class="card">
     <h2>{{ "Option B" if gmail_available else "Option A" }} <span class="tiny" style="font-weight:400">any mailbox, with its own SMTP and IMAP settings</span></h2>
-    <p class="muted small">Works with Gmail (use an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">app password</a>), Microsoft 365 / Outlook (<code>smtp.office365.com</code> / <code>outlook.office365.com</code>, if your admin allows SMTP AUTH), Zoho, Fastmail, iCloud, your web host's mail, and most others. The password is stored in your workspace and only used to send and read your mail.</p>
+    <p class="muted small">Your mailbox's own server settings. The password is stored in your workspace and only used to send and read your mail.</p>
+    <p class="small" style="margin:10px 0 4px"><b>Fill in the servers for:</b></p>
+    <div class="actions" style="margin-bottom:6px">
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.gmail.com" data-sport="587" data-imap="imap.gmail.com" data-iport="993">Gmail / Google Workspace</button>
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.office365.com" data-sport="587" data-imap="outlook.office365.com" data-iport="993">Outlook / Microsoft 365</button>
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.mail.yahoo.com" data-sport="465" data-imap="imap.mail.yahoo.com" data-iport="993">Yahoo</button>
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.mail.me.com" data-sport="587" data-imap="imap.mail.me.com" data-iport="993">iCloud</button>
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.zoho.com" data-sport="465" data-imap="imap.zoho.com" data-iport="993">Zoho</button>
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.fastmail.com" data-sport="465" data-imap="imap.fastmail.com" data-iport="993">Fastmail</button>
+    </div>
+    <details class="howto"><summary><b>How to connect Gmail or Google Workspace</b> <span class="muted small">(about two minutes)</span></summary>
+      <ol class="small">
+        <li>Click <b>Gmail / Google Workspace</b> above to fill in the servers.</li>
+        <li>Open <a href="https://myaccount.google.com/security" target="_blank" rel="noopener">myaccount.google.com/security</a> and make sure <b>2-Step Verification</b> is turned on (app passwords need it).</li>
+        <li>Open <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>, type a name such as <i>BB Outreach</i>, and click <b>Create</b>. Google shows a 16-character password once; copy it.</li>
+        <li>Below, <b>Username</b> is your full Gmail address and <b>Password</b> is that 16-character app password (spaces don't matter). Leave the IMAP fields as filled in.</li>
+        <li>Click <b>Test and save</b>. Replies land in this same Gmail inbox, where the worker reads and answers them.</li>
+      </ol>
+      <p class="tiny">Google Workspace users: if "App passwords" is missing, your Workspace admin has turned it off (Admin console → Security → 2-Step Verification → allow users to create app passwords), or ask the admin to switch on one-click Gmail for this site.</p>
+    </details>
+    <details class="howto"><summary><b>How to connect Outlook or Microsoft 365</b> <span class="muted small">(sending works; reading replies needs one extra step)</span></summary>
+      <ol class="small">
+        <li>Click <b>Outlook / Microsoft 365</b> above to fill in the servers.</li>
+        <li><b>Work or school account (Microsoft 365):</b> your admin must allow <i>Authenticated SMTP</i> on your mailbox (Microsoft 365 admin center → Users → your user → <i>Mail</i> → <i>Manage email apps</i> → tick <i>Authenticated SMTP</i>). Then <b>Username</b> is your email address and <b>Password</b> is your normal password (or an app password if your organisation uses multi-factor sign-in).</li>
+        <li><b>Personal outlook.com / hotmail.com accounts:</b> Microsoft removed password sign-in for mail apps in 2024, so these can no longer be used here. Use a Gmail, Zoho or Fastmail mailbox instead.</li>
+        <li><b>Reading replies:</b> Microsoft also no longer allows password sign-in over IMAP, so the worker cannot read a Microsoft inbox. To keep automatic replies, set <b>Reply-To</b> to a mailbox that does allow IMAP (a Gmail with an app password works) and put that mailbox's server, username and app password in the <b>IMAP</b> fields. Replies then arrive there and the worker reads and answers them from your Outlook address.</li>
+        <li>Click <b>Test and save</b>. The test signs in to both servers, so it will tell you straight away if either step is missing.</li>
+      </ol>
+    </details>
+    <details class="howto"><summary><b>Yahoo, iCloud, Zoho, Fastmail, your web host</b></summary>
+      <p class="small">Yahoo and iCloud need an app password too (Yahoo: Account security → Generate app password; iCloud: appleid.apple.com → Sign-In and Security → App-Specific Passwords). Zoho and Fastmail take an app password from their security settings. For a mailbox from your web host, the servers are usually <code>mail.yourdomain.com</code> for both SMTP (port 587 or 465) and IMAP (port 993); your host's email settings page lists them.</p>
+    </details>
     {% if smtp_configured %}<p style="margin-top:10px"><span class="tag good">{{ icon('check', 13) }} Saved</span> {{ smtp.smtp_username }} via {{ smtp.smtp_host }}:{{ smtp.smtp_port or 587 }} · password <code>{{ smtp_masked }}</code></p>{% endif %}
     <form method="post" action="/mailbox/smtp">
       <div class="row">
@@ -102,6 +164,22 @@
   </div>
 {% endif %}
 
+<style>
+  details.howto { border:1px solid var(--line); border-radius:var(--r-sm); padding:10px 14px; margin:8px 0; background:var(--surface-2); }
+  details.howto summary { cursor:pointer; list-style:none; } details.howto summary::-webkit-details-marker { display:none; }
+  details.howto summary::before { content:"›"; display:inline-block; margin-right:8px; transition:transform .15s; color:var(--ink-3); }
+  details.howto[open] summary::before { transform:rotate(90deg); }
+  details.howto ol { margin:10px 0 4px 18px; padding:0; } details.howto li { margin:6px 0; }
+</style>
+<script>
+  document.querySelectorAll('.smtp-preset').forEach(btn => btn.addEventListener('click', () => {
+    const form = btn.closest('.card').querySelector('form[action="/mailbox/smtp"]');
+    const set = (name, value) => { const el = form.querySelector('[name=' + name + ']'); if (el) el.value = value; };
+    set('smtp_host', btn.dataset.smtp); set('smtp_port', btn.dataset.sport);
+    set('imap_host', btn.dataset.imap); set('imap_port', btn.dataset.iport);
+    form.querySelector('[name=smtp_username]').focus();
+  }));
+</script>
 {% if user.role == 'admin' %}
 <div class="card flat small muted">
   <b>Admin note:</b> option A needs a Google Cloud OAuth client of type <i>Web application</i> with redirect URI <code>{{ redirect_uri }}</code>, and Google's verification before non-test users can connect. Option B needs nothing from you.

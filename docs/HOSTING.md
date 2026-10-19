@@ -177,6 +177,34 @@ reset it from the same page.
    total recipients, refreshed every 30 seconds. **Replies** lists everyone
    who answered; **Outbox** holds emails awaiting approval.
 
+## Connecting a mailbox (what to tell your users)
+
+The Mailbox page has these instructions built in, with buttons that fill
+in the servers. In short:
+
+**Gmail or Google Workspace.** Turn on 2-Step Verification at
+myaccount.google.com/security, create an app password at
+myaccount.google.com/apppasswords, then on the Mailbox page click
+*Gmail / Google Workspace*, enter the full Gmail address as the username
+and the 16-character app password as the password, and *Test and save*.
+Replies arrive in the same inbox and the worker reads and answers them.
+Servers: `smtp.gmail.com:587`, `imap.gmail.com:993`.
+
+**Outlook / Microsoft 365.** Sending works for work or school accounts
+once the admin allows *Authenticated SMTP* on the mailbox (Microsoft 365
+admin center → Users → user → Mail → Manage email apps). Microsoft no
+longer allows password sign-in over IMAP, so the worker cannot read a
+Microsoft inbox: set *Reply-To* to a Gmail (or other IMAP) mailbox and put
+that mailbox's IMAP server, username and app password in the IMAP fields.
+Personal outlook.com and hotmail.com accounts cannot be used at all since
+Microsoft removed password sign-in for mail apps in 2024. Servers:
+`smtp.office365.com:587`, `outlook.office365.com:993`.
+
+**Yahoo, iCloud, Zoho, Fastmail.** Each needs an app password from its
+security settings; the page's buttons fill in the servers. A mailbox from a
+web host is usually `mail.yourdomain.com` on ports 587/465 (SMTP) and 993
+(IMAP).
+
 ## Operations
 
 - **Data**: everything is under `./data` on the host (`data/bb/bb.db` holds
