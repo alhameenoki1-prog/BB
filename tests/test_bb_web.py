@@ -422,6 +422,45 @@ def test_ai_provider_anthropic_is_checked_and_stored_per_user(client, monkeypatc
     assert ws.anthropic_key() == "" and client.get("/api/summary").json()["api_key"] is False
 
 
+@pytest.mark.asyncio
+async def test_anthropic_key_check_explains_what_anthropic_said(monkeypatch):
+    import anthropic
+    import httpx
+    from bb.app import check_anthropic_key
+
+    ok, detail = await check_anthropic_key("sk-ant-oat01-" + "x" * 40)
+    assert not ok and "sign-in token" in detail
+
+    def fake_client(status, body):
+        class Models:
+            async def list(self, **kw):
+                request = httpx.Request("GET", "https://api.anthropic.com/v1/models")
+                response = httpx.Response(status, json=body, request=request)
+                if status == 400:
+                    raise anthropic.BadRequestError(body["error"]["message"], response=response, body=body)
+                raise anthropic.InternalServerError("boom", response=response, body=body)
+        class Client:
+            def __init__(self, **kw):
+                self.models = Models()
+        return Client
+
+    no_credit = {"type": "error", "error": {"type": "invalid_request_error",
+                                             "message": "Your credit balance is too low to access the Anthropic API."}}
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", fake_client(400, no_credit))
+    ok, detail = await check_anthropic_key("sk-ant-api03-" + "x" * 40)
+    assert not ok and "no credit" in detail and "Billing" in detail and "Gemini" in detail
+
+    other = {"type": "error", "error": {"type": "invalid_request_error", "message": "limit: must be <= 1000"}}
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", fake_client(400, other))
+    ok, detail = await check_anthropic_key("sk-ant-api03-" + "x" * 40)
+    assert not ok and detail == "Anthropic refused the request: limit: must be <= 1000"
+
+    outage = {"type": "error", "error": {"type": "api_error", "message": "Overloaded"}}
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", fake_client(500, outage))
+    ok, detail = await check_anthropic_key("sk-ant-api03-" + "x" * 40)
+    assert not ok and detail == "Anthropic answered 500: Overloaded"
+
+
 def test_ai_provider_free_endpoint(client, monkeypatch):
     _as_user(client)
     monkeypatch.setattr("bb.app.check_openai_compatible", _endpoint_ok)

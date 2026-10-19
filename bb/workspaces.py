@@ -53,7 +53,7 @@ LLM_PRESETS = {
     "openai": {"label": "OpenAI", "note": "Paid, billed to your OpenAI account.",
                "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini",
                "key_url": "https://platform.openai.com/api-keys", "free": False},
-    "anthropic": {"label": "Anthropic Claude", "note": "Paid, billed to your Anthropic account. Strongest writing.",
+    "anthropic": {"label": "Anthropic Claude", "note": "Paid: needs prepaid credit on your Anthropic account (Console → Billing). Strongest writing.",
                   "base_url": "", "model": "", "key_url": "https://console.anthropic.com/settings/keys",
                   "free": False},
     "custom": {"label": "Another OpenAI-compatible API", "note": "Any endpoint that speaks /chat/completions.",

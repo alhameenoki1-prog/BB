@@ -47,6 +47,18 @@ async def check_anthropic_key(key: str) -> tuple[bool, str]:
 
     if not key.startswith("sk-ant-"):
         return False, "Anthropic keys start with sk-ant-. Copy the whole key from console.anthropic.com."
+    if key.startswith("sk-ant-oat"):
+        return False, ("That is a Claude.ai sign-in token, not an API key. API keys start with "
+                       "sk-ant-api and come from console.anthropic.com → API keys.")
+
+    def said(e) -> str:
+        body = getattr(e, "body", None)
+        if isinstance(body, dict):
+            err = body.get("error")
+            if isinstance(err, dict) and err.get("message"):
+                return str(err["message"])
+        return str(getattr(e, "message", "") or e)[:200]
+
     try:
         client = anthropic.AsyncAnthropic(api_key=key, max_retries=0, timeout=20)
         await client.models.list(limit=1)
@@ -54,8 +66,20 @@ async def check_anthropic_key(key: str) -> tuple[bool, str]:
         return False, "Anthropic rejected that key."
     except anthropic.PermissionDeniedError:
         return False, "That key is not allowed to use the API (check its permissions in the Console)."
+    except anthropic.BadRequestError as e:
+        message = said(e)
+        if "credit" in message.lower() or "billing" in message.lower():
+            return False, ("The key is valid, but the Anthropic account has no credit, so every call "
+                           "would fail. Add prepaid credit at console.anthropic.com → Settings → "
+                           "Billing (a few dollars goes a long way), or choose Google Gemini or Groq "
+                           "above, which have free tiers.")
+        return False, f"Anthropic refused the request: {message}"
+    except anthropic.RateLimitError:
+        return True, "Key accepted (Anthropic is rate-limiting it right now; the worker waits and retries)."
+    except anthropic.APIStatusError as e:
+        return False, f"Anthropic answered {e.status_code}: {said(e)}"
     except Exception as e:  # network, proxy, outage
-        return False, f"Could not reach Anthropic to check the key: {type(e).__name__}."
+        return False, f"Could not reach Anthropic to check the key: {type(e).__name__}: {str(e)[:120]}"
     return True, "Key accepted."
 
 
