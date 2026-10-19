@@ -32,7 +32,18 @@ python -m bb
 ```
 
 Open <http://localhost:8000>, sign in with the admin email and password,
-go to **Users** and create a login for each person. Everything is stored
+go to **Users** and create a login for each person.
+
+If the site says "wrong email or password" on a fresh install, the two
+`export` lines were not in effect when the server first started (the admin
+account is only created on a first start with them set). Create the login
+directly instead; this works whether or not the server is running:
+
+```bash
+python -m bb create-user you@example.com --admin     # asks for a password
+python -m bb reset-password you@example.com          # change it later
+python -m bb list-users
+``` Everything is stored
 under `BB/data/bb/` on your Mac. `Ctrl-C` stops it; `source
 .venv/bin/activate && python -m bb` starts it again (the settings in step 3
 need exporting again in a new Terminal window, or put them in a file you

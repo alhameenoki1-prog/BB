@@ -539,3 +539,44 @@ def test_secret_key_is_generated_once(tmp_path):
     first = s.secret_key()
     assert len(first) > 40 and (s.home / "secret.key").read_text() == first
     assert _settings(tmp_path, BB_SECRET_KEY="").secret_key() == first
+
+
+# ── terminal account management ──
+
+
+def test_cli_creates_and_resets_accounts(tmp_path, monkeypatch, capsys):
+    import bb.__main__ as cli
+
+    monkeypatch.setenv("BB_HOME", str(tmp_path / "bbcli"))
+    monkeypatch.setenv("BB_BASE_URL", "http://localhost:8000")
+    for k in ("BB_ADMIN_EMAIL", "BB_ADMIN_PASSWORD"):
+        monkeypatch.delenv(k, raising=False)
+
+    cli.main(["list-users"])
+    assert "No accounts yet" in capsys.readouterr().out
+    cli.main(["create-user", "Boss@Example.com", "--admin", "--password", "a-long-password-1"])
+    out = capsys.readouterr().out
+    assert "Created admin boss@example.com" in out and "localhost:8000" in out
+    with pytest.raises(SystemExit):
+        cli.main(["create-user", "boss@example.com", "--password", "a-long-password-1"])
+    assert "already exists" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cli.main(["create-user", "weak@example.com", "--password", "short"])
+    assert "at least 10" in capsys.readouterr().out
+
+    cli.main(["reset-password", "boss@example.com", "--password", "another-long-one-2"])
+    assert "Password changed" in capsys.readouterr().out
+    accounts = Accounts(Settings().accounts_db)
+    assert accounts.authenticate("boss@example.com", "another-long-one-2")
+    assert not accounts.authenticate("boss@example.com", "a-long-password-1")
+    accounts.set_disabled(accounts.get_by_email("boss@example.com")["id"], True)
+    cli.main(["reset-password", "boss@example.com", "--password", "third-long-one-33"])
+    assert "enabled again" in capsys.readouterr().out
+    cli.main(["list-users"])
+    assert "boss@example.com" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cli.main(["reset-password", "nobody@example.com", "--password", "whatever-long-1"])
+
+    # The site itself sees the same account and doesn't re-bootstrap.
+    with TestClient(create_app(Settings()), follow_redirects=False) as client:
+        assert client.post("/login", data={"email": "boss@example.com", "password": "third-long-one-33"}).status_code == 303
