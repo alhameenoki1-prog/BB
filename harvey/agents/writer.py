@@ -13,6 +13,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from harvey import names
 from harvey.brain import Brain
 from harvey.config import HarveyConfig
 from harvey.integrations.mail_provider import NATIVE_PROVIDERS
@@ -28,7 +29,10 @@ LEGACY_BATCH_CAP = 50
 # Segment mode (outreach.personalize_each: false): one sequence per
 # sector × role segment, sent to everyone in it, so a segment can be large.
 SEGMENT_BATCH_CAP = 250
-SEGMENT_ROOM = 500  # contacts considered per cycle in segment mode
+SEGMENT_ROOM = 500
+# Team pages fetched per cycle to recover names the upload left out; the
+# rest wait for the next cycle, so a 1-minute heartbeat stays quick.
+MAX_NAME_LOOKUPS = 15  # contacts considered per cycle in segment mode
 CLASSIFY_BATCH = 25  # contacts per classification call
 
 # The sector vocabulary the classifier sorts contacts into. Closed, so
@@ -128,6 +132,13 @@ class Writer:
                 )
                 return
             prospects_with_email = prospects_with_email[:room]
+
+        # Work out who the nameless addresses belong to before anything is
+        # written, so the greeting is "Hi Jane," and not "Hi there,".
+        try:
+            await self._find_missing_names(prospects_with_email)
+        except Exception as e:
+            logger.warning(f"Writer: name lookup skipped: {e}")
 
         # Sort newcomers into sector × role before grouping, so every
         # campaign is one sector and one tier and the writing can speak to
@@ -256,6 +267,65 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
 - Never invent a project detail, budget, timeline or location that isn't in the facts or
   in what {persona.name} wants."""
 
+    async def _find_missing_names(self, prospects) -> int:
+        """Fill in names the upload left blank: from the LinkedIn URL or a
+        first.last address first (free), then from the company's team page
+        (one fetch per domain, at most MAX_NAME_LOOKUPS pages a cycle),
+        matched against the address. Shared inboxes are left alone. Returns
+        how many names were found."""
+        found = 0
+        lookups = 0
+        pages: dict[str, list] = {}
+        scout = None
+        for prospect in prospects:
+            if prospect.full_name() or not prospect.email or names.is_role_address(prospect.email):
+                continue
+            resolved = names.resolve_name("", "", prospect.email, prospect.linkedin_url)
+            note = ""
+            if resolved["source"] == "linkedin":
+                note = "Name taken from the LinkedIn URL."
+            elif resolved["source"] == "email":
+                note = "Name read from the email address (first.last pattern)."
+            else:
+                domain = prospect.email.rsplit("@", 1)[-1].lower()
+                if domain in names.PUBLIC_DOMAINS:
+                    continue
+                if domain not in pages:
+                    if lookups >= MAX_NAME_LOOKUPS:
+                        continue
+                    lookups += 1
+                    if scout is None:
+                        from harvey.agents.scout import Scout
+                        scout = Scout(self.brain, self.state, self.config, self.env)
+                    try:
+                        pages[domain] = await scout._scrape_team_page(domain)
+                    except Exception as e:
+                        logger.debug(f"Writer: team page for {domain} unreadable: {e}")
+                        pages[domain] = []
+                member = names.match_team_member(prospect.email, pages[domain])
+                if not member:
+                    continue
+                resolved = {"first_name": member["first_name"], "last_name": member["last_name"]}
+                note = f"Name matched to {domain}'s team page" + (
+                    f" ({member['title']})." if member.get("title") else ".")
+                if member.get("title") and not prospect.title:
+                    prospect.title = member["title"]
+            if not resolved["first_name"]:
+                continue
+            prospect.first_name = resolved["first_name"]
+            prospect.last_name = resolved["last_name"]
+            await self.state.update_prospect_name(prospect.id, prospect.first_name,
+                                                  prospect.last_name, note, title=prospect.title)
+            found += 1
+        if found:
+            logger.info(f"Writer: found names for {found} recipient(s) the upload left blank.")
+        return found
+
+    @property
+    def greeting_word(self) -> str:
+        outreach = getattr(self.config, "outreach", None)
+        return getattr(outreach, "greeting", "") or "Hi"
+
     @property
     def style(self) -> str:
         outreach = getattr(self.config, "outreach", None)
@@ -292,8 +362,15 @@ them alone and want to answer it.
 
     async def _write_personal_email(self, prospect) -> dict | None:
         """One grounded draft for one person. Facts in, one email out."""
+        if names.is_role_address(prospect.email):
+            name_fact = (f"- Name: unknown — {prospect.email} is a shared inbox; write to the "
+                         f"{prospect.company or 'company'} team, do not invent a person")
+        elif prospect.full_name():
+            name_fact = f"- Name: {prospect.full_name()}"
+        else:
+            name_fact = "- Name: unknown (do not guess one)"
         facts = [
-            f"- Name: {prospect.full_name()}",
+            name_fact,
             f"- Title: {prospect.title}",
             f"- Company: {prospect.company}",
         ]
@@ -349,6 +426,9 @@ or anything else:
 Requirements:
 - {self._length_rule}. One specific observation from the FACTS above, one
   question. No pitch, no product name.
+- Open with the greeting line "{names.greeting_for(prospect.first_name, prospect.email, prospect.company, self.greeting_word)}"
+  on its own line, then a blank line. Use the person's first name only if it is
+  in the FACTS; never invent or guess one.
 - Write the actual text (no merge variables — you know their name/company).
 - Subject: lowercase, 2-5 words.
 - Follow every STRICT EMAIL RULE above.
@@ -362,7 +442,9 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
         if not isinstance(result, dict):
             return None
         subject = str(result.get("subject") or "").strip()
-        body = str(result.get("body") or "").strip()
+        body = names.ensure_greeting(
+            str(result.get("body") or "").strip(), prospect.first_name,
+            prospect.email, prospect.company, self.greeting_word)
         if not subject or not body:
             return None
         return {"subject": subject[:120], "body": body[:2000]}
@@ -413,7 +495,10 @@ Requirements:
 - Email 1: Personalized cold observation + one question. {self._length_rule}. No pitch.
 - Email 2: Follow-up 3 days later. Different angle, one concrete proof point. {self._length_rule}.
 - Email 3: Break-up email 4 days after that. Under 40 words. Gracious, not guilt-tripping.
-- Use {{{{first_name}}}}, {{{{company}}}}, {{{{title}}}} as merge variables — every email
+- Every email opens with the greeting line "{self.greeting_word} {{{{first_name}}}}," on its
+  own line, then a blank line. Use {{{{first_name}}}} ONLY there (it is swapped for
+  "there" or the team when a name is unknown).
+- Use {{{{company}}}} and {{{{title}}}} as merge variables where natural — every email
   must use at least one, and email 1 must reference something specific to
   these prospects' industry or role (use the notes above).
 - Never be pushy or salesy. Be consultative and value-driven.

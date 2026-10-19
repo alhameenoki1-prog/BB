@@ -70,7 +70,10 @@ ramp, the writing style (`outreach.style`), an email signature with an
 inline image (`outreach.signature_html/_image`), and a Microsoft 365
 admin-app mailbox (`channels.email.provider: microsoft_app`, Graph client
 credentials). The Mailbox page runs SPF/DKIM/DMARC/MX checks
-(`bb/deliverability.py`). Start it with `python -m bb` (needs `BB_BASE_URL`,
+(`bb/deliverability.py`). `harvey/names.py` resolves missing recipient
+names (LinkedIn slug, first.last address, team page) and puts the greeting
+line on every email (`outreach.greeting`); a worker that dies is revived
+on the next dashboard view. Start it with `python -m bb` (needs `BB_BASE_URL`,
 `BB_ADMIN_EMAIL`, `BB_ADMIN_PASSWORD`; `GMAIL_CLIENT_ID`/`SECRET` of a *Web
 application* OAuth client are optional). Deployment and Mac quick-start:
 `docs/HOSTING.md`. Code: `bb/app.py` (routes),

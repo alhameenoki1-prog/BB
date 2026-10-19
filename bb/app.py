@@ -19,8 +19,8 @@ from pydantic import ValidationError
 from bb import deliverability, gmail_oauth, recipients as recipients_mod
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
-from bb.workspaces import (ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, LLM_PRESETS, OUTREACH_MODES,
-                           SPEEDS, STYLES, TONES, Workspace, all_workspaces)
+from bb.workspaces import (ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
+                           OUTREACH_MODES, SPEEDS, STYLES, TONES, Workspace, all_workspaces)
 
 logger = logging.getLogger("bb.app")
 
@@ -249,12 +249,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
+        revived = ws.revive_worker()
         return await render(request, "dashboard.html", user, logs=ws.log_tail(40),
-                            problems=settings.problems() if user["role"] == "admin" else [])
+                            problems=settings.problems() if user["role"] == "admin" else [],
+                            msg=revived or request.query_params.get("msg", ""))
 
     @app.get("/api/summary")
     async def api_summary(user: dict = Depends(current_user)):
-        return await workspace_for(user).summary()
+        ws = workspace_for(user)
+        ws.revive_worker()
+        return await ws.summary()
 
     @app.post("/worker/{action}")
     async def worker(action: str, user: dict = Depends(current_user)):
@@ -279,7 +283,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def _profile_ctx(ws: Workspace, profile: dict) -> dict:
         return dict(profile=profile, tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES,
                     modes=OUTREACH_MODES, policies=ATTACH_POLICIES, attachments=ws.attachments(),
-                    speeds=SPEEDS, styles=STYLES, signature_image=ws.signature_image())
+                    speeds=SPEEDS, styles=STYLES, greetings=GREETINGS,
+                    signature_image=ws.signature_image())
 
     @app.get("/profile", response_class=HTMLResponse)
     async def profile_page(request: Request, user: dict = Depends(current_user)):
@@ -348,7 +353,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def apikey_remove(user: dict = Depends(current_user)):
         ws = workspace_for(user)
         if ws.worker_running():
-            await ws.stop_worker()
+            await ws.stop_worker("the AI provider was removed")
         ws.clear_llm()
         return _redirect("/apikey", msg="AI provider removed. The worker was stopped.")
 
@@ -405,7 +410,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def mailbox_m365_remove(user: dict = Depends(current_user)):
         ws = workspace_for(user)
         if ws.worker_running() and ws.mail_provider() == "microsoft_app":
-            await ws.stop_worker()
+            await ws.stop_worker("the Microsoft 365 settings were removed")
         ws.save_secrets(**{k: "" for k in ws.m365_settings()})
         ws.set_mail_provider("gmail" if ws.gmail_connected() else "smtp")
         ws.rewrite_config()
@@ -490,7 +495,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def mailbox_smtp_remove(user: dict = Depends(current_user)):
         ws = workspace_for(user)
         if ws.worker_running() and ws.mail_provider() == "smtp":
-            await ws.stop_worker()
+            await ws.stop_worker("the SMTP mailbox was removed")
         ws.save_secrets(**{k: "" for k in ws.smtp_settings()})
         if ws.gmail_connected():
             ws.set_mail_provider("gmail")
@@ -565,7 +570,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def gmail_disconnect(user: dict = Depends(current_user)):
         ws = workspace_for(user)
         if ws.worker_running() and ws.mail_provider() == "gmail":
-            await ws.stop_worker()
+            await ws.stop_worker("Gmail was disconnected")
         ws.disconnect_gmail()
         if ws.smtp_configured():
             ws.set_mail_provider("smtp")
@@ -690,7 +695,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             accounts.set_disabled(user_id, True)
             ws = Workspace(settings, target)
             if ws.worker_running():
-                await ws.stop_worker()
+                await ws.stop_worker("the account was disabled by the admin")
             return _redirect("/admin/users", msg=f"Disabled {target['email']} and stopped their worker.")
         if action == "enable":
             accounts.set_disabled(user_id, False)

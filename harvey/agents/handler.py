@@ -10,6 +10,7 @@ sending domain while nobody's watching.
 import logging
 from datetime import datetime, timezone
 
+from harvey import names
 from harvey.brain import Brain, BrainUnavailable
 from harvey.config import HarveyConfig, EnvConfig
 from harvey.integrations.instantly import InstantlyClient
@@ -688,7 +689,10 @@ Write a reply that:"""
 - Under 50 words"""
 
         prompt += self._outreach_context(await self._reply_attachments(convo))
-        prompt += "\n\nWrite ONLY the email body. No subject line, no greeting label, no signature block, no markdown."
+        greeting_word = getattr(getattr(self.config, "outreach", None), "greeting", "") or "Hi"
+        greeting = names.greeting_for(prospect.first_name, prospect.email, prospect.company, greeting_word)
+        prompt += (f"\n\nWrite ONLY the email body. Open with the greeting line \"{greeting}\" on its own line, "
+                   "then a blank line. No subject line, no signature block, no markdown.")
 
         response = await self.brain.think(
             prompt, session_id="harvey-handler",
@@ -706,4 +710,5 @@ Write a reply that:"""
         if response.lower().startswith(("i can't", "i cannot", "as an ai", "sorry,")):
             logger.warning("Handler: Model returned meta-text instead of an email. Discarding.")
             return ""
-        return response
+        return names.ensure_greeting(response, prospect.first_name, prospect.email,
+                                     prospect.company, greeting_word)

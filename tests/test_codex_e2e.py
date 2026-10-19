@@ -236,7 +236,7 @@ async def test_reply_is_classified_answered_for_review_and_never_reprocessed(har
     assert [m.sender for m in convo.thread] == ["harvey", "prospect"]
     replies = await harvey.state.get_outbox(status="pending_review")
     assert len(replies) == 1 and replies[0]["kind"] == "reply"
-    assert replies[0]["body"].startswith("Happy to help")
+    assert replies[0]["body"].startswith("Hi Jane,\n\nHappy to help")
     assert harvey.mail.sent == []  # approval required: nothing leaves
     assert await harvey.state.is_reply_processed("in-1")
     # Exactly two model calls (classify + draft), counted once, on Codex only.

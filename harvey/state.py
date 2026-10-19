@@ -734,6 +734,24 @@ class StateManager:
             )
             await db.commit()
 
+    async def update_prospect_name(self, prospect_id: str, first_name: str, last_name: str,
+                                   note: str = "", title: str = ""):
+        """Record a name found after import (team page, LinkedIn, address
+        pattern), appending where it came from to the research notes. A
+        title fills in only when the row has none."""
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE prospects SET first_name = ?, last_name = ?, "
+                "title = CASE WHEN title = '' OR title IS NULL THEN ? ELSE title END, "
+                "personalization_notes = CASE WHEN ? = '' THEN personalization_notes "
+                "WHEN personalization_notes = '' OR personalization_notes IS NULL THEN ? "
+                "ELSE personalization_notes || char(10) || ? END, "
+                "updated_at = ? WHERE id = ?",
+                (first_name, last_name, title or "", note, note, note,
+                 _utcnow().isoformat(), prospect_id),
+            )
+            await db.commit()
+
     async def update_prospect_segment(self, prospect_id: str, *, industry: str = "",
                                       seniority: str = "", department: str = ""):
         """Record which sector / role tier / department a contact belongs to

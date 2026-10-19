@@ -215,6 +215,7 @@ class OutreachConfig(BaseModel):
     signature_html: str = ""
     signature_text: str = ""
     signature_image: str = ""  # file name under HARVEY_HOME/signature
+    greeting: str = "Hi"       # the opening word: "Hi Jane," / "Hello Acme team,"
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -231,6 +232,16 @@ class OutreachConfig(BaseModel):
         if v not in ("concise", "engaging"):
             raise ValueError("outreach.style must be concise or engaging.")
         return v
+
+    @field_validator("greeting", mode="before")
+    @classmethod
+    def _valid_greeting(cls, v) -> str:
+        from harvey.names import GREETING_WORDS
+        v = str(v or "Hi").strip()
+        match = next((w for w in GREETING_WORDS if w.lower() == v.lower()), "")
+        if not match:
+            raise ValueError(f"'{v}' is not a greeting. Use one of: {', '.join(GREETING_WORDS)}.")
+        return match
 
     @field_validator("signature_image", mode="before")
     @classmethod

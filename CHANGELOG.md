@@ -9,6 +9,20 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Names and greetings.** Every email and reply opens with a greeting
+  line that fits what is known: "Hi Jane," / "Hello Acme team," for a
+  shared inbox such as info@ / "Hi there," when nobody's name is known; the
+  word is `outreach.greeting` (Hi, Hello, Hey, Dear, Good day). Names the
+  upload left blank are worked out before writing (`harvey/names.py`): from
+  the LinkedIn URL, from a first.last address, or from the company's team
+  page matched against the address (one fetch per domain, 15 a cycle). A
+  name is never guessed; `{{first_name}}` is for the greeting only.
+- **A clearer stop.** The worker's last log line says why it stopped (the
+  dashboard's Stop button, a settings change, Ctrl+C, the terminal
+  closing) instead of a joke about needing a break, the web app writes
+  who stopped a worker into its log, and a worker that dies on its own is
+  started again the next time its dashboard is opened.
+
 - **Microsoft 365 admin-app provider** (`channels.email.provider:
   microsoft_app`). Client-credentials sign-in with `M365_TENANT_ID`,
   `M365_CLIENT_ID`, `M365_CLIENT_SECRET` and `M365_MAILBOX`; sends and

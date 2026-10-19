@@ -128,7 +128,7 @@ async def test_handler_reply_gets_instructions_and_attachments(state):
     convo = Conversation(id="c9", prospect_id="p1")
 
     text = await handler._generate_response("interested", "Sure, tell me more", prospect, convo)
-    assert text.startswith("Thanks")
+    assert text.startswith("Hi Sam,\n\nThanks")
     prompt = brain.prompts[-1]
     assert "prospective client or partner" in prompt and "find a financial advisor" in prompt
     assert "STANDING INSTRUCTIONS" in prompt and "Tuesday afternoons" in prompt

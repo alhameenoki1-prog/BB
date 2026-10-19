@@ -72,6 +72,7 @@ SPEEDS = {
     "normal": {"label": "Normal", "note": "10 emails every 2 minutes (about 300 an hour)", "interval": 2, "per_cycle": 10},
     "fast": {"label": "Fast", "note": "25 emails every minute (about 1,500 an hour; needs a mailbox that allows it)", "interval": 1, "per_cycle": 25},
 }
+GREETINGS = ("Hi", "Hello", "Hey", "Dear", "Good day")
 STYLES = {
     "engaging": "Engaging: 90–130 words with a hook, one useful detail, an easy question and a PS",
     "concise": "Concise: under 75 words, one observation and one question",
@@ -390,6 +391,7 @@ class Workspace:
             "attach_on": outreach.get("attach_on", "first_reply"),
             "writing": "person" if outreach.get("personalize_each", False) else "segment",
             "style": outreach.get("style", "engaging"),
+            "greeting": outreach.get("greeting", "Hi"),
             "signature_html": outreach.get("signature_html", ""),
             "speed": next((k for k, v in SPEEDS.items()
                            if v["interval"] == usage.get("heartbeat_interval_minutes")
@@ -485,6 +487,7 @@ class Workspace:
                 # Web default: one email per sector × role segment, sent in bulk.
                 "personalize_each": text("writing") == "person",
                 "style": text("style") if text("style") in STYLES else "engaging",
+                "greeting": text("greeting") if text("greeting") in GREETINGS else "Hi",
                 "signature_html": signature_html,
                 "signature_image": self.signature_image(),
             },
@@ -777,12 +780,13 @@ class Workspace:
         self.autostart_file.write_text(str(int(time.time())))
         return True, f"Started (pid {proc.pid})."
 
-    async def stop_worker(self) -> tuple[bool, str]:
+    async def stop_worker(self, reason: str = "Stop pressed on the dashboard") -> tuple[bool, str]:
         self.autostart_file.unlink(missing_ok=True)
         pid = self.worker_running()
         if not pid:
             self.pid_file.unlink(missing_ok=True)
             return True, "Not running."
+        self._note_in_log(f"BB is stopping the worker: {reason}.")
         try:
             os.kill(pid, signal.SIGTERM)
             for _ in range(20):
@@ -800,6 +804,25 @@ class Workspace:
 
     def wants_autostart(self) -> bool:
         return self.autostart_file.exists()
+
+    def _note_in_log(self, text: str):
+        try:
+            with open(self.log_file, "a") as log:
+                log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - bb - INFO - {text}\n")
+        except OSError:
+            pass
+
+    def revive_worker(self) -> str:
+        """If the worker should be running (it was started and never
+        stopped from here) but its process is gone — the Mac rebooted, the
+        system killed it, it crashed — start it again. Returns a note for
+        the page, or ""."""
+        if self.user.get("disabled") or self.worker_running() or not self.wants_autostart():
+            return ""
+        self._note_in_log("The worker was not running although it was never stopped from "
+                          "here (a crash, a reboot, or the system ended it). Starting it again.")
+        ok, detail = self.start_worker()
+        return f"The worker had stopped on its own and was started again ({detail})." if ok else ""
 
     def log_tail(self, lines: int = 60) -> list[str]:
         try:

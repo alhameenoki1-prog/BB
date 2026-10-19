@@ -155,10 +155,16 @@ async def _interruptible_sleep(seconds: float, stop_event: asyncio.Event) -> boo
         return False
 
 
+# Why the loop ended, for the last log line: set by the signal handler
+# ("SIGTERM from the dashboard or the system"), else worked out below.
+_stop_reason = {"text": ""}
+
+
 async def heartbeat(stop_event: asyncio.Event | None = None):
     """Harvey's main loop. Wakes up, decides, acts, sleeps. Repeat."""
     if stop_event is None:
         stop_event = asyncio.Event()
+    _stop_reason["text"] = ""
 
     logger.info("=" * 60)
     logger.info("Harvey is online. Always Be Closing.")
@@ -337,6 +343,7 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
                 break
 
         except (KeyboardInterrupt, asyncio.CancelledError):
+            _stop_reason["text"] = _stop_reason["text"] or "interrupted from the keyboard"
             break
         except Exception as e:
             consecutive_errors += 1
@@ -352,7 +359,12 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
             if await _interruptible_sleep(backoff, stop_event):
                 break
 
-    logger.info("Harvey shutting down. Deals don't close themselves, but I need a break.")
+    reason = _stop_reason["text"] or (
+        "asked to stop" if stop_event.is_set() else "the loop ended")
+    logger.info(
+        f"Harvey stopped: {reason}. This is a normal stop, not an error — nothing "
+        "is lost. Start it again and it carries on where it left off."
+    )
 
 
 def _needs_setup() -> bool:
@@ -400,7 +412,14 @@ async def _run_with_signals():
         if stop_event.is_set():
             logger.info("Second shutdown signal — exiting immediately.")
             sys.exit(1)
-        logger.info(f"Received {sig_name}. Finishing current work, then shutting down...")
+        source = {
+            "SIGTERM": "a stop request (the dashboard's Stop button, a settings change "
+                       "that needs a restart, or the system)",
+            "SIGINT": "Ctrl+C in the terminal",
+            "SIGHUP": "the terminal closing",
+        }.get(sig_name, sig_name)
+        _stop_reason["text"] = f"{sig_name}, {source}"
+        logger.info(f"Received {sig_name} ({source}). Finishing current work, then stopping...")
         stop_event.set()
 
     for sig in (signal.SIGINT, signal.SIGTERM):

@@ -215,6 +215,9 @@ bob@gmail.com,Bob,,,,"Freelancer, met at a meetup"
 JANE@acme.com,Jane Again,Acme,,,
 not-an-email,Nobody,,,,
 sam@beta.io,,Beta Industries,CTO,,
+ada.okafor@gamma.ng,,Gamma,,,
+pat@delta.co,,Delta,,https://linkedin.com/in/pat-lee-7a6b5c,
+info@delta.co,,Delta,,,
 """
 
 
@@ -223,7 +226,7 @@ def test_recipient_upload_creates_prospects_and_companies(client):
     r = client.post("/recipients", files={"file": ("list.csv", CSV, "text/csv")})
     assert r.status_code == 303
     loc = r.headers["location"]
-    assert "Added%203" in loc and "1%20already" in loc and "1%20skipped" in loc
+    assert "Added%206" in loc and "1%20already" in loc and "1%20skipped" in loc
 
     user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
     ws = Workspace(client.settings, user)
@@ -231,7 +234,17 @@ def test_recipient_upload_creates_prospects_and_companies(client):
     rows = db.execute(
         "SELECT email, first_name, last_name, email_status, status, company, title, linkedin_url, "
         "personalization_notes FROM prospects ORDER BY email").fetchall()
-    assert [r[0] for r in rows] == ["bob@gmail.com", "jane@acme.com", "sam@beta.io"]
+    by_email = {r[0]: r for r in rows}
+    assert sorted(by_email) == ["ada.okafor@gamma.ng", "bob@gmail.com", "info@delta.co", "jane@acme.com",
+                                "pat@delta.co", "sam@beta.io"]
+    # Names the rows left blank are worked out where it is safe to.
+    ada = by_email["ada.okafor@gamma.ng"]
+    assert ada[1:3] == ("Ada", "Okafor") and "email address" in ada[8]
+    pat = by_email["pat@delta.co"]
+    assert pat[1:3] == ("Pat", "Lee") and "LinkedIn URL" in pat[8]
+    shared = by_email["info@delta.co"]
+    assert shared[1:3] == ("", "") and "Shared inbox" in shared[8]
+    rows = [by_email["bob@gmail.com"], by_email["jane@acme.com"], by_email["sam@beta.io"]]
     jane = rows[1]
     assert jane[1:5] == ("Jane", "Doe", "provided", "new")
     assert jane[5] == "Acme" and jane[6] == "Head of Growth"
@@ -248,7 +261,7 @@ def test_recipient_upload_creates_prospects_and_companies(client):
     assert "Added%200" in r.headers["location"]
 
     summary = client.get("/api/summary").json()
-    assert summary["recipients"] == 3 and summary["waiting"] == 3 and summary["not_sent"] == 3
+    assert summary["recipients"] == 6 and summary["waiting"] == 6 and summary["not_sent"] == 6
     page = client.get("/recipients")
     assert "jane@acme.com" in page.text and "Beta Industries" in page.text
     assert "waiting to be sorted" in page.text
@@ -257,7 +270,7 @@ def test_recipient_upload_creates_prospects_and_companies(client):
     db.commit()
     page = client.get("/recipients")
     assert "Construction" in page.text and "1 executive" in page.text and "1 admin" in page.text
-    assert "1 not sorted yet" in page.text
+    assert "4 not sorted yet" in page.text
 
 
 def test_pasted_addresses_without_a_header(client):
@@ -565,6 +578,26 @@ def test_worker_start_stop(client, monkeypatch):
     assert "Stopped" in r.headers["location"]
     assert not ws.pid_file.exists() and not ws.autostart_file.exists()
     assert client.get("/api/summary").json()["worker_running"] is False
+    # The worker's log says who stopped it, so a user reading the tail is not left guessing.
+    assert "BB is stopping the worker: Stop pressed on the dashboard." in ws.log_file.read_text()
+
+    # A worker that dies on its own (never stopped from here) is started again
+    # the next time the dashboard looks, and the page says so.
+    alive.add(4242)
+    client.post("/worker/start")
+    assert ws.autostart_file.exists()
+    alive.discard(4242)                      # the process vanished (crash, reboot)
+    assert ws.worker_running() is None
+    client.get("/api/summary")               # the next look revives it (fake_popen answers pid 4242)
+    alive.add(4242)
+    assert ws.worker_running() == 4242 and ws.autostart_file.exists()
+    log = ws.log_file.read_text()
+    assert "was not running although it was never stopped from here" in log
+    # Stopped on purpose: nothing revives it.
+    client.post("/worker/stop")
+    alive.discard(4242)
+    client.get("/")
+    assert ws.worker_running() is None
 
 
 def test_workers_autostart_on_boot(settings, monkeypatch):

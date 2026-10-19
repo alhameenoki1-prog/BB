@@ -14,6 +14,7 @@ import re
 from urllib.parse import urlparse
 
 from harvey.models.company import Company
+from harvey import names
 from harvey.models.prospect import Prospect
 
 MAX_ROWS = 10_000
@@ -144,12 +145,20 @@ async def import_rows(state, rows: list[dict]) -> dict:
             notes.append(row["notes"])
         if row.get("linkedin"):
             notes.append(f"LinkedIn: {row['linkedin']}")
-        if not (row.get("first_name") or row.get("last_name")):
+        resolved = names.resolve_name(row.get("first_name", ""), row.get("last_name", ""),
+                                      email, row.get("linkedin", ""))
+        if resolved["source"] == "linkedin":
+            notes.append("Name taken from the LinkedIn URL; the row gave none.")
+        elif resolved["source"] == "email":
+            notes.append("Name read from the email address (first.last pattern); the row gave none.")
+        elif resolved["source"] == "role":
+            notes.append(f"Shared inbox ({email.split('@')[0]}@): address the team, not a person.")
+        elif resolved["source"] == "":
             notes.append("No name was given; open without one rather than guessing.")
         prospect = Prospect(
             company_id=company_id,
-            first_name=(row.get("first_name") or "").strip(),
-            last_name=(row.get("last_name") or "").strip(),
+            first_name=resolved["first_name"],
+            last_name=resolved["last_name"],
             email=email,
             email_status="provided",
             linkedin_url=(row.get("linkedin") or "").strip(),

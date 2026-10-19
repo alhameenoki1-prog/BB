@@ -232,6 +232,30 @@ security settings; the page's buttons fill in the servers. A mailbox from a
 web host is usually `mail.yourdomain.com` on ports 587/465 (SMTP) and 993
 (IMAP).
 
+## Names and greetings
+
+Every email opens with a greeting line. The first name comes from the
+upload, else the LinkedIn URL (`/in/jane-doe-…`), else a `first.last@`
+address, else the company's team page matched against the address
+(`jdoe@acme.com` next to a card for Jane Doe). When none of those gives a
+name the line is "Hi there,"; a shared inbox such as `info@` or `office@`
+gets "Hello Acme team,". The word (Hi, Hello, Hey, Dear, Good day) is on
+the profile. Nothing is ever guessed from a single word like `jane@` or
+`jdoe@`, because a wrong name is worse than none.
+
+## If the worker stops
+
+The worker's log (dashboard → Worker) ends with a line that says why it
+stopped. "Harvey stopped: SIGTERM, a stop request…" means the Stop button,
+a settings change that stops the worker (removing the mailbox or the AI
+provider, an admin disabling the account), or the system shutting down;
+"Ctrl+C" or "the terminal closing" mean the terminal that ran it. A worker
+that was never stopped from the dashboard but is no longer running (the
+Mac rebooted, it crashed) is started again the next time its owner opens
+the dashboard, and again when `python -m bb` starts. Press Start on the
+dashboard to bring a stopped worker back by hand; nothing is lost either
+way, it carries on from the outbox and the recipients it had not reached.
+
 ## Operations
 
 - **Data**: everything is under `./data` on the host (`data/bb/bb.db` holds

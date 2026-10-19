@@ -16,6 +16,7 @@ import random
 import re
 from datetime import date, datetime, timedelta, timezone
 
+from harvey import names
 from harvey.brain import Brain
 from harvey.config import HarveyConfig, EnvConfig
 from harvey.gate import pre_send_check
@@ -391,10 +392,15 @@ class Sender:
 
         await self._drain_due()
 
-    def _render(self, text: str, prospect) -> str:
-        """Fill merge variables. The pre-send gate rejects any leftovers."""
+    def _render(self, text: str, prospect, *, body: bool = False) -> str:
+        """Fill merge variables. The pre-send gate rejects any leftovers.
+        A body also gets its greeting line fixed to what is known about the
+        recipient ("Hi Jane," / "Hello Acme team," / "Hi there,")."""
+        if body:
+            text = names.strip_greeting(text)
+        first = (prospect.first_name or "").strip()
         replacements = {
-            "first_name": prospect.first_name,
+            "first_name": first or ("your team" if names.is_role_address(prospect.email) else "there"),
             "last_name": prospect.last_name,
             "company": prospect.company,
             "title": prospect.title,
@@ -403,7 +409,12 @@ class Sender:
         for key, value in replacements.items():
             text = text.replace("{{" + key + "}}", value or "")
             text = text.replace("{{ " + key + " }}", value or "")
-        return text.strip()
+        text = text.strip()
+        if body:
+            outreach = getattr(self.config, "outreach", None)
+            text = names.ensure_greeting(text, first, prospect.email, prospect.company,
+                                         getattr(outreach, "greeting", "") or "Hi")
+        return text
 
     async def _stage_campaign_native(self, campaign):
         """Render + schedule a draft campaign's emails into the outbox."""
@@ -450,7 +461,7 @@ class Sender:
                     step=step.step,
                     to_email=email,
                     subject=self._render(step.subject, prospect),
-                    body=self._render(step.body, prospect),
+                    body=self._render(step.body, prospect, body=True),
                     send_at=send_at.isoformat(),
                     status=initial_status,
                     provider=self.provider.name,
