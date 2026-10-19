@@ -1,16 +1,15 @@
-"""Tests for usage tracking: schema, pricing, result parsing, reconciliation, quota."""
+"""Tests for usage tracking: schema, aggregations, and the Claude API ledger rows."""
 
-import json
 import os
 import tempfile
-from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
 
+import harvey.brain as brain_mod
 from harvey.brain import Brain
 from harvey.state import StateManager
-from harvey.integrations.quota import _parse_window, _token_from_json_blob
 
 
 @pytest_asyncio.fixture
@@ -82,83 +81,63 @@ async def test_request_key_dedup(state):
     assert totals["today"]["output_tokens"] == 50
 
 
-# ── Brain result-JSON parsing ──
+# ── Brain usage rows from Messages API responses ──
 
 
-SAMPLE_RESULT = {
-    "type": "result",
-    "subtype": "success",
-    "is_error": False,
-    "duration_ms": 1428,
-    "num_turns": 1,
-    "result": "Hello from Claude",
-    "session_id": "f362e409-925c-4eb1-ba98-60484bb2dcf5",
-    "total_cost_usd": 0.0182948,
-    "usage": {"input_tokens": 10, "output_tokens": 51},
-    "modelUsage": {
-        "claude-haiku-4-5-20251001": {
-            "inputTokens": 10, "outputTokens": 51,
-            "cacheReadInputTokens": 17198, "cacheCreationInputTokens": 8155,
-            "costUSD": 0.0182948,
-        }
-    },
-}
-
-
-def test_parse_result_payload_json():
-    text, payload = Brain._parse_result_payload(json.dumps(SAMPLE_RESULT))
-    assert text == "Hello from Claude"
-    assert payload["session_id"] == "f362e409-925c-4eb1-ba98-60484bb2dcf5"
-
-
-def test_parse_result_payload_plain_text_fallback():
-    text, payload = Brain._parse_result_payload("just plain text output")
-    assert text == "just plain text output"
-    assert payload is None
-    # A JSON response body that isn't a CLI result envelope stays verbatim
-    text2, payload2 = Brain._parse_result_payload('{"intent": "interested"}')
-    assert text2 == '{"intent": "interested"}'
-    assert payload2 is None
+def _response(**overrides):
+    base = dict(
+        id="msg_01", model="claude-opus-5-5", stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text="Hello from Claude")],
+        usage=SimpleNamespace(input_tokens=10, output_tokens=51,
+                              cache_read_input_tokens=17198, cache_creation_input_tokens=8155),
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
 
 
 @pytest.mark.asyncio
-async def test_brain_records_usage_from_payload(state):
-    brain = Brain(state)
-    await brain._record_usage(
-        SAMPLE_RESULT, agent="", task="", label="harvey-scout-score"
+async def test_brain_records_usage_from_response(state):
+    brain = Brain(state, client=SimpleNamespace(api_key="sk-ant-test", auth_token=None))
+    await brain._record_claude_usage(
+        _response(), model="claude-opus-5-5", duration_ms=1428,
+        agent="", task="", label="harvey-scout-score",
     )
     rows = await state.usage_by_agent(days=1)
     assert len(rows) == 1
     assert rows[0]["agent"] == "scout"  # derived from the harvey-* label
     assert rows[0]["output_tokens"] == 51
-    assert rows[0]["cost_usd"] == pytest.approx(0.0182948, abs=1e-4)
+    assert rows[0]["cache_read_tokens"] == 17198
+    expected = brain_mod.estimate_cost_usd("claude-opus-5-5", 10, 51, 17198, 8155)
+    assert expected > 0
+    assert rows[0]["cost_usd"] == pytest.approx(expected, abs=1e-6)
 
     by_model = await state.usage_by_model(days=1)
-    assert by_model[0]["model"] == "claude-haiku-4-5-20251001"
+    assert by_model[0]["model"] == "claude-opus-5-5"
+    by_provider = await state.usage_by_provider(days=1)
+    assert [r["provider"] for r in by_provider] == ["claude"]
+
+
+@pytest.mark.asyncio
+async def test_served_model_wins_over_requested_model(state):
+    """With a refusal fallback the response names the model that answered."""
+    brain = Brain(state, client=SimpleNamespace(api_key="sk-ant-test", auth_token=None))
+    await brain._record_claude_usage(
+        _response(model="claude-opus-4-8"), model="claude-opus-5-5", duration_ms=1,
+        agent="writer", task="draft", label="",
+    )
+    by_model = await state.usage_by_model(days=1)
+    assert by_model[0]["model"] == "claude-opus-4-8"
+    assert by_model[0]["cost_usd"] == pytest.approx(
+        brain_mod.estimate_cost_usd("claude-opus-4-8", 10, 51, 17198, 8155))
 
 
 @pytest.mark.asyncio
 async def test_usage_is_harvey_only(state):
     """Sanity: the ledger only contains rows Harvey's Brain wrote. There is
-    no transcript scan to pull in other projects' Claude sessions."""
-    import harvey.usage as usage_mod
-    assert not hasattr(usage_mod, "reconcile_transcripts")
-    assert not hasattr(usage_mod, "parse_transcript_events")
-
-
-# ── quota client helpers ──
-
-
-def test_token_from_json_blob():
-    blob = json.dumps({"claudeAiOauth": {"accessToken": "sk-ant-oat01-abc"}})
-    assert _token_from_json_blob(blob) == "sk-ant-oat01-abc"
-    assert _token_from_json_blob("not json") is None
-    assert _token_from_json_blob(json.dumps({"other": 1})) is None
-
-
-def test_parse_window():
-    parsed = _parse_window({"utilization": 42.5, "resets_at": "2026-08-29T01:00:00Z"})
-    assert parsed == {"utilization": 42.5, "resets_at": "2026-08-29T01:00:00Z"}
-    assert _parse_window({"utilization": "bad"}) is None
-    assert _parse_window(None) is None
-    assert _parse_window({"utilization": 0})["utilization"] == 0.0
+    no transcript scan to pull in other projects' sessions, and no reading
+    of the operator's own Claude Code login."""
+    assert not hasattr(brain_mod, "reconcile_transcripts")
+    assert not hasattr(brain_mod, "parse_transcript_events")
+    import importlib.util
+    assert importlib.util.find_spec("harvey.integrations.quota") is None
+    assert importlib.util.find_spec("harvey.usage") is None

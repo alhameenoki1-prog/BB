@@ -5,9 +5,9 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-# System deps (curl needed for the Claude CLI installer)
+# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -33,9 +33,8 @@ COPY --chown=harvey:harvey harvey.yaml .
 USER harvey
 ENV PATH="/home/harvey/.local/bin:${PATH}"
 
-# Claude Code CLI, installed as the runtime user so ~/.local/bin is correct.
-# `|| true` keeps the build working offline; the CLI is required at runtime.
-RUN curl -fsSL https://claude.ai/install.sh | sh || true
+# The brain calls the Anthropic API directly: pass ANTHROPIC_API_KEY through
+# the environment (docker-compose reads it from .env). No CLI to install.
 
 # Healthy = the heartbeat loop has touched the database recently
 # (2h window tolerates long heartbeat intervals and quiet-hour idling).

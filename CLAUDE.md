@@ -1,6 +1,6 @@
 # Harvey — Autonomous AI Sales Agent
 
-Harvey is an autonomous sales agent powered by Claude Code. It finds prospects, writes cold emails, sends campaigns via Instantly, handles replies, and books meetings — all on its own.
+Harvey is an autonomous sales agent that thinks with Claude through the Anthropic API (or, opt-in, Codex on a ChatGPT plan). It finds prospects, writes cold emails, sends them from your own mailbox, handles replies, and books meetings — all on its own.
 
 **You (Claude) are the guide.** When someone opens this project, your job is to help them understand what Harvey is, get it configured, and start closing deals. Be conversational, not robotic. Explain things simply. Ask one thing at a time.
 
@@ -13,14 +13,14 @@ Start by checking what state things are in. Don't dump a wall of setup steps —
 ### Quick health check (do this silently):
 1. Does `.venv/` exist? → If not, they need install
 2. Is `harvey` importable? → If not, dependencies need installing
-3. Does `.env` exist with real values? → If not, they need API keys
+3. Does `.env` exist with real values (`ANTHROPIC_API_KEY` plus a mail provider)? → If not, they need API keys
 4. Does `harvey.yaml` have real values (not "Your Company")? → If not, they need product training
 5. Does `data/harvey.db` exist? → If not, Harvey hasn't run yet
 
 ### Then introduce yourself based on what you find:
 
 **If nothing is set up:**
-> "This is Harvey — an autonomous AI sales agent. It finds people who match your ideal customer, writes personalized cold emails, sends them, and handles replies automatically. It runs on your Claude Max subscription so there's no extra cost.
+> "This is Harvey — an autonomous AI sales agent. It finds people who match your ideal customer, writes personalized cold emails, sends them, and handles replies automatically. It thinks with Claude through the Anthropic API, billed per token, with a daily spend cap you control.
 >
 > Let me help you get it set up. It takes about 5 minutes. First, let me install the dependencies..."
 
@@ -44,9 +44,9 @@ People will ask "how does this work?" — explain it simply:
 
 - **"Is it safe?"** → Yes. It runs locally on your machine, has daily usage limits, quiet hours, and send limits built in. It can't delete files, access your bank account, or do anything outside its sales workflow. Everything it does is logged in a local SQLite database you can inspect anytime.
 
-- **"What does it cost?"** → Just your Claude Max subscription (which you already have). The only paid integration is Instantly for sending emails (their cheapest plan works). Everything else — prospecting, email writing, reply handling — is included.
+- **"What does it cost?"** → Anthropic API usage for the model calls (billed per token; the default model is `claude-opus-5-5`, and `usage.max_daily_cost_usd` in harvey.yaml caps the daily spend — the Usage tab and `harvey usage` show the running estimate), plus a mailbox (~$7/mo Google Workspace). Prospecting on the free sources, website reading, and reply handling need nothing else.
 
-- **"Can it use ChatGPT / Codex instead of Claude?"** → Yes, opt-in. Install Codex CLI 0.159.3 (`npm install -g @openai/codex@0.159.3`; other versions are refused), run `codex login` with ChatGPT, and set `brain: { provider: codex, model: gpt-5.5 }` in harvey.yaml (or choose codex in `harvey setup`, which suggests gpt-5.5, or `harvey train <url> --provider codex --model gpt-5.5`). gpt-5.5 is the verified text-only model; a blank model fails on current accounts because the live catalog hides it, and code-mode models are refused. Claude stays the default; Harvey never switches providers on its own. Each Codex call runs isolated with no tools — see "Using a ChatGPT plan instead (Codex)" in the README. macOS and Linux only; on Windows, Codex is refused, so use Claude. Don't edit the user's own `~/.codex` config to make it work.
+- **"Can it use ChatGPT / Codex instead of Claude?"** → Yes, opt-in, and that path is a subscription rather than per-token billing. Install Codex CLI 0.159.3 (`npm install -g @openai/codex@0.159.3`; other versions are refused), run `codex login` with ChatGPT, and set `brain: { provider: codex, model: gpt-5.5 }` in harvey.yaml (or choose codex in `harvey setup`, which suggests gpt-5.5, or `harvey train <url> --provider codex --model gpt-5.5`). gpt-5.5 is the verified text-only model; a blank model fails on current accounts because the live catalog hides it, and code-mode models are refused. Claude stays the default; Harvey never switches providers on its own. Each Codex call runs isolated with no tools — see "Using a ChatGPT plan instead (Codex)" in the README. macOS and Linux only; on Windows, Codex is refused, so use Claude. Don't edit the user's own `~/.codex` config to make it work.
 
 - **"What's the dashboard?"** → Run `harvey dashboard` to see a local web UI at localhost:5555. It opens on **Today** — anything waiting on a decision, then the pipeline. Tabs for Signals, Companies, Contacts, Campaigns, Outbox, Conversations, Activity, Usage, Settings.
 
@@ -71,9 +71,12 @@ python -m playwright install chromium
 
 ### Step 2: API Keys (`.env`)
 
-Harvey needs an **email provider** (to send + read replies) and, strongly recommended, an **email verifier**. Pick one provider:
+Harvey needs an **Anthropic API key** (the brain), an **email provider** (to send + read replies) and, strongly recommended, an **email verifier**. Pick one email provider:
 
 ```
+# --- Brain: Claude via the Anthropic API (brain.provider: claude, default) ---
+ANTHROPIC_API_KEY=          # console.anthropic.com → API keys. Not needed for brain.provider: codex
+
 # --- Email provider: choose ONE, set channels.email.provider to match ---
 GMAIL_CLIENT_ID=            # Recommended: Gmail/Workspace. Then run 'harvey gmail auth'
 GMAIL_CLIENT_SECRET=
@@ -198,7 +201,8 @@ it is mostly directories anyway.
 ### Step 6: Behavior Settings
 
 These go in `harvey.yaml` under `usage:`. Use sensible defaults unless they want to customize:
-- `max_daily_claude_percent`: 80 (how much of daily Claude quota to use)
+- `max_daily_cost_usd`: 0 = no cap. Claude only: estimated API spend per day before Harvey pauses until tomorrow. Suggest a cap (e.g. 5) to anyone worried about the bill.
+- `max_daily_claude_percent`: 80 (Codex only: how much of the ChatGPT plan's quota to use)
 - `heartbeat_interval_minutes`: 15 (how often Harvey checks for work)
 - `quiet_hours`: 22:00-07:00 in their timezone
 - `max_daily_sends`: 50 (email send limit)
@@ -234,9 +238,9 @@ Users will come back with questions and tasks. Common ones:
 
 ### Architecture
 - **Heartbeat loop** (`main.py`): Every cycle → check quiet hours → check budget → decide → act → log → sleep
-- **Brain** (`brain.py`): Wraps `claude -p --output-format json --dangerously-skip-permissions` for headless Claude calls; records exact per-call token usage into `usage_events`
+- **Brain** (`brain.py`): Calls Claude through the Anthropic API with the official SDK (`anthropic.AsyncAnthropic`): one `messages.create` per prompt, no tools, a fixed system prompt that marks quoted content as data, bounded retries, and a server-side refusal fallback on supported models. Records exact per-call tokens and an estimated cost into `usage_events`; `usage.max_daily_cost_usd` caps the day. `brain.provider: codex` swaps in the isolated Codex runtime (`codex.py`) instead
 - **State** (`state.py`): SQLite at `data/harvey.db` with tables for companies, prospects, campaigns, conversations, actions, usage
-- **Usage tracking** (`usage.py`, `integrations/quota.py`): per-call attribution (agent/task/model/tokens) for Harvey's OWN Claude calls only — it never scans your other Claude Code sessions — plus a live subscription-quota gauge read the same way Claude Code's `/usage` does. The budget check throttles Harvey against real quota utilization so it always leaves headroom for your own interactive Claude use (`usage.max_daily_claude_percent`). Dashboard has a Usage tab; CLI has `harvey usage`.
+- **Usage tracking** (`brain.py`, `state.py`): per-call attribution (agent/task/model/tokens/estimated cost) for Harvey's own model calls only. Claude is budgeted in dollars (`usage.max_daily_cost_usd`); Codex against the ChatGPT plan's real quota windows (`usage.max_daily_claude_percent`), falling back to a daily call count when they can't be read. Dashboard has a Usage tab; CLI has `harvey usage`.
 - **Skills** (`skills/`): Markdown knowledge files injected into agent prompts
 - **Signals** (`signals.py`, `state.py`): every fact Harvey learns is an OBSERVATION — a row in `observations`, never a column. A new signal needs no migration, re-observing over time is a free time series, and confidence + provenance travel with the fact. The vocabulary in `signal_codes` is governed (a trigger rejects any code not in it) and gated: only `status = 'confirmed'` signals are collected, and only a human sets that. `state.cohort(require, exclude)` does the set intersection in SQL.
 - **Dashboard** (`dashboard.py` + `harvey/web/`): FastAPI JSON API plus plain HTML/CSS/JS served from disk — no build step. Edit `harvey/web/app.css` or `app.js` and reload the page.
@@ -263,7 +267,7 @@ harvey dashboard             # Web UI at http://localhost:5555
 harvey setup                 # Re-run setup wizard
 harvey train <url>           # Train on a product website
 harvey status                # Pipeline summary
-harvey usage                 # Claude quota gauges + per-agent token usage (no dollar costs — subscription plans aren't billed per token)
+harvey usage                 # estimated Claude API spend (or Codex quota) + per-agent token usage
 harvey export                # Deliverable prospects → sequencer-ready CSV (prospects.csv)
 harvey export --all          # Full raw list, no filters
 harvey gmail auth            # One-time Gmail OAuth (when provider: gmail)
@@ -279,7 +283,7 @@ harvey sending pause|resume  # Kill switch for all outbound
 - **"ModuleNotFoundError: No module named 'harvey'" after install (macOS)**: Python 3.13 silently ignores `.pth` files that carry the macOS hidden file flag, and some Macs propagate that flag into `.venv`. Run `harvey install` again (it auto-fixes by linking the package), or manually: `ln -s "$(pwd)/harvey" .venv/lib/python3.13/site-packages/harvey`
 - **"externally-managed-environment"**: Use a venv, not system Python
 - **SQLite errors**: The `data/` directory is created automatically on first run
-- **Claude headless mode fails**: User needs `claude login` and an active Max subscription
+- **Claude calls fail**: the log line says why. A 401 → `ANTHROPIC_API_KEY` in `.env` is missing or wrong (Harvey pauses until it's fixed and restarted; `harvey status --check` confirms). "credit balance" → add credit in the Anthropic Console (Harvey pauses an hour, then retries). 404 → `brain.model` in harvey.yaml names a model that doesn't exist; leave it blank for `claude-opus-5-5`. Harvey never switches to Codex on its own.
 - **Codex calls fail** (`brain.provider: codex`): the log line says why — `codex login` with ChatGPT (also when the login "has expired or is due for renewal": Harvey never renews it), install the supported Codex version (`harvey status --check` shows what's wrong without a model call; while Codex is unusable Harvey pauses whole cycles on purpose), pick a `brain.model` without code mode, or remove whatever Codex config layer is forcing tools/hooks/MCP back on. Never weaken Harvey's isolation checks to get past it.
 - **Instantly API 401**: Wrong API key or needs the Growth plan for API access
 - **Google search rate limiting**: Harvey automatically falls back to DuckDuckGo and Bing. For reliable search, add a Serper API key ($5/mo).

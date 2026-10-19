@@ -177,17 +177,31 @@ async def test_claude_is_unaffected_on_windows(on_windows, monkeypatch, tmp_path
     from harvey.brain import Brain
     from harvey.state import StateManager
 
-    class Proc:
-        returncode = 0
+    from types import SimpleNamespace
 
-        async def communicate(self, data=None):
-            return b'{"type": "result", "result": "ok", "session_id": "s"}', b""
+    class FakeAnthropic:
+        api_key = "sk-ant-test"
+        auth_token = None
 
-    async def fake_claude(*cmd, **kwargs):
-        assert cmd[0] == "claude"
-        return Proc()
+        def __init__(self, **kwargs):
+            self.messages = SimpleNamespace(create=self._create)
+            self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._create))
 
-    monkeypatch.setattr(brain_mod.asyncio, "create_subprocess_exec", fake_claude)
+        def with_options(self, **kwargs):
+            return self
+
+        async def _create(self, **kwargs):
+            return SimpleNamespace(
+                id="msg_s", model=kwargs["model"], stop_reason="end_turn",
+                content=[SimpleNamespace(type="text", text="ok")],
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1,
+                                      cache_read_input_tokens=0, cache_creation_input_tokens=0))
+
+    async def no_process(*cmd, **kwargs):
+        raise AssertionError("the Claude path must not start a process")
+
+    monkeypatch.setattr(brain_mod.anthropic, "AsyncAnthropic", FakeAnthropic)
+    monkeypatch.setattr(brain_mod.asyncio, "create_subprocess_exec", no_process)
     state = StateManager(str(tmp_path / "c.db"))
     await state.init_db()
     brain = Brain(state)

@@ -227,8 +227,8 @@ def cmd_status(args):
                     print(f"  Brain:                {label} ready (CLI, isolation, login, "
                           "model and account checked; no prompt sent)")
                 else:
-                    print(f"  Brain:                {label} (not checked: Claude is checked "
-                          "by its first call)")
+                    print(f"  Brain:                {label} ready (API key present; the "
+                          "model is checked by its first call)")
         elif brain_status.get("status") == "paused":
             label = {"claude": "Claude", "codex": "Codex"}.get(brain_status.get("provider"), "Brain")
             print(f"  Brain:                {label} PAUSED since {brain_status.get('since', '?')}")
@@ -256,9 +256,9 @@ def cmd_usage(args):
             print(f"  {e}")
             brain_config = None
 
-        # Live quota for the ACTIVE provider only (best-effort). Each
-        # subscription's gauge is read from its own source and labelled as
-        # such; one is never shown as the other.
+        # Live quota for the ACTIVE provider only (best-effort). Codex has a
+        # plan quota to read; Claude runs on the API and is billed per token,
+        # so its gauge is the estimated spend from the ledger instead.
         windows = None
         provider = brain_config.provider if brain_config else None
         try:
@@ -266,9 +266,6 @@ def cmd_usage(args):
                 from harvey.codex import CodexClient, CodexQuotaClient
                 windows = await CodexQuotaClient(
                     CodexClient(model=brain_config.model)).get_utilization()
-            elif provider == "claude":
-                from harvey.integrations.quota import QuotaClient
-                windows = await QuotaClient().get_utilization()
         except Exception:
             pass
 
@@ -285,17 +282,21 @@ def cmd_usage(args):
             print("  Quota gauge unavailable (check 'codex login', the Codex CLI "
                   "version, and network).")
         elif provider == "claude":
-            print("  Quota gauge unavailable (run 'claude login' or check network).")
+            print("  Claude runs on the Anthropic API (billed per token): no subscription")
+            print("  quota to read. Costs below are estimated from token counts; cap them")
+            print("  with usage.max_daily_cost_usd in harvey.yaml.")
 
         totals = await state.usage_totals()
         print()
-        print(f"  {'Period':<10} {'Calls':>7} {'Input':>12} {'Output':>10} {'Cache read':>12}")
+        print(f"  {'Period':<10} {'Calls':>7} {'Input':>12} {'Output':>10} "
+              f"{'Cache read':>12} {'Est. cost':>10}")
         for label, key in (("Today", "today"), ("7 days", "week"), ("30 days", "month")):
             t = totals.get(key) or {}
             print(
                 f"  {label:<10} {t.get('calls', 0):>7} "
                 f"{t.get('input_tokens', 0):>12,} {t.get('output_tokens', 0):>10,} "
-                f"{t.get('cache_read_tokens', 0):>12,}"
+                f"{t.get('cache_read_tokens', 0):>12,} "
+                f"${float(t.get('cost_usd', 0) or 0):>9.2f}"
             )
 
         by_provider = await state.usage_by_provider(days=args.days)

@@ -397,8 +397,8 @@
     </details>
 
     <details>
-      <summary>Claude headless mode fails</summary>
-      <div class="faq-body">Make sure you've run <code>claude login</code> in your terminal and have an active Claude Max subscription. Harvey uses your existing subscription, not a separate API key.</div>
+      <summary>Claude calls fail</summary>
+      <div class="faq-body">Harvey calls Claude through the Anthropic API with <code>ANTHROPIC_API_KEY</code> from <code>.env</code>. A 401 means the key is missing or wrong (fix it and restart; <code>harvey status --check</code> confirms). "Credit balance is too low" means the Anthropic account needs credit; Harvey pauses an hour and retries. A 404 means <code>brain.model</code> in harvey.yaml names a model that doesn't exist; leave it blank for the default.</div>
     </details>
 
     <details>

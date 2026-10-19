@@ -3,6 +3,7 @@
 import asyncio
 import getpass
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -67,11 +68,6 @@ def _ask_yes_no(prompt: str, default: bool = True) -> bool:
     return answer in ("y", "yes")
 
 
-def _check_claude_cli() -> bool:
-    """Check if Claude CLI is installed and accessible."""
-    return shutil.which("claude") is not None
-
-
 def _check_codex_cli() -> bool:
     """Check if Codex CLI is installed and accessible."""
     return shutil.which("codex") is not None
@@ -87,9 +83,10 @@ async def _test_claude(brain: Brain) -> bool:
 
 
 def _ask_brain_config() -> BrainConfig:
-    """Ask which subscription Harvey thinks with. Claude is the default."""
-    _print_harvey("I think with an AI subscription you already pay for:")
-    print("    claude — your Claude plan, via Claude Code (default)")
+    """Ask which model provider Harvey thinks with. Claude is the default."""
+    from harvey.brain import DEFAULT_CLAUDE_MODEL
+    _print_harvey("I can think with either of these:")
+    print(f"    claude — Claude via the Anthropic API, billed per token (default, {DEFAULT_CLAUDE_MODEL})")
     print("    codex  — your ChatGPT plan, via the Codex CLI")
     while True:
         provider = _ask("Which one? (claude/codex)", default="claude").lower()
@@ -111,7 +108,7 @@ def _ask_brain_config() -> BrainConfig:
         if provider == "codex":
             model = _ask("Model", default=SUGGESTED_MODEL, required=False)
         else:
-            model = _ask("Model (leave blank for the default)", required=False)
+            model = _ask(f"Model (leave blank for {DEFAULT_CLAUDE_MODEL})", required=False)
         try:
             return BrainConfig(provider=provider, model=model)
         except ValidationError:
@@ -186,7 +183,7 @@ class SetupWizard:
         await self._print_summary()
 
     async def _check_prerequisites(self):
-        """Pick the brain provider and verify its CLI is installed and working."""
+        """Pick the brain provider and verify it can answer a prompt."""
         self.brain_config = _ask_brain_config()
         if self.brain_config.provider == "codex":
             await self._check_codex()
@@ -194,20 +191,18 @@ class SetupWizard:
             await self._check_claude()
 
     async def _check_claude(self):
-        # Check Claude CLI
-        print("\n  Checking Claude Code CLI...", end=" ")
-        if _check_claude_cli():
-            print("✓ Found")
-        else:
-            print("✗ Not found")
-            _print_harvey("I need Claude Code CLI to think. Install it from:")
-            print("         https://claude.ai/download")
-            print("\n         After installing, run 'claude login' to authenticate,")
-            print("         then re-run this setup.")
-            raise SystemExit(1)
+        print()
+        _print_harvey("Claude thinks through the Anthropic API, billed per token.")
+        print("         Create a key at https://console.anthropic.com/settings/keys")
+        print("         (cap daily spend later with usage.max_daily_cost_usd in harvey.yaml).")
+        existing = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        prompt = "Anthropic API key" + (" (Enter to keep the current one)" if existing else "")
+        key = _ask(prompt, default=existing, secret=True)
+        os.environ["ANTHROPIC_API_KEY"] = key
+        self.env_vars["ANTHROPIC_API_KEY"] = key
 
-        # Test headless mode
-        print("  Testing Claude headless mode...", end=" ", flush=True)
+        # One real (small) call through the same path every prompt takes.
+        print("  Testing the Anthropic API...", end=" ", flush=True)
         state = StateManager()
         await state.init_db()
         brain = Brain(state, self.brain_config)
@@ -215,9 +210,9 @@ class SetupWizard:
             print("✓ Working")
         else:
             print("✗ Failed")
-            _print_harvey("Claude CLI is installed but headless mode isn't working.")
-            _print_harvey("Make sure you're logged in: run 'claude login'")
-            print("\n         Also verify your Max subscription is active.")
+            _print_harvey("The Anthropic API didn't answer. The log line above says why:")
+            print("         a rejected key, no credit on the account, or a model name")
+            print("         that doesn't exist (leave brain.model blank for the default).")
             if not _ask_yes_no("Continue anyway?", default=False):
                 raise SystemExit(1)
         self._check_python_packages()
@@ -659,8 +654,8 @@ class SetupWizard:
         # Show what's configured
         checks = {
             ("Codex CLI (ChatGPT plan)" if self.brain_config.provider == "codex"
-             else "Claude Code CLI"): (_check_codex_cli() if self.brain_config.provider == "codex"
-                                      else _check_claude_cli()),
+             else "Anthropic API key"): (_check_codex_cli() if self.brain_config.provider == "codex"
+                                        else bool(self.env_vars.get("ANTHROPIC_API_KEY"))),
             "Instantly API": bool(self.env_vars.get("INSTANTLY_API_KEY")),
             "LinkedIn": bool(self.env_vars.get("LINKEDIN_EMAIL")),
             "Cloudflare Crawl": bool(self.env_vars.get("CLOUDFLARE_ACCOUNT_ID")),

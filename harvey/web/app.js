@@ -920,18 +920,28 @@ function emailTag(p) {
   return ' <span class="badge t-' + m.tone + '" style="margin-left:6px">' + escHtml(m.label) + '</span>';
 }
 
-// Quota gauges for the ACTIVE provider only: Claude's are the numbers
-// `/usage` shows in Claude Code; Codex's are the ChatGPT plan's limits.
-// When they can't be read, say so rather than hiding the card.
+// Budget card for the ACTIVE provider only. Claude runs on the Anthropic
+// API (billed per token), so its card is estimated spend; Codex's gauges
+// are the ChatGPT plan's limits. When those can't be read, say so rather
+// than hiding the card.
 function quotaCardHtml(data) {
   const provider = data && data.quota_provider;
   if (!provider) return '';
-  const title = provider === 'codex' ? 'Codex (ChatGPT plan) Quota' : 'Claude Subscription Quota';
+  if (provider === 'claude') {
+    const totals = (data && data.totals) || {};
+    const usd = (k) => '$' + (Number((totals[k] || {}).cost_usd) || 0).toFixed(2);
+    return '<h2>Claude API Spend (estimated)</h2>' +
+      '<p class="muted">Claude runs on the Anthropic API and is billed per token, so there is no subscription quota to read. ' +
+      'Costs are estimated from token counts; the Anthropic Console invoice is authoritative. ' +
+      'Cap daily spend with usage.max_daily_cost_usd in harvey.yaml.</p>' +
+      '<span class="chip">Today <b>' + usd('today') + '</b></span> ' +
+      '<span class="chip">7 days <b>' + usd('week') + '</b></span> ' +
+      '<span class="chip">30 days <b>' + usd('month') + '</b></span>';
+  }
+  const title = 'Codex (ChatGPT plan) Quota';
   let html = '<h2>' + escHtml(title) + '</h2>';
   if (!data.quota || !Object.keys(data.quota).length) {
-    const why = provider === 'codex'
-      ? "Quota unavailable: Harvey couldn't read your ChatGPT plan's limits (check codex login, the Codex CLI version, and network)."
-      : "Quota unavailable: Harvey couldn't read your Claude subscription's limits (check claude login and network).";
+    const why = "Quota unavailable: Harvey couldn't read your ChatGPT plan's limits (check codex login, the Codex CLI version, and network).";
     return html + '<p class="muted">' + escHtml(why) + ' Until it can, budgets count Harvey\'s own calls.</p>';
   }
   const labels = {five_hour: '5-hour window', seven_day: 'Weekly', primary: 'Primary window',
@@ -1000,19 +1010,21 @@ async function loadUsage() {
     dailyEl.style.display = 'none';
   }
 
-  // Breakdown tables — calls + tokens, no cost column
+  // Breakdown tables — calls, tokens, and estimated cost (Claude API calls
+  // carry a real estimate; Codex rows are $0 because the plan isn't metered)
   const tablesEl = document.getElementById('usage-tables');
   const table = (title, rows, keyName) => {
     if (!rows || !rows.length) return '';
     let h = '<div class="card"><h2>' + title + '</h2><div class="table-card"><table><thead><tr>' +
-      '<th>' + keyName + '</th><th>Calls</th><th>Input</th><th>Output</th><th>Cache read</th>' +
+      '<th>' + keyName + '</th><th>Calls</th><th>Input</th><th>Output</th><th>Cache read</th><th>Est. cost</th>' +
       '</tr></thead><tbody>';
     for (const r of rows) {
       h += '<tr><td>' + escHtml(String(r[keyName.toLowerCase()] || '')) + '</td>' +
         '<td>' + (r.calls || 0) + '</td>' +
         '<td class="muted">' + fmtTokens(r.input_tokens) + '</td>' +
         '<td>' + fmtTokens(r.output_tokens) + '</td>' +
-        '<td class="muted">' + fmtTokens(r.cache_read_tokens) + '</td></tr>';
+        '<td class="muted">' + fmtTokens(r.cache_read_tokens) + '</td>' +
+        '<td class="muted">$' + (Number(r.cost_usd) || 0).toFixed(2) + '</td></tr>';
     }
     return h + '</tbody></table></div></div>';
   };
@@ -1020,7 +1032,7 @@ async function loadUsage() {
   const anyRows = (data.by_agent || []).length || (data.by_task || []).length;
   if (!anyRows) {
     tablesEl.innerHTML = emptyState('&#9680;', 'No usage recorded yet',
-      'Once Harvey starts making model calls (Claude or Codex), every one is logged here with exact calls and tokens by provider, agent and task.');
+      'Once Harvey starts making model calls (Claude API or Codex), every one is logged here with exact calls, tokens and estimated cost by provider, agent and task.');
   } else {
     const providers = data.by_provider || [];
     const showProviders = providers.length > 1 || (providers.length === 1 && providers[0].provider !== 'claude');

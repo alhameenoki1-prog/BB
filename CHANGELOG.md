@@ -7,6 +7,27 @@ minor versions can still change behaviour.
 
 ## [Unreleased]
 
+### Changed
+
+- **The Claude brain calls the Anthropic API directly.** `brain.provider:
+  claude` (the default) no longer shells out to the Claude Code CLI. It uses
+  the official `anthropic` SDK: one `messages.create` per prompt with no tools,
+  a fixed system prompt that marks quoted content as data, bounded retries
+  with backoff on 429/5xx/network errors, and the server-side refusal
+  fallback (`brain.fallbacks`, default on) on supported models. Set
+  `ANTHROPIC_API_KEY` in `.env`; the model defaults to `claude-opus-5-5`
+  (`brain.model` to change it, `brain.reasoning_effort` low…max for depth).
+  Every call records exact tokens plus an estimated cost in `usage_events`,
+  and the new `usage.max_daily_cost_usd` pauses Harvey for the day once the
+  estimate reaches it. A rejected key or unknown model pauses the brain with
+  the reason in the log, `harvey status --check` and the dashboard; an
+  account out of credit pauses it for an hour. The Claude Code OAuth quota
+  gauge (`integrations/quota.py`) is gone with the CLI; the dashboard's
+  Usage tab and `harvey usage` show estimated spend instead, and the
+  breakdown tables gained a cost column. Docker no longer installs the CLI
+  or mounts `~/.claude`. `usage.max_daily_claude_percent` now applies to
+  Codex only. Codex is unchanged.
+
 ### Added
 
 - **Microsoft 365 mail provider.** Set `channels.email.provider: microsoft` to

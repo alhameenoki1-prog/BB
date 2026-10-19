@@ -237,15 +237,18 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
                     break
                 continue
 
-            # 3. Check usage budget (real subscription quota when readable,
-            # else Harvey's own call counter)
+            # 3. Check usage budget: Claude's daily spend cap, Codex's real
+            # plan quota when readable, else Harvey's own call counter.
             if not await brain.is_within_budget(
-                max_calls, max_percent=config.usage.max_daily_claude_percent
+                max_calls, max_percent=config.usage.max_daily_claude_percent,
+                max_daily_cost_usd=config.usage.max_daily_cost_usd,
             ):
+                cap = (f"${config.usage.max_daily_cost_usd:.2f}/day"
+                       if brain.provider == "claude" and config.usage.max_daily_cost_usd
+                       else f"{config.usage.max_daily_claude_percent}% of quota")
                 logger.info(
                     f"{brain.provider_label} usage limit reached "
-                    f"({config.usage.max_daily_claude_percent}% of quota or "
-                    f"{max_calls} calls). Sleeping 1h, then re-checking."
+                    f"({cap} or {max_calls} calls). Sleeping 1h, then re-checking."
                 )
                 if await _interruptible_sleep(3600, stop_event):
                     break

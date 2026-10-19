@@ -9,7 +9,7 @@ description = "Autonomous AI sales agent. Always Be Closing."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-keywords = ["sales", "ai-agent", "cold-email", "prospecting", "autonomous-agent", "claude"]
+keywords = ["sales", "ai-agent", "cold-email", "prospecting", "autonomous-agent", "claude", "anthropic"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -32,6 +32,7 @@ dependencies = [
     "pytz>=2024.1",
     "fastapi>=0.115,<1",
     "uvicorn>=0.34,<1",
+    "anthropic>=1.15,<2",
 ]
 
 [project.optional-dependencies]

@@ -9,10 +9,8 @@ services:
       - ./harvey.yaml:/app/harvey.yaml:ro
       - ./prompts:/app/prompts:ro
       - ./skills:/app/skills
-      # Mount Claude auth (required for Max plan usage).
-      # Not read-only: the CLI refreshes OAuth tokens in place.
-      # The container runs as non-root user "harvey" (uid 1000).
-      - ~/.claude:/home/harvey/.claude
+      # The brain uses ANTHROPIC_API_KEY from .env (env_file above); nothing
+      # else needs mounting. The container runs as non-root "harvey" (uid 1000).
     restart: unless-stopped
     init: true
     logging:

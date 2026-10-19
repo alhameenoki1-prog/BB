@@ -10,6 +10,7 @@ counted, and what happens when Codex can't be used.
 """
 
 import asyncio
+from types import SimpleNamespace
 import json
 import os
 import sqlite3
@@ -46,11 +47,27 @@ BASE = {
     "channels": {"email": {"provider": "smtp", "require_approval": True}},
 }
 
-FAKE_CLAUDE = (
-    "import json, sys; sys.stdin.read() if not sys.stdin.isatty() else None; "
-    "print(json.dumps({'type': 'result', 'result': 'question', 'session_id': 's',"
-    " 'usage': {'input_tokens': 3, 'output_tokens': 1}}))"
-)
+class FakeAnthropic:
+    """Stands in for anthropic.AsyncAnthropic on the Claude path: every
+    prompt is answered "question" with a small, fixed token count."""
+
+    api_key = "sk-ant-test"
+    auth_token = None
+
+    def __init__(self, **kwargs):
+        self.messages = SimpleNamespace(create=self._create)
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._create))
+
+    def with_options(self, **kwargs):
+        return self
+
+    async def _create(self, **kwargs):
+        return SimpleNamespace(
+            id="msg_s", model=kwargs["model"], stop_reason="end_turn",
+            content=[SimpleNamespace(type="text", text="question")],
+            usage=SimpleNamespace(input_tokens=3, output_tokens=1,
+                                  cache_read_input_tokens=0, cache_creation_input_tokens=0),
+        )
 
 
 class Harness:
@@ -78,14 +95,14 @@ class Harness:
         monkeypatch.setattr(hc, "find_codex", lambda: "codex")
         monkeypatch.setattr(hc, "native_codex_home", lambda: self.native)
         monkeypatch.setattr(brain_mod, "RETRY_BASE_DELAY", 0)
+        monkeypatch.setattr(brain_mod.anthropic, "AsyncAnthropic", FakeAnthropic)
         real_exec = asyncio.create_subprocess_exec
 
         async def exec_routed(program, *args, **kwargs):
             if program == "codex":
                 return await real_exec(sys.executable, FAKE, self.scenario, str(self.log),
                                        *args, **kwargs)
-            if program == "claude":
-                return await real_exec(sys.executable, "-c", FAKE_CLAUDE, **kwargs)
+            # The Claude path is an API client; it must never start a process.
             raise AssertionError(f"unexpected subprocess {program!r}")
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_routed)

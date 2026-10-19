@@ -57,8 +57,17 @@ channels:
     max_daily_connections: 20
     max_daily_messages: 10
 
+# Which model Harvey thinks with. claude (default) calls the Anthropic API
+# with ANTHROPIC_API_KEY from .env; codex uses your ChatGPT plan via the Codex
+# CLI. Leave model blank for the provider's default (claude-opus-5-5 / gpt-5.5).
+brain:
+  provider: "claude"
+  model: ""
+  reasoning_effort: ""         # claude: low|medium|high|xhigh|max; codex: minimal..xhigh
+
 usage:
-  max_daily_claude_percent: 80
+  max_daily_cost_usd: 0        # claude: estimated API spend per day before pausing (0 = no cap)
+  max_daily_claude_percent: 80 # codex: share of the ChatGPT plan's quota Harvey may use
   heartbeat_interval_minutes: 15
   quiet_hours:
     start: "22:00"

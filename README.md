@@ -18,11 +18,11 @@ it will be revised as BB diverges.
 
 # Harvey
 
-**An autonomous sales agent that runs on your Claude Code or Codex subscription.**
+**An autonomous sales agent that thinks with Claude through the Anthropic API.**
 
 Harvey finds businesses worth selling to, learns something specific about each one, writes cold email that references it, sends it, reads the replies, and works the conversation toward a meeting. It runs on your machine, in a loop, on its own.
 
-The unusual part: **there is no model API bill.** Harvey uses your Claude Pro or Max subscription through Claude Code, or your ChatGPT subscription through Codex. Model calls use the plan you already pay for, without an API key or per-token API billing. Claude is the default; [Codex is an opt-in provider on macOS and Linux](#using-a-chatgpt-plan-instead-codex).
+Model calls go straight to the Anthropic API with your own key (`ANTHROPIC_API_KEY`), billed per token, with every call's tokens and estimated cost in a local ledger and a daily spend cap you set. Claude is the default; [Codex on a ChatGPT plan is an opt-in provider on macOS and Linux](#using-a-chatgpt-plan-instead-codex).
 
 ```
 $ harvey run
@@ -51,7 +51,7 @@ anything, and approving mail one message at a time:
 
 ## Table of contents
 
-- [Why the subscription thing matters](#why-the-subscription-thing-matters)
+- [What model calls cost](#what-model-calls-cost)
 - [What Harvey actually does](#what-harvey-actually-does)
 - [Quick start](#quick-start)
 - [You confirm what it looks for](#you-confirm-what-it-looks-for)
@@ -71,29 +71,25 @@ anything, and approving mail one message at a time:
 
 ---
 
-## Why the subscription thing matters
+## What model calls cost
 
-Every other autonomous sales agent bills you per token. That is the whole reason they cost what they cost: an agent that thinks in a loop, all day, is an agent that burns API credits in a loop, all day. Vendors solve this by thinking less — shorter prompts, cheaper models, fewer passes.
+An agent that thinks in a loop all day is an agent that spends on model calls all day, so Harvey is built to spend little: everything that can be done deterministically (rank position, tech detection, junk filtering, the priority decision, the pre-send gate) is plain code, and Claude is called only for the parts that need judgment. Each call is one `messages.create` request with **no tools** (prompts carry untrusted text, so the model gets nothing to act with), and Harvey handles the prospecting and mail operations itself.
 
-Harvey uses the subscription-backed CLI for the provider you choose: `claude` for Claude Code, or an isolated `codex app-server` for Codex. Both return text with model tools disabled. Harvey handles the prospecting and mail operations itself.
-
-Your selected subscription covers model calls, subject to its usage limits. That lets Harvey use its skills library for personalization and reply handling without a separate model API bill.
+The brain talks to the Anthropic API directly with the official SDK. The default model is `claude-opus-5-5`; set `brain.model` to any current Claude model (for example `claude-sonnet-5-5` for a cheaper run), and `brain.reasoning_effort` (`low` … `max`) to trade depth for cost.
 
 **What this costs you:**
 
 | | |
 |---|---|
-| Claude Pro/Max or a ChatGPT plan with Codex access | your existing subscription |
+| Model calls | Anthropic API usage, per token. The Usage tab and `harvey usage` show the running estimate per agent, task and model. |
 | Finding businesses | **$0** on the default source, or ~$0.37 per 1,000 on the cheapest paid one |
 | Reading their websites | **$0** — three HTTP requests each, no model call |
-| Writing and sending | your subscription + a mailbox (~$7/mo Google Workspace) |
+| Writing and sending | a mailbox (~$7/mo Google Workspace) |
 | Prospecting tools | **none.** No Apollo, no ZoomInfo, no Clearbit, no Clay. |
 
 For comparison, the tools Harvey replaces start at $250–500/month — and they are weakest precisely where Harvey is strongest: small local businesses with 5–50 people, where single-provider contact coverage caps out around 30% and micro-businesses are frequently absent entirely.
 
-**Harvey also budgets itself.** It reads the active provider's subscription quota and throttles to leave headroom for your own Claude or Codex work. Set `max_daily_claude_percent: 80` for either provider—the setting's name predates Codex support. If quota cannot be read, Harvey reports it as unavailable and falls back to its daily call budget.
-
-Harvey runs locally with your own login. Check the terms and usage limits of the provider you choose.
+**Harvey also budgets itself.** Set `usage.max_daily_cost_usd` and Harvey stops calling Claude once the day's estimated spend reaches it, resuming tomorrow. If the Anthropic account runs out of credit, Harvey pauses for an hour and says so in the log, `harvey status`, and the dashboard rather than retrying every heartbeat. Cost figures are estimates from token counts; the Anthropic Console is authoritative.
 
 ---
 
@@ -124,7 +120,7 @@ Profiling and outbox draining ride along on **every** cycle regardless, because 
 ### Prerequisites
 
 - **Python 3.11+** — check with `python3 --version`. macOS ships 3.9; if that's what you have, `brew install python@3.13` first.
-- An active **Claude Pro or Max** subscription, with the CLI logged in (`claude login`) — or, opt-in, a **ChatGPT plan with the Codex CLI** ([see below](#using-a-chatgpt-plan-instead-codex))
+- An **Anthropic API key** ([console.anthropic.com](https://console.anthropic.com/settings/keys)) — or, opt-in, a **ChatGPT plan with the Codex CLI** ([see below](#using-a-chatgpt-plan-instead-codex))
 - A mailbox to send from — Gmail/Workspace recommended, on a *dedicated secondary domain*. Microsoft 365 works too ([setup](docs/microsoft365.md))
 
 ### Easiest: let Claude set it up
@@ -145,6 +141,7 @@ Then say: **"set up Harvey for me"**. The repo ships a `CLAUDE.md` that turns Cl
 python3.13 -m venv .venv && source .venv/bin/activate && pip install -e .
 
 # 2. Configure — every variable is documented inline with where to get it
+#    (ANTHROPIC_API_KEY first, then a mail provider)
 cp .env.example .env && $EDITOR .env
 
 # 3. Learn your product from your website
@@ -357,7 +354,7 @@ Plain HTML, CSS and JavaScript served from `harvey/web/`. No build step, no fram
 - **Companies / Contacts** — everything found, with CSV export
 - **Outbox** — the decisions desk
 - **Conversations** — every reply and how Harvey handled it
-- **Usage** — Claude or Codex quota gauges and per-agent token counts. No dollar figures: you're on a subscription, you aren't billed per token, and pretending otherwise would be theater.
+- **Usage** — estimated Claude API spend (today / 7 days / 30 days) or Codex quota gauges, plus calls, tokens and estimated cost per agent, task and model.
 
 Three rules hold the interface together:
 
@@ -401,7 +398,7 @@ Other tables: `companies`, `prospects`, `campaigns`, `conversations`, `outbox`, 
 
 Two files, both plain text.
 
-**`.env`** — credentials. Every variable documented inline with where to get it. The only required one is a mail provider; everything else is optional.
+**`.env`** — credentials. Every variable documented inline with where to get it. Required: `ANTHROPIC_API_KEY` and a mail provider; everything else is optional.
 
 **`harvey.yaml`** — who Harvey is and who it sells to:
 
@@ -412,11 +409,11 @@ icp:          { industries, titles, company_size, geography, hiring_signals, geo
 channels:
   email:      { provider: gmail | microsoft | smtp | instantly, max_daily_sends, require_approval,
                 send_to_risky, max_bounce_rate }
-usage:        { max_daily_claude_percent, heartbeat_interval_minutes, quiet_hours }
-brain:        { provider: claude | codex, model, reasoning_effort }   # optional; claude by default
+usage:        { max_daily_cost_usd, max_daily_claude_percent, heartbeat_interval_minutes, quiet_hours }
+brain:        { provider: claude | codex, model, reasoning_effort, fallbacks }   # optional; claude by default
 ```
 
-`max_daily_claude_percent` caps whichever subscription `brain.provider` uses (the name predates Codex support).
+`max_daily_cost_usd` caps Claude's estimated API spend per day (0 = no cap). `max_daily_claude_percent` caps the ChatGPT plan when `brain.provider` is `codex` (the name predates Codex support). `brain.fallbacks` (default on) lets the API re-run a request a safety classifier declined on a fallback model instead of returning nothing.
 
 If `harvey.local.yaml` exists it wins. It's gitignored, so a fork can carry real product configuration while the tracked `harvey.yaml` stays a template — nobody publishes their positioning and pricing by accident.
 
@@ -430,7 +427,7 @@ harvey discover              # find businesses; --providers / --estimate
 harvey profile               # read discovered companies' sites (free)
 harvey train <url>           # learn a product from its website (--provider codex --model gpt-5.5)
 harvey status                # pipeline summary
-harvey usage                 # active provider's quota + per-agent tokens
+harvey usage                 # estimated spend (or Codex quota) + per-agent tokens
 harvey outbox                # review queued email
 harvey export                # deliverable prospects → CSV
 harvey sending pause|resume  # kill switch
@@ -441,7 +438,7 @@ harvey microsoft auth|test  # one-time Microsoft 365 sign-in (docs/microsoft365.
 
 ## Using a ChatGPT plan instead (Codex)
 
-Claude is the default and needs no change. If you'd rather spend a ChatGPT plan (Plus, Pro, Business, …), Harvey can think through the [Codex CLI](https://developers.openai.com/codex) instead — still a subscription, never per-token API billing.
+Claude via the Anthropic API is the default and needs no change. If you'd rather spend a ChatGPT plan (Plus, Pro, Business, …), Harvey can think through the [Codex CLI](https://developers.openai.com/codex) instead — a subscription, not per-token billing.
 
 ```bash
 npm install -g @openai/codex@0.159.3   # the Codex version Harvey has verified (see Requirements)
@@ -508,7 +505,7 @@ Harvey automates outreach, but **you are the sender.** Cold email is legal in mo
 
 **`SyntaxError` or odd `ImportError`s right after install (macOS)** — Your venv is Python 3.9. `python3 -m venv` builds from `/usr/bin/python3`, which macOS keeps at 3.9. Check with `.venv/bin/python -V`, then rebuild: `rm -rf .venv && python3.13 -m venv .venv && source .venv/bin/activate && pip install -e .`
 
-**Claude headless mode fails** — `claude login`, and confirm the subscription is active. Test with `claude -p "say hi"`. In Docker, mount `~/.claude` into the container.
+**Claude calls fail** — Read the log line. A 401 means `ANTHROPIC_API_KEY` in `.env` is missing or wrong; Harvey pauses until you fix it and restart (`harvey status --check` confirms). "Credit balance is too low" means the Anthropic account needs credit; Harvey pauses an hour and retries. A 404 means `brain.model` names a model that doesn't exist; leave it blank for the default. In Docker, `ANTHROPIC_API_KEY` comes from `.env` via `env_file`.
 
 **Codex calls fail** — Read the log line; every Codex error says what to do. "Not logged in" or "expired or is due for renewal" → use Codex once or run `codex login` with ChatGPT. "Hasn't been verified with Harvey" → install the supported Codex version named in the message. "Isolation could not be verified" → a Codex config layer outside your `~/.codex` (for example a managed or `/etc/codex` config) forces a tool, hook, MCP server, instructions or custom endpoint back on; Harvey refuses to send prompts until it's gone. Model catalog errors → choose an available model ID from the catalog shown in the message, or leave `brain.model` blank to select a listed model. Harvey never switches to Claude on its own.
 
@@ -518,7 +515,7 @@ Harvey automates outreach, but **you are the sender.** Cold email is legal in mo
 
 **Emails land in spam** — Almost always the domain, not the copy. Check SPF/DKIM/DMARC, confirm warmup ran, halve your volume.
 
-**Harvey does nothing during the day** — Check `quiet_hours` and whether it hit `max_daily_claude_percent`. `harvey status` shows current state; the `actions` table logs every decision.
+**Harvey does nothing during the day** — Check `quiet_hours` and whether it hit `max_daily_cost_usd` (Claude) or `max_daily_claude_percent` (Codex). `harvey status` shows current state; the `actions` table logs every decision.
 
 **How do I stop it right now?** — `Ctrl+C`, or `harvey sending pause` to stop outbound while leaving the loop running. State is in SQLite, so it resumes cleanly.
 
@@ -531,7 +528,7 @@ Harvey automates outreach, but **you are the sender.** Cold email is legal in mo
 ```
 harvey/
 ├── main.py              # heartbeat loop
-├── brain.py             # Claude/Codex provider selection + skills + usage
+├── brain.py             # Claude (Anthropic API) / Codex provider + skills + usage ledger
 ├── codex.py             # Isolated Codex subscription runtime
 ├── state.py             # SQLite schema, migrations, observations, cohorts
 ├── signals.py           # the 23-signal catalog Harvey proposes
@@ -558,7 +555,7 @@ tests/                   # 242 tests
 
 **You decide what a good prospect is.** Harvey proposes signals; you confirm them. A prospect list you can't explain is a prospect list you shouldn't send to.
 
-**If it can be gotten deterministically, don't use a model.** Rank position, tech detection, junk filtering, the priority decision, the pre-send gate — all plain code. Claude or Codex is reserved for the parts that need judgment. That's why this runs on a subscription at all.
+**If it can be gotten deterministically, don't use a model.** Rank position, tech detection, junk filtering, the priority decision, the pre-send gate — all plain code. Claude or Codex is reserved for the parts that need judgment. That's what keeps the model bill small.
 
 **A failure is an observation, not silence.** "No team page found" is a finding. "Overpass is throttling" is a finding. Silent failures look exactly like clean results, which is how a broken run gets mistaken for an empty market.
 
@@ -570,7 +567,7 @@ tests/                   # 242 tests
 
 ## Roadmap
 
-**Done:** heartbeat loop · observation data model with governed vocabulary · user-confirmed signal catalog · cohort builder · discovery provider menu with cost estimates · free HTTP profiler with agency detection · pattern-first email finding with honest status · native mail providers (Gmail API, Microsoft 365 via Graph, SMTP+IMAP) · outbox approval ladder · deterministic pre-send gate · bounce detection and kill switch · reply handling with intent classification · subscription quota tracking · website trainer · web dashboard · CSV export
+**Done:** heartbeat loop · observation data model with governed vocabulary · user-confirmed signal catalog · cohort builder · discovery provider menu with cost estimates · free HTTP profiler with agency detection · pattern-first email finding with honest status · native mail providers (Gmail API, Microsoft 365 via Graph, SMTP+IMAP) · outbox approval ladder · deterministic pre-send gate · bounce detection and kill switch · reply handling with intent classification · per-call cost ledger with a daily spend cap · website trainer · web dashboard · CSV export
 
 **Next:** people enrichment from public registries · consent-gated voice callbacks · calendar integration for auto-booking · scheduled re-observation so signal *changes* trigger outreach · multi-product support
 

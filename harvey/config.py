@@ -186,7 +186,13 @@ class QuietHoursConfig(BaseModel):
 
 
 class UsageConfig(BaseModel):
+    # Codex only: share of the ChatGPT plan's rate-limit windows Harvey may
+    # use (the name predates Codex support). Claude runs on the API, which
+    # has no subscription quota, so it is capped in dollars instead.
     max_daily_claude_percent: float = 80.0
+    # Claude only: estimated API spend per day (UTC) before Harvey pauses
+    # until tomorrow. 0 = no cap (only max_daily_calls applies).
+    max_daily_cost_usd: float = 0.0
     heartbeat_interval_minutes: int = 15
     quiet_hours: QuietHoursConfig = QuietHoursConfig()
 
@@ -196,6 +202,13 @@ class UsageConfig(BaseModel):
         if not 0 < v <= 100:
             raise ValueError("max_daily_claude_percent must be between 0 and 100")
         return v
+
+    @field_validator("max_daily_cost_usd")
+    @classmethod
+    def _valid_cost(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("max_daily_cost_usd must be 0 (no cap) or positive")
+        return float(v)
 
     @field_validator("heartbeat_interval_minutes")
     @classmethod
@@ -207,24 +220,33 @@ class UsageConfig(BaseModel):
 
 BRAIN_PROVIDERS = ("claude", "codex")
 CODEX_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+REASONING_EFFORTS = {"claude": CLAUDE_EFFORTS, "codex": CODEX_REASONING_EFFORTS}
 
-# Model names are passed to a CLI, so they must look like a model name and
-# never like a flag ("-x") or anything a shell would treat specially.
+# Model names go into an API request or a CLI, so they must look like a
+# model name and never like a flag ("-x") or anything a shell would treat
+# specially.
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 
 
 class BrainConfig(BaseModel):
-    """Which subscription Harvey thinks with.
+    """Which model provider Harvey thinks with.
 
-    ``claude`` (default) runs Claude Code headless on your Claude plan.
-    ``codex`` runs Codex on your ChatGPT plan. There is never an automatic
-    fallback between them, and an explicit ``model`` only affects Harvey —
-    your own Claude Code / Codex settings are never read or changed.
+    ``claude`` (default) calls Claude through the Anthropic API with the key
+    in ``ANTHROPIC_API_KEY`` (billed per token; the model defaults to
+    ``claude-opus-5-5``). ``codex`` runs Codex on your ChatGPT plan. There is
+    never an automatic fallback between them, and ``model`` only affects
+    Harvey — your own Codex settings are never read or changed.
     """
 
     provider: str = "claude"
-    model: str = ""  # empty = the provider's own default
-    reasoning_effort: str = ""  # codex only; empty = model default
+    model: str = ""  # empty = the provider's default
+    # Thinking depth. Claude: low | medium | high | xhigh | max (empty = the
+    # model's default). Codex: minimal | low | medium | high | xhigh.
+    reasoning_effort: str = ""
+    # Claude only: let the API re-run a request a safety classifier declined
+    # on a fallback model, inside the same call, instead of returning nothing.
+    fallbacks: bool = True
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -248,13 +270,17 @@ class BrainConfig(BaseModel):
     @field_validator("reasoning_effort", mode="before")
     @classmethod
     def _valid_effort(cls, v) -> str:
-        v = str(v or "").strip().lower()
-        if v and v not in CODEX_REASONING_EFFORTS:
+        return str(v or "").strip().lower()
+
+    @model_validator(mode="after")
+    def _effort_matches_provider(self):
+        allowed = REASONING_EFFORTS[self.provider]
+        if self.reasoning_effort and self.reasoning_effort not in allowed:
             raise ValueError(
-                f"'{v}' is not a valid reasoning effort. "
-                f"Use one of: {', '.join(CODEX_REASONING_EFFORTS)}."
+                f"'{self.reasoning_effort}' is not a valid reasoning effort for "
+                f"{self.provider}. Use one of: {', '.join(allowed)}."
             )
-        return v
+        return self
 
 
 class HarveyConfig(BaseModel):
@@ -268,6 +294,9 @@ class HarveyConfig(BaseModel):
 
 
 class EnvConfig(BaseModel):
+    # Brain (brain.provider: claude). Read by the Anthropic SDK from the
+    # environment; kept here so setup and status can report on it.
+    anthropic_api_key: str = ""
     instantly_api_key: str = ""
     # Discovery providers
     dataforseo_login: str = ""
@@ -385,6 +414,7 @@ def load_env() -> EnvConfig:
     """Load environment variables from .env file."""
     load_dotenv()
     env = EnvConfig(
+        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", "").strip(),
         instantly_api_key=os.getenv("INSTANTLY_API_KEY", "").strip(),
         dataforseo_login=os.getenv("DATAFORSEO_LOGIN", "").strip(),
         dataforseo_password=os.getenv("DATAFORSEO_PASSWORD", "").strip(),

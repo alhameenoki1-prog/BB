@@ -6,7 +6,10 @@ import asyncio
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
+import anthropic
+import httpx2
 import pytest
 import pytest_asyncio
 import yaml
@@ -15,7 +18,7 @@ from pydantic import ValidationError
 
 import harvey.brain as brain_mod
 import harvey.dashboard as dash
-from harvey.brain import Brain
+from harvey.brain import DEFAULT_CLAUDE_MODEL, Brain
 from harvey.codex import CodexError, CodexResult
 from harvey.config import BrainConfig, ConfigError, HarveyConfig, load_brain_config
 from harvey.state import StateManager
@@ -55,8 +58,12 @@ def test_claude_is_the_default():
 def test_brain_config_validation():
     cfg = BrainConfig(provider=" Codex ", model="gpt-5.5", reasoning_effort="HIGH")
     assert (cfg.provider, cfg.model, cfg.reasoning_effort) == ("codex", "gpt-5.5", "high")
+    assert BrainConfig(reasoning_effort="MAX").reasoning_effort == "max"  # Claude has max
+    assert BrainConfig().fallbacks is True
     for bad in ({"provider": "openai"}, {"model": "--dangerously-skip-permissions"},
-                {"model": "gpt 5; rm -rf /"}, {"reasoning_effort": "max"}):
+                {"model": "gpt 5; rm -rf /"},
+                {"provider": "codex", "reasoning_effort": "max"},   # Codex has no max
+                {"reasoning_effort": "minimal"}):                   # Claude has no minimal
         with pytest.raises(ValidationError):
             BrainConfig(**bad)
 
@@ -73,68 +80,213 @@ def test_load_brain_config(tmp_path):
         load_brain_config(str(path))
 
 
-# ── Claude path unchanged ──
+# ── Claude via the Anthropic API ──
 
 
-class _FakeProcess:
-    returncode = 0
+def _response(text="ok", model=DEFAULT_CLAUDE_MODEL, stop_reason="end_turn", **usage):
+    counts = {"input_tokens": 10, "output_tokens": 4,
+              "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, **usage}
+    return SimpleNamespace(
+        id="msg_" + text[:8], model=model, stop_reason=stop_reason,
+        stop_details=SimpleNamespace(category="cyber") if stop_reason == "refusal" else None,
+        content=[SimpleNamespace(type="text", text=text)],
+        usage=SimpleNamespace(**counts),
+    )
 
-    def __init__(self):
-        self.stdin_data = None
 
-    async def communicate(self, data=None):
-        self.stdin_data = data
-        return b'{"type": "result", "result": "ok", "usage": {"input_tokens": 1}}', b""
+def _api_error(cls, status, message="boom", headers=None):
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx2.Response(status, request=request, headers=headers or {})
+    return cls(message, response=response, body={"error": {"message": message}})
 
 
-def _capture_exec(monkeypatch):
-    captured = {}
+class _FakeAnthropic:
+    """Stands in for anthropic.AsyncAnthropic. ``outcomes`` are returned (or
+    raised) in order; every request is recorded with the path it took."""
 
-    async def fake_exec(*cmd, **kwargs):
-        captured["cmd"] = list(cmd)
-        captured["kwargs"] = kwargs
-        captured["proc"] = _FakeProcess()
-        return captured["proc"]
+    def __init__(self, outcomes, api_key="sk-ant-test"):
+        self.outcomes = list(outcomes)
+        self.api_key = api_key
+        self.auth_token = None
+        self.requests = []
+        self.messages = SimpleNamespace(create=self._plain)
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._beta))
+        self.options = []
 
-    monkeypatch.setattr(brain_mod.asyncio, "create_subprocess_exec", fake_exec)
-    return captured
+    def with_options(self, **kwargs):
+        self.options.append(kwargs)
+        return self
+
+    async def _plain(self, **kwargs):
+        return await self._take("messages", kwargs)
+
+    async def _beta(self, **kwargs):
+        return await self._take("beta", kwargs)
+
+    async def _take(self, path, kwargs):
+        self.requests.append((path, kwargs))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def _claude_brain(state, outcomes, config=None):
+    fake = _FakeAnthropic(outcomes)
+    return Brain(state, config or BrainConfig(), client=fake), fake
 
 
 @pytest.mark.asyncio
-async def test_default_brain_runs_claude_without_model_flag(state, monkeypatch):
-    captured = _capture_exec(monkeypatch)
-    assert await Brain(state).think("hi") == "ok"
-    assert captured["cmd"][0] == "claude"
-    assert "--model" not in captured["cmd"]
+async def test_default_brain_calls_the_api_with_opus_and_fallbacks(state):
+    brain, fake = _claude_brain(state, [_response("hello")])
+    assert type(brain.quota).__name__ == "_NoQuota" and brain.codex is None
+    assert await brain.think("hi", agent="writer", task="draft", timeout=42) == "hello"
+
+    path, request = fake.requests[0]
+    assert path == "beta"  # the refusal fallback rides the beta endpoint
+    assert request["model"] == DEFAULT_CLAUDE_MODEL
+    assert request["betas"] == [brain_mod._FALLBACK_BETA] and request["fallbacks"] == "default"
+    assert request["max_tokens"] == brain_mod.CLAUDE_MAX_TOKENS
+    assert "output_config" not in request and "thinking" not in request
+    assert fake.options == [{"timeout": 42}]
+
     assert await state.get_usage_today("claude") == 1
     assert await state.get_usage_today("codex") == 0
     rows = await state.usage_by_provider(days=1)
     assert [r["provider"] for r in rows] == ["claude"]
+    assert rows[0]["output_tokens"] == 4
+    assert rows[0]["cost_usd"] == pytest.approx(
+        brain_mod.estimate_cost_usd(DEFAULT_CLAUDE_MODEL, 10, 4))
+    by_agent = await state.usage_by_agent(days=1)
+    assert by_agent[0]["agent"] == "writer"
 
 
 @pytest.mark.asyncio
-async def test_claude_model_choice_is_passed_per_call(state, monkeypatch):
-    captured = _capture_exec(monkeypatch)
-    await Brain(state, BrainConfig(model="claude-opus-4-8")).think("hi")
-    cmd = captured["cmd"]
-    assert cmd[cmd.index("--model") + 1] == "claude-opus-4-8"
-    assert cmd[cmd.index("--tools") + 1] == "" and "--strict-mcp-config" in cmd
+async def test_claude_model_effort_and_fallback_toggle_are_passed_per_call(state):
+    config = BrainConfig(model="claude-haiku-5-5", reasoning_effort="low")
+    brain, fake = _claude_brain(state, [_response(model="claude-haiku-5-5")], config)
+    await brain.think("hi")
+    path, request = fake.requests[0]
+    assert path == "messages"  # no fallback for models outside the supported set
+    assert request["model"] == "claude-haiku-5-5"
+    assert request["output_config"] == {"effort": "low"}
+    assert "fallbacks" not in request and "betas" not in request
+
+    brain, fake = _claude_brain(state, [_response()], BrainConfig(fallbacks=False))
+    await brain.think("hi")
+    assert fake.requests[0][0] == "messages"
 
 
 @pytest.mark.asyncio
-async def test_long_claude_prompts_still_go_via_stdin(state, monkeypatch):
-    """Windows long-prompt fix: prompts past the argv limit travel on stdin."""
-    captured = _capture_exec(monkeypatch)
-    long_prompt = "x" * (brain_mod._MAX_ARGV_PROMPT_CHARS + 1)
-    await Brain(state).think(long_prompt)
-    assert long_prompt not in captured["cmd"]
-    assert captured["kwargs"]["stdin"] == asyncio.subprocess.PIPE
-    assert captured["proc"].stdin_data == long_prompt.encode("utf-8")
+async def test_claude_think_json(state):
+    brain, _ = _claude_brain(state, [_response('```json\n{"intent": "interested"}\n```')])
+    assert await brain.think_json("classify") == {"intent": "interested"}
 
-    short = _capture_exec(monkeypatch)
-    await Brain(state).think("short")
-    assert "short" in short["cmd"]
-    assert short["kwargs"]["stdin"] == asyncio.subprocess.DEVNULL
+
+@pytest.mark.asyncio
+async def test_claude_transient_failures_are_retried_and_bounded(state, monkeypatch):
+    monkeypatch.setattr(brain_mod, "RETRY_BASE_DELAY", 0)
+    limited = _api_error(anthropic.RateLimitError, 429, "slow down", {"retry-after": "0"})
+    server = _api_error(anthropic.InternalServerError, 500, "oops")
+    network = anthropic.APIConnectionError(
+        request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
+
+    brain, fake = _claude_brain(state, [limited, server, _response("late")])
+    assert await brain.think("hi", max_retries=2) == "late"
+    assert len(fake.requests) == 3
+
+    brain, fake = _claude_brain(state, [network, network, network, _response("never")])
+    assert await brain.think("hi", max_retries=2) == ""
+    assert len(fake.requests) == 3
+    assert await state.get_usage_today("claude") == 1  # only the successful call counted
+
+
+@pytest.mark.asyncio
+async def test_claude_rejected_key_pauses_until_the_key_changes(state):
+    import json
+    brain, fake = _claude_brain(
+        state, [_api_error(anthropic.AuthenticationError, 401, "invalid x-api-key")])
+    assert await brain.think("one") == ""
+    assert await brain.think("two") == ""
+    assert len(fake.requests) == 1  # the second call never reached the API
+    assert "ANTHROPIC_API_KEY" in brain.paused_reason
+    stored = json.loads(await state.get_setting(brain_mod.BRAIN_STATUS_KEY))
+    assert stored == {**stored, "provider": "claude", "status": "paused", "kind": "auth"}
+    assert await brain.preflight() == brain.paused_reason
+
+    fake.api_key = "sk-ant-rotated"  # the operator fixed .env and restarted
+    assert await brain.preflight() == ""
+    stored = json.loads(await state.get_setting(brain_mod.BRAIN_STATUS_KEY))
+    assert stored["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_claude_bad_requests_are_not_retried(state):
+    brain, fake = _claude_brain(
+        state, [_api_error(anthropic.BadRequestError, 400, "messages: too long")])
+    assert await brain.think("hi") == ""
+    assert len(fake.requests) == 1 and brain.paused_reason == ""
+
+    unknown = _api_error(anthropic.NotFoundError, 404, "model: claude-nope")
+    brain, fake = _claude_brain(state, [unknown], BrainConfig(model="claude-nope"))
+    assert await brain.think("hi") == ""
+    assert "claude-nope" in brain.paused_reason and "brain.model" in brain.paused_reason
+
+
+@pytest.mark.asyncio
+async def test_claude_out_of_credit_pauses_like_a_usage_limit(state):
+    brain, fake = _claude_brain(state, [_api_error(
+        anthropic.BadRequestError, 400, "Your credit balance is too low to access the API.")])
+    assert await brain.think("hi") == ""
+    assert "usage limit" in brain.paused_reason
+    assert await brain.is_within_budget(1000) is False
+    assert await brain.think("again") == "" and len(fake.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_claude_refusal_returns_nothing_but_is_recorded(state):
+    brain, _ = _claude_brain(state, [_response("", stop_reason="refusal")])
+    assert await brain.think("hi") == ""
+    rows = await state.usage_by_provider(days=1)
+    assert rows[0]["calls"] == 1
+    assert brain.paused_reason == ""  # one declined prompt doesn't pause the brain
+
+
+@pytest.mark.asyncio
+async def test_claude_preflight_needs_a_key_and_makes_no_call(state):
+    brain, fake = _claude_brain(state, [AssertionError("preflight must not call the API")])
+    assert await brain.preflight() == ""
+    assert fake.requests == []
+
+    brain, fake = _claude_brain(state, [])
+    fake.api_key = None
+    reason = await brain.preflight()
+    assert "ANTHROPIC_API_KEY is not set" in reason
+    assert await brain.think("hi") == "" and fake.requests == []
+
+    # No client at all (the SDK couldn't be constructed) reads the same way.
+    monkey = Brain(state, BrainConfig(), client=_FakeAnthropic([]))
+    monkey.client = None
+    assert "ANTHROPIC_API_KEY" in await monkey.preflight()
+
+
+@pytest.mark.asyncio
+async def test_claude_daily_spend_cap(state):
+    brain, _ = _claude_brain(state, [_response(input_tokens=1_000_000, output_tokens=0)])
+    await brain.think("expensive")  # $4.00 of Opus input
+    assert await brain.is_within_budget(1000) is True              # no cap
+    assert await brain.is_within_budget(1000, max_daily_cost_usd=10.0) is True
+    assert await brain.is_within_budget(1000, max_daily_cost_usd=3.0) is False
+    assert await brain.is_within_budget(1, max_daily_cost_usd=10.0) is False  # call count still applies
+
+
+def test_estimate_cost_usd():
+    assert brain_mod.estimate_cost_usd("claude-opus-5-5", 1_000_000, 0) == 4.0
+    assert brain_mod.estimate_cost_usd("claude-opus-5-5", 0, 1_000_000) == 20.0
+    assert brain_mod.estimate_cost_usd("claude-opus-5", 1_000_000) == 5.0  # longest prefix wins
+    assert brain_mod.estimate_cost_usd("claude-haiku-5-5", 1_000_000, 1_000_000) == 0.6
+    assert brain_mod.estimate_cost_usd("claude-sonnet-4-6", cache_read_tokens=1_000_000) == 0.3
+    assert brain_mod.estimate_cost_usd("some-future-model", 1_000_000, 1_000_000) == 0.0
 
 
 # ── Codex path ──
@@ -174,15 +326,15 @@ def _codex_brain(state, outcomes):
 
 @pytest.mark.asyncio
 async def test_codex_brain_never_touches_claude(state, monkeypatch):
-    async def no_claude(*a, **k):
-        raise AssertionError("Codex brain must not run the Claude CLI")
+    def no_claude(*a, **k):
+        raise AssertionError("Codex brain must not build an Anthropic client")
 
-    monkeypatch.setattr(brain_mod.asyncio, "create_subprocess_exec", no_claude)
+    monkeypatch.setattr(brain_mod.anthropic, "AsyncAnthropic", no_claude)
     result = CodexResult(text="hello", model="gpt-5.5", thread_id="thr-1", duration_ms=900,
                          usage={"input_tokens": 10, "output_tokens": 4, "cache_read_tokens": 2,
                                 "cache_creation_tokens": 0})
     brain = _codex_brain(state, [result])
-    assert type(brain.quota).__name__ == "CodexQuotaClient"
+    assert type(brain.quota).__name__ == "CodexQuotaClient" and brain.client is None
     assert await brain.think("hi", agent="writer", task="draft") == "hello"
 
     assert await state.get_usage_today("codex") == 1
@@ -218,15 +370,6 @@ async def test_codex_retries_are_bounded(state, monkeypatch):
 
     brain = _codex_brain(state, [err, CodexResult(text="recovered")])
     assert await brain.think("hi", max_retries=2) == "recovered"
-
-
-@pytest.mark.asyncio
-async def test_claude_preflight_is_a_no_op(state, monkeypatch):
-    async def no_process(*a, **k):
-        raise AssertionError("Claude preflight must not start anything")
-
-    monkeypatch.setattr(brain_mod.asyncio, "create_subprocess_exec", no_process)
-    assert await Brain(state).preflight() == ""
 
 
 @pytest.mark.asyncio
@@ -438,7 +581,7 @@ def _answering(answers, prompts):
     (["codex", "gpt-6-sol"], BrainConfig(provider="codex", model="gpt-6-sol")),  # explicit kept
     (["codex", "--model", "my-model"], BrainConfig(provider="codex", model="my-model")),
     (["claude", ""], BrainConfig()),
-    (["claude", "opus"], BrainConfig(model="opus")),
+    (["claude", "claude-sonnet-5-5"], BrainConfig(model="claude-sonnet-5-5")),
 ])
 def test_setup_model_prompt(monkeypatch, answers, expected):
     import harvey.setup as setup_mod
@@ -453,7 +596,7 @@ def test_setup_model_prompt(monkeypatch, answers, expected):
         # validated; a flag-like answer is asked again).
         assert all(p == ("Model", SUGGESTED_MODEL) for p in model_prompts)
     else:
-        assert model_prompts == [("Model (leave blank for the default)", "")]
+        assert model_prompts == [(f"Model (leave blank for {DEFAULT_CLAUDE_MODEL})", "")]
 
 
 def test_setup_writes_the_selection(tmp_path, monkeypatch):
@@ -481,7 +624,7 @@ def test_setup_writes_the_selection(tmp_path, monkeypatch):
 async def test_codex_setup_does_not_require_claude(monkeypatch, tmp_path):
     import harvey.setup as setup_mod
 
-    monkeypatch.setattr(setup_mod, "_check_claude_cli", lambda: False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)  # no Claude key either
     monkeypatch.setattr(setup_mod, "_check_codex_cli", lambda: True)
     monkeypatch.setattr("harvey.codex.check_native_auth", lambda *a: Path("auth.json"))
     monkeypatch.setattr("harvey.codex.check_cli_version", lambda *a: "0.159.3")
@@ -545,13 +688,17 @@ def test_dashboard_codex_quota_is_labelled_codex(client, monkeypatch):
     assert stats["codex_calls_today"] == 0 and stats["claude_calls_today"] == 0
 
 
-def test_dashboard_claude_default_unchanged(client, monkeypatch):
+def test_dashboard_claude_reports_spend_not_quota(client, monkeypatch):
     monkeypatch.setattr(dash, "_active_brain", lambda: BrainConfig())
-    monkeypatch.setitem(dash._quota_clients, ("claude", ""),
-                        _Quota({"seven_day": {"utilization": 50.0, "resets_at": ""}}))
+    monkeypatch.setitem(dash._quota_clients, ("claude", ""), _NeverRead())
+    asyncio.run(StateManager(str(client.db_path)).record_usage_event(
+        provider="claude", model=DEFAULT_CLAUDE_MODEL, output_tokens=9, cost_usd=0.25))
     data = client.get("/api/usage").json()
-    assert data["quota_provider"] == "claude"
-    assert data["quota"]["seven_day"]["utilization"] == 50.0
+    assert data["quota_provider"] == "claude" and data["quota"] is None
+    assert data["quota_status"] == "unavailable"  # no subscription window exists
+    assert data["totals"]["today"]["cost_usd"] == pytest.approx(0.25)
+    assert ("claude", "") not in dash._quota_clients or isinstance(
+        dash._quota_clients[("claude", "")], _NeverRead)
 
 
 def test_dashboard_reports_unavailable_codex_quota(client, monkeypatch):
@@ -650,6 +797,8 @@ def test_cli_status_shows_a_recorded_pause(monkeypatch, tmp_path, capsys):
 
 
 def test_cli_status_check_reports_readiness(monkeypatch, tmp_path, capsys):
+    real_preflight = Brain.preflight
+
     async def not_ready(self):
         return "Your Codex login has expired or is due for renewal."
 
@@ -668,8 +817,16 @@ def test_cli_status_check_reports_readiness(monkeypatch, tmp_path, capsys):
     out = _status_cli(monkeypatch, tmp_path, capsys, check=True,
                       config=BrainConfig(provider="codex", model="gpt-5.5"))
     assert "Codex (gpt-5.5) ready" in out
+    monkeypatch.setattr(brain_mod.Brain, "preflight", real_preflight)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     out = _status_cli(monkeypatch, tmp_path, capsys, check=True, config=BrainConfig())
-    assert "Claude (not checked" in out
+    assert "Claude ready (API key present" in out
+    # No credentials at all (the SDK found nothing in env or profiles).
+    monkeypatch.setattr(brain_mod.anthropic, "AsyncAnthropic",
+                        lambda **k: SimpleNamespace(api_key=None, auth_token=None))
+    with pytest.raises(SystemExit):
+        _status_cli(monkeypatch, tmp_path, capsys, check=True, config=BrainConfig())
+    assert "ANTHROPIC_API_KEY is not set" in capsys.readouterr().out
 
 
 def test_quota_card_renders_unavailable_codex_quota():
@@ -686,15 +843,17 @@ def test_quota_card_renders_gauges_and_limit_reached():
                                                            "resets_at": ""}}})
     assert "Usage limit reached" in html and "100%" in html
     assert _render_quota_card({"quota_provider": "", "quota": None}) == ""
-    claude = _render_quota_card({"quota_provider": "claude", "quota": None})
-    assert "Claude Subscription Quota" in claude and "unavailable" in claude
+    claude = _render_quota_card({"quota_provider": "claude", "quota": None,
+                                 "totals": {"today": {"cost_usd": 1.5}, "week": {"cost_usd": 7}}})
+    assert "Claude API Spend" in claude and "$1.50" in claude and "$7.00" in claude
+    assert "max_daily_cost_usd" in claude and "Quota unavailable" not in claude
+    assert "$0.00" in _render_quota_card({"quota_provider": "claude", "quota": None})
 
 
 def test_cli_usage_reads_only_the_active_providers_quota(monkeypatch, tmp_path, capsys):
     import harvey.cli as cli
     import harvey.codex as codex_mod
     import harvey.config as config_mod
-    import harvey.integrations.quota as quota_mod
     import harvey.state as state_mod
 
     monkeypatch.setattr(config_mod, "load_brain_config", lambda: BrainConfig(provider="codex"))
@@ -708,12 +867,7 @@ def test_cli_usage_reads_only_the_active_providers_quota(monkeypatch, tmp_path, 
         async def get_utilization(self):
             return {"five_hour": {"utilization": 21.0, "resets_at": ""}}
 
-    class ClaudeQuota:
-        async def get_utilization(self):
-            raise AssertionError("Claude quota must not be read when Codex is active")
-
     monkeypatch.setattr(codex_mod, "CodexQuotaClient", CodexQuota)
-    monkeypatch.setattr(quota_mod, "QuotaClient", ClaudeQuota)
     cli.cmd_usage(type("A", (), {"days": 30})())
     out = capsys.readouterr().out
     assert "Codex Usage" in out and "Claude Usage" not in out
