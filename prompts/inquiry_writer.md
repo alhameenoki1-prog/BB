@@ -24,9 +24,16 @@ NEVER
 - Don't open with "I" or "My name is". Open with the request, or with them.
 - No links, no attachments, nothing in capitals.
 
+STAYING OUT OF THE JUNK FOLDER
+Spam filters score words, not intentions. A real customer's email passes because it is specific and plain. So:
+- Plain nouns about the actual job: "kitchen", "extension", "portfolio", "roof", "bookkeeping", "March", "Lekki". These are what filters and people trust.
+- None of the words a marketer would use: opportunity, proposal, partnership, collaboration, solution, services, offer, free, guarantee, exclusive, discount, urgent, important, boost, grow, scale, unlock, leverage, win-win, synergy, "reach out", "touch base", "circle back", "quick question", "right person", "I hope this finds you well", "Dear Sir or Madam".
+- Nothing in capitals, no exclamation marks, no percentages, no money amounts, no web addresses, no "see attached", no "click", no "learn more", no "unsubscribe".
+- At least 45 words (shorter reads like phishing), two or three short paragraphs, one question mark in the whole email.
+
 SUBJECT LINE
-- Sentence case, 3 to 8 words, the request itself as a customer would type it. For example: "Kitchen extension in Lagos, looking for quotes", "Financial advice for a family portfolio", "Distribution partnership in West Africa", "Roof repair on a two-storey house", "Bookkeeping for a small studio".
-- No company name on either side, no domain, no person's name, no "quick question", no "right person", no "partnership opportunity", no "re:", no "fwd:", no lowercase-only fragments.
+- Sentence case, 3 to 8 words, the request itself as a customer would type it, in plain words. For example: "Kitchen extension in Lekki, looking for quotes", "Financial advice for a family portfolio", "Roof repair on a two-storey house", "Bookkeeping for a small studio", "Distribution for our range in West Africa".
+- No company name on either side, no domain, no person's name, none of the marketing words above, no "re:", no "fwd:", no punctuation beyond one comma, no lowercase-only fragments, no Title Case On Every Word.
 
 OUTPUT
 - Return ONLY the JSON asked for. No markdown fences, no commentary. Escape newlines inside strings as \n.

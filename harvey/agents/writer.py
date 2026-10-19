@@ -175,6 +175,12 @@ class Writer:
         except Exception as e:
             logger.warning(f"Writer: name lookup skipped: {e}")
 
+        # The operator's own message: no model call, one campaign, the
+        # sender fills in {{first_name}} and the greeting per person.
+        if self.use_template:
+            await self._queue_template_campaign(prospects_with_email)
+            return
+
         # Sort newcomers into sector × role before grouping, so every
         # campaign is one sector and one tier and the writing can speak to
         # what that business does and who is reading.
@@ -258,6 +264,7 @@ class Writer:
                 continue
             if not draft:
                 continue
+            held = draft.get("spam_reasons") or []
             item_id = await self.state.add_outbox_item(
                 prospect_id=prospect.id,
                 campaign_id=campaign_id,
@@ -266,9 +273,14 @@ class Writer:
                 subject=draft["subject"],
                 body=draft["body"],
                 send_at=now,
-                status=status,
+                status="pending_review" if held else status,
                 provider=provider,
             )
+            if item_id and held:
+                from harvey.spamcheck import describe
+                await self.state.update_outbox_item(
+                    item_id, error="Held for your review: a spam filter would likely flag "
+                    + describe(held) + ". Edit the profile's request or approve it as is.")
             if item_id:
                 drafted += 1
 
@@ -355,6 +367,61 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
         if found:
             logger.info(f"Writer: found names for {found} recipient(s) the upload left blank.")
         return found
+
+    @property
+    def use_template(self) -> bool:
+        outreach = getattr(self.config, "outreach", None)
+        return bool(getattr(outreach, "use_template", False)
+                    and (getattr(outreach, "template_body", "") or "").strip())
+
+    def template_steps(self) -> list[EmailStep]:
+        """The operator's own message as a sequence: the first email, then
+        whichever follow-ups were written (3 and 7 days on)."""
+        outreach = self.config.outreach
+        subject = (outreach.template_subject or "").strip() or "Following up"
+        steps = [EmailStep(step=1, subject=subject, body=outreach.template_body.strip(), delay_days=0)]
+        for delay, text in ((3, outreach.template_followup_1), (4, outreach.template_followup_2)):
+            text = (text or "").strip()
+            if text:
+                steps.append(EmailStep(step=len(steps) + 1, subject=subject, body=text, delay_days=delay))
+        return steps
+
+    async def _queue_template_campaign(self, prospects: list) -> str:
+        campaign = Campaign(
+            id="", name="your message", channel="email",
+            sequence=self.template_steps(),
+            prospect_ids=[p.id for p in prospects], status="draft",
+        )
+        campaign_id = await self.state.add_campaign(campaign)
+        for p in prospects:
+            await self.state.update_prospect_status(p.id, "queued")
+        await self.state.log_action(
+            action_type="write_campaign", agent="writer",
+            details={"campaign_id": campaign_id, "campaign_name": campaign.name,
+                     "prospect_count": len(prospects), "steps": len(campaign.sequence),
+                     "template": True})
+        logger.info(f"Writer: queued your own message for {len(prospects)} recipient(s).")
+        return campaign_id
+
+    async def _spam_safe(self, prompt: str, result: dict, task: str) -> tuple[dict, list[str]]:
+        """Score a draft; if it reads like spam, ask once for a rewrite with
+        the findings spelled out. Returns (best draft, reasons left)."""
+        from harvey.spamcheck import REVIEW, describe, spam_risk
+
+        score, reasons = spam_risk(str(result.get("subject", "")), str(result.get("body", "")))
+        if score < REVIEW:
+            return result, []
+        retry = await self.brain.think_json(
+            prompt + "\n\nYour previous draft would land in the junk folder. A filter flagged: "
+            + describe(reasons) + ". Rewrite it in plain, specific words a real customer would use, "
+            "with none of those, same facts, same JSON.",
+            session_id="harvey-writer", agent="writer", task=task,
+        )
+        if isinstance(retry, dict) and retry.get("body"):
+            score2, reasons2 = spam_risk(str(retry.get("subject", "")), str(retry.get("body", "")))
+            if score2 < score:
+                result, score, reasons = retry, score2, reasons2
+        return result, (reasons if score >= REVIEW else [])
 
     def _forbidden_terms(self, prospects: list) -> set[str]:
         """Names that must not appear in an inquiry email: the recipients'
@@ -553,13 +620,14 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
             )
             if isinstance(retry, dict) and retry.get("body"):
                 result = retry
+        result, spam_reasons = await self._spam_safe(prompt, result, "personal_email")
         subject = _scrub(str(result.get("subject") or "").strip(), forbidden)
         body = names.ensure_greeting(
             _scrub(str(result.get("body") or "").strip(), forbidden), prospect.first_name,
             prospect.email, prospect.company, self.greeting_word)
         if not subject or not body:
             return None
-        return {"subject": subject[:120], "body": body[:2000]}
+        return {"subject": subject[:120], "body": body[:2000], "spam_reasons": spam_reasons}
 
     async def _write_sequence(self, prospects: list) -> list[EmailStep]:
         """Ask the brain to write a 3-email sequence."""
@@ -618,7 +686,17 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             prompt, session_id="harvey-writer",
             agent="writer", task="write_sequence",
         )
-        return self._parse_sequence(result, forbidden=self._forbidden_terms(prospects))
+        steps = self._parse_sequence(result, forbidden=self._forbidden_terms(prospects))
+        if steps:
+            first = {"subject": steps[0].subject, "body": steps[0].body}
+            fixed, reasons = await self._spam_safe(prompt, first, "sequence")
+            if fixed is not first:
+                steps[0].subject = _scrub(str(fixed.get("subject") or steps[0].subject), self._forbidden_terms(prospects))
+                steps[0].body = _scrub(str(fixed.get("body") or steps[0].body), self._forbidden_terms(prospects))
+            if reasons:
+                logger.warning("Writer: the first email still reads like spam to a filter "
+                               f"({'; '.join(reasons[:4])}); the sender will hold it for review.")
+        return steps
 
     def _parse_sequence(self, result, forbidden: set | None = None) -> list[EmailStep]:
         """Robustly coerce LLM output into a validated EmailStep list.

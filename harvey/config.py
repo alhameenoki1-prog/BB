@@ -215,7 +215,15 @@ class OutreachConfig(BaseModel):
     signature_html: str = ""
     signature_text: str = ""
     signature_image: str = ""  # file name under HARVEY_HOME/signature
-    greeting: str = "Hi"       # the opening word: "Hi Jane," / "Hello Acme team,"
+    greeting: str = "Hi"       # the opening word: "Hi Jane," / "Hello team,"
+    # Your own message instead of AI writing: subject + body for the first
+    # email ({{first_name}} allowed; the greeting line is added if missing),
+    # and optional follow-ups 3 and 7 days later (blank = none).
+    use_template: bool = False
+    template_subject: str = ""
+    template_body: str = ""
+    template_followup_1: str = ""
+    template_followup_2: str = ""
 
     @field_validator("mode", mode="before")
     @classmethod

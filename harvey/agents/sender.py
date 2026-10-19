@@ -23,6 +23,7 @@ from harvey.gate import pre_send_check
 from harvey.integrations.instantly import InstantlyClient
 from harvey.integrations.mail_provider import NATIVE_PROVIDERS, get_mail_provider
 from harvey.integrations.precleared import PreclearedClient
+from harvey.spamcheck import REVIEW as SPAM_REVIEW, describe, spam_risk
 from harvey.state import StateManager
 
 logger = logging.getLogger("harvey.sender")
@@ -434,6 +435,7 @@ class Sender:
             else SENDABLE_EMAIL_STATUSES
         )
 
+        held = 0
         staged = 0
         skipped = 0
         now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -457,19 +459,33 @@ class Sender:
             for step in campaign.sequence:
                 cumulative_days += max(0, step.delay_days)
                 send_at = now + timedelta(days=cumulative_days)
+                subject = self._render(step.subject, prospect)
+                body = self._render(step.body, prospect, body=True)
+                status, note = initial_status, ""
+                if status == "approved" and campaign.name != "your message":
+                    # Autopilot never sends what a filter would junk; the
+                    # operator's own words are theirs to send.
+                    score, reasons = spam_risk(subject, body)
+                    if score >= SPAM_REVIEW:
+                        status = "pending_review"
+                        note = ("Held for your review: a spam filter would likely flag "
+                                + describe(reasons) + ". Approve it as is, or reject it.")
+                        held += 1
                 item_id = await self.state.add_outbox_item(
                     prospect_id=prospect.id,
                     campaign_id=campaign.id,
                     step=step.step,
                     to_email=email,
-                    subject=self._render(step.subject, prospect),
-                    body=self._render(step.body, prospect, body=True),
+                    subject=subject,
+                    body=body,
                     send_at=send_at.isoformat(),
-                    status=initial_status,
+                    status=status,
                     provider=self.provider.name,
                 )
                 if item_id:
                     staged += 1
+                    if note:
+                        await self.state.update_outbox_item(item_id, error=note)
             await self.state.update_prospect_status(prospect.id, "queued")
 
         await self.state.update_campaign(campaign.id, status="active")
@@ -478,6 +494,10 @@ class Sender:
                 f"Sender: held back {skipped} prospect(s) with unverified "
                 f"emails from '{campaign.name}'."
             )
+        if held:
+            logger.warning(
+                f"Sender: {held} email(s) from '{campaign.name}' read like spam to a filter "
+                "and wait in the Outbox for your approval instead of going out.")
         if staged:
             mode = "awaiting your approval" if require_approval else "approved"
             logger.info(

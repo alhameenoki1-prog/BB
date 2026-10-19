@@ -246,6 +246,16 @@ web host is usually `mail.yourdomain.com` on ports 587/465 (SMTP) and 993
 
 ## What makes the emails good or bad
 
+Every draft is scored the way a spam filter would score it (marketing
+words, capitals, exclamation marks, links, money, "Re:" subjects,
+clichéd openers, very short bodies). A flagged draft is rewritten once;
+if it still fails it waits in the Outbox marked "Held for your review"
+with the reasons, even when approval is off. Prefer plain, specific words
+about the actual job. If you would rather write the email yourself,
+choose "Use my own message" on the profile: everyone gets your text with
+their first name in the greeting, no AI writing, replies still handled;
+the page warns if your text would trip filters but sends it as you wrote it.
+
 Every enquiry email is built around the "what you want from them" sentence
 on the profile. Vague in, vague out: "I want to work with you" produces
 emails that hedge; "quotes for a 40 sqm kitchen extension in Lekki, work

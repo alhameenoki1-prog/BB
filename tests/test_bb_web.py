@@ -820,7 +820,7 @@ def test_profile_speed_style_and_signature(client):
     assert cfg["usage"]["heartbeat_interval_minutes"] == 1
     assert cfg["channels"]["email"]["sends_per_cycle"] == 25
     assert cfg["channels"]["email"]["warmup_ramp"] is True
-    assert cfg["channels"]["email"]["list_unsubscribe"] is True
+    assert cfg["channels"]["email"]["list_unsubscribe"] is False   # a personal enquiry carries no bulk headers
     assert cfg["outreach"]["style"] == "engaging"
     assert cfg["outreach"]["signature_html"].startswith("Jane<br>")
     assert HarveyConfig(**cfg).outreach.style == "engaging"
@@ -955,3 +955,39 @@ def test_outbox_bounced_view(client):
     assert "x@gone.example" in client.get("/outbox?status=sent").text
     assert 'href="/outbox?status=bounced"' in client.get("/").text
     assert client.get("/outbox?status=nonsense").status_code == 200
+
+
+def test_profile_own_message_option(client):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    assert "Use my own message" in client.get("/profile").text
+
+    r = client.post("/profile", data={**PROFILE, "writing": "template", "template_body": "short"})
+    assert r.status_code == 200 and "Write the message you want sent" in r.text
+
+    body = ("We are planning a 40 square metre kitchen extension in Lekki and want the work to start in March. "
+            "Do you take on work like this, and how do you usually start?\n\nJane")
+    r = client.post("/profile", data={**PROFILE, "writing": "template", "intent": "",
+                                       "template_subject": "Kitchen extension in Lekki, looking for quotes",
+                                       "template_body": body, "template_followup_1": "Hi {{first_name}},\n\nFollowing my note about the kitchen extension: could you take it on?"})
+    assert r.status_code == 303 and "error=" not in r.headers["location"]   # the request sentence is not needed here
+    cfg = yaml.safe_load(ws.config_file.read_text())
+    assert cfg["outreach"]["use_template"] is True and cfg["outreach"]["template_body"] == body
+    assert cfg["outreach"]["template_subject"].startswith("Kitchen extension")
+    assert cfg["outreach"]["template_followup_1"].startswith("Hi {{first_name}}")
+    assert HarveyConfig(**cfg).outreach.use_template
+    prof = ws.profile()
+    assert prof["writing"] == "template" and body.split("\n")[0] in client.get("/profile").text
+
+    # Marketing words in the operator's own message get a warning, but are saved.
+    spammy = "Dear Sir/Madam, I hope this email finds you well. We offer the best solutions! Click here for a FREE quote. 100% guaranteed."
+    r = client.post("/profile", data={**PROFILE, "writing": "template", "template_subject": "PARTNERSHIP OPPORTUNITY",
+                                       "template_body": spammy})
+    assert "land%20in%20junk%20folders" in r.headers["location"] and "Profile%20saved" in r.headers["location"]
+    assert yaml.safe_load(ws.config_file.read_text())["outreach"]["template_body"] == spammy
+
+    # Back to AI writing: template kept on disk but off.
+    client.post("/profile", data={**PROFILE, "writing": "segment"})
+    cfg = yaml.safe_load(ws.config_file.read_text())
+    assert cfg["outreach"]["use_template"] is False and ws.profile()["writing"] == "segment"

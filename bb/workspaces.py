@@ -396,7 +396,12 @@ class Workspace:
             "intent": outreach.get("intent", ""),
             "reply_instructions": outreach.get("reply_instructions", ""),
             "attach_on": outreach.get("attach_on", "first_reply"),
-            "writing": "person" if outreach.get("personalize_each", False) else "segment",
+            "writing": ("template" if outreach.get("use_template") else
+                        "person" if outreach.get("personalize_each", False) else "segment"),
+            "template_subject": outreach.get("template_subject", ""),
+            "template_body": outreach.get("template_body", ""),
+            "template_followup_1": outreach.get("template_followup_1", ""),
+            "template_followup_2": outreach.get("template_followup_2", ""),
             "style": outreach.get("style", "engaging"),
             "greeting": outreach.get("greeting", "Hi"),
             "signature_html": outreach.get("signature_html", ""),
@@ -405,6 +410,21 @@ class Workspace:
                            and v["per_cycle"] == email.get("sends_per_cycle")), "normal"),
             "warmup_ramp": bool(email.get("warmup_ramp", True)),
         }
+
+    def template_warning(self) -> str:
+        """What a spam filter would flag in the operator's own message, as a
+        sentence for the page, or ""."""
+        from harvey.spamcheck import REVIEW, describe, spam_risk
+
+        prof = self.profile()
+        if prof.get("writing") != "template" or not prof.get("template_body"):
+            return ""
+        score, reasons = spam_risk(prof.get("template_subject", ""), prof.get("template_body", ""))
+        if score < REVIEW:
+            return ""
+        return ("Your message may land in junk folders. A filter would flag: " + describe(reasons)
+                + ". Plain, specific words about the actual job pass; marketing words, capitals, "
+                "links and exclamation marks do not.")
 
     def write_profile(self, form: dict) -> dict:
         """Build harvey.yaml from the profile form and write it (validated
@@ -426,7 +446,9 @@ class Workspace:
         persona_email = self.sending_address() or text("email")
         benefits = _split_lines(form.get("benefits", ""))
         mode = text("mode") or "inquiry"
-        if mode == "inquiry" and len(text("intent")) < 15:
+        if text("writing") == "template" and len(str(form.get("template_body", "") or "").strip()) < 20:
+            raise ValueError("Write the message you want sent (at least a few lines), or pick one of the AI options.")
+        if mode == "inquiry" and text("writing") != "template" and len(text("intent")) < 15:
             raise ValueError(
                 "Say what you want from the people you write to, in a sentence or two (for example "
                 "\"quotes for a two-storey extension in Lagos, starting in March\"). Every email is "
@@ -474,7 +496,9 @@ class Workspace:
                     # Checkbox: absent in the form means off; a brand-new form
                     # (no key at all) defaults to on.
                     "warmup_ramp": flag("warmup_ramp") if "warmup_ramp" in form or "speed" in form else True,
-                    "list_unsubscribe": True,
+                    # A personal enquiry carries no bulk-mail headers; a sales
+                    # sequence does, as Gmail and Yahoo require of bulk senders.
+                    "list_unsubscribe": mode != "inquiry",
                 },
                 "linkedin": {"enabled": False},
             },
@@ -498,6 +522,11 @@ class Workspace:
                 "attach_on": text("attach_on") or "first_reply",
                 # Web default: one email per sector × role segment, sent in bulk.
                 "personalize_each": text("writing") == "person",
+                "use_template": text("writing") == "template",
+                "template_subject": text("template_subject")[:120],
+                "template_body": str(form.get("template_body", "") or "").strip(),
+                "template_followup_1": str(form.get("template_followup_1", "") or "").strip(),
+                "template_followup_2": str(form.get("template_followup_2", "") or "").strip(),
                 "style": text("style") if text("style") in STYLES else "engaging",
                 "greeting": text("greeting") if text("greeting") in GREETINGS else "Hi",
                 "signature_html": signature_html,

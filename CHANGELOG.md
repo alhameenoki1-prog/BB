@@ -9,6 +9,22 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Spam-risk check on every draft** (`harvey/spamcheck.py`): a
+  deterministic score for the things filters react to in cold mail
+  (marketing vocabulary, capitals, exclamation marks, links, money,
+  fake-reply or marketing subjects, template openers, phishing-short
+  bodies). The writer rewrites a flagged draft once with the findings
+  spelled out; anything still flagged is queued as *pending review* with
+  the reasons on the Outbox item, even on autopilot. The operator's own
+  message is never held, only warned about on the profile page.
+- **Use my own message.** `outreach.use_template` with
+  `template_subject`, `template_body` and two optional follow-ups: no
+  model call, one campaign, `{{first_name}}` and the greeting filled per
+  person, replies still handled. Profile → "How the emails are written".
+- The inquiry brief gained a "staying out of the junk folder" section,
+  and web-app inquiry mode no longer adds a `List-Unsubscribe` header (a
+  personal enquiry is not bulk mail).
+
 - **No company names in enquiry emails.** Inquiry-mode emails never name
   the recipient's company or domain, nor the sender's own company: the
   sender reads as a prospective client, and the recipient is "you", "your

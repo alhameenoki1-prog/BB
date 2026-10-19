@@ -349,8 +349,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return await render(request, "profile.html", user,
                                 **_profile_ctx(ws, {**ws.profile(), **form}), error=str(e))
         restarted = await ws.restart_worker_if_running("the new profile")
-        return _redirect("/profile", msg="Profile saved. The worker was restarted with the new settings."
-                         if restarted else "Profile saved.")
+        warning = ws.template_warning()
+        msg = "Profile saved. The worker was restarted with the new settings." if restarted else "Profile saved."
+        if warning:
+            return _redirect("/profile", msg=msg, error=warning)
+        return _redirect("/profile", msg=msg)
 
     # ── the user's own Anthropic key ──
 
