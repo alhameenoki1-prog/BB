@@ -78,13 +78,20 @@ async def check_openai_compatible(base_url: str, api_key: str, model: str) -> tu
         return False, "That provider rejected the key."
     if resp.status_code >= 400:
         return False, f"{base_url} answered {resp.status_code}: {resp.text[:160]}"
+    def bare(name: str) -> str:
+        # Gemini lists "models/gemini-2.5-flash"; requests take either form.
+        name = str(name or "")
+        return name[len("models/"):] if name.startswith("models/") else name
+
     try:
-        ids = {m.get("id") for m in (resp.json().get("data") or []) if isinstance(m, dict)}
+        ids = {bare(m.get("id")) for m in (resp.json().get("data") or []) if isinstance(m, dict)}
+        ids.discard("")
     except ValueError:
         ids = set()
-    if ids and model and model not in ids:
+    if ids and model and bare(model) not in ids:
+        shown = sorted(i for i in ids if not any(w in i for w in ("embedding", "image", "audio", "tts", "vision")))
         return False, (f"Connected, but the model '{model}' is not in this provider's list. "
-                       "Pick one of: " + ", ".join(sorted(str(i) for i in ids)[:12]) + "…")
+                       "Pick one of: " + ", ".join(shown[:14]) + ("…" if len(shown) > 14 else ""))
     return True, "Connected."
 
 

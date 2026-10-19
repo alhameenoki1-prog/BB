@@ -631,3 +631,28 @@ def test_cli_creates_and_resets_accounts(tmp_path, monkeypatch, capsys):
     # The site itself sees the same account and doesn't re-bootstrap.
     with TestClient(create_app(Settings()), follow_redirects=False) as client:
         assert client.post("/login", data={"email": "boss@example.com", "password": "third-long-one-33"}).status_code == 303
+
+
+@pytest.mark.asyncio
+async def test_model_check_accepts_gemini_style_prefixed_ids(monkeypatch):
+    import httpx
+
+    from bb.app import check_openai_compatible
+
+    listing = {"data": [{"id": "models/gemini-2.5-flash"}, {"id": "models/gemini-2.5-pro"},
+                        {"id": "models/text-embedding-004"}]}
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None):
+            assert url.endswith("/models") and headers == {"Authorization": "Bearer k"}
+            return httpx.Response(200, json=listing, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    base = "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert (await check_openai_compatible(base, "k", "gemini-2.5-flash")) == (True, "Connected.")
+    assert (await check_openai_compatible(base, "k", "models/gemini-2.5-pro")) == (True, "Connected.")
+    ok, detail = await check_openai_compatible(base, "k", "gemini-9")
+    assert not ok and "gemini-2.5-flash" in detail and "embedding" not in detail
