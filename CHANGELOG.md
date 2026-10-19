@@ -9,6 +9,19 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **No company names in enquiry emails.** Inquiry-mode emails never name
+  the recipient's company or domain, nor the sender's own company: the
+  sender reads as a prospective client, and the recipient is "you", "your
+  team" or what they do. The brief says so, a draft that slips is
+  rewritten once, and whatever remains is scrubbed (merge fields
+  included). Shared inboxes are greeted "Hello team,".
+- **Bounce reasons.** A bounce now records the receiving server's own
+  words and what to do about them on the sent item (`error`:
+  "Bounced: …"), with hints for no-such-address, authentication (SPF /
+  DKIM / DMARC), rate limits, "unsolicited mail", blocked content, full
+  mailboxes and unreachable servers. The web app's Outbox has a Bounced
+  view and the dashboard's Bounced number links to it.
+
 - **Enquiry emails that read like enquiries.** Inquiry mode now has its
   own brief (`prompts/inquiry_writer.md`) instead of the cold-sales prompt
   plus sales skill files: state the request from `outreach.intent`, one

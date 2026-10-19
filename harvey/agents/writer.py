@@ -60,6 +60,36 @@ TIER_GUIDANCE = {
               "lines: say what you need and ask whether they can take it on or pass it to the "
               "person who does. Never remark on the inbox or on their role; just ask."),
 }
+def _mentions(text: str, terms: set[str]) -> bool:
+    low = (text or "").lower()
+    return any(t.lower() in low for t in terms if t)
+
+
+def _scrub(text: str, terms: set[str]) -> str:
+    """Replace company names and domains with neutral wording, so an email
+    never names the recipient's business or the sender's. Longest terms
+    first so "Acme Roofing" goes before "Acme"."""
+    if not text or not terms:
+        return text
+    for term in sorted((t for t in terms if t), key=len, reverse=True):
+        esc = re.escape(term)
+        # "Avrum here from Wandlp." → "Avrum here."; "the team at Acme" → "the team".
+        tail = r"(?!\w)(?!\.\w)"   # not inside a longer word, not the start of a domain
+        text = re.sub(rf"(?i)\s+\b(?:at|from|of)\s+{esc}{tail}", "", text)
+        # "working with Acme" → "working with you"; "a quote for Acme" → "a quote for you".
+        text = re.sub(rf"(?i)\b(with|for|to)\s+{esc}{tail}", r"\1 you", text)
+        text = re.sub(rf"(?i)\b{esc}['’]s{tail}", "your", text)
+        text = re.sub(rf"(?i)(?<![\w@.]){esc}{tail}", "you", text)
+    # Any web address left over (a dot in a word that looks like a host) goes too.
+    text = re.sub(r"(?i)\b(?:https?://|www\.)\S+", "your site", text)
+    text = re.sub(r"(?i)\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|co|ng|uk|de|fr|ca|au|us|biz|info|app|dev|me)\b(?:/\S*)?",
+                  "your site", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\s+([.,;:!?])", r"\1", text)
+    text = re.sub(r"\byour your\b", "your", text)
+    return text.strip()
+
+
 # Titles that really are admin / gatekeeping roles.
 _ADMIN_TITLE_RE = re.compile(
     r"assistant|secretary|reception|front desk|office manager|office admin|administrator|"
@@ -326,6 +356,28 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
             logger.info(f"Writer: found names for {found} recipient(s) the upload left blank.")
         return found
 
+    def _forbidden_terms(self, prospects: list) -> set[str]:
+        """Names that must not appear in an inquiry email: the recipients'
+        companies and domains, and the sender's own company."""
+        if not self.inquiry:
+            return set()
+        terms = set()
+        own = (self.config.persona.company or "").strip()
+        if len(own) >= 3:
+            terms.add(own)
+        for p in prospects:
+            domain = (p.email or "").rsplit("@", 1)[-1].lower()
+            if domain and domain not in names.PUBLIC_DOMAINS:
+                terms.add(domain)
+                label = names.company_display_name("", domain)
+                if len(label) >= 3 and not label.isdigit():
+                    terms.add(label)
+            for raw in (p.company or "", names.company_display_name(p.company, domain)):
+                raw = raw.strip()
+                if len(raw) >= 3 and raw.lower() not in {"your team", "the company", "unknown"}:
+                    terms.add(raw)
+        return terms
+
     @property
     def inquiry(self) -> bool:
         outreach = getattr(self.config, "outreach", None)
@@ -422,8 +474,8 @@ them alone and want to answer it.
     async def _write_personal_email(self, prospect) -> dict | None:
         """One grounded draft for one person. Facts in, one email out."""
         if names.is_role_address(prospect.email):
-            name_fact = (f"- Name: unknown — {prospect.email} is a shared inbox; write to the "
-                         f"{prospect.company or 'company'} team, do not invent a person")
+            name_fact = ("- Name: unknown — this is a shared inbox; write to the team, "
+                         "do not invent a person")
         elif prospect.full_name():
             name_fact = f"- Name: {prospect.full_name()}"
         else:
@@ -433,7 +485,8 @@ them alone and want to answer it.
         facts = [
             name_fact,
             f"- Title: {prospect.title or 'unknown'}",
-            f"- Company: {company_name or 'unknown'}",
+            (f"- Company: {company_name or 'unknown'}" if not self.inquiry else
+             "- Company: (not to be named in the email; the facts below say what it does)"),
         ]
         if prospect.industry:
             facts.append(f"- Industry: {prospect.industry}")
@@ -489,9 +542,20 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
         )
         if not isinstance(result, dict):
             return None
-        subject = str(result.get("subject") or "").strip()
+        forbidden = self._forbidden_terms([prospect])
+        if forbidden and _mentions(f"{result.get('subject', '')} {result.get('body', '')}", forbidden):
+            # Once more, with the slip pointed out; then whatever is left is scrubbed.
+            retry = await self.brain.think_json(
+                prompt + "\n\nYour previous draft named a company or web address (" +
+                ", ".join(sorted(forbidden)[:4]) + "). Rewrite it without naming any company on "
+                "either side and without any web address. Same JSON.",
+                session_id="harvey-writer", agent="writer", task="personal_email",
+            )
+            if isinstance(retry, dict) and retry.get("body"):
+                result = retry
+        subject = _scrub(str(result.get("subject") or "").strip(), forbidden)
         body = names.ensure_greeting(
-            str(result.get("body") or "").strip(), prospect.first_name,
+            _scrub(str(result.get("body") or "").strip(), forbidden), prospect.first_name,
             prospect.email, prospect.company, self.greeting_word)
         if not subject or not body:
             return None
@@ -533,9 +597,12 @@ Requirements:
 - Every email opens with the greeting line "{self.greeting_word} {{{{first_name}}}}," on its
   own line, then a blank line. Use {{{{first_name}}}} ONLY there (it is swapped for
   "there" or the team when a name is unknown).
-- Use {{{{company}}}} and {{{{title}}}} as merge variables where natural — every email
-  must use at least one, and email 1 must reference something specific to
-  these prospects' industry or role (use the notes above).
+{("- Do NOT use {{company}} or {{title}} anywhere: the recipient's company is never named. "
+   "Email 1 must still read as written for people in this line of work (use the segment above).")
+  if self.inquiry else
+  "- Use {{company}} and {{title}} as merge variables where natural — every email\n"
+  "  must use at least one, and email 1 must reference something specific to\n"
+  "  these prospects' industry or role (use the notes above)."}
 - Never be pushy or salesy.
 {self._subject_rule}
 - Follow every rule above. No exceptions.
@@ -551,9 +618,9 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             prompt, session_id="harvey-writer",
             agent="writer", task="write_sequence",
         )
-        return self._parse_sequence(result)
+        return self._parse_sequence(result, forbidden=self._forbidden_terms(prospects))
 
-    def _parse_sequence(self, result) -> list[EmailStep]:
+    def _parse_sequence(self, result, forbidden: set | None = None) -> list[EmailStep]:
         """Robustly coerce LLM output into a validated EmailStep list.
 
         Never raises. Tolerates a wrapper dict ({"emails": [...]}), missing
@@ -580,6 +647,12 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             if not subject or not body:
                 logger.warning(f"Writer: Skipping step {i + 1} with empty subject/body.")
                 continue
+            if self.inquiry:
+                # No company on either side, ever: merge fields and names alike.
+                subject = _scrub(subject.replace("{{company}}", "your team").replace("{{title}}", ""),
+                                 forbidden or set())
+                body = _scrub(body.replace("{{company}}", "your team").replace("{{title}}", ""),
+                              forbidden or set())
             try:
                 delay = max(0, int(raw.get("delay_days", 3 if steps else 0)))
             except (TypeError, ValueError):

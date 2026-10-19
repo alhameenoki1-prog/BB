@@ -337,6 +337,12 @@ request limits; when one is hit the worker pauses and resumes on its own.
 
 ## Getting delivered (why mail gets blocked)
 
+Start with Outbox → **Bounced**. Every email the receiving server sent
+back is there with the server's own words and what to do about them. A
+few "no such address" bounces are normal list noise. Several that say
+"unsolicited", "blocked", "rate" or "unauthenticated" mean the mailbox or
+domain is the problem, and the fixes below apply.
+
 The Mailbox page checks the sending domain's SPF, DKIM, DMARC and MX
 records every time it is opened and says exactly which record to add. The
 things that matter, in order:

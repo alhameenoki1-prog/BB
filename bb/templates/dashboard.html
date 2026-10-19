@@ -23,7 +23,7 @@
   <div class="stat hero"><div class="l">Replies received</div><div class="n">{{ summary.replies }}</div><div class="sub">{{ summary.open_replies }} open conversation{{ 's' if summary.open_replies != 1 else '' }}</div></div>
   <div class="stat"><div class="l">Emails sent</div><div class="n">{{ summary.sent }}</div><div class="sub">{{ summary.sent_today }} today</div></div>
   <div class="stat warn"><div class="l">Not sent yet</div><div class="n">{{ summary.not_sent }}</div><div class="sub">{{ summary.outbox_pending }} awaiting your approval</div></div>
-  <div class="stat bad"><div class="l">Bounced</div><div class="n">{{ summary.bounced }}</div><div class="sub">invalid addresses</div></div>
+  <a class="stat bad" href="/outbox?status=bounced" style="text-decoration:none;color:inherit"><div class="l">Bounced</div><div class="n">{{ summary.bounced }}</div><div class="sub">{{ 'see why' if summary.bounced else 'invalid addresses' }}</div></a>
   <div class="stat"><div class="l">Recipients</div><div class="n">{{ summary.recipients }}</div><div class="sub">on your list</div></div>
 </div>
 

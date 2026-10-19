@@ -50,8 +50,70 @@ BOUNCE_SENDERS = ("mailer-daemon", "postmaster", "mail delivery subsystem")
 BOUNCE_SUBJECTS = (
     "delivery status notification", "undeliverable", "returned mail",
     "delivery failure", "failure notice", "could not be delivered",
-    "delivery incomplete", "address not found",
+    "delivery incomplete", "address not found", "message blocked",
+    "message not delivered", "delivery has failed",
 )
+
+# What a bounce means and what to do about it, from the SMTP code or the
+# wording in the report. Order matters: the first match wins.
+BOUNCE_HINTS = (
+    (r"5\.1\.1|5\.1\.[0-9]|user unknown|no such user|does not exist|address not found|"
+     r"recipient address rejected|unknown recipient|no mailbox|invalid recipient",
+     "no such address",
+     "The address does not exist. Nothing to fix on your side; it has been marked invalid."),
+    (r"5\.7\.26|5\.7\.25|dmarc|spf|dkim|not authenticated|unauthenticated|authentication",
+     "sender authentication failed",
+     "The receiving server could not verify your domain. Publish SPF, DKIM and DMARC for the "
+     "sending domain (the Mailbox page's deliverability table shows which is missing)."),
+    (r"unusual rate|rate.?limit|too many|sending quota|quota exceeded|4\.7\.0|5\.4\.5|"
+     r"daily sending quota|exceeded the maximum",
+     "sending too fast or too much",
+     "Your mailbox provider throttled you. Switch the profile to the Gentle speed, keep the warm-up "
+     "ramp on, and lower the daily maximum (30 to 50 a day for a mailbox under a month old)."),
+    (r"likely unsolicited|unsolicited mail|5\.7\.1|spam|blocked using|blacklist|block list|"
+     r"poor reputation|low reputation|sending reputation",
+     "judged as unsolicited mail",
+     "The receiving side treated the email as bulk or spam. Slow down (Gentle speed), send from a "
+     "domain with SPF, DKIM and DMARC, keep links and attachments out of first emails, and keep "
+     "the list to addresses you are sure exist."),
+    (r"5\.7\.0|security issue|suspicious attachment|attachment|content presents",
+     "content blocked",
+     "The provider blocked the content itself. Remove attachments from first emails and check that "
+     "the signature's links point at a plain, working site."),
+    (r"5\.2\.2|mailbox full|over quota|quota",
+     "mailbox full",
+     "Their mailbox is full. The address is real; try again in a few weeks."),
+    (r"4\.4\.1|4\.4\.7|timed out|timeout|connection refused|could not connect|dns|no mx|not reachable",
+     "their mail server could not be reached",
+     "Their domain's mail server is down or missing. Nothing to fix on your side."),
+)
+
+
+def bounce_reason(body: str) -> tuple[str, str]:
+    """(what went wrong, what to do) from a bounce report. The first line of
+    diagnostic text found is kept as the reason; the hint comes from the
+    code or wording when one is recognised."""
+    import re as _re
+
+    text = body or ""
+    diag = ""
+    for pat in (r"(?im)^\s*diagnostic-code:\s*(?:smtp;)?\s*(.+)$",
+                r"(?im)^\s*(?:the response was|the error that the other server returned was|"
+                r"remote server returned|server said|technical details[^\n]*)[:\s]*\n?\s*(.+)$",
+                r"(?im)^\s*(5\d\d[ -][^\n]{10,})$", r"(?im)^\s*(4\d\d[ -][^\n]{10,})$",
+                r"(?i)(your message (?:to [^\n]{1,80} )?(?:has been|was) blocked[^\n]*)",
+                r"(?i)(address not found[^\n]*|user unknown[^\n]*|does not exist[^\n]*)"):
+        m = _re.search(pat, text)
+        if m:
+            diag = _re.sub(r"\s+", " ", m.group(1)).strip(" .")[:220]
+            break
+    low = text.lower()
+    for pat, what, hint in BOUNCE_HINTS:
+        if _re.search(pat, low):
+            return (diag or what), hint
+    return (diag or "the receiving server rejected it (no reason given)"), (
+        "Read the bounce in your mailbox for the exact wording; if several addresses bounce the "
+        "same way, slow down and check the Mailbox page's deliverability table.")
 
 
 def looks_like_bounce(from_email: str, subject: str) -> bool:

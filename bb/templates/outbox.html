@@ -9,10 +9,11 @@
   {% endif %}
 </div>
 <div class="segs" style="margin-bottom:18px">
-  {% for s, label in [('pending_review','Awaiting approval'),('approved','Scheduled'),('sent','Sent'),('failed','Failed'),('rejected','Rejected')] %}
+  {% for s, label in [('pending_review','Awaiting approval'),('approved','Scheduled'),('sent','Sent'),('failed','Failed'),('bounced','Bounced'),('rejected','Rejected')] %}
     <a class="{{ 'on' if s == status else '' }}" href="/outbox?status={{ s }}">{{ label }}</a>
   {% endfor %}
 </div>
+{% if status == 'bounced' %}<p class="muted small" style="margin:-8px 0 14px">Emails the receiving server sent back. Each one says why in the receiving server's words and what to do about it. A few "no such address" bounces are normal; several "unsolicited" or "too fast" ones mean slow down and fix the domain's DNS on the Mailbox page.</p>{% endif %}
 {% if not items %}
   <div class="card"><div class="empty">{{ icon('send') }}<div>Nothing here.{% if status == 'pending_review' %} If approval is on in your profile, written emails appear here before they go out. If it is off, they are sent automatically and show under Sent.{% endif %}</div></div></div>
 {% endif %}

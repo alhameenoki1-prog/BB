@@ -38,7 +38,7 @@
   <label class="choice"><input type="radio" name="style" value="{{ k }}" {{ 'checked' if profile.style == k else '' }}><span><b>{{ k|capitalize }}</b><span class="small muted">{{ v }}</span></span></label>
   {% endfor %}
   <div class="row" style="margin-top:12px">
-    <div><label>Greeting</label><select name="greeting">{% for g in greetings %}<option value="{{ g }}" {{ 'selected' if g == profile.greeting else '' }}>{{ g }} Jane,</option>{% endfor %}</select><div class="hint">Every email and reply opens with this line. The first name comes from your upload, the LinkedIn URL, a first.last email address, or the company's team page. If none gives one it says “{{ profile.greeting or 'Hi' }} there,”, and a shared inbox like info@ gets “Hello &lt;company&gt; team,”. A name is never guessed.</div></div>
+    <div><label>Greeting</label><select name="greeting">{% for g in greetings %}<option value="{{ g }}" {{ 'selected' if g == profile.greeting else '' }}>{{ g }} Jane,</option>{% endfor %}</select><div class="hint">Every email and reply opens with this line. The first name comes from your upload, the LinkedIn URL, a first.last email address, or the company's team page. If none gives one it says “{{ profile.greeting or 'Hi' }} there,”, and a shared inbox like info@ gets “Hello team,”. A name is never guessed.</div></div>
   </div>
 </div>
 <div class="card">

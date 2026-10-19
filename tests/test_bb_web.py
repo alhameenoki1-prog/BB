@@ -926,3 +926,32 @@ async def test_m365_check_uses_the_app_provider(monkeypatch):
     ok, detail = await test_m365({"m365_tenant_id": "t", "m365_client_id": "c",
                                   "m365_client_secret": "s", "m365_mailbox": "outreach@corp.example"})
     assert ok and "outreach@corp.example" in detail and Fake.env.m365_client_secret == "s"
+
+
+def test_outbox_bounced_view(client):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+
+    async def seed():
+        state = ws.state()
+        await state.init_db()
+        from harvey.models.prospect import Prospect
+        await state.add_prospect(Prospect(id="b1", email="x@gone.example", first_name="Pat", company="Gone Ltd",
+                                          email_status="invalid"))
+        sent = await state.add_outbox_item(prospect_id="b1", to_email="x@gone.example", subject="Roof quote",
+                                           body="Hi Pat,\n\nCould you quote?", send_at="2026-01-01T00:00:00",
+                                           status="approved")
+        await state.update_outbox_item(sent, status="sent", sent_at="2026-01-01T00:00:00",
+                                       error="Bounced: 550 5.1.1 no such user. The address does not exist.")
+        ok = await state.add_outbox_item(prospect_id="b1", to_email="y@fine.example", subject="s", body="b",
+                                         send_at="2026-01-01T00:00:00", status="approved")
+        await state.update_outbox_item(ok, status="sent", sent_at="2026-01-01T00:00:00")
+    asyncio.run(seed())
+
+    page = client.get("/outbox?status=bounced").text
+    assert "Bounced: 550 5.1.1 no such user" in page and "y@fine.example" not in page
+    assert "Emails the receiving server sent back" in page
+    assert "x@gone.example" in client.get("/outbox?status=sent").text
+    assert 'href="/outbox?status=bounced"' in client.get("/").text
+    assert client.get("/outbox?status=nonsense").status_code == 200

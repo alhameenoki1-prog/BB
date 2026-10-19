@@ -14,7 +14,7 @@ from harvey import names
 from harvey.brain import Brain, BrainUnavailable
 from harvey.config import HarveyConfig, EnvConfig
 from harvey.integrations.instantly import InstantlyClient
-from harvey.integrations.mail_provider import NATIVE_PROVIDERS, get_mail_provider
+from harvey.integrations.mail_provider import NATIVE_PROVIDERS, bounce_reason, get_mail_provider
 from harvey.models.conversation import Conversation, Message
 from harvey.state import StateManager
 
@@ -427,6 +427,12 @@ class Handler:
         prospect = None
         if outbox_item:
             prospect = await self.state.get_prospect(outbox_item["prospect_id"])
+        reason, hint = bounce_reason(msg.body)
+        if outbox_item:
+            # The sent item keeps its status (it was sent) and carries the
+            # verdict, so the Outbox's Bounced view can say why.
+            await self.state.update_outbox_item(
+                outbox_item["id"], error=f"Bounced: {reason}. {hint}"[:600])
 
         if prospect:
             await self.state.update_prospect_email(
@@ -436,8 +442,8 @@ class Handler:
                 prospect.id, reason="bounced"
             )
             logger.warning(
-                f"Handler: BOUNCE for {prospect.email} — marked invalid, "
-                f"cancelled {cancelled} queued email(s)."
+                f"Handler: BOUNCE for {prospect.email} ({reason}) — marked invalid, "
+                f"cancelled {cancelled} queued email(s). {hint}"
             )
         else:
             logger.warning(
@@ -451,7 +457,7 @@ class Handler:
             action_type="bounce",
             agent="handler",
             details={"prospect": prospect.email if prospect else "unknown",
-                     "bounces": bounces, "total_sent": total_sent},
+                     "bounces": bounces, "total_sent": total_sent, "reason": reason},
         )
 
         max_rate = getattr(self.config.channels.email, "max_bounce_rate", 0.05)

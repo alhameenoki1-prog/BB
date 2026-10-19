@@ -324,13 +324,18 @@ async def test_bounce_marks_invalid_and_kill_switch(state):
     provider.inbound = [InboundMessage(
         provider_id="b1", from_email="mailer-daemon@googlemail.com",
         subject="Delivery Status Notification (Failure)",
-        body="couldn't be delivered", in_reply_to="<m1@x>", is_bounce=True,
+        body="couldn't be delivered\n\nThe response was:\n550 5.1.1 The email account that you "
+             "tried to reach does not exist.", in_reply_to="<m1@x>", is_bounce=True,
     )]
     handler = make_handler(state, provider)
     await handler._run_native()
 
     prospect = await state.get_prospect(pid)
     assert prospect.email_status == "invalid"
+    # The sent item carries the receiving server's words and what to do.
+    item = await state.get_outbox_item(item_id)
+    assert item["status"] == "sent" and item["error"].startswith("Bounced: 550 5.1.1")
+    assert "marked invalid" in item["error"]
     # 1 bounce / 11 sent = 9% > 5% threshold with >= 10 sends → kill switch
     assert await state.get_setting("sending_paused") != ""
 

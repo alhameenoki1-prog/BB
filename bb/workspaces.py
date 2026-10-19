@@ -690,6 +690,12 @@ class Workspace:
     async def outbox(self, status: str = "pending_review", limit: int = 200) -> list[dict]:
         if not await self._table_exists("outbox"):
             return []
+        if status == "bounced":
+            return await self._query(
+                "SELECT o.*, p.first_name, p.last_name, p.company FROM outbox o "
+                "LEFT JOIN prospects p ON p.id = o.prospect_id "
+                "WHERE o.status = 'sent' AND o.error LIKE 'Bounced:%' "
+                "ORDER BY o.updated_at DESC LIMIT ?", (limit,))
         return await self._query(
             "SELECT o.*, p.first_name, p.last_name, p.company FROM outbox o "
             "LEFT JOIN prospects p ON p.id = o.prospect_id "

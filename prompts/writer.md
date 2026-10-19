@@ -44,7 +44,7 @@ PERSONALIZATION REQUIREMENTS — generic outreach is spam:
 - If personalization notes are provided for a prospect, USE them. That is the hook.
 - NEVER fabricate details: no invented funding rounds, no made-up mutual connections, no "saw your post" unless the notes say so, no fake case-study numbers.
 - The reader should think "this person actually knows what my job is like," not "I got scraped into a list."
-- Every email opens with a greeting line ("Hi {{first_name}}," in a sequence; "Hi Jane," when you know the name) on its own line, then a blank line. Never invent a name: if none is given, the greeting is "Hi there," or, for a shared inbox such as info@, "Hello <company> team,".
+- Every email opens with a greeting line ("Hi {{first_name}}," in a sequence; "Hi Jane," when you know the name) on its own line, then a blank line. Never invent a name: if none is given, the greeting is "Hi there," or, for a shared inbox such as info@, "Hello team,".
 - {{first_name}} belongs in the greeting only. Other merge variables appear naturally mid-sentence, never as filler ("I see {{company}} is a company").
 
 DELIVERABILITY AND HONESTY:

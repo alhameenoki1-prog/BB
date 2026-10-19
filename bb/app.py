@@ -665,7 +665,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/outbox", response_class=HTMLResponse)
     async def outbox_page(request: Request, user: dict = Depends(current_user),
                           status: str = "pending_review"):
-        if status not in ("pending_review", "approved", "sent", "failed", "rejected"):
+        if status not in ("pending_review", "approved", "sent", "failed", "bounced", "rejected"):
             status = "pending_review"
         ws = workspace_for(user)
         return await render(request, "outbox.html", user, items=await ws.outbox(status), status=status)
