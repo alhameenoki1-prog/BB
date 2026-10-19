@@ -107,6 +107,24 @@ def _domain_from(website: str, email: str) -> str:
     return "" if domain in FREE_MAIL_DOMAINS else domain
 
 
+async def confirm_free_signals(state) -> int:
+    """Turn on every signal that costs nothing (what a company's own
+    website, sitemap, robots.txt, careers and team pages say), so uploaded
+    companies are researched before their email is written. The CLI asks
+    the operator to pick signals one by one; a web user has no signals
+    page, and nothing here spends money. Signals a user already decided
+    on are left alone. Returns how many were confirmed now."""
+    from harvey.signals import seed_signal_catalog
+
+    await seed_signal_catalog(state)
+    changed = 0
+    for sig in await state.get_signal_codes():
+        if sig["status"] == "proposed" and (sig["cost_note"] or "").lower().startswith("free"):
+            if await state.set_signal_status(sig["code"], "confirmed"):
+                changed += 1
+    return changed
+
+
 async def import_rows(state, rows: list[dict]) -> dict:
     """Insert rows as companies + prospects. Returns counts."""
     result = {"added": 0, "duplicates": 0, "invalid": 0, "too_many": 0}
@@ -114,6 +132,7 @@ async def import_rows(state, rows: list[dict]) -> dict:
         result["too_many"] = len(rows) - MAX_ROWS
         rows = rows[:MAX_ROWS]
     await state.init_db()
+    await confirm_free_signals(state)
     # Addresses already on the list count as duplicates whatever the schema
     # enforces; one query up front keeps a 10,000-row upload cheap.
     seen: set[str] = set()

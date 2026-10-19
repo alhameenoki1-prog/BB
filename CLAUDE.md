@@ -73,7 +73,9 @@ credentials). The Mailbox page runs SPF/DKIM/DMARC/MX checks
 (`bb/deliverability.py`). `harvey/names.py` resolves missing recipient
 names (LinkedIn slug, first.last address, team page) and puts the greeting
 line on every email (`outreach.greeting`); a worker that dies is revived
-on the next dashboard view. Start it with `python -m bb` (needs `BB_BASE_URL`,
+on the next dashboard view; the dashboard has Pause for edits / Resume /
+Start over, and uploading recipients confirms the free signals so the
+profile stage runs without the CLI's confirm step. Start it with `python -m bb` (needs `BB_BASE_URL`,
 `BB_ADMIN_EMAIL`, `BB_ADMIN_PASSWORD`; `GMAIL_CLIENT_ID`/`SECRET` of a *Web
 application* OAuth client are optional). Deployment and Mac quick-start:
 `docs/HOSTING.md`. Code: `bb/app.py` (routes),

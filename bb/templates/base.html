@@ -188,7 +188,7 @@
   <main>
     {% if summary %}
     <div class="live" id="live" aria-live="polite">
-      <span class="pill"><i class="dot {{ '' if summary.worker_running else 'off' }}" data-k="dot"></i><span data-k="worker">{{ 'Working' if summary.worker_running else 'Worker stopped' }}{{ ' · sending paused' if summary.sending_paused else '' }}</span></span>
+      <span class="pill"><i class="dot {{ '' if summary.worker_running else 'off' }}" data-k="dot"></i><span data-k="worker">{{ 'Working' if summary.worker_running else ('Paused for edits' if summary.worker_paused else 'Worker stopped') }}{{ ' · sending paused' if summary.sending_paused else '' }}</span></span>
       <span class="pill">{{ icon('chat', 14) }}<b data-k="replies">{{ summary.replies }}</b> replies</span>
       <span class="pill">{{ icon('send', 14) }}<b data-k="sent">{{ summary.sent }}</b> sent · <b data-k="sent_today">{{ summary.sent_today }}</b> today</span>
       <span class="pill">{{ icon('clock', 14) }}<b data-k="not_sent">{{ summary.not_sent }}</b> waiting</span>
@@ -203,7 +203,7 @@
           const s = await r.json();
           document.querySelectorAll('#live [data-k]').forEach(el => {
             const k = el.dataset.k;
-            if (k === 'worker') el.textContent = (s.worker_running ? 'Working' : 'Worker stopped') + (s.sending_paused ? ' · sending paused' : '');
+            if (k === 'worker') el.textContent = (s.worker_running ? 'Working' : (s.worker_paused ? 'Paused for edits' : 'Worker stopped')) + (s.sending_paused ? ' · sending paused' : '');
             else if (k === 'dot') el.classList.toggle('off', !s.worker_running);
             else if (k in s) el.textContent = s[k];
           });

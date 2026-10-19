@@ -243,6 +243,23 @@ gets "Hello Acme team,". The word (Hi, Hello, Hey, Dear, Good day) is on
 the profile. Nothing is ever guessed from a single word like `jane@` or
 `jdoe@`, because a wrong name is worse than none.
 
+## Pausing, editing, starting over
+
+The dashboard has three controls besides Start and Stop:
+
+- **Pause for edits** stops the worker and remembers that it is meant to
+  come back. Change the profile, mailbox or AI provider, then press
+  **Resume**. Queued emails and open conversations wait where they were.
+  (Saving the profile or the AI provider while the worker is running
+  restarts it on its own, so Pause is only needed for several edits at
+  once.)
+- **Pause all sending** (in the Worker card) keeps the worker running and
+  reading replies but sends nothing until **Resume sending**.
+- **Start over** (under the Worker card, with a confirmation) stops the
+  worker and deletes every recipient, every written and sent email, all
+  replies and the counters. Profile, mailbox, AI provider, attachments and
+  signature stay. Upload a new list and press Start to begin again.
+
 ## If the worker stops
 
 The worker's log (dashboard → Worker) ends with a line that says why it

@@ -8,7 +8,10 @@
     <p class="lead">{% if done == 5 %}Your worker is researching, writing and sending one email per person, and watching for replies.{% else %}{{ 5 - done }} step{{ 's' if 5 - done != 1 else '' }} left before your first email goes out.{% endif %}</p></div>
   <div class="actions">
     {% if summary.worker_running %}
+      <form class="inline" method="post" action="/worker/pause"><button class="secondary" type="submit">{{ icon('pause', 15) }} Pause for edits</button></form>
       <form class="inline" method="post" action="/worker/stop"><button class="secondary" type="submit">{{ icon('stop', 15) }} Stop worker</button></form>
+    {% elif summary.worker_paused %}
+      <form class="inline" method="post" action="/worker/resume"><button type="submit">{{ icon('play', 15) }} Resume</button></form>
     {% else %}
       <form class="inline" method="post" action="/worker/start"><button type="submit">{{ icon('play', 15) }} Start worker</button></form>
     {% endif %}
@@ -39,9 +42,10 @@
   <div>
     <div class="card">
       <h2>Worker</h2>
-      <p class="muted small">Your personal copy of the engine. Every cycle (1, 2 or 5 minutes, set by the speed on your profile) it writes emails for new recipients, sends what is due inside your sending hours and daily limit, and reads replies. Profile changes apply after a restart.</p>
+      <p class="muted small">Your personal copy of the engine. Every cycle (1, 2 or 5 minutes, set by the speed on your profile) it writes emails for new recipients, sends what is due inside your sending hours and daily limit, and reads replies. Saving your profile or AI provider restarts a running worker so the change applies at once.</p>
+      {% if summary.worker_paused %}<p class="small" style="margin-top:10px;color:var(--warn)"><b>Paused for edits.</b> Change what you need on Profile, Mailbox or AI provider, then press Resume. Queued emails and open conversations are waiting where they were.</p>{% endif %}
       <div class="actions" style="margin-top:14px">
-        {% if summary.worker_running %}<span class="tag good"><i class="dot" style="width:7px;height:7px;border-radius:50%;background:currentColor"></i> Running</span>{% else %}<span class="tag">Stopped</span>{% endif %}
+        {% if summary.worker_running %}<span class="tag good"><i class="dot" style="width:7px;height:7px;border-radius:50%;background:currentColor"></i> Running</span>{% elif summary.worker_paused %}<span class="tag warn">Paused for edits</span>{% else %}<span class="tag">Stopped</span>{% endif %}
         {% if summary.sending_paused %}
           <span class="tag warn">Sending paused</span>
           <form class="inline" method="post" action="/sending/resume"><button class="secondary small" type="submit">{{ icon('play', 14) }} Resume sending</button></form>
@@ -50,6 +54,11 @@
         {% endif %}
       </div>
       {% if summary.sending_paused %}<p class="tiny" style="margin-top:8px">Reason: {{ summary.sending_paused }}</p>{% endif %}
+      <details style="margin-top:16px">
+        <summary class="small muted" style="cursor:pointer">Start over with a new list</summary>
+        <p class="small muted" style="margin-top:8px">Clears every recipient, every written and sent email, all replies and the counters, so you can upload a fresh list and begin again. Your profile, mailbox, AI provider, attachments and signature are kept. This cannot be undone.</p>
+        <form class="inline" method="post" action="/worker/reset" onsubmit="return confirm('Start over? This deletes all recipients, emails, replies and counters for this account. Your profile, mailbox and AI provider stay. This cannot be undone.')"><button class="danger small" type="submit">{{ icon('trash', 13) }} Start over</button></form>
+      </details>
     </div>
     <div class="card">
       <h2>Pipeline</h2>

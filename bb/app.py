@@ -265,8 +265,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace_for(user)
         if action == "start":
             ok, detail = ws.start_worker()
+            if ok:
+                ws.paused_file.unlink(missing_ok=True)
         elif action == "stop":
             ok, detail = await ws.stop_worker()
+            ws.paused_file.unlink(missing_ok=True)
+        elif action == "pause":
+            ok, detail = await ws.pause_worker()
+        elif action == "resume":
+            ok, detail = ws.resume_worker()
+        elif action == "reset":
+            ok, detail = await ws.reset_data()
         else:
             raise HTTPException(status_code=404)
         return _redirect("/", msg=detail if ok else "", error="" if ok else detail)
@@ -306,8 +315,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as e:
             return await render(request, "profile.html", user,
                                 **_profile_ctx(ws, {**ws.profile(), **form}), error=str(e))
-        return _redirect("/profile", msg="Profile saved. Restart the worker to apply changes."
-                         if ws.worker_running() else "Profile saved.")
+        restarted = await ws.restart_worker_if_running("the new profile")
+        return _redirect("/profile", msg="Profile saved. The worker was restarted with the new settings."
+                         if restarted else "Profile saved.")
 
     # ── the user's own Anthropic key ──
 
@@ -346,8 +356,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not ok:
             return _redirect("/apikey", error=detail)
         ws.save_llm(provider, key, model=model, base_url=base_url)
+        restarted = await ws.restart_worker_if_running("the new AI provider")
         return _redirect("/apikey", msg=f"{preset['label']} saved and verified ({model or 'default model'})."
-                         + (" Restart the worker to use it." if ws.worker_running() else ""))
+                         + (" The worker was restarted to use it." if restarted else ""))
 
     @app.post("/apikey/remove")
     async def apikey_remove(user: dict = Depends(current_user)):

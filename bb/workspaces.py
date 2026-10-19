@@ -112,6 +112,9 @@ class Workspace:
         self.pid_file = self.data_dir / "harvey.pid"
         self.log_file = self.data_dir / "harvey.log"
         self.autostart_file = self.data_dir / "worker.autostart"
+        # Present while the user has paused the worker to make edits: the
+        # dashboard shows Resume, and nothing revives the worker meanwhile.
+        self.paused_file = self.data_dir / "worker.paused"
         self.gmail_token_file = self.data_dir / "gmail_token.json"
         self.gmail_account_file = self.data_dir / "gmail_account.json"
         self.secrets_file = self.data_dir / "secrets.json"
@@ -603,6 +606,7 @@ class Workspace:
             "bounced": 0, "outbox_pending": 0, "outbox_scheduled": 0, "outbox_sent": 0,
             "outbox_failed": 0, "outbox_rejected": 0, "replies": 0, "open_replies": 0,
             "sent_today": 0, "sending_paused": "", "worker_running": bool(self.worker_running()),
+            "worker_paused": self.worker_paused(),
             "configured": self.is_configured(), "gmail": self.mailbox_connected(),
             "mailbox": self.mail_provider(), "api_key": self.llm_configured(),
             "llm": self.llm()["label"],
@@ -804,6 +808,57 @@ class Workspace:
 
     def wants_autostart(self) -> bool:
         return self.autostart_file.exists()
+
+    def worker_paused(self) -> bool:
+        return self.paused_file.exists() and not self.worker_running()
+
+    async def pause_worker(self) -> tuple[bool, str]:
+        """Stop the worker so settings can be changed, remembering that it
+        is meant to come back. Queued emails and conversations stay put."""
+        ok, detail = await self.stop_worker("paused for edits from the dashboard")
+        self.paused_file.write_text(str(int(time.time())))
+        return ok, ("Paused. Make your edits, then press Resume." if detail != "Not running."
+                    else "The worker was not running. Make your edits, then press Resume.")
+
+    def resume_worker(self) -> tuple[bool, str]:
+        ok, detail = self.start_worker()
+        if ok:
+            self.paused_file.unlink(missing_ok=True)
+            detail = "Resumed with your latest settings." if "Started" in detail else detail
+        return ok, detail
+
+    async def restart_worker_if_running(self, reason: str) -> bool:
+        """Settings only reach the worker at start, so a running worker is
+        restarted after a save. Returns True when that happened."""
+        if not self.worker_running():
+            return False
+        await self.stop_worker(f"restarting to apply {reason}")
+        ok, _ = self.start_worker()
+        return ok
+
+    async def reset_data(self) -> tuple[bool, str]:
+        """Start over: stop the worker and delete everything it collected
+        (recipients, companies, written emails, the outbox, replies,
+        counters). Profile, mailbox, AI provider, attachments and signature
+        stay. The next upload begins a fresh list."""
+        was_running = bool(self.worker_running())
+        await self.stop_worker("starting over from the dashboard")
+        self.paused_file.unlink(missing_ok=True)
+        removed = 0
+        for path in (self.db_path, Path(str(self.db_path) + "-wal"), Path(str(self.db_path) + "-shm"),
+                     self.data_dir / "analytics.json"):
+            try:
+                path.unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                return False, f"Could not clear {path.name}: {e}"
+        self._note_in_log("Started over: recipients, emails, replies and counters were cleared "
+                          "from the dashboard. Profile, mailbox and AI provider were kept.")
+        return True, ("Everything was cleared: recipients, emails, replies and counters. Your profile, "
+                      "mailbox, AI provider, attachments and signature are kept. Upload a new list, then "
+                      + ("press Start." if was_running else "start the worker."))
 
     def _note_in_log(self, text: str):
         try:

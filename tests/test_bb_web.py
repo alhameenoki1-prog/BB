@@ -251,6 +251,10 @@ def test_recipient_upload_creates_prospects_and_companies(client):
     assert "linkedin.com/in/janedoe" in jane[7] and "SaaStr" in jane[8]
     sam = rows[2]
     assert "No name was given" in sam[8] and sam[5] == "Beta Industries"
+    # Uploading turns on the free signals, so the worker researches each company's site.
+    confirmed = {r[0] for r in db.execute("SELECT code FROM signal_codes WHERE status = 'confirmed'")}
+    assert {"TECH_STACK", "HIRING_ROLE", "CONTACT_FOUND"} <= confirmed
+    assert not {"SERP_RANK", "EMAIL_STATUS"} & confirmed          # nothing that costs credits
     companies = {r[0]: r for r in db.execute("SELECT name, domain, website, source FROM companies")}
     assert companies["Acme"][1:] == ("acme.com", "https://acme.com", "upload")
     assert companies["Beta Industries"][1] == "beta.io"
@@ -598,6 +602,38 @@ def test_worker_start_stop(client, monkeypatch):
     alive.discard(4242)
     client.get("/")
     assert ws.worker_running() is None
+
+    # Pause for edits: stopped, remembered as paused, not revived; Resume starts it again.
+    client.post("/worker/start"); alive.add(4242)
+    r = client.post("/worker/pause")
+    alive.discard(4242)
+    assert "Make%20your%20edits" in r.headers["location"]
+    assert ws.worker_paused() and client.get("/api/summary").json()["worker_paused"] is True
+    page = client.get("/").text
+    assert "Paused for edits" in page and 'action="/worker/resume"' in page
+    assert ws.worker_running() is None                       # revive_worker left it alone
+    assert "paused for edits from the dashboard" in ws.log_file.read_text()
+    r = client.post("/worker/resume"); alive.add(4242)
+    assert "Resumed" in r.headers["location"] and not ws.worker_paused() and ws.worker_running() == 4242
+
+    # Saving the profile restarts a running worker so the change applies.
+    stops_before = ws.log_file.read_text().count("restarting to apply the new profile")
+    r = client.post("/profile", data={**PROFILE, "style": "concise"})
+    alive.add(4242)                          # fake_popen handed back the same pid
+    assert "restarted" in r.headers["location"]
+    assert ws.log_file.read_text().count("restarting to apply the new profile") == stops_before + 1
+    assert ws.worker_running() == 4242 and ws.pid_file.exists()
+
+    # Start over: worker stopped, data gone, settings kept.
+    client.post("/sending/pause")            # creates the database with a setting in it
+    assert ws.db_path.exists()
+    r = client.post("/worker/reset")
+    alive.discard(4242)
+    assert "Everything%20was%20cleared" in r.headers["location"]
+    assert not ws.db_path.exists() and not ws.autostart_file.exists()
+    assert ws.is_configured() and ws.llm_configured() and ws.mailbox_connected()
+    assert client.get("/api/summary").json()["recipients"] == 0
+    assert "Start over" in client.get("/").text
 
 
 def test_workers_autostart_on_boot(settings, monkeypatch):

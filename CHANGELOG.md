@@ -9,6 +9,16 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Dashboard controls.** *Pause for edits* stops the worker and shows a
+  Resume button (nothing revives it meanwhile); saving the profile or AI
+  provider restarts a running worker so the change applies at once; *Start
+  over* clears recipients, emails, replies and counters while keeping the
+  profile, mailbox, AI provider, attachments and signature.
+- **Free signals on by default in the web app.** Uploading recipients
+  confirms every signal whose cost note starts with "free", so each
+  company's website is read before its email is written. The CLI's
+  "confirm signals first" step is unchanged.
+
 - **Names and greetings.** Every email and reply opens with a greeting
   line that fits what is known: "Hi Jane," / "Hello Acme team," for a
   shared inbox such as info@ / "Hi there," when nobody's name is known; the
