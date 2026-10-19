@@ -10,7 +10,7 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
-from harvey.paths import PROJECT_ROOT
+from harvey.paths import CONFIG_FILE, LOCAL_CONFIG_FILE, PROJECT_ROOT
 
 logger = logging.getLogger("harvey.config")
 
@@ -57,6 +57,10 @@ class ICPConfig(BaseModel):
     company_size: str
     titles: list[str]
     geography: list[str]
+    # Let the heartbeat go looking for new businesses on its own when the
+    # pipeline runs low. Off when the operator supplies every recipient
+    # (the hosted web app's upload flow) so Harvey only writes to them.
+    auto_prospect: bool = True
     # Role keywords that indicate a company is in-market right now (a company
     # hiring a "Head of Growth" is buying growth tooling). Empty → falls back
     # to `titles`. Used for careers-page scanning and job-board discovery.
@@ -450,9 +454,13 @@ def _find_config_file() -> str:
     the tracked ``harvey.yaml`` stays an untrained template — nobody
     publishes their positioning, pricing, and prospect targeting by accident.
     """
+    # HARVEY_HOME first (it is the checkout unless the env var says
+    # otherwise), then the working directory, then the checkout itself.
     candidates = [
+        LOCAL_CONFIG_FILE,
         Path.cwd() / "harvey.local.yaml",
         PROJECT_ROOT / "harvey.local.yaml",
+        CONFIG_FILE,
         Path.cwd() / "harvey.yaml",
         Path.cwd().parent / "harvey.yaml",
         PROJECT_ROOT / "harvey.yaml",

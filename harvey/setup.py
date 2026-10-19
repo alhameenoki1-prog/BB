@@ -17,10 +17,8 @@ from harvey.state import StateManager
 
 logger = logging.getLogger("harvey.setup")
 
-from harvey.paths import PROJECT_ROOT
-ENV_FILE = PROJECT_ROOT / ".env"
+from harvey.paths import CONFIG_FILE, ENV_FILE, PROJECT_ROOT
 ENV_EXAMPLE = PROJECT_ROOT / ".env.example"
-CONFIG_FILE = PROJECT_ROOT / "harvey.yaml"
 
 
 def _print_harvey(message: str):

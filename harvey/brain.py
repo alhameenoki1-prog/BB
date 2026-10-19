@@ -26,10 +26,7 @@ from harvey.state import StateManager
 
 logger = logging.getLogger("harvey.brain")
 
-from harvey.paths import PROJECT_ROOT
-
-PROMPTS_DIR = PROJECT_ROOT / "prompts"
-SKILLS_DIR = PROJECT_ROOT / "skills"
+from harvey.paths import HOME_SKILLS_DIR, PROMPTS_DIR, SKILLS_DIR
 
 # Call safety limits
 DEFAULT_TIMEOUT_SECONDS = 300  # a single model call should never hang forever
@@ -801,8 +798,13 @@ class Brain:
         return template
 
     def load_skill(self, skill_name: str) -> str:
-        """Load a skill knowledge file from the skills/ directory."""
+        """Load a skill knowledge file: this home's own copy (HARVEY_HOME/
+        skills, where the trainer and the web app write product knowledge)
+        wins over the one shipped with the checkout."""
         skill_file = SKILLS_DIR / f"{skill_name}.md"
+        home_file = HOME_SKILLS_DIR / f"{skill_name}.md"
+        if home_file != skill_file and home_file.is_file():
+            skill_file = home_file
         try:
             return skill_file.read_text()
         except FileNotFoundError:

@@ -1,16 +1,18 @@
 services:
-  harvey:
+  # The hosted web app: admin-created logins, one isolated Harvey per user.
+  # Put a TLS-terminating reverse proxy (Caddy, nginx, Traefik) in front and
+  # set BB_BASE_URL to the public https URL. See docs/HOSTING.md.
+  bb:
     build: .
     env_file: .env
+    ports:
+      - "8000:8000"
     volumes:
-      # Persist database across restarts
+      # All users' workspaces, the accounts database and the session secret.
       - ./data:/app/data
-      # Mount config for easy editing without rebuild
-      - ./harvey.yaml:/app/harvey.yaml:ro
+      # Optional: edit prompts/skills without a rebuild.
       - ./prompts:/app/prompts:ro
-      - ./skills:/app/skills
-      # The brain uses ANTHROPIC_API_KEY from .env (env_file above); nothing
-      # else needs mounting. The container runs as non-root "harvey" (uid 1000).
+      - ./skills:/app/skills:ro
     restart: unless-stopped
     init: true
     logging:

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Outbox{% endblock %}
+{% block content %}
+<h1>Outbox</h1>
+<p class="actions">
+  {% for s, label in [('pending_review','Awaiting approval'),('approved','Scheduled'),('sent','Sent'),('failed','Failed'),('rejected','Rejected')] %}
+    <a class="btn secondary {{ '' if s != status else 'active' }}" href="/outbox?status={{ s }}" {% if s == status %}style="border-color:var(--accent);color:var(--accent)"{% endif %}>{{ label }}</a>
+  {% endfor %}
+  {% if status == 'pending_review' and items %}
+    <form class="inline" method="post" action="/outbox/approve-all" onsubmit="return confirm('Approve all {{ items|length }} emails?')"><button type="submit">Approve all</button></form>
+  {% endif %}
+</p>
+{% if not items %}
+  <div class="card muted">Nothing here.{% if status == 'pending_review' %} If approval is on in your profile, written emails appear here before they go out. If it is off, they are sent automatically and show under Sent.{% endif %}</div>
+{% endif %}
+{% for it in items %}
+<div class="card">
+  <div class="actions" style="justify-content:space-between">
+    <div><b>To:</b> {{ it.to_email }} {% if it.first_name or it.company %}<span class="muted">({{ (it.first_name ~ ' ' ~ (it.last_name or '')).strip() }}{{ ', ' ~ it.company if it.company else '' }})</span>{% endif %}
+      <span class="pill">{{ 'follow-up' if it.step and it.step > 1 else 'first email' }}{{ ' · step ' ~ it.step if it.step and it.step > 1 else '' }}</span>
+      {% if it.kind == 'reply' %}<span class="pill good">reply</span>{% endif %}</div>
+    <div class="small muted">{{ it.send_at or it.created_at }}</div>
+  </div>
+  <p style="margin:8px 0"><b>Subject:</b> {{ it.subject }}</p>
+  <div class="email-body">{{ it.body }}</div>
+  {% if it.error %}<p class="small" style="color:var(--bad)">{{ it.error }}</p>{% endif %}
+  {% if status == 'pending_review' %}
+  <p class="actions" style="margin-top:10px">
+    <form class="inline" method="post" action="/outbox/{{ it.id }}/approve"><button class="small" type="submit">Approve</button></form>
+    <form class="inline" method="post" action="/outbox/{{ it.id }}/reject"><button class="small danger" type="submit">Reject</button></form>
+  </p>
+  {% endif %}
+</div>
+{% endfor %}
+{% endblock %}

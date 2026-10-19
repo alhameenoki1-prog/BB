@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+{% for p in problems %}<div class="msg err">Server setup: {{ p }}</div>{% endfor %}
+
+<div class="grid">
+  <div class="stat good"><div class="n">{{ summary.replies }}</div><div class="l">Replies received</div></div>
+  <div class="stat"><div class="n">{{ summary.sent }}</div><div class="l">Emails sent</div></div>
+  <div class="stat warn"><div class="n">{{ summary.not_sent }}</div><div class="l">Not sent yet</div></div>
+  <div class="stat"><div class="n">{{ summary.outbox_pending }}</div><div class="l">Waiting for your approval</div></div>
+  <div class="stat bad"><div class="n">{{ summary.bounced }}</div><div class="l">Bounced</div></div>
+  <div class="stat"><div class="n">{{ summary.recipients }}</div><div class="l">Recipients on your list</div></div>
+</div>
+
+<div class="card" style="margin-top:18px">
+  <h2>Getting started</h2>
+  <ol class="steps">
+    <li>{{ '✅' if summary.configured else '⬜' }} <a href="/profile">Tell BB who you are</a> — your name, company, LinkedIn and what you're reaching out about.</li>
+    <li>{{ '✅' if summary.gmail else '⬜' }} <a href="/gmail">Connect your Gmail</a> — emails go out from your own address and replies land in your inbox.</li>
+    <li>{{ '✅' if summary.recipients else '⬜' }} <a href="/recipients">Upload the people you want to reach</a> — a CSV with their emails (up to 10,000).</li>
+    <li>{{ '✅' if summary.worker_running else '⬜' }} Start the worker below. It researches each person, writes their email, sends at a safe pace, and watches for replies.</li>
+  </ol>
+</div>
+
+<div class="card">
+  <h2>Worker</h2>
+  <p class="muted small">The worker is your personal copy of the engine. It wakes up every 15 minutes, writes emails for new recipients, sends what is due (inside your sending hours and daily limit), and reads replies. Changes to your profile apply after a restart.</p>
+  <div class="actions">
+    {% if summary.worker_running %}
+      <span class="pill good">Running</span>
+      <form class="inline" method="post" action="/worker/stop"><button class="secondary" type="submit">Stop worker</button></form>
+    {% else %}
+      <span class="pill">Stopped</span>
+      <form class="inline" method="post" action="/worker/start"><button type="submit">Start worker</button></form>
+    {% endif %}
+    {% if summary.sending_paused %}
+      <span class="pill warn">Sending paused</span>
+      <form class="inline" method="post" action="/sending/resume"><button class="secondary" type="submit">Resume sending</button></form>
+    {% else %}
+      <form class="inline" method="post" action="/sending/pause"><button class="danger" type="submit">Pause all sending</button></form>
+    {% endif %}
+  </div>
+  {% if summary.sending_paused %}<p class="small muted">Reason: {{ summary.sending_paused }}</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Pipeline</h2>
+  <table>
+    <tr><th>Stage</th><th>Count</th><th>Meaning</th></tr>
+    <tr><td>Waiting for an email</td><td>{{ summary.waiting }}</td><td class="muted">Uploaded; the worker hasn't written to them yet.</td></tr>
+    <tr><td>Written, in the outbox</td><td>{{ summary.queued }}</td><td class="muted">{{ summary.outbox_pending }} awaiting approval, {{ summary.outbox_scheduled }} scheduled.</td></tr>
+    <tr><td>Sent</td><td>{{ summary.sent }}</td><td class="muted">{{ summary.outbox_sent }} messages delivered to Gmail in total.</td></tr>
+    <tr><td>Replied</td><td>{{ summary.replied }}</td><td class="muted">{{ summary.open_replies }} conversations open. <a href="/replies">Read them</a>.</td></tr>
+    <tr><td>Failed / rejected</td><td>{{ summary.outbox_failed + summary.outbox_rejected }}</td><td class="muted">Blocked by a check, or rejected by you in the outbox.</td></tr>
+  </table>
+</div>
+
+{% if logs %}
+<div class="card">
+  <h2>Recent activity</h2>
+  <pre class="log">{{ logs | join('\n') }}</pre>
+</div>
+{% endif %}
+{% endblock %}

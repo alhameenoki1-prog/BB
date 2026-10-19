@@ -7,6 +7,28 @@ minor versions can still change behaviour.
 
 ## [Unreleased]
 
+### Added
+
+- **BB, a hosted multi-user web app (`bb/`).** `python -m bb` (the Docker
+  image's default) serves a site where an admin creates logins (no
+  self-registration) and each user gets an isolated Harvey: their own
+  profile form that writes `harvey.yaml`, Gmail connected through the web
+  OAuth redirect flow, CSV recipient upload (up to 10,000 rows, stored as
+  `email_status: provided`), an outbox to approve or reject emails, a
+  replies page, pause/resume, and a worker process started with
+  `HARVEY_HOME` pointing at their workspace. A banner on every page shows
+  replies, sent, not yet sent, bounced and total recipients. Server settings:
+  `BB_BASE_URL`, `BB_ADMIN_EMAIL`/`BB_ADMIN_PASSWORD`, `BB_SECRET_KEY`
+  (generated if blank), `BB_HOME`. See docs/HOSTING.md.
+- **`HARVEY_HOME`.** Harvey's instance files (harvey.yaml, .env, data/,
+  per-home skills/) can live outside the checkout; the default is unchanged.
+  Prompts and shipped skills stay with the code; a `skills/` file in the
+  home overrides the shipped one.
+- **`icp.auto_prospect`** (default true). Off, the heartbeat never goes
+  looking for new businesses and only writes to the prospects it has.
+- **`email_status: provided`** for addresses the operator supplied. The
+  gate, writer and sender treat it as deliverable.
+
 ### Changed
 
 - **The Claude brain calls the Anthropic API directly.** `brain.provider:

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Replies{% endblock %}
+{% block content %}
+<h1>Replies</h1>
+<p class="muted">Everyone who has answered. The full thread is in your Gmail; replies BB drafts for you wait in the <a href="/outbox">Outbox</a> if approval is on.</p>
+{% if not conversations %}<div class="card muted">No replies yet.</div>{% endif %}
+{% for c in conversations %}
+<div class="card">
+  <div class="actions" style="justify-content:space-between">
+    <div><b>{{ (c.first_name ~ ' ' ~ (c.last_name or '')).strip() or c.prospect_email }}</b> <span class="muted">{{ c.prospect_email }}{{ ' · ' ~ c.company if c.company else '' }}</span></div>
+    <div>
+      {% if c.intent %}<span class="pill {{ 'good' if c.intent in ('interested','meeting','positive') else ('bad' if c.intent in ('not_interested','objection') else '') }}">{{ c.intent.replace('_',' ') }}</span>{% endif %}
+      <span class="pill">{{ c.stage.replace('_',' ') }}</span>
+      <span class="pill {{ 'warn' if c.status == 'open' else '' }}">{{ c.status }}</span>
+    </div>
+  </div>
+  {% if c.last_message %}<div class="email-body" style="margin-top:8px">{{ c.last_message }}</div>{% endif %}
+  <p class="small muted" style="margin:6px 0 0">{{ c.messages }} message(s) · updated {{ c.updated_at }}</p>
+</div>
+{% endfor %}
+{% endblock %}

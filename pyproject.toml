@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "harvey"
-version = "0.3.0"
-description = "Autonomous AI sales agent. Always Be Closing."
+version = "0.4.0"
+description = "AI-personalized outreach: Harvey's autonomous agent plus BB, the hosted multi-user web app around it."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -33,6 +33,9 @@ dependencies = [
     "fastapi>=0.115,<1",
     "uvicorn>=0.34,<1",
     "anthropic>=1.15,<2",
+    # The hosted web app (bb/)
+    "jinja2>=3.1,<4",
+    "python-multipart>=0.0.9,<1",
 ]
 
 [project.optional-dependencies]
@@ -48,11 +51,13 @@ Changelog = "https://github.com/ethanplusai/harvey/blob/main/CHANGELOG.md"
 
 [project.scripts]
 harvey = "harvey.cli:main"
+bb = "bb.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["harvey*"]
+include = ["harvey*", "bb*"]
 
 # The dashboard's HTML/CSS/JS are real files served from disk, and its fonts
 # are vendored so a local tool renders correctly with the network off.
 [tool.setuptools.package-data]
 harvey = ["web/*", "web/fonts/*"]
+bb = ["templates/*.html"]

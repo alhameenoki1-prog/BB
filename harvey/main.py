@@ -100,7 +100,7 @@ async def decide_next_action(
         action, reason = "send_campaign", f"{draft_campaigns} draft campaign(s) ready to deploy"
     elif new_prospects > 0:
         action, reason = "write_campaign", f"{new_prospects} new prospect(s) with no drafts ready"
-    elif new_prospects < 20:
+    elif new_prospects < 20 and config.icp.auto_prospect:
         action, reason = "prospect", f"only {new_prospects} new prospect(s); pipeline needs leads"
     else:
         action, reason = "idle", "pipeline is healthy; running analysis"
@@ -357,13 +357,16 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
 
 def _needs_setup() -> bool:
     """Check if Harvey needs first-time setup."""
-    from harvey.paths import PROJECT_ROOT
+    import os
+    from harvey.paths import ENV_FILE
     from harvey.config import _find_config_file, ConfigFileNotFoundError
 
-    env_file = PROJECT_ROOT / ".env"
-
-    # If .env doesn't exist, definitely needs setup
-    if not env_file.exists():
+    # Credentials come from .env, or straight from the environment when a
+    # supervisor (the hosted web app) starts this process with them set.
+    has_env = ENV_FILE.exists() or any(
+        os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "GMAIL_CLIENT_ID",
+                                    "SMTP_HOST", "M365_CLIENT_ID", "INSTANTLY_API_KEY"))
+    if not has_env:
         return True
 
     # harvey.local.yaml wins over the tracked harvey.yaml template, same

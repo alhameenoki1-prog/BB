@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Profile{% endblock %}
+{% block content %}
+<h1>Your profile</h1>
+<p class="muted">This is what every email is written from. Be specific: the more real detail here, the less generic the emails.</p>
+<form method="post" action="/profile">
+<div class="card">
+  <h2>Who you are</h2>
+  <div class="row">
+    <div><label>Your name *</label><input type="text" name="name" value="{{ profile.name }}" required></div>
+    <div><label>Company *</label><input type="text" name="company" value="{{ profile.company }}" required></div>
+    <div><label>Your role / title</label><input type="text" name="role" value="{{ profile.role }}" placeholder="Founder, Researcher, Head of Partnerships…"></div>
+    <div><label>LinkedIn URL</label><input type="url" name="linkedin" value="{{ profile.linkedin }}" placeholder="https://linkedin.com/in/…"></div>
+    <div><label>Email you send from</label><input type="email" name="email" value="{{ profile.email }}" placeholder="Filled in when you connect Gmail"><div class="small muted">Must be the Gmail account you connect.</div></div>
+    <div><label>Tone</label>
+      <select name="tone">{% for t in tones %}<option value="{{ t }}" {{ 'selected' if t == profile.tone else '' }}>{{ t }}</option>{% endfor %}</select></div>
+  </div>
+</div>
+<div class="card">
+  <h2>What you're reaching out about</h2>
+  <label>Name of the thing (product, service, project, request)</label>
+  <input type="text" name="offer_name" value="{{ profile.offer_name }}" placeholder="e.g. Acme Analytics, a research interview, a partnership">
+  <label>Describe it in plain words</label>
+  <textarea name="offer_description" placeholder="What it is, who it is for, and why you are writing to these people now.">{{ profile.offer_description }}</textarea>
+  <label>Why it matters to them (one per line)</label>
+  <textarea name="benefits" placeholder="Saves finance teams a day a month&#10;Works with the tools they already use">{{ profile.benefits }}</textarea>
+  <div class="row">
+    <div><label>Pricing (optional)</label><input type="text" name="pricing" value="{{ profile.pricing }}" placeholder="e.g. from $99/month, or leave blank"></div>
+    <div><label>What a good outcome looks like</label>
+      <select name="goal">{% for k, v in goals.items() %}<option value="{{ k }}" {{ 'selected' if k == profile.goal else '' }}>{{ v }}</option>{% endfor %}</select></div>
+    <div><label>Booking link (if you want them to book a call)</label><input type="url" name="booking_url" value="{{ profile.booking_url }}" placeholder="https://cal.com/you/15min"></div>
+    <div><label>Call length</label><input type="text" name="meeting_duration" value="{{ profile.meeting_duration }}"></div>
+  </div>
+</div>
+<div class="card">
+  <h2>Who you're writing to (optional, helps the writing)</h2>
+  <div class="row">
+    <div><label>Industries</label><input type="text" name="industries" value="{{ profile.industries }}" placeholder="SaaS, Logistics, Universities"></div>
+    <div><label>Typical job titles</label><input type="text" name="titles" value="{{ profile.titles }}" placeholder="Head of Growth, Professor, Recruiter"></div>
+    <div><label>Company size</label><input type="text" name="company_size" value="{{ profile.company_size }}" placeholder="10-200 employees"></div>
+    <div><label>Regions</label><input type="text" name="geography" value="{{ profile.geography }}" placeholder="United Kingdom, Nigeria"></div>
+  </div>
+  <label class="check"><input type="checkbox" name="auto_prospect" {{ 'checked' if profile.auto_prospect else '' }}> Also let the worker find new businesses on its own when my list runs out (off = only email the people I upload)</label>
+</div>
+<div class="card">
+  <h2>Sending</h2>
+  <div class="row">
+    <div><label>Max emails per day</label><input type="number" name="max_daily_sends" min="0" max="500" value="{{ profile.max_daily_sends }}"><div class="small muted">Free Gmail: stay around 20–40. Google Workspace: 50–150 after warm-up. Higher gets the account flagged.</div></div>
+    <div><label>Daily AI spend cap (USD)</label><input type="number" step="0.5" min="0" name="max_daily_cost_usd" value="{{ profile.max_daily_cost_usd }}"><div class="small muted">Writing and reply handling cost a few cents per email. 0 = no cap.</div></div>
+    <div><label>Don't send before</label><input type="time" name="quiet_end" value="{{ profile.quiet_end }}"></div>
+    <div><label>Don't send after</label><input type="time" name="quiet_start" value="{{ profile.quiet_start }}"></div>
+    <div><label>Your time zone</label>
+      <select name="timezone">{% for tz in timezones %}<option value="{{ tz }}" {{ 'selected' if tz == profile.timezone else '' }}>{{ tz }}</option>{% endfor %}</select></div>
+  </div>
+  <label class="check"><input type="checkbox" name="require_approval" {{ 'checked' if profile.require_approval else '' }}> Let me approve each email in the Outbox before it is sent (off = fully automatic)</label>
+</div>
+<p><button type="submit">Save profile</button></p>
+</form>
+{% endblock %}

@@ -46,8 +46,9 @@ SENDABLE_STATUSES = {"new", "queued"}
 # Email confidence levels safe to send to. "verified" only by default;
 # "risky" (catch-all domains) is opt-in via config. Never send to a "guess"
 # or "invalid" address — that bounces and burns the sending domain.
-SENDABLE_EMAIL_STATUSES = {"verified"}
-SENDABLE_EMAIL_STATUSES_WITH_RISKY = {"verified", "risky"}
+# "provided" = supplied by the operator (web upload): sends like verified.
+SENDABLE_EMAIL_STATUSES = {"verified", "provided"}
+SENDABLE_EMAIL_STATUSES_WITH_RISKY = {"verified", "provided", "risky"}
 
 
 class Sender:

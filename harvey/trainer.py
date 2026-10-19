@@ -22,7 +22,7 @@ from harvey.state import StateManager
 
 logger = logging.getLogger("harvey.trainer")
 
-from harvey.paths import PROJECT_ROOT
+from harvey.paths import HARVEY_HOME, HOME_SKILLS_DIR
 
 
 def _normalize_start_url(url: str) -> str:
@@ -413,7 +413,7 @@ class Trainer:
         # so training works no matter what directory it's launched from)
         config_path = Path(output_path)
         if not config_path.is_absolute():
-            config_path = PROJECT_ROOT / config_path
+            config_path = HARVEY_HOME / config_path
         with open(config_path, "w") as f:
             yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
@@ -667,7 +667,7 @@ Do NOT pursue prospects who:
 {product_info.get('tone', 'professional, consultative, confident')}
 """
 
-        skills_path = PROJECT_ROOT / "skills" / "product_knowledge.md"
+        skills_path = HOME_SKILLS_DIR / "product_knowledge.md"
         skills_path.write_text(knowledge)
         print(f"      Generated: skills/product_knowledge.md")
 
@@ -715,7 +715,7 @@ What prospects do instead of buying a solution like ours:
 ---
 """
 
-        skills_path = PROJECT_ROOT / "skills" / "competitive_intel.md"
+        skills_path = HOME_SKILLS_DIR / "competitive_intel.md"
         skills_path.write_text(cards)
         print(f"      Generated: skills/competitive_intel.md")
 

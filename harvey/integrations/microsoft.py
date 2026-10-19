@@ -35,7 +35,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from harvey.paths import PROJECT_ROOT
+from harvey.paths import DATA_DIR
 from harvey.integrations.mail_provider import (
     InboundMessage,
     MailProvider,
@@ -45,7 +45,7 @@ from harvey.integrations.mail_provider import (
 
 logger = logging.getLogger("harvey.microsoft")
 
-TOKEN_FILE = PROJECT_ROOT / "data" / "m365_token.json"
+TOKEN_FILE = DATA_DIR / "m365_token.json"
 GRAPH = "https://graph.microsoft.com/v1.0"
 GRAPH_HOST = "graph.microsoft.com"
 INBOX_MESSAGES = "/me/mailFolders/inbox/messages"

@@ -1,0 +1,428 @@
+"""The hosted web app: admin-made accounts, per-user workspaces, the profile
+that becomes harvey.yaml, recipient upload, outbox review, Gmail OAuth over
+the web redirect flow, and the worker process (stubbed)."""
+
+import asyncio
+import json
+import sqlite3
+import sys
+
+import pytest
+import yaml
+from fastapi.testclient import TestClient
+
+import bb.workspaces as ws_mod
+from bb import gmail_oauth
+from bb.accounts import Accounts, hash_password, verify_password
+from bb.app import create_app
+from bb.settings import Settings
+from bb.workspaces import Workspace
+from harvey.config import HarveyConfig
+from harvey.state import StateManager
+
+ADMIN = {"email": "admin@example.com", "password": "correct-horse-battery"}
+USER = {"email": "jane@example.com", "password": "jane-password-123"}
+
+
+def _settings(tmp_path, **extra) -> Settings:
+    env = {
+        "BB_HOME": str(tmp_path / "bb"), "BB_BASE_URL": "http://testserver",
+        "BB_SECRET_KEY": "test-secret", "BB_ADMIN_EMAIL": ADMIN["email"],
+        "BB_ADMIN_PASSWORD": ADMIN["password"], "ANTHROPIC_API_KEY": "sk-ant-test",
+        "GMAIL_CLIENT_ID": "cid.apps.googleusercontent.com", "GMAIL_CLIENT_SECRET": "csec",
+        **extra,
+    }
+    return Settings(env=env)
+
+
+@pytest.fixture
+def settings(tmp_path):
+    return _settings(tmp_path)
+
+
+@pytest.fixture
+def client(settings):
+    with TestClient(create_app(settings), follow_redirects=False) as c:
+        c.settings = settings
+        yield c
+
+
+def _login(client, email, password):
+    r = client.post("/login", data={"email": email, "password": password})
+    return r
+
+
+def _admin(client):
+    assert _login(client, **ADMIN).status_code == 303
+    return client
+
+
+def _make_user(client):
+    r = client.post("/admin/users", data={"email": USER["email"], "password": USER["password"]})
+    assert r.status_code == 303 and "Created" in r.headers["location"]
+    return client.settings and Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+
+
+def _as_user(client):
+    _admin(client)
+    _make_user(client)
+    client.cookies.clear()
+    assert _login(client, **USER).status_code == 303
+    return client
+
+
+PROFILE = {
+    "name": "Jane Doe", "company": "Acme Research", "role": "Founder",
+    "linkedin": "https://linkedin.com/in/janedoe", "email": "jane@acme-research.com",
+    "tone": "friendly and direct", "offer_name": "Acme Insights",
+    "offer_description": "A monthly report on logistics pricing.", "benefits": "Saves a day a month\nNo setup",
+    "pricing": "", "goal": "get_reply", "booking_url": "", "meeting_duration": "15 minutes",
+    "industries": "Logistics, Retail", "titles": "Head of Ops", "company_size": "10-200",
+    "geography": "United Kingdom", "max_daily_sends": "25", "max_daily_cost_usd": "3",
+    "quiet_start": "20:00", "quiet_end": "08:00", "timezone": "Europe/London",
+}
+
+
+# ── accounts ──
+
+
+def test_password_hashing_roundtrip():
+    stored = hash_password("s3cret-password")
+    assert stored.startswith("scrypt$") and verify_password("s3cret-password", stored)
+    assert not verify_password("wrong", stored) and not verify_password("x", "garbage")
+
+
+def test_admin_is_bootstrapped_and_login_works(client):
+    assert client.get("/").status_code == 303  # not signed in → /login
+    assert client.get("/").headers["location"] == "/login"
+    bad = _login(client, ADMIN["email"], "nope")
+    assert bad.status_code == 200 and "Wrong email or password" in bad.text
+    good = _login(client, **ADMIN)
+    assert good.status_code == 303 and "bb_session" in good.cookies
+    page = client.get("/")
+    assert page.status_code == 200 and "Dashboard" in page.text and ADMIN["email"] in page.text
+    assert client.get("/admin/users").status_code == 200
+    # Second boot keeps the one admin (no duplicate bootstrap).
+    with TestClient(create_app(client.settings)) as again:
+        assert Accounts(client.settings.accounts_db).count() == 1
+
+
+def test_login_is_throttled(client):
+    for _ in range(10):
+        _login(client, ADMIN["email"], "nope")
+    r = _login(client, **ADMIN)
+    assert r.status_code == 200 and "Too many attempts" in r.text
+
+
+def test_admin_creates_users_and_users_are_not_admins(client):
+    _admin(client)
+    weak = client.post("/admin/users", data={"email": USER["email"], "password": "short"})
+    assert "at%20least%2010" in weak.headers["location"]
+    user = _make_user(client)
+    assert user["role"] == "user" and not user["disabled"]
+    dup = client.post("/admin/users", data={"email": USER["email"], "password": USER["password"]})
+    assert "already%20exists" in dup.headers["location"]
+
+    client.cookies.clear()
+    assert _login(client, **USER).status_code == 303
+    assert client.get("/admin/users").status_code == 403
+    assert client.post("/admin/users", data={"email": "x@y.io", "password": "abcdefghijk"}).status_code == 403
+
+    # Disabled users are signed out and can't sign in again.
+    client.cookies.clear()
+    _admin(client)
+    assert client.post(f"/admin/users/{user['id']}/disable").status_code == 303
+    client.cookies.clear()
+    assert _login(client, **USER).status_code == 200
+    _admin(client)
+    client.post(f"/admin/users/{user['id']}/enable")
+    client.post(f"/admin/users/{user['id']}/password", data={"password": "a-new-password-1"})
+    client.cookies.clear()
+    assert _login(client, USER["email"], USER["password"]).status_code == 200
+    assert _login(client, USER["email"], "a-new-password-1").status_code == 303
+
+
+def test_cross_site_posts_are_refused(client):
+    _admin(client)
+    r = client.post("/worker/start", headers={"Origin": "https://evil.example"})
+    assert r.status_code == 403
+    r = client.post("/sending/pause", headers={"Origin": "http://testserver"})
+    assert r.status_code == 303
+
+
+# ── workspace: profile → harvey.yaml ──
+
+
+def test_profile_writes_a_valid_harvey_config(client):
+    _as_user(client)
+    r = client.post("/profile", data=PROFILE)
+    assert r.status_code == 303, r.text
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    cfg = yaml.safe_load(ws.config_file.read_text())
+    loaded = HarveyConfig(**cfg)
+    assert loaded.persona.name == "Jane Doe" and loaded.persona.email == "jane@acme-research.com"
+    assert loaded.product.key_benefits == ["Saves a day a month", "No setup"]
+    assert loaded.icp.auto_prospect is False  # unchecked box: only the uploaded list
+    assert loaded.channels.email.provider == "gmail"
+    assert loaded.channels.email.require_approval is False  # unchecked: fully automatic
+    assert loaded.channels.email.max_daily_sends == 25
+    assert loaded.usage.max_daily_cost_usd == 3.0
+    assert loaded.usage.quiet_hours.timezone == "Europe/London"
+    assert loaded.brain.provider == "claude"
+    knowledge = (ws.skills_dir / "product_knowledge.md").read_text()
+    assert "Acme Insights" in knowledge and "Saves a day a month" in knowledge
+    # The form round-trips.
+    page = client.get("/profile")
+    assert "Jane Doe" in page.text and "Acme Insights" in page.text
+
+    # Checked boxes flip both flags; a bad value is reported, not written.
+    r = client.post("/profile", data={**PROFILE, "auto_prospect": "on", "require_approval": "on"})
+    loaded = HarveyConfig(**yaml.safe_load(ws.config_file.read_text()))
+    assert loaded.icp.auto_prospect is True and loaded.channels.email.require_approval is True
+    r = client.post("/profile", data={**PROFILE, "timezone": "Mars/Olympus"})
+    assert r.status_code == 200 and "Could not save" in r.text and "timezone" in r.text
+    assert HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).usage.quiet_hours.timezone == "Europe/London"
+    r = client.post("/profile", data={**PROFILE, "name": ""})
+    assert r.status_code == 200 and "required" in r.text
+
+
+# ── recipients ──
+
+
+CSV = """Email,Name,Company,Job Title,LinkedIn,Notes
+jane@acme.com,Jane Doe,Acme,Head of Growth,https://linkedin.com/in/janedoe,Spoke at SaaStr
+bob@gmail.com,Bob,,,,"Freelancer, met at a meetup"
+JANE@acme.com,Jane Again,Acme,,,
+not-an-email,Nobody,,,,
+sam@beta.io,,Beta Industries,CTO,,
+"""
+
+
+def test_recipient_upload_creates_prospects_and_companies(client):
+    _as_user(client)
+    r = client.post("/recipients", files={"file": ("list.csv", CSV, "text/csv")})
+    assert r.status_code == 303
+    loc = r.headers["location"]
+    assert "Added%203" in loc and "1%20already" in loc and "1%20skipped" in loc
+
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    db = sqlite3.connect(str(ws.db_path))
+    rows = db.execute(
+        "SELECT email, first_name, last_name, email_status, status, company, title, linkedin_url, "
+        "personalization_notes FROM prospects ORDER BY email").fetchall()
+    assert [r[0] for r in rows] == ["bob@gmail.com", "jane@acme.com", "sam@beta.io"]
+    jane = rows[1]
+    assert jane[1:5] == ("Jane", "Doe", "provided", "new")
+    assert jane[5] == "Acme" and jane[6] == "Head of Growth"
+    assert "linkedin.com/in/janedoe" in jane[7] and "SaaStr" in jane[8]
+    sam = rows[2]
+    assert "No name was given" in sam[8] and sam[5] == "Beta Industries"
+    companies = {r[0]: r for r in db.execute("SELECT name, domain, website, source FROM companies")}
+    assert companies["Acme"][1:] == ("acme.com", "https://acme.com", "upload")
+    assert companies["Beta Industries"][1] == "beta.io"
+    assert "gmail.com" not in {c[1] for c in companies.values()}  # public mailbox ≠ a company
+
+    # Re-uploading the same file adds nobody new.
+    r = client.post("/recipients", data={"pasted": CSV})
+    assert "Added%200" in r.headers["location"]
+
+    summary = client.get("/api/summary").json()
+    assert summary["recipients"] == 3 and summary["waiting"] == 3 and summary["not_sent"] == 3
+    page = client.get("/recipients")
+    assert "jane@acme.com" in page.text and "Beta Industries" in page.text
+
+
+def test_pasted_addresses_without_a_header(client):
+    _as_user(client)
+    r = client.post("/recipients", data={"pasted": "a@one.com\nb@two.org\na@one.com\n"})
+    assert "Added%202" in r.headers["location"]
+    assert client.post("/recipients", data={"pasted": "  "}).headers["location"].startswith("/recipients?error=")
+
+
+def test_upload_limit(client, monkeypatch):
+    import bb.recipients as rec
+    monkeypatch.setattr(rec, "MAX_ROWS", 2)
+    _as_user(client)
+    r = client.post("/recipients", data={"pasted": "a@x.com\nb@x.com\nc@x.com\n"})
+    assert "Added%202" in r.headers["location"] and "1%20beyond" in r.headers["location"]
+
+
+# ── outbox ──
+
+
+def _seed_outbox(ws: Workspace, prefix: str = "o"):
+    async def seed():
+        state = ws.state()
+        await state.init_db()
+        async with state._connect() as db:
+            for i, status in enumerate(["pending_review", "pending_review", "approved"]):
+                await db.execute(
+                    "INSERT INTO outbox (id, prospect_id, to_email, subject, body, status, kind, step) "
+                    "VALUES (?, '', ?, ?, ?, ?, 'sequence', 1)",
+                    (f"{prefix}{i}", f"p{i}@x.com", f"Hello {i}", "body", status))
+            await db.commit()
+    asyncio.run(seed())
+
+
+def test_outbox_review(client):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    _seed_outbox(ws)
+    page = client.get("/outbox")
+    assert "Hello 0" in page.text and "Hello 1" in page.text and "Hello 2" not in page.text
+    assert client.post("/outbox/o0/reject").status_code == 303
+    assert client.post("/outbox/o1/approve").status_code == 303
+    assert client.post("/outbox/missing/approve").status_code == 404
+    db = sqlite3.connect(str(ws.db_path))
+    assert dict(db.execute("SELECT id, status FROM outbox")) == {"o0": "rejected", "o1": "approved", "o2": "approved"}
+    summary = client.get("/api/summary").json()
+    assert summary["outbox_scheduled"] == 2 and summary["outbox_rejected"] == 1
+    _seed_outbox(Workspace(client.settings, user), prefix="q")  # two more pending
+    assert "Approved%202" in client.post("/outbox/approve-all").headers["location"]
+    assert db.execute("SELECT COUNT(*) FROM outbox WHERE status = 'pending_review'").fetchone()[0] == 0
+
+
+# ── Gmail (web redirect flow) ──
+
+
+def test_gmail_connect_round_trip(client, monkeypatch):
+    _as_user(client)
+    client.post("/profile", data=PROFILE)
+    r = client.post("/gmail/connect")
+    assert r.status_code == 303
+    url = r.headers["location"]
+    assert url.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
+    assert "redirect_uri=http%3A%2F%2Ftestserver%2Fgmail%2Fcallback" in url
+    assert "gmail.modify" in url and "access_type=offline" in url
+    state = url.split("state=")[1].split("&")[0]
+
+    async def fake_exchange(settings, code):
+        assert code == "the-code"
+        return {"refresh_token": "rt-1", "access_token": "at-1", "scope": "gmail.modify"}
+
+    async def fake_email(token):
+        assert token == "at-1"
+        return "jane.sends@gmail.com"
+
+    monkeypatch.setattr(gmail_oauth, "exchange_code", fake_exchange)
+    monkeypatch.setattr(gmail_oauth, "account_email", fake_email)
+    bad = client.get("/gmail/callback", params={"code": "the-code", "state": "1.deadbeef"})
+    assert "did%20not%20match" in bad.headers["location"]
+    ok = client.get("/gmail/callback", params={"code": "the-code", "state": state})
+    assert "connected%20as%20jane.sends%40gmail.com" in ok.headers["location"]
+
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    token = json.loads(ws.gmail_token_file.read_text())
+    assert token["refresh_token"] == "rt-1"  # the format harvey.integrations.gmail reads
+    assert ws.gmail_account()["email"] == "jane.sends@gmail.com"
+    # The persona now sends from the connected mailbox.
+    assert yaml.safe_load(ws.config_file.read_text())["persona"]["email"] == "jane.sends@gmail.com"
+    page = client.get("/gmail")
+    assert "Connected" in page.text and "jane.sends@gmail.com" in page.text
+    assert client.get("/api/summary").json()["gmail"] is True
+
+    assert client.post("/gmail/disconnect").status_code == 303
+    assert not ws.gmail_token_file.exists() and client.get("/api/summary").json()["gmail"] is False
+
+
+def test_gmail_connect_needs_a_server_client(tmp_path):
+    settings = _settings(tmp_path, GMAIL_CLIENT_ID="", GMAIL_CLIENT_SECRET="")
+    with TestClient(create_app(settings), follow_redirects=False) as client:
+        _login(client, **ADMIN)
+        assert "no%20Google%20OAuth%20client" in client.post("/gmail/connect").headers["location"]
+        assert "GMAIL_CLIENT_ID" in client.get("/").text  # admin sees the server gap
+
+
+# ── worker process ──
+
+
+class _FakeProc:
+    def __init__(self):
+        self.pid = 4242
+
+
+def test_worker_start_stop(client, monkeypatch):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+
+    assert "profile%20first" in client.post("/worker/start").headers["location"]
+    client.post("/profile", data=PROFILE)
+    assert "Gmail%20first" in client.post("/worker/start").headers["location"]
+    gmail_oauth.save_token(ws, {"refresh_token": "rt"}, "jane@acme-research.com")
+
+    seen = {}
+
+    def fake_popen(cmd, **kwargs):
+        seen["cmd"], seen["kwargs"] = cmd, kwargs
+        return _FakeProc()
+
+    alive = {4242}
+    real_kill = ws_mod.os.kill
+
+    def fake_kill(pid, sig):
+        if pid == 4242:
+            if sig == 0 and 4242 in alive:
+                return None
+            if sig in (ws_mod.signal.SIGTERM, ws_mod.signal.SIGKILL):
+                alive.discard(4242)
+                return None
+            raise ProcessLookupError
+        return real_kill(pid, sig)
+
+    monkeypatch.setattr(ws_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(ws_mod.os, "kill", fake_kill)
+
+    r = client.post("/worker/start")
+    assert "Started%20%28pid%204242%29" in r.headers["location"]
+    assert seen["cmd"] == [sys.executable, "-m", "harvey.main"]
+    env = seen["kwargs"]["env"]
+    assert env["HARVEY_HOME"] == str(ws.root)
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-test" and env["GMAIL_CLIENT_ID"].startswith("cid")
+    assert not any(k.startswith("BB_") for k in env)
+    assert seen["kwargs"]["start_new_session"] is True
+    assert ws.pid_file.read_text() == "4242" and ws.autostart_file.exists()
+    assert client.get("/api/summary").json()["worker_running"] is True
+    assert "Already%20running" in client.post("/worker/start").headers["location"]
+
+    r = client.post("/worker/stop")
+    assert "Stopped" in r.headers["location"]
+    assert not ws.pid_file.exists() and not ws.autostart_file.exists()
+    assert client.get("/api/summary").json()["worker_running"] is False
+
+
+def test_workers_autostart_on_boot(settings, monkeypatch):
+    started = []
+    monkeypatch.setattr(Workspace, "start_worker", lambda self: (started.append(self.user["email"]) or (True, "ok")))
+    with TestClient(create_app(settings), follow_redirects=False) as client:
+        _login(client, **ADMIN)
+        admin = Accounts(settings.accounts_db).get_by_email(ADMIN["email"])
+        ws = Workspace(settings, admin).ensure()
+        ws.autostart_file.write_text("1")
+    assert started == []
+    with TestClient(create_app(settings), follow_redirects=False):
+        pass
+    assert started == [ADMIN["email"]]
+
+
+def test_sending_pause_resume(client):
+    _as_user(client)
+    assert client.post("/sending/pause").status_code == 303
+    s = client.get("/api/summary").json()
+    assert s["sending_paused"] == "paused from the web app"
+    assert client.post("/sending/resume").status_code == 303
+    assert client.get("/api/summary").json()["sending_paused"] == ""
+
+
+# ── settings ──
+
+
+def test_secret_key_is_generated_once(tmp_path):
+    s = _settings(tmp_path, BB_SECRET_KEY="")
+    first = s.secret_key()
+    assert len(first) > 40 and (s.home / "secret.key").read_text() == first
+    assert _settings(tmp_path, BB_SECRET_KEY="").secret_key() == first

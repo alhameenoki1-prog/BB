@@ -7,6 +7,13 @@ writes an email tailored to them, sends it at a safe pace, and tracks replies.
 The project direction, feature plan, and open questions are in
 [docs/PROJECT_BRIEF.md](docs/PROJECT_BRIEF.md).
 
+**Hosted for your users.** BB can run as a website: you create logins, each
+user connects their own Gmail, fills in who they are, uploads up to 10,000
+recipients, and a worker of their own researches each person, writes and
+sends the emails, and tracks replies on a live banner. One command with
+Docker; see [docs/HOSTING.md](docs/HOSTING.md). Everything below the line
+also still works as a single-user, run-it-yourself tool.
+
 **Provenance.** This repository started as a fork of
 [ethanplusai/harvey](https://github.com/ethanplusai/harvey) (MIT License,
 Copyright (c) 2026 Ethan Rogers), imported with its full commit history on

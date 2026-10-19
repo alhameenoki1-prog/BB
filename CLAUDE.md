@@ -54,6 +54,22 @@ People will ask "how does this work?" — explain it simply:
 
 ---
 
+## The hosted web app (bb/)
+
+BB is a second way to run everything: a website where an admin creates logins
+and each user gets their own isolated Harvey (`HARVEY_HOME` = their workspace
+under `BB_HOME/workspaces/<id>`), connects Gmail via the web OAuth flow, fills
+a profile that becomes their `harvey.yaml`, uploads recipients (stored with
+`email_status: provided`, which sends), and runs a worker process. Start it
+with `python -m bb` (needs `BB_BASE_URL`, `BB_ADMIN_EMAIL`, `BB_ADMIN_PASSWORD`,
+`ANTHROPIC_API_KEY`, `GMAIL_CLIENT_ID`/`SECRET` of a *Web application* OAuth
+client). Deployment guide: `docs/HOSTING.md`. Code: `bb/app.py` (routes),
+`bb/workspaces.py` (per-user home, config writer, worker control),
+`bb/recipients.py` (CSV import), `bb/gmail_oauth.py`, `bb/accounts.py`.
+When someone asks to "host this" or "give users logins", that is this.
+
+---
+
 ## Setup Flow
 
 Walk through these steps conversationally. Ask one thing at a time. Don't overwhelm.

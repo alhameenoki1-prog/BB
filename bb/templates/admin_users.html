@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<h1>Users</h1>
+{% for p in problems %}<div class="msg err">Server setup: {{ p }}</div>{% endfor %}
+<div class="card">
+  <h2>Create a login</h2>
+  <p class="muted small">There is no self-registration. Make the account here and send the person their email and password; they can't change it themselves, but you can reset it below.</p>
+  <form method="post" action="/admin/users">
+    <div class="row">
+      <div><label>Email</label><input type="email" name="email" required></div>
+      <div><label>Password (10+ characters)</label><input type="text" name="password" minlength="10" required autocomplete="off"></div>
+      <div><label>Role</label><select name="role"><option value="user">User</option><option value="admin">Admin</option></select></div>
+    </div>
+    <p><button type="submit">Create account</button></p>
+  </form>
+</div>
+<div class="card">
+  <h2>Accounts</h2>
+  <table>
+    <tr><th>Email</th><th>Role</th><th>Status</th><th>Setup</th><th>Worker</th><th></th></tr>
+    {% for u in users %}
+    <tr>
+      <td>{{ u.email }}</td>
+      <td>{{ u.role }}</td>
+      <td>{% if u.disabled %}<span class="pill bad">disabled</span>{% else %}<span class="pill good">active</span>{% endif %}</td>
+      <td class="small">{{ 'profile ✓' if u.configured else 'profile ✗' }} · {{ 'gmail ✓' if u.gmail else 'gmail ✗' }}</td>
+      <td>{% if u.running %}<span class="pill good">running</span>{% else %}<span class="pill">stopped</span>{% endif %}</td>
+      <td>
+        <form class="inline" method="post" action="/admin/users/{{ u.id }}/password"><input type="text" name="password" placeholder="new password" minlength="10" style="width:150px;padding:5px 8px" autocomplete="off"> <button class="small secondary" type="submit">Reset</button></form>
+        {% if u.id != user.id %}
+          {% if u.disabled %}
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/enable"><button class="small secondary" type="submit">Enable</button></form>
+          {% else %}
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/disable" onsubmit="return confirm('Disable {{ u.email }}? Their worker stops and they are signed out.')"><button class="small danger" type="submit">Disable</button></form>
+          {% endif %}
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}
