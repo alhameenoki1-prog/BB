@@ -9,6 +9,24 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Enquiry emails that read like enquiries.** Inquiry mode now has its
+  own brief (`prompts/inquiry_writer.md`) instead of the cold-sales prompt
+  plus sales skill files: state the request from `outreach.intent`, one
+  natural reference to the recipient at most, one easy question, no
+  narration about inboxes or what could be told from the website, no
+  hedging ("client or partner, whichever fits"), and sentence-case
+  subjects that name the request. Follow-ups are a short nudge and a
+  courteous close. The web app requires the "what you want" sentence in
+  inquiry mode.
+- **Real company names.** A row with no company gets a readable name from
+  its domain (north-west-build.co.uk → North West Build), and the profile
+  stage replaces a bare-domain name with what the site calls itself
+  (og:site_name or the title) plus its meta description, on the company
+  and its prospects. Merge fields and prompts never show a domain.
+- **Role tiers.** A shared inbox (info@, office@) is always the admin tier;
+  a personal address with no title is never admin, so nobody is addressed
+  as a mailroom.
+
 - **Anthropic user-scoped keys.** A key that is not tied to a workspace
   (`sk-ant-usr-…`) needs the workspace named on every request:
   `ANTHROPIC_WORKSPACE_ID` in `.env`, or the Workspace ID box on the web

@@ -10,6 +10,7 @@ design). Every draft still passes the deterministic pre-send gate.
 """
 
 import json
+import re
 import logging
 from datetime import datetime, timezone
 
@@ -55,10 +56,14 @@ TIER_GUIDANCE = {
                 "you'd give them; ask one concrete question about how they'd take it on."),
     "individual": ("Specialists do the work. Speak to their craft, say what you need, and ask "
                    "how their team usually takes on a request like yours."),
-    "admin": ("Assistants, office managers and shared inboxes route mail. In two or three "
-              "lines, say what you're looking for and ask who handles requests like this and "
-              "whether they can pass it on. Do not pitch; make forwarding easy."),
+    "admin": ("Assistants, office managers and shared inboxes route mail. Keep it to a few "
+              "lines: say what you need and ask whether they can take it on or pass it to the "
+              "person who does. Never remark on the inbox or on their role; just ask."),
 }
+# Titles that really are admin / gatekeeping roles.
+_ADMIN_TITLE_RE = re.compile(
+    r"assistant|secretary|reception|front desk|office manager|office admin|administrator|"
+    r"admin\b|coordinator|pa\b|ea\b|clerk|dispatcher", re.I)
 # Scout-sourced seniority values map onto the four tiers.
 _SENIORITY_TO_TIER = {
     "c_suite": "executive", "vp": "executive", "director": "executive", "owner": "executive",
@@ -322,6 +327,58 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
         return found
 
     @property
+    def inquiry(self) -> bool:
+        outreach = getattr(self.config, "outreach", None)
+        return getattr(outreach, "mode", "offer") == "inquiry"
+
+    def _base_prompt(self) -> str:
+        """The system brief. Inquiry mode gets its own prompt and none of
+        the sales skill files; offer mode keeps the cold-email prompt plus
+        skills."""
+        persona = self.config.persona
+        if self.inquiry:
+            outreach = self.config.outreach
+            intent = (outreach.intent or "").strip() or "to work with them as a client or partner"
+            product = self.config.product
+            context = ""
+            if product.description and product.description.strip() and product.name != persona.company:
+                context = f"More about the request, in {persona.name}'s words: {product.description.strip()}"
+            elif product.description and product.description.strip():
+                context = f"Background: {product.description.strip()}"
+            prompt = self.brain.load_prompt(
+                "inquiry_writer",
+                persona_name=persona.name, persona_company=persona.company,
+                persona_role=persona.role or "", persona_tone=persona.tone,
+                intent=intent, request_context=context,
+            )
+            if prompt:
+                return prompt
+            return (f"You are writing enquiry emails for {persona.name} ({persona.role} at "
+                    f"{persona.company}), a prospective customer or partner of the recipient. "
+                    f"What {persona.name} wants: {intent}. Tone: {persona.tone}. Never pitch.")
+        prompt = self.brain.load_prompt(
+            "writer",
+            product_name=self.config.product.name,
+            product_description=self.config.product.description,
+            product_benefits="\n".join(f"- {b}" for b in self.config.product.key_benefits),
+            product_pricing=self.config.product.pricing,
+            persona_name=persona.name, persona_company=persona.company,
+            persona_role=persona.role, persona_tone=persona.tone,
+        ) or (f"You are {persona.name}, {persona.role} at {persona.company}.\n"
+              f"Your tone is: {persona.tone}\n\nProduct: {self.config.product.name}\n"
+              f"Description: {self.config.product.description}")
+        if self.skills:
+            prompt += "\n\n" + self.skills
+        return prompt + self._outreach_block()
+
+    @property
+    def _subject_rule(self) -> str:
+        if self.inquiry:
+            return ("- Subject: sentence case, 3 to 8 words, the request itself as a customer would "
+                    "type it (see SUBJECT LINE above). No company name, domain or person's name.")
+        return "- Subject lines: lowercase, 2-5 words, no prospect name, no \"quick question\"."
+
+    @property
     def greeting_word(self) -> str:
         outreach = getattr(self.config, "outreach", None)
         return getattr(outreach, "greeting", "") or "Hi"
@@ -356,6 +413,8 @@ them alone and want to answer it.
 
     @property
     def _length_rule(self) -> str:
+        if self.inquiry:
+            return "Between 70 and 120 words" if self.style == "engaging" else "Between 45 and 80 words"
         if self.style == "engaging":
             return "Between 90 and 130 words"
         return "Under 75 words"
@@ -369,10 +428,12 @@ them alone and want to answer it.
             name_fact = f"- Name: {prospect.full_name()}"
         else:
             name_fact = "- Name: unknown (do not guess one)"
+        company_name = names.company_display_name(
+            prospect.company, (prospect.email or "").rsplit("@", 1)[-1])
         facts = [
             name_fact,
-            f"- Title: {prospect.title}",
-            f"- Company: {prospect.company}",
+            f"- Title: {prospect.title or 'unknown'}",
+            f"- Company: {company_name or 'unknown'}",
         ]
         if prospect.industry:
             facts.append(f"- Industry: {prospect.industry}")
@@ -397,25 +458,12 @@ them alone and want to answer it.
         if prospect.linkedin_url:
             facts.append(f"- LinkedIn: {prospect.linkedin_url}")
 
-        prompt = self.brain.load_prompt(
-            "writer",
-            product_name=self.config.product.name,
-            product_description=self.config.product.description,
-            product_benefits="\n".join(f"- {b}" for b in self.config.product.key_benefits),
-            product_pricing=self.config.product.pricing,
-            persona_name=self.config.persona.name,
-            persona_company=self.config.persona.company,
-            persona_role=self.config.persona.role,
-            persona_tone=self.config.persona.tone,
-        ) or ""
-        if self.skills:
-            prompt += "\n\n" + self.skills
-        prompt += self._outreach_block()
+        prompt = self._base_prompt()
         prompt += self._style_block()
 
         prompt += f"""
 
-Write ONE cold email (the very first touch) to this specific person.
+Write ONE {'enquiry email' if self.inquiry else 'cold email'} (the very first touch) to this specific person.
 
 FACTS — everything you know about them. Every claim about the prospect in
 your email must come from these facts. If a fact isn't listed here, you
@@ -424,14 +472,14 @@ or anything else:
 {chr(10).join(facts)}
 
 Requirements:
-- {self._length_rule}. One specific observation from the FACTS above, one
-  question. No pitch, no product name.
+- {self._length_rule}. {("Say what " + self.config.persona.name + " needs from this business, shaped to what the FACTS say it does, and ask ONE easy question.") if self.inquiry else "One specific observation from the FACTS above, one question. No pitch, no product name."}
 - Open with the greeting line "{names.greeting_for(prospect.first_name, prospect.email, prospect.company, self.greeting_word)}"
   on its own line, then a blank line. Use the person's first name only if it is
   in the FACTS; never invent or guess one.
 - Write the actual text (no merge variables — you know their name/company).
-- Subject: lowercase, 2-5 words.
-- Follow every STRICT EMAIL RULE above.
+- Follow every rule above.
+
+{self._subject_rule}
 
 Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
 
@@ -453,57 +501,44 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
         """Ask the brain to write a 3-email sequence."""
         # Build context about the prospects
         prospect_summary = "\n".join(
-            f"- {p.full_name()}, {p.title} at {p.company}"
+            f"- {p.full_name() or 'name unknown'}, {p.title or 'title unknown'} at "
+            f"{names.company_display_name(p.company, (p.email or '').rsplit('@', 1)[-1]) or 'a company'}"
             + (f" | Notes: {p.personalization_notes}" if p.personalization_notes else "")
             for p in prospects[:5]  # Show sample for context
         )
 
-        prompt = self.brain.load_prompt(
-            "writer",
-            product_name=self.config.product.name,
-            product_description=self.config.product.description,
-            product_benefits="\n".join(f"- {b}" for b in self.config.product.key_benefits),
-            product_pricing=self.config.product.pricing,
-            persona_name=self.config.persona.name,
-            persona_company=self.config.persona.company,
-            persona_role=self.config.persona.role,
-            persona_tone=self.config.persona.tone,
-        )
-
-        if not prompt:
-            prompt = f"""You are {self.config.persona.name}, {self.config.persona.role} at {self.config.persona.company}.
-Your tone is: {self.config.persona.tone}
-
-Product: {self.config.product.name}
-Description: {self.config.product.description}
-Key benefits: {', '.join(self.config.product.key_benefits)}
-Pricing: {self.config.product.pricing}"""
-
-        # Inject email framework skills
-        if self.skills:
-            prompt += "\n\n" + self.skills
-        prompt += self._outreach_block()
+        prompt = self._base_prompt()
         prompt += self._style_block()
         prompt += self._segment_block(prospects)
 
+        if self.inquiry:
+            steps_brief = f"""- Email 1: the enquiry itself. {self._length_rule}. What {self.config.persona.name} needs,
+  shaped to what this kind of business does, one or two details that let them answer, ONE easy question.
+- Email 2: 3 days later, under 60 words. A short nudge: one line restating the need, then ask
+  whether they can take it on or who could. New subject, same request.
+- Email 3: 4 days after that, under 40 words. A courteous close: if it is not something they
+  handle, no reply needed; if it is, a line back is plenty."""
+        else:
+            steps_brief = f"""- Email 1: Personalized cold observation + one question. {self._length_rule}. No pitch.
+- Email 2: Follow-up 3 days later. Different angle, one concrete proof point. {self._length_rule}.
+- Email 3: Break-up email 4 days after that. Under 40 words. Gracious, not guilt-tripping."""
+
         prompt += f"""
 
-Write a 3-email cold outreach sequence for prospects like these:
+Write a 3-email {'enquiry' if self.inquiry else 'cold outreach'} sequence for people like these:
 {prospect_summary}
 
 Requirements:
-- Email 1: Personalized cold observation + one question. {self._length_rule}. No pitch.
-- Email 2: Follow-up 3 days later. Different angle, one concrete proof point. {self._length_rule}.
-- Email 3: Break-up email 4 days after that. Under 40 words. Gracious, not guilt-tripping.
+{steps_brief}
 - Every email opens with the greeting line "{self.greeting_word} {{{{first_name}}}}," on its
   own line, then a blank line. Use {{{{first_name}}}} ONLY there (it is swapped for
   "there" or the team when a name is unknown).
 - Use {{{{company}}}} and {{{{title}}}} as merge variables where natural — every email
   must use at least one, and email 1 must reference something specific to
   these prospects' industry or role (use the notes above).
-- Never be pushy or salesy. Be consultative and value-driven.
-- Subject lines: lowercase, 2-5 words.
-- Follow every rule in the STRICT EMAIL RULES above. No exceptions.
+- Never be pushy or salesy.
+{self._subject_rule}
+- Follow every rule above. No exceptions.
 
 Return ONLY a JSON array (no markdown fences, no commentary):
 [
@@ -626,8 +661,9 @@ Return ONLY a JSON array (no markdown fences, no commentary):
                 f"SECTORS (pick exactly one): {', '.join(SECTORS)}\n"
                 f"TIERS (pick exactly one): {', '.join(TIERS)} — executive = owners, partners, "
                 "C-level, VPs, directors; manager = runs a team or function; individual = a "
-                "specialist doing the work; admin = assistants, office managers, reception, shared "
-                "inboxes like info@.\n"
+                "specialist doing the work; admin = ONLY assistants, office managers, reception, or "
+                "a shared inbox like info@ or office@. A personal address (a name before the @) with "
+                "no title is NOT admin: choose manager.\n"
                 f"DEPARTMENTS (pick exactly one): {', '.join(DEPARTMENTS)}\n\n"
                 f"CONTACTS (JSON): {json.dumps(rows, ensure_ascii=False)}\n\n"
                 'Return ONLY a JSON array like [{"id": "...", "sector": "...", "tier": "...", '
@@ -651,6 +687,10 @@ Return ONLY a JSON array (no markdown fences, no commentary):
                 dept = str(item.get("department") or "other").strip().lower().replace(" ", "_")
                 sector = sector if sector in SECTORS else "other"
                 tier = tier if tier in TIERS else self.tier_of(p)
+                if names.is_role_address(p.email):
+                    tier = "admin"
+                elif tier == "admin" and not _ADMIN_TITLE_RE.search(p.title or ""):
+                    tier = "manager"  # a person, not a shared inbox
                 dept = dept if dept in DEPARTMENTS else "other"
                 await self.state.update_prospect_segment(p.id, industry=sector, seniority=tier, department=dept)
                 if p.company_id:
@@ -697,8 +737,12 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             return ""
         sector = (prospects[0].industry or "other").replace("_", " ")
         tier = self.tier_of(prospects[0])
+        shaping = (
+            f"Shape the request for what a {sector} business does (a builder is asked about the job, "
+            f"an advisor about taking {self.config.persona.name} on), without describing their business "
+            "to them." if self.inquiry else
+            f"Write for what a {sector} business does.")
         return (
             f"\n\nSEGMENT: everyone in this campaign works in {sector}, and the readers are "
-            f"{tier}s. {TIER_GUIDANCE[tier]} Write for what a {sector} business does; the merge "
-            "fields fill in the person and company."
+            f"{tier}s. {TIER_GUIDANCE[tier]} {shaping} The merge fields fill in the person and company."
         )

@@ -399,10 +399,12 @@ class Sender:
         if body:
             text = names.strip_greeting(text)
         first = (prospect.first_name or "").strip()
+        company = names.company_display_name(
+            prospect.company, (prospect.email or "").rsplit("@", 1)[-1]) or "your team"
         replacements = {
             "first_name": first or ("your team" if names.is_role_address(prospect.email) else "there"),
             "last_name": prospect.last_name,
-            "company": prospect.company,
+            "company": company,
             "title": prospect.title,
             "personalization": prospect.personalization_notes,
         }

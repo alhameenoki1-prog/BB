@@ -174,10 +174,17 @@ async def test_writer_inquiry_mode_and_throttle(state):
     queued = await state.get_outbox()
     assert len(queued) == 2
     assert all("hello" == q["subject"] for q in queued)
-    personal = [p for p in brain.prompts if "Write ONE cold email" in p]
-    assert len(personal) == 2 and all("OUTREACH MODE: INQUIRY" in p for p in personal)
+    personal = [p for p in brain.prompts if "Write ONE enquiry email" in p]
+    assert len(personal) == 2
+    for p in personal:
+        # Inquiry mode gets its own brief (the fake brain stands prompt files in
+        # as "[name prompt]"): no cold-email prompt, no sales skills, no old block.
+        assert p.startswith("[inquiry_writer prompt]") and "[writer prompt]" not in p
+        assert "OUTREACH MODE" not in p and "Jane needs from this business" in p
+        assert "sentence case, 3 to 8 words" in p
     sequence = [p for p in brain.prompts if "3-email" in p]
-    assert sequence and all("OUTREACH MODE: INQUIRY" in p for p in sequence)
+    assert sequence and all(p.startswith("[inquiry_writer prompt]") and "the enquiry itself" in p
+                            for p in sequence)
 
     # Backlog is full: the next cycle makes no model calls at all.
     calls = len(brain.prompts)
@@ -270,8 +277,9 @@ async def test_segment_mode_sorts_then_writes_one_sequence_per_segment(state):
     exec_prompt = next(p for p in sequences if "works in construction" in p)
     assert "executives" in exec_prompt and "one decision or a short call" in exec_prompt
     admin_prompt = next(p for p in sequences if "readers are admins" in p)
-    assert "pass it on" in admin_prompt and "Do not pitch" in admin_prompt
-    assert all("OUTREACH MODE: INQUIRY" in p for p in sequences)
+    assert "pass it to the person who does" in admin_prompt and "Never remark on the inbox" in admin_prompt
+    assert all(p.startswith("[inquiry_writer prompt]") and "Shape the request for what a" in p
+               for p in sequences)
     # Nothing staged yet: the sender stages segment templates on its cycle.
     assert await state.count_outbox_queued() == 0
     assert (await state.count_prospects_by_status()).get("queued") == 4

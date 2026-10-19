@@ -204,6 +204,8 @@ def test_profile_writes_a_valid_harvey_config(client):
     assert HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).usage.quiet_hours.timezone == "Europe/London"
     r = client.post("/profile", data={**PROFILE, "name": ""})
     assert r.status_code == 200 and "required" in r.text
+    r = client.post("/profile", data={**PROFILE, "intent": "work with you"})
+    assert r.status_code == 200 and "Say what you want from the people you write to" in r.text
 
 
 # ── recipients ──
@@ -218,6 +220,7 @@ sam@beta.io,,Beta Industries,CTO,,
 ada.okafor@gamma.ng,,Gamma,,,
 pat@delta.co,,Delta,,https://linkedin.com/in/pat-lee-7a6b5c,
 info@delta.co,,Delta,,,
+lee@north-west-build.co.uk,,,,,
 """
 
 
@@ -226,7 +229,7 @@ def test_recipient_upload_creates_prospects_and_companies(client):
     r = client.post("/recipients", files={"file": ("list.csv", CSV, "text/csv")})
     assert r.status_code == 303
     loc = r.headers["location"]
-    assert "Added%206" in loc and "1%20already" in loc and "1%20skipped" in loc
+    assert "Added%207" in loc and "1%20already" in loc and "1%20skipped" in loc
 
     user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
     ws = Workspace(client.settings, user)
@@ -236,7 +239,9 @@ def test_recipient_upload_creates_prospects_and_companies(client):
         "personalization_notes FROM prospects ORDER BY email").fetchall()
     by_email = {r[0]: r for r in rows}
     assert sorted(by_email) == ["ada.okafor@gamma.ng", "bob@gmail.com", "info@delta.co", "jane@acme.com",
-                                "pat@delta.co", "sam@beta.io"]
+                                "lee@north-west-build.co.uk", "pat@delta.co", "sam@beta.io"]
+    # No company column: the domain becomes a readable name, never "north-west-build.co.uk".
+    assert by_email["lee@north-west-build.co.uk"][5] == "North West Build"
     # Names the rows left blank are worked out where it is safe to.
     ada = by_email["ada.okafor@gamma.ng"]
     assert ada[1:3] == ("Ada", "Okafor") and "email address" in ada[8]
@@ -265,7 +270,7 @@ def test_recipient_upload_creates_prospects_and_companies(client):
     assert "Added%200" in r.headers["location"]
 
     summary = client.get("/api/summary").json()
-    assert summary["recipients"] == 6 and summary["waiting"] == 6 and summary["not_sent"] == 6
+    assert summary["recipients"] == 7 and summary["waiting"] == 7 and summary["not_sent"] == 7
     page = client.get("/recipients")
     assert "jane@acme.com" in page.text and "Beta Industries" in page.text
     assert "waiting to be sorted" in page.text
@@ -274,7 +279,7 @@ def test_recipient_upload_creates_prospects_and_companies(client):
     db.commit()
     page = client.get("/recipients")
     assert "Construction" in page.text and "1 executive" in page.text and "1 admin" in page.text
-    assert "4 not sorted yet" in page.text
+    assert "5 not sorted yet" in page.text
 
 
 def test_pasted_addresses_without_a_header(client):

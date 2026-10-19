@@ -126,14 +126,27 @@ async def test_only_confirmed_signals_are_collected(state, monkeypatch):
     assert not c.wants("INCUMBENT_AGENCY")   # proposed, never confirmed
 
     async def fake_get(url):
-        return '<html><link href="/wp-content/x.css"><footer>Powered by <a href="https://ag.com">Agency</a></footer></html>'
+        return ('<html><head><title>Acme Roofing | Roofers in Leeds</title>'
+                '<meta name="description" content="Acme Roofing repairs and replaces roofs across Leeds and Bradford."></head>'
+                '<link href="/wp-content/x.css"><footer>Powered by <a href="https://ag.com">Agency</a></footer></html>')
     c._get = fake_get
     c.state = state
 
-    cid = await state.add_company(Company(name="Acme", domain="acme.com"))
+    cid = await state.add_company(Company(name="acme.com", domain="acme.com"))
+    from harvey.models.prospect import Prospect
+    await state.add_prospect(Prospect(id="p-acme", email="jo@acme.com", company_id=cid, company="acme.com",
+                                      email_status="provided"))
     obs = await c.profile_company(cid, "acme.com")
     codes = {o["signal_code"] for o in obs}
     assert codes == {"TECH_STACK"}, "unconfirmed signals must not be collected"
+    # The site's own name and description replace the bare domain, on the prospect too.
+    company = await state.get_company(cid)
+    assert company.name == "Acme Roofing" and company.description.startswith("Acme Roofing repairs")
+    assert (await state.get_prospect("p-acme")).company == "Acme Roofing"
+    # A real name given at upload is kept.
+    cid2 = await state.add_company(Company(name="Acme Holdings Ltd", domain="acme2.com"))
+    await c.profile_company(cid2, "acme2.com")
+    assert (await state.get_company(cid2)).name == "Acme Holdings Ltd"
 
 
 @pytest.mark.asyncio

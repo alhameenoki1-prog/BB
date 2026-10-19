@@ -767,6 +767,33 @@ class StateManager:
             await db.execute(f"UPDATE prospects SET {', '.join(sets)} WHERE id = ?", params)
             await db.commit()
 
+    async def update_company_profile(self, company_id: str, *, name: str = "", description: str = ""):
+        """What the company's own site says it is called and does. The name
+        replaces only a missing one or a bare domain; the description fills
+        only an empty one. Prospects carrying the old name are renamed too."""
+        from harvey.names import looks_like_domain
+        if not company_id:
+            return
+        async with self._connect() as db:
+            async with db.execute("SELECT name, description FROM companies WHERE id = ?",
+                                  (company_id,)) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return
+            old_name, old_desc = row[0] or "", row[1] or ""
+            now = _utcnow().isoformat()
+            if name and (not old_name or looks_like_domain(old_name)) and name != old_name:
+                await db.execute("UPDATE companies SET name = ?, updated_at = ? WHERE id = ?",
+                                 (name, now, company_id))
+                await db.execute(
+                    "UPDATE prospects SET company = ?, updated_at = ? WHERE company_id = ? "
+                    "AND (company = ? OR company = '' OR company IS NULL)",
+                    (name, now, company_id, old_name))
+            if description and not old_desc:
+                await db.execute("UPDATE companies SET description = ?, updated_at = ? WHERE id = ?",
+                                 (description[:600], now, company_id))
+            await db.commit()
+
     async def update_company_industry(self, company_id: str, industry: str):
         if not (company_id and industry):
             return

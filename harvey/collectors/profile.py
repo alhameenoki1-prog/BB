@@ -360,6 +360,18 @@ class ProfileCollector:
             logger.info(f"profile: {domain} unreachable")
             return obs
 
+        # What the business calls itself and says it does, for the writer:
+        # a name fit for a sentence instead of a bare domain.
+        try:
+            from harvey import names as _names
+            await self.state.update_company_profile(
+                company_id,
+                name=_names.site_name_from_html(home, domain) or _names.company_display_name("", domain),
+                description=_names.meta_description_from_html(home),
+            )
+        except Exception as e:
+            logger.debug(f"profile: could not record the site name for {domain}: {e}")
+
         # Ads (they are spending TODAY — the strongest budget signal here)
         add("RUNNING_GOOGLE_ADS", num=1 if self._any(home, GOOGLE_ADS) else 0)
         add("RUNNING_META_ADS", num=1 if self._any(home, META_PIXEL) else 0)

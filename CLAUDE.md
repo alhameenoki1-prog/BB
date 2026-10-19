@@ -256,7 +256,7 @@ harvey dashboard
 Users will come back with questions and tasks. Common ones:
 
 - **"Show me what Harvey has done"** → Run `harvey status` or `harvey dashboard`
-- **"The emails aren't good"** → Edit `skills/email_frameworks.md` and `prompts/writer.md`. Show them the current rules and help them adjust.
+- **"The emails aren't good"** → Offer mode (selling): edit `skills/email_frameworks.md` and `prompts/writer.md`. Inquiry mode (the user is the prospective customer or partner, the web app's default): edit `prompts/inquiry_writer.md`; the sales skills are not loaded there, and the request comes from `outreach.intent`. Show them the current rules and help them adjust.
 - **"Harvey isn't finding the right people"** → Check the ICP config in `harvey.yaml`. Adjust industries, titles, company_size, geography.
 - **"I want to change what Harvey says"** → Skills are in `skills/`, prompts are in `prompts/`. Both are plain markdown files. Edit them directly.
 - **"Train Harvey on a different product"** → `harvey train <new-url>`

@@ -10,7 +10,8 @@
   {% for k, v in modes.items() %}
   <label class="choice"><input type="radio" name="mode" value="{{ k }}" {{ 'checked' if profile.mode == k else '' }}><span><b>{{ k|capitalize }}</b><span class="small muted">{{ v }}</span></span></label>
   {% endfor %}
-  <label>In your words, what do you want from them?</label>
+  <label>In your words, what do you want from them? *</label>
+  <div class="hint">Be concrete: what, roughly when, where if it matters, and what you would need from them. This sentence becomes the point of every email. "I want to work with you" produces vague emails; "quotes for a 40 sqm kitchen extension in Lekki, work to start in March" produces good ones.</div>
   <textarea name="intent" placeholder="e.g. I'm looking for a financial advisor to manage a family portfolio, or I want quotes for a two-storey extension in Lagos, or I'd like to partner on distribution in West Africa.">{{ profile.intent }}</textarea>
 </div>
 <div class="card">

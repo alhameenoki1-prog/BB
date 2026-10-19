@@ -149,7 +149,7 @@ async def import_rows(state, rows: list[dict]) -> dict:
             continue
         seen.add(email)
         domain = _domain_from(row.get("website", ""), email)
-        company_name = (row.get("company") or "").strip() or (domain or "")
+        company_name = (row.get("company") or "").strip() or names.company_display_name("", domain)
         company_id = ""
         if domain or company_name:
             company = Company(

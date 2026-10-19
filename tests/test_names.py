@@ -175,3 +175,60 @@ async def test_sender_renders_greeting_for_sequences(state):  # noqa: F811
     assert sender._render("Saw {{company}}.", named, body=True) == "Hello Jane,\n\nSaw Acme."
     assert sender._render("{{first_name}}, quick question", named) == "Jane, quick question"
     assert sender._render("{{first_name}}, quick question", nameless) == "there, quick question"
+
+
+def test_company_display_name_never_shows_a_domain():
+    assert names.looks_like_domain("5b4me.com") and not names.looks_like_domain("Acme Ltd")
+    assert names.company_display_name("Acme Ltd", "acme.com") == "Acme Ltd"
+    assert names.company_display_name("5b4me.com", "5b4me.com") == "5b4me"
+    assert names.company_display_name("", "north-west-build.co.uk") == "North West Build"
+    assert names.company_display_name("", "www.okafor-and-co.ng") == "Okafor And Co"
+    assert names.company_display_name("", "https://acme.com/") == "Acme"
+    assert names.company_display_name("", "") == ""
+
+
+def test_site_name_and_description_from_html():
+    html = ('<html><head><title>Home | 5B4ME Digital Agency</title>'
+            '<meta property="og:site_name" content="5B4ME">'
+            '<meta name="description" content="A small digital agency in Lagos building sites and brands for local businesses.">'
+            '</head><body></body></html>')
+    assert names.site_name_from_html(html, "5b4me.com") == "5B4ME"
+    assert names.meta_description_from_html(html).startswith("A small digital agency in Lagos")
+    title_only = "<html><head><title>Welcome - North West Build Ltd - Builders in Leeds</title></head></html>"
+    assert names.site_name_from_html(title_only, "north-west-build.co.uk") == "North West Build Ltd"
+    assert names.site_name_from_html("<title>Home</title>", "x.com") == ""
+    assert names.site_name_from_html("<title>https://x.com</title>", "x.com") == ""
+    assert names.site_name_from_html("", "x.com") == "" and names.meta_description_from_html("") == ""
+
+
+@pytest.mark.asyncio
+async def test_real_inquiry_prompt_renders_the_request(state):  # noqa: F811
+    from harvey.brain import Brain
+
+    cfg = HarveyConfig(**{**BASE, "outreach": {"mode": "inquiry",
+                                               "intent": "quotes for a two-storey extension in Lagos"}})
+    writer = Writer(Brain(state, cfg.brain), state, cfg, EnvConfig())
+    writer.skills = "SALES SKILL TEXT THAT MUST NOT APPEAR"
+    prompt = writer._base_prompt()
+    assert "prospective CUSTOMER or PARTNER" in prompt and "quotes for a two-storey extension in Lagos" in prompt
+    assert "Never pitch" in prompt and "SUBJECT LINE" in prompt and "shared inboxes like this one" in prompt
+    assert "SALES SKILL TEXT" not in prompt and "STRICT EMAIL RULES" not in prompt and "{{" not in prompt
+    assert writer._length_rule == "Between 45 and 80 words"
+    assert "sentence case" in writer._subject_rule
+
+    offer = Writer(Brain(state, HarveyConfig(**BASE).brain), state, HarveyConfig(**BASE), EnvConfig())
+    offer.skills = "SALES SKILL TEXT"
+    prompt = offer._base_prompt()
+    assert "STRICT EMAIL RULES" in prompt and "SALES SKILL TEXT" in prompt and "CUSTOMER or PARTNER" not in prompt
+    assert "lowercase, 2-5 words" in offer._subject_rule
+
+
+@pytest.mark.asyncio
+async def test_sender_never_renders_a_domain_as_the_company(state):  # noqa: F811
+    import harvey.agents.sender as sender_mod
+
+    sender = sender_mod.Sender(_Brain(), state, HarveyConfig(**BASE), EnvConfig())
+    p = Prospect(id="1", email="x@5b4me.com", first_name="Ada", company="5b4me.com")
+    assert sender._render("Saw {{company}}'s work.", p) == "Saw 5b4me's work."
+    p2 = Prospect(id="2", email="x@north-west-build.co.uk", first_name="Ada", company="")
+    assert sender._render("{{company}}", p2) == "North West Build"

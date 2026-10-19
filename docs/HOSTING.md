@@ -244,6 +244,17 @@ security settings; the page's buttons fill in the servers. A mailbox from a
 web host is usually `mail.yourdomain.com` on ports 587/465 (SMTP) and 993
 (IMAP).
 
+## What makes the emails good or bad
+
+Every enquiry email is built around the "what you want from them" sentence
+on the profile. Vague in, vague out: "I want to work with you" produces
+emails that hedge; "quotes for a 40 sqm kitchen extension in Lekki, work
+to start in March" produces a request a builder can answer. The worker
+also reads each company's website before writing (name, what they say
+they do), so upload rows with a website or a company email address rather
+than a personal one where you can. The brief the writer follows is
+`prompts/inquiry_writer.md`; edit it to change the voice for everyone.
+
 ## Names and greetings
 
 Every email opens with a greeting line. The first name comes from the

@@ -426,6 +426,11 @@ class Workspace:
         persona_email = self.sending_address() or text("email")
         benefits = _split_lines(form.get("benefits", ""))
         mode = text("mode") or "inquiry"
+        if mode == "inquiry" and len(text("intent")) < 15:
+            raise ValueError(
+                "Say what you want from the people you write to, in a sentence or two (for example "
+                "\"quotes for a two-storey extension in Lagos, starting in March\"). Every email is "
+                "built around it; without it they come out vague.")
         speed = SPEEDS.get(text("speed") or "normal", SPEEDS["normal"])
         signature_html = str(form.get("signature_html", "") or "").strip()
         cfg = {
