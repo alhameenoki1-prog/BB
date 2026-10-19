@@ -374,34 +374,65 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
         return bool(getattr(outreach, "use_template", False)
                     and (getattr(outreach, "template_body", "") or "").strip())
 
-    def template_steps(self) -> list[EmailStep]:
+    def template_steps(self, message=None) -> list[EmailStep]:
         """The operator's own message as a sequence: the first email, then
-        whichever follow-ups were written (3 and 7 days on)."""
+        whichever follow-ups were written (3 and 7 days on). ``message`` is
+        a sector version; None means the default."""
         outreach = self.config.outreach
-        subject = (outreach.template_subject or "").strip() or "Following up"
-        steps = [EmailStep(step=1, subject=subject, body=outreach.template_body.strip(), delay_days=0)]
-        for delay, text in ((3, outreach.template_followup_1), (4, outreach.template_followup_2)):
+        if message is None:
+            subject, body = outreach.template_subject, outreach.template_body
+            followups = (outreach.template_followup_1, outreach.template_followup_2)
+        else:
+            subject, body = message.subject or outreach.template_subject, message.body
+            followups = (message.followup_1, message.followup_2)
+        subject = (subject or "").strip() or "Following up"
+        steps = [EmailStep(step=1, subject=subject, body=(body or "").strip(), delay_days=0)]
+        for delay, text in zip((3, 4), followups):
             text = (text or "").strip()
             if text:
                 steps.append(EmailStep(step=len(steps) + 1, subject=subject, body=text, delay_days=delay))
         return steps
 
-    async def _queue_template_campaign(self, prospects: list) -> str:
-        campaign = Campaign(
-            id="", name="your message", channel="email",
-            sequence=self.template_steps(),
-            prospect_ids=[p.id for p in prospects], status="draft",
-        )
-        campaign_id = await self.state.add_campaign(campaign)
+    def _message_for_sector(self, sector: str):
+        """The sector version that covers ``sector``, or None for the default."""
+        for message in getattr(self.config.outreach, "sector_messages", None) or []:
+            if (message.body or "").strip() and sector in message.sectors:
+                return message
+        return None
+
+    async def _queue_template_campaign(self, prospects: list) -> list[str]:
+        """One campaign per version of the operator's message. With sector
+        versions, contacts are sorted into sectors first (one model call per
+        25); anyone unsorted or in an uncovered sector gets the default."""
+        versions = [m for m in (getattr(self.config.outreach, "sector_messages", None) or [])
+                    if (m.body or "").strip() and m.sectors]
+        if versions:
+            try:
+                await self._classify(prospects)
+            except Exception as e:
+                logger.warning(f"Writer: sorting into sectors failed ({e}); using the default message.")
+        groups: dict[str, tuple] = {}
         for p in prospects:
-            await self.state.update_prospect_status(p.id, "queued")
-        await self.state.log_action(
-            action_type="write_campaign", agent="writer",
-            details={"campaign_id": campaign_id, "campaign_name": campaign.name,
-                     "prospect_count": len(prospects), "steps": len(campaign.sequence),
-                     "template": True})
-        logger.info(f"Writer: queued your own message for {len(prospects)} recipient(s).")
-        return campaign_id
+            message = self._message_for_sector((p.industry or "").strip().lower()) if versions else None
+            key = "your message" if message is None else "your message · " + " / ".join(message.sectors[:3])
+            groups.setdefault(key, (message, []))[1].append(p)
+        ids = []
+        for name, (message, group) in groups.items():
+            campaign = Campaign(
+                id="", name=name, channel="email", sequence=self.template_steps(message),
+                prospect_ids=[p.id for p in group], status="draft",
+            )
+            campaign_id = await self.state.add_campaign(campaign)
+            ids.append(campaign_id)
+            for p in group:
+                await self.state.update_prospect_status(p.id, "queued")
+            await self.state.log_action(
+                action_type="write_campaign", agent="writer",
+                details={"campaign_id": campaign_id, "campaign_name": name,
+                         "prospect_count": len(group), "steps": len(campaign.sequence),
+                         "template": True})
+            logger.info(f"Writer: queued '{name}' for {len(group)} recipient(s).")
+        return ids
 
     async def _spam_safe(self, prompt: str, result: dict, task: str) -> tuple[dict, list[str]]:
         """Score a draft; if it reads like spam, ask once for a rewrite with

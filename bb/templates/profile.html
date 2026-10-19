@@ -30,12 +30,63 @@
       <div><label>Follow-up after 3 days <span class="muted" style="font-weight:400">(optional)</span></label><textarea name="template_followup_1" rows="4" placeholder="Hi {{ '{{first_name}}' }},&#10;&#10;Following my note last week about the kitchen extension: is this something you could take on?">{{ profile.template_followup_1 }}</textarea></div>
       <div><label>Second follow-up, 4 days later <span class="muted" style="font-weight:400">(optional)</span></label><textarea name="template_followup_2" rows="4" placeholder="Hi {{ '{{first_name}}' }},&#10;&#10;Last note from me on this. If it is not something you handle, no need to reply.">{{ profile.template_followup_2 }}</textarea></div>
     </div>
+
+    <h3 style="margin:22px 0 4px;font-size:15px">Different versions for particular sectors <span class="muted" style="font-weight:400">(optional)</span></h3>
+    <p class="muted small">Contacts are sorted by what their company does (one AI call per 25, no writing). Anyone in a sector you list below gets that version; everyone else gets the message above. Hold ⌘ or Ctrl to pick several sectors.</p>
+    <div id="sector-messages">
+      {% set rows = profile.sector_messages or [] %}
+      {% for m in rows %}
+      <div class="card flat sm-row" style="margin:10px 0">
+        <div class="row">
+          <div><label>Sectors</label><select name="sm_sectors_{{ loop.index0 }}" multiple size="6">{% for k, v in sector_labels.items() %}<option value="{{ k }}" {{ 'selected' if k in m.sectors else '' }}>{{ v }}</option>{% endfor %}</select></div>
+          <div style="grid-column:span 2"><label>Subject</label><input type="text" name="sm_subject_{{ loop.index0 }}" value="{{ m.subject }}" maxlength="120" placeholder="Blank = the subject above">
+            <label>Message</label><textarea name="sm_body_{{ loop.index0 }}" rows="6">{{ m.body }}</textarea></div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <div><label>Follow-up after 3 days</label><textarea name="sm_followup_1_{{ loop.index0 }}" rows="3">{{ m.followup_1 }}</textarea></div>
+          <div><label>Second follow-up</label><textarea name="sm_followup_2_{{ loop.index0 }}" rows="3">{{ m.followup_2 }}</textarea></div>
+        </div>
+        <p style="margin:8px 0 0"><button type="button" class="small danger sm-remove">Remove this version</button></p>
+      </div>
+      {% endfor %}
+    </div>
+    <template id="sm-template">
+      <div class="card flat sm-row" style="margin:10px 0">
+        <div class="row">
+          <div><label>Sectors</label><select name="sm_sectors_IDX" multiple size="6">{% for k, v in sector_labels.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select></div>
+          <div style="grid-column:span 2"><label>Subject</label><input type="text" name="sm_subject_IDX" maxlength="120" placeholder="Blank = the subject above">
+            <label>Message</label><textarea name="sm_body_IDX" rows="6" placeholder="Hi {{ '{{first_name}}' }},&#10;&#10;The version of your message for these sectors."></textarea></div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <div><label>Follow-up after 3 days</label><textarea name="sm_followup_1_IDX" rows="3"></textarea></div>
+          <div><label>Second follow-up</label><textarea name="sm_followup_2_IDX" rows="3"></textarea></div>
+        </div>
+        <p style="margin:8px 0 0"><button type="button" class="small danger sm-remove">Remove this version</button></p>
+      </div>
+    </template>
+    <p><button type="button" class="secondary small" id="sm-add">+ Add a version for other sectors</button></p>
   </div>
 </div>
 <script>
   document.querySelectorAll('input[name=writing]').forEach(r => r.addEventListener('change', () => {
     document.getElementById('template-wrap').style.display = r.value === 'template' && r.checked ? '' : 'none';
   }));
+  (function () {
+    const list = document.getElementById('sector-messages'), tpl = document.getElementById('sm-template');
+    const max = {{ max_sector_messages }};
+    function renumber() {
+      list.querySelectorAll('.sm-row').forEach((row, i) => {
+        row.querySelectorAll('[name]').forEach(el => { el.name = el.name.replace(/_(IDX|\d+)$/, '_' + i); });
+      });
+    }
+    list.addEventListener('click', e => {
+      if (e.target.classList.contains('sm-remove')) { e.target.closest('.sm-row').remove(); renumber(); }
+    });
+    document.getElementById('sm-add').addEventListener('click', () => {
+      if (list.querySelectorAll('.sm-row').length >= max) return;
+      list.appendChild(tpl.content.cloneNode(true)); renumber();
+    });
+  })();
 </script>
 <div class="card">
   <h2>Who you are</h2>

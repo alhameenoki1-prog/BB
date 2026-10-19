@@ -991,3 +991,29 @@ def test_profile_own_message_option(client):
     client.post("/profile", data={**PROFILE, "writing": "segment"})
     cfg = yaml.safe_load(ws.config_file.read_text())
     assert cfg["outreach"]["use_template"] is False and ws.profile()["writing"] == "segment"
+
+
+def test_profile_sector_versions_of_own_message(client):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    body = "We are planning a kitchen extension in Lekki and want the work to start in March. Do you take on work like this?\n\nJane"
+    data = {**PROFILE, "writing": "template", "template_subject": "A request for your team", "template_body": body,
+            "sm_sectors_0": ["construction", "real_estate"],
+            "sm_subject_0": "Kitchen extension in Lekki, looking for quotes",
+            "sm_body_0": "The builders' version of the message, long enough to count as a message.",
+            "sm_followup_1_0": "Following my note about the kitchen extension.",
+            "sm_sectors_1": ["financial_advisory"], "sm_body_1": "",                   # empty: dropped
+            "sm_sectors_2": ["nonsense"], "sm_body_2": "A body with no valid sector is dropped too."}
+    r = client.post("/profile", data=data)
+    assert r.status_code == 303, r.text
+    cfg = yaml.safe_load(ws.config_file.read_text())
+    versions = cfg["outreach"]["sector_messages"]
+    assert len(versions) == 1 and versions[0]["sectors"] == ["construction", "real_estate"]
+    assert versions[0]["subject"].startswith("Kitchen") and versions[0]["followup_1"].startswith("Following")
+    assert HarveyConfig(**cfg).outreach.sector_messages[0].sectors == ["construction", "real_estate"]
+    page = client.get("/profile").text
+    assert "Different versions for particular sectors" in page
+    assert 'name="sm_sectors_0"' in page and "builders&#39; version" in page and "Add a version for other sectors" in page
+    assert 'value="construction" selected' in page and 'value="real_estate" selected' in page
+    assert ws.profile()["sector_messages"][0]["sectors"] == ["construction", "real_estate"]

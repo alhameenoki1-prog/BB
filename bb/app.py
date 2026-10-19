@@ -20,7 +20,8 @@ from bb import deliverability, gmail_oauth, recipients as recipients_mod
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
 from bb.workspaces import (ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
-                           OUTREACH_MODES, SPEEDS, STYLES, TONES, Workspace, all_workspaces)
+                           MAX_SECTOR_MESSAGES, OUTREACH_MODES, SECTOR_LABELS, SPEEDS, STYLES, TONES,
+                           Workspace, all_workspaces)
 
 logger = logging.getLogger("bb.app")
 
@@ -325,8 +326,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def _profile_ctx(ws: Workspace, profile: dict) -> dict:
         return dict(profile=profile, tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES,
                     modes=OUTREACH_MODES, policies=ATTACH_POLICIES, attachments=ws.attachments(),
-                    speeds=SPEEDS, styles=STYLES, greetings=GREETINGS,
-                    signature_image=ws.signature_image())
+                    speeds=SPEEDS, styles=STYLES, greetings=GREETINGS, sector_labels=SECTOR_LABELS,
+                    max_sector_messages=MAX_SECTOR_MESSAGES, signature_image=ws.signature_image())
 
     @app.get("/profile", response_class=HTMLResponse)
     async def profile_page(request: Request, user: dict = Depends(current_user)):
@@ -336,7 +337,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/profile")
     async def profile_save(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
-        form = dict(await request.form())
+        raw = await request.form()
+        form = dict(raw)
+        # Multi-select fields (sector pickers) keep every chosen value.
+        for key in {k for k in raw.keys() if k.startswith("sm_sectors_")}:
+            form[key] = raw.getlist(key)
         try:
             ws.write_profile(form)
         except ValidationError as e:

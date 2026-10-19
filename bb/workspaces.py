@@ -73,6 +73,39 @@ SPEEDS = {
     "fast": {"label": "Fast", "note": "25 emails every minute (about 1,500 an hour; needs a mailbox that allows it)", "interval": 1, "per_cycle": 25},
 }
 GREETINGS = ("Hi", "Hello", "Hey", "Dear", "Good day")
+# Sectors the writer sorts contacts into, with labels for the form.
+SECTOR_LABELS = {
+    "construction": "Construction", "real_estate": "Real estate", "architecture_engineering": "Architecture & engineering",
+    "financial_advisory": "Financial advisory", "banking": "Banking", "insurance": "Insurance", "accounting": "Accounting",
+    "legal": "Legal", "healthcare": "Healthcare", "education": "Education", "hr_recruiting": "HR & recruiting",
+    "marketing_agency": "Marketing agency", "software": "Software", "it_services": "IT services",
+    "manufacturing": "Manufacturing", "logistics": "Logistics", "retail": "Retail", "ecommerce": "E-commerce",
+    "hospitality": "Hospitality", "nonprofit": "Non-profit", "government": "Government", "media": "Media",
+    "energy": "Energy", "consulting": "Consulting", "agriculture": "Agriculture", "automotive": "Automotive",
+    "other": "Other",
+}
+MAX_SECTOR_MESSAGES = 12
+
+
+def _sector_messages_from_form(form) -> list[dict]:
+    """Rows sm_sectors_N (several values) + sm_subject_N + sm_body_N +
+    sm_followup_1_N + sm_followup_2_N. Empty rows are dropped."""
+    out = []
+    getlist = getattr(form, "getlist", None)
+    for i in range(MAX_SECTOR_MESSAGES):
+        body = str(form.get(f"sm_body_{i}", "") or "").strip()
+        if getlist:
+            sectors = [str(x) for x in getlist(f"sm_sectors_{i}")]
+        else:
+            raw = form.get(f"sm_sectors_{i}", [])
+            sectors = list(raw) if isinstance(raw, (list, tuple)) else str(raw or "").split()
+        sectors = [x.strip().lower() for x in sectors if x and x.strip().lower() in SECTOR_LABELS]
+        if not body or not sectors:
+            continue
+        out.append({"sectors": sectors, "subject": str(form.get(f"sm_subject_{i}", "") or "").strip()[:120],
+                    "body": body, "followup_1": str(form.get(f"sm_followup_1_{i}", "") or "").strip(),
+                    "followup_2": str(form.get(f"sm_followup_2_{i}", "") or "").strip()})
+    return out
 STYLES = {
     "engaging": "Engaging: 90–130 words with a hook, one useful detail, an easy question and a PS",
     "concise": "Concise: under 75 words, one observation and one question",
@@ -402,6 +435,11 @@ class Workspace:
             "template_body": outreach.get("template_body", ""),
             "template_followup_1": outreach.get("template_followup_1", ""),
             "template_followup_2": outreach.get("template_followup_2", ""),
+            "sector_messages": [
+                {"sectors": list(m.get("sectors") or []), "subject": m.get("subject", ""),
+                 "body": m.get("body", ""), "followup_1": m.get("followup_1", ""),
+                 "followup_2": m.get("followup_2", "")}
+                for m in (outreach.get("sector_messages") or []) if isinstance(m, dict)],
             "style": outreach.get("style", "engaging"),
             "greeting": outreach.get("greeting", "Hi"),
             "signature_html": outreach.get("signature_html", ""),
@@ -527,6 +565,7 @@ class Workspace:
                 "template_body": str(form.get("template_body", "") or "").strip(),
                 "template_followup_1": str(form.get("template_followup_1", "") or "").strip(),
                 "template_followup_2": str(form.get("template_followup_2", "") or "").strip(),
+                "sector_messages": _sector_messages_from_form(form),
                 "style": text("style") if text("style") in STYLES else "engaging",
                 "greeting": text("greeting") if text("greeting") in GREETINGS else "Hi",
                 "signature_html": signature_html,

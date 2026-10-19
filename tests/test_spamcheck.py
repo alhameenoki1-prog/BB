@@ -137,3 +137,58 @@ async def test_own_message_skips_the_model_and_fills_the_name(state):  # noqa: F
     assert info1["body"].startswith("Hello team,\n\nWe are planning")
     assert jane1["subject"] == "Kitchen extension in Lekki, looking for quotes"
     assert "{{" not in jane2["body"]
+
+
+@pytest.mark.asyncio
+async def test_own_message_has_versions_per_sector(state):  # noqa: F811
+    import json
+
+    class _SortingBrain(_Brain):
+        async def think_json(self, prompt, **kw):
+            self.prompts.append(prompt)
+            if "Sort these contacts" in prompt:
+                rows = json.loads(prompt.split("CONTACTS (JSON): ", 1)[1].split("\n\nReturn ONLY", 1)[0])
+                sector = {"bigbuild.example": "construction", "truewealth.example": "financial_advisory",
+                          "bank.example": "banking"}
+                return [{"id": r["id"], "sector": sector.get(r["domain"], "other"), "tier": "manager",
+                         "department": "operations"} for r in rows]
+            raise AssertionError("no writing call expected")
+
+    cfg = HarveyConfig(**{**BASE, "outreach": {
+        "mode": "inquiry", "intent": "x", "use_template": True, "personalize_each": False,
+        "template_subject": "A request for your team",
+        "template_body": "Hi {{first_name}},\n\nThe default version of my message, for everyone not covered below.\n\nAvrum",
+        "sector_messages": [
+            {"sectors": ["construction", "real_estate"], "subject": "Kitchen extension in Lekki, looking for quotes",
+             "body": "We are planning a kitchen extension in Lekki starting in March. Do you take on work like this?",
+             "followup_1": "Following my note about the kitchen extension: could you take it on?"},
+            {"sectors": ["financial_advisory"], "body": "My family is looking for an adviser to take over a portfolio. Do you take on new families?"},
+            {"sectors": ["banking"], "body": ""},   # blank body: ignored
+        ],
+    }, "channels": {"email": {**BASE["channels"]["email"], "require_approval": False, "max_daily_sends": 0}}})
+    brain = _SortingBrain()
+    writer = Writer(brain, state, cfg, EnvConfig())
+    for pid, email in (("c1", "ann@bigbuild.example"), ("c2", "bo@bigbuild.example"),
+                       ("f1", "cy@truewealth.example"), ("b1", "di@bank.example"), ("o1", "ed@shop.example")):
+        await state.add_prospect(Prospect(id=pid, email=email, first_name=pid.upper(), email_status="provided"))
+    await writer.run()
+    assert len([p for p in brain.prompts if "Sort these contacts" in p]) == 1   # sorting only, no writing
+    campaigns = {c.name: c for c in await state.get_campaigns_by_status("draft")}
+    assert set(campaigns) == {"your message · construction / real_estate", "your message · financial_advisory", "your message"}
+    assert sorted(campaigns["your message · construction / real_estate"].prospect_ids) == ["c1", "c2"]
+    assert campaigns["your message · financial_advisory"].prospect_ids == ["f1"]
+    assert sorted(campaigns["your message"].prospect_ids) == ["b1", "o1"]   # blank banking version → default
+    build = campaigns["your message · construction / real_estate"].sequence
+    assert build[0].subject.startswith("Kitchen extension") and len(build) == 2 and build[1].delay_days == 3
+    wealth = campaigns["your message · financial_advisory"].sequence
+    assert wealth[0].subject == "A request for your team" and len(wealth) == 1   # subject falls back to the default
+
+    # The sender treats every version as the operator's own words: approved, name filled, nothing held.
+    sender = sender_mod.Sender(brain, state, cfg, EnvConfig())
+    for c in campaigns.values():
+        await sender._stage_campaign_native(c)
+    items = {i["to_email"]: i for i in await state.get_outbox() if i["step"] == 1}
+    assert items["ann@bigbuild.example"]["body"].startswith("Hi C1,\n\nWe are planning a kitchen extension")
+    assert items["cy@truewealth.example"]["body"].startswith("Hi F1,\n\nMy family is looking")
+    assert items["ed@shop.example"]["body"].startswith("Hi O1,\n\nThe default version")
+    assert all(i["status"] == "approved" for i in items.values())

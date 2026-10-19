@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from harvey.paths import CONFIG_FILE, LOCAL_CONFIG_FILE, PROJECT_ROOT
 
@@ -182,6 +182,29 @@ OUTREACH_MODES = ("offer", "inquiry")
 ATTACH_POLICIES = ("first_reply", "every_reply", "never")
 
 
+class SectorMessage(BaseModel):
+    """One of the operator's own messages, for the sectors listed. Contacts
+    in any other sector get the default message."""
+
+    sectors: list[str] = Field(default_factory=list)
+    subject: str = ""
+    body: str = ""
+    followup_1: str = ""
+    followup_2: str = ""
+
+    @field_validator("sectors", mode="before")
+    @classmethod
+    def _clean_sectors(cls, v) -> list[str]:
+        if isinstance(v, str):
+            v = [x for x in v.replace(",", " ").split() if x]
+        out = []
+        for x in v or []:
+            x = str(x).strip().lower().replace(" ", "_").replace("-", "_")
+            if x and x not in out:
+                out.append(x)
+        return out
+
+
 class OutreachConfig(BaseModel):
     """What kind of email this is, and how replies are answered.
 
@@ -224,6 +247,9 @@ class OutreachConfig(BaseModel):
     template_body: str = ""
     template_followup_1: str = ""
     template_followup_2: str = ""
+    # Different versions of your own message for particular sectors; the
+    # fields above are the default for everyone else.
+    sector_messages: list[SectorMessage] = Field(default_factory=list)
 
     @field_validator("mode", mode="before")
     @classmethod

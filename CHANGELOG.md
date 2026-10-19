@@ -9,6 +9,13 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Sector versions of your own message.** `outreach.sector_messages`: a
+  list of {sectors, subject, body, follow-ups}. Contacts are sorted into
+  sectors (one model call per 25, no writing), everyone in a listed sector
+  gets that version, and the rest get the default message. One campaign
+  per version. Profile → "Use my own message" → "Different versions for
+  particular sectors".
+
 - **Spam-risk check on every draft** (`harvey/spamcheck.py`): a
   deterministic score for the things filters react to in cold mail
   (marketing vocabulary, capitals, exclamation marks, links, money,

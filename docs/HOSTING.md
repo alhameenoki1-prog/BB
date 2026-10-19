@@ -255,6 +255,9 @@ about the actual job. If you would rather write the email yourself,
 choose "Use my own message" on the profile: everyone gets your text with
 their first name in the greeting, no AI writing, replies still handled;
 the page warns if your text would trip filters but sends it as you wrote it.
+Under that message you can add versions for particular sectors (a builders'
+version, a financial advisers' version); contacts are sorted by what their
+company does and get the matching version, everyone else the default.
 
 Every enquiry email is built around the "what you want from them" sentence
 on the profile. Vague in, vague out: "I want to work with you" produces

@@ -462,7 +462,7 @@ class Sender:
                 subject = self._render(step.subject, prospect)
                 body = self._render(step.body, prospect, body=True)
                 status, note = initial_status, ""
-                if status == "approved" and campaign.name != "your message":
+                if status == "approved" and not campaign.name.startswith("your message"):
                     # Autopilot never sends what a filter would junk; the
                     # operator's own words are theirs to send.
                     score, reasons = spam_risk(subject, body)
