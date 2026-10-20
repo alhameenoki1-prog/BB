@@ -9,6 +9,19 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Backlog scan for the inbox auto-reply.** `outreach.inbox_backlog_days`
+  (0, 7, 30 or 90 on the Inbox page) also answers mail already in the
+  inbox from that many days back that nobody replied to, from this
+  mailbox by hand or by BB, five a cycle. Providers gained
+  `get_unanswered`: Gmail checks each thread for a message from the
+  mailbox, IMAP checks the Sent folder's In-Reply-To / References (or
+  falls back to unread mail only when no Sent folder opens), Microsoft
+  Graph checks Sent Items by conversation.
+- **Log in with your email.** The Mailbox page takes an address and a
+  password and works out the SMTP and IMAP servers (known providers, else
+  the domain's mail records, else smtp./imap. of the domain), tests, and
+  saves; `bb/mail_autoconfig.py`.
+
 - **Inbox auto-reply.** With `outreach.inbox_autoreply` on, new mail from
   anyone not on the list is answered in the operator's name following
   `outreach.inbox_instructions`, with the fitting entries from

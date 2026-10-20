@@ -273,6 +273,9 @@ class OutreachConfig(BaseModel):
     inbox_instructions: str = ""
     inbox_links: list[SharedLink] = Field(default_factory=list)
     inbox_attach_files: bool = False
+    # Also answer mail already in the inbox from the last N days that nobody
+    # replied to (0 = only mail that arrives from now on).
+    inbox_backlog_days: int = 0
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -289,6 +292,15 @@ class OutreachConfig(BaseModel):
         if v not in ("concise", "engaging"):
             raise ValueError("outreach.style must be concise or engaging.")
         return v
+
+    @field_validator("inbox_backlog_days", mode="before")
+    @classmethod
+    def _backlog_range(cls, v) -> int:
+        try:
+            v = int(v or 0)
+        except (TypeError, ValueError):
+            v = 0
+        return max(0, min(v, 365))
 
     @field_validator("greeting", mode="before")
     @classmethod

@@ -328,6 +328,38 @@ class MicrosoftProvider(MailProvider):
             f"inbox has more than {MAX_INBOX_PAGES} pages; refusing a partial read"
         )
 
+    async def get_unanswered(self, days: int = 30, limit: int = 100) -> list[InboundMessage]:
+        """Inbox mail from the last ``days`` days whose conversation has no
+        message in Sent Items."""
+        me = await self._check_identity()
+        since = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+        data = await self._request(
+            "GET", f"{self._user_path}{INBOX_MESSAGES}",
+            params={"$filter": f"receivedDateTime ge {since.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+                    "$orderby": "receivedDateTime desc", "$top": str(min(limit, 100)), "$select": _SELECT},
+            headers={"Prefer": 'outlook.body-content-type="text"'},
+        )
+        items = data.get("value") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return []
+        out, seen_threads = [], set()
+        for item in items:
+            msg = self._parse_message(item)
+            if not msg or msg.from_email == me or msg.is_bounce:
+                continue
+            conv = str(item.get("conversationId") or "")
+            if conv in seen_threads:
+                continue
+            seen_threads.add(conv)
+            if conv:
+                sent = await self._request(
+                    "GET", f"{self._user_path}/mailFolders/sentitems/messages",
+                    params={"$filter": f"conversationId eq '{conv}'", "$top": "1", "$select": "id"})
+                if isinstance(sent, dict) and sent.get("value"):
+                    continue
+            out.append(msg)
+        return out
+
     @staticmethod
     def _parse_message(item) -> InboundMessage | None:
         """One Graph message. A message with no sender address is skipped;

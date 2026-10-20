@@ -279,7 +279,17 @@ answer it (notifications, newsletters, receipts and pitches are left
 alone), writes a short reply in your name, and puts the exact links at
 the bottom. With approval on, the reply waits in the Outbox; the Inbox
 page lists every reply drafted or sent. Each sender is answered at most
-once every three days so two auto-responders never loop.
+once every three days so two auto-responders never loop. "Which
+emails" chooses whether only new mail is answered or also unanswered mail
+from the last week, 30 or 90 days; that backlog is worked through five a
+cycle, and anything already replied to (by you or by BB) is skipped.
+
+Connecting the mailbox itself is now one step for most people: on the
+Mailbox page, "Log in with your email" takes the address and an app
+password and finds the servers (Gmail, Outlook, Yahoo, iCloud, Zoho,
+Fastmail, and custom domains hosted on Google Workspace or Microsoft 365
+through their mail records). The full settings form is still there for
+anything unusual.
 
 ## Names and greetings
 

@@ -72,7 +72,10 @@ admin-app mailbox (`channels.email.provider: microsoft_app`, Graph client
 credentials). The Mailbox page runs SPF/DKIM/DMARC/MX checks
 (`bb/deliverability.py`). `outreach.inbox_autoreply` + `inbox_instructions` + `inbox_links` answer
 mail from strangers with the right document links (Handler
-`_auto_reply_inbox`; web Inbox page). `harvey/spamcheck.py` scores every draft like a filter would (rewrite once,
+`_auto_reply_inbox`; `inbox_backlog_days` also sweeps older unanswered
+mail via each provider's `get_unanswered`; web Inbox page). The Mailbox
+page's "Log in with your email" derives SMTP/IMAP servers from the
+address (`bb/mail_autoconfig.py`). `harvey/spamcheck.py` scores every draft like a filter would (rewrite once,
 then hold for review); `outreach.use_template` sends the user's own message
 instead of AI text. `harvey/names.py` resolves missing recipient
 names (LinkedIn slug, first.last address, team page) and puts the greeting

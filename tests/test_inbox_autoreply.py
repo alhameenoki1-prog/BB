@@ -155,3 +155,157 @@ async def test_inbox_autoreply_off_leaves_strangers_alone(state):  # noqa: F811
     handler = _handler(state, provider, _InboxBrain([]))
     await handler._run_native()
     assert not [i for i in await state.get_outbox() if i["kind"] == "inbox_reply"]
+
+
+# ── backlog: older mail nobody answered ──
+
+
+@pytest.mark.asyncio
+async def test_backlog_scan_answers_old_unanswered_mail_a_few_at_a_time(state):  # noqa: F811
+    provider = FakeProvider()
+    provider.inbound = []
+    old = [_mail(10 + i, f"p{i}@client{i}.example", f"Question {i}", f"Could you tell me about job {i}?")
+           for i in range(7)]
+    answered_by_hand = _mail(30, "done@client.example", "Old thread", "Already handled by BB earlier")
+    bounce = InboundMessage(provider_id="b1", from_email="mailer-daemon@x", subject="Delivery Status Notification",
+                            body="failed", is_bounce=True, message_id="<b1@x>")
+
+    async def get_unanswered(days=30, limit=100):
+        get_unanswered.calls.append(days)
+        return old + [answered_by_hand, bounce]
+    get_unanswered.calls = []
+    provider.get_unanswered = get_unanswered
+
+    # BB already replied to the "done" thread: its outbox item references that Message-ID.
+    await state.add_prospect(Prospect(id="d", email="done@client.example", source="inbox", status="replied", email_status="provided"))
+    await state.add_outbox_item(prospect_id="d", to_email="done@client.example", subject="Re: Old thread", body="x",
+                                send_at="2026-01-01T00:00:00", status="sent", kind="inbox_reply", in_reply_to="<30@theirs>")
+
+    decisions = [{"action": "reply", "reason": "ok", "share": [], "reply": f"Happy to help with job {i}."} for i in range(7)]
+    brain = _InboxBrain(decisions)
+    handler = _handler(state, provider, brain, inbox_backlog_days=30)
+    assert await handler._run_native() is True
+    assert get_unanswered.calls == [30]
+    replies = [i for i in await state.get_outbox() if i["kind"] == "inbox_reply" and i["in_reply_to"] != "<30@theirs>"]
+    assert len(replies) == 5                      # five per cycle, not the whole backlog at once
+    assert len(brain.prompts) == 5
+    assert not any(i["to_email"] == "done@client.example" and i["in_reply_to"] == "<30@theirs>" and i["status"] != "sent"
+                   for i in await state.get_outbox())
+
+    # Next cycle picks up the remaining two and nothing twice.
+    await handler._run_native()
+    replies = [i for i in await state.get_outbox() if i["kind"] == "inbox_reply" and i["in_reply_to"] != "<30@theirs>"]
+    assert len(replies) == 7 and len(brain.prompts) == 7
+    await handler._run_native()
+    assert len(brain.prompts) == 7
+
+    # With the option off, the backlog is never read.
+    provider2 = FakeProvider(); provider2.inbound = []
+    calls = []
+    async def never(days=30, limit=100):
+        calls.append(days); return old
+    provider2.get_unanswered = never
+    await _handler(state, provider2, _InboxBrain([]), inbox_backlog_days=0)._run_native()
+    assert calls == []
+
+
+def test_backlog_days_is_bounded():
+    assert OutreachConfig(inbox_backlog_days="90").inbox_backlog_days == 90
+    assert OutreachConfig(inbox_backlog_days=-5).inbox_backlog_days == 0
+    assert OutreachConfig(inbox_backlog_days=9999).inbox_backlog_days == 365
+    assert OutreachConfig(inbox_backlog_days="x").inbox_backlog_days == 0
+
+
+@pytest.mark.asyncio
+async def test_gmail_unanswered_skips_threads_i_replied_in():
+    from harvey.integrations.gmail import GmailProvider
+
+    def message(mid, sender, subject="s", labels=("INBOX",)):
+        return {"id": mid, "threadId": "t-" + mid[0], "labelIds": list(labels),
+                "payload": {"mimeType": "text/plain", "headers": [
+                    {"name": "From", "value": f"X <{sender}>"}, {"name": "Subject", "value": subject},
+                    {"name": "Message-ID", "value": f"<{mid}@m>"}],
+                    "body": {"data": "aGVsbG8="}}}
+
+    threads = {
+        "t-a": [message("a1", "ann@x.example", "Need a quote")],                                        # unanswered
+        "t-b": [message("b1", "bob@x.example", "Hi"), message("b2", "me@mine.example", "Re: Hi", ("SENT",))],  # I replied
+        "t-c": [message("c1", "cy@x.example", "First"), message("c2", "cy@x.example", "Second")],        # two from them
+    }
+
+    async def fake_request(method, path, **kw):
+        if path == "/threads":
+            assert "newer_than:14d" in kw["params"]["q"]
+            return {"threads": [{"id": t} for t in threads]}
+        if path == "/profile":
+            return {"emailAddress": "me@mine.example"}
+        if path.startswith("/threads/"):
+            return {"messages": threads[path.split("/")[-1]]}
+        raise AssertionError(path)
+
+    p = GmailProvider.__new__(GmailProvider)
+    p._request = fake_request
+    out = await p.get_unanswered(days=14)
+    assert [m.from_email for m in out] == ["ann@x.example", "cy@x.example"]
+    assert out[1].provider_id == "c2"      # the newest incoming message of the thread
+
+
+def test_imap_unanswered_uses_the_sent_folder(monkeypatch):
+    import imaplib
+
+    from harvey.integrations import smtp_mail
+
+    raw = lambda mid, sender, subj: (  # noqa: E731
+        f"From: {sender}\r\nTo: me@mine.example\r\nSubject: {subj}\r\nMessage-ID: <{mid}@m>\r\n"
+        f"Date: Mon, 1 Jan 2026 10:00:00 +0000\r\nContent-Type: text/plain\r\n\r\nbody {mid}\r\n").encode()
+
+    class FakeIMAP:
+        folder = ""
+        inbox = {b"1": raw("a1", "ann@x.example", "Need a quote"), b"2": raw("b1", "bob@x.example", "Hi"),
+                 b"3": raw("m1", "me@mine.example", "my own")}
+        sent = {b"9": b"In-Reply-To: <b1@m>\r\nReferences: <b0@m> <b1@m>\r\n\r\n"}
+
+        def __init__(self, host, port):
+            FakeIMAP.host = (host, port)
+        def login(self, u, p):
+            FakeIMAP.login_as = u
+        def select(self, folder, readonly=False):
+            name = folder.strip('"')
+            if name == "INBOX" or name == "[Gmail]/Sent Mail":
+                self.folder = name
+                return "OK", [b"3"]
+            return "NO", [b"nope"]
+        def search(self, charset, query):
+            assert 'SINCE "' in query
+            ids = self.inbox if self.folder == "INBOX" else self.sent
+            return "OK", [b" ".join(ids.keys())]
+        def fetch(self, mid, what):
+            data = (self.inbox if self.folder == "INBOX" else self.sent)[mid]
+            return "OK", [(b"1 (BODY[] {%d})" % len(data), data)]
+        def logout(self):
+            pass
+
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", FakeIMAP)
+
+    class Env:
+        smtp_host = "smtp.mine.example"; smtp_port = 587; smtp_username = "me@mine.example"; smtp_password = "pw"
+        smtp_reply_to = ""; imap_host = "imap.mine.example"; imap_port = 993; imap_username = ""; imap_password = ""
+
+    p = smtp_mail.SmtpImapProvider(config=None, env=Env())
+    out = p._fetch_unanswered(days=30, limit=100)
+    assert [m.from_email for m in out] == ["ann@x.example"]     # bob was answered from Sent; my own mail skipped
+    assert FakeIMAP.login_as == "me@mine.example"
+
+    # No Sent folder at all: only unread inbox mail is offered, never read-and-ignored mail.
+    class NoSent(FakeIMAP):
+        def select(self, folder, readonly=False):
+            if folder.strip('"') == "INBOX":
+                self.folder = "INBOX"; return "OK", [b"3"]
+            return "NO", [b"nope"]
+        def search(self, charset, query):
+            if "UNSEEN" in query:
+                return "OK", [b"2"]
+            return "OK", [b"1 2 3"]
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", NoSent)
+    out = smtp_mail.SmtpImapProvider(config=None, env=Env())._fetch_unanswered(days=30, limit=100)
+    assert [m.from_email for m in out] == ["bob@x.example"]

@@ -16,7 +16,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
-from bb import deliverability, gmail_oauth, recipients as recipients_mod
+from bb import deliverability
+from bb import gmail_oauth, recipients as recipients_mod
+from bb.mail_autoconfig import guess_settings
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
 from bb.workspaces import (ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
@@ -537,6 +539,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws.rewrite_config()
         return _redirect("/mailbox", msg=f"Mailbox saved. {detail}")
 
+    @app.post("/mailbox/login")
+    async def mailbox_login(request: Request, user: dict = Depends(current_user)):
+        """Email + password: the servers are worked out from the address."""
+        ws = workspace_for(user)
+        form = dict(await request.form())
+        email = str(form.get("email", "") or "").strip().lower()
+        password = str(form.get("password", "") or "")
+        if not email or not password:
+            return _redirect("/mailbox", error="Enter the email address and its password.")
+        guess, note = guess_settings(email)
+        if guess is None:
+            return _redirect("/mailbox", error=note)
+        smtp = {**guess, "smtp_password": password}
+        ok, detail = await test_smtp(smtp)
+        if not ok:
+            hint = ""
+            if smtp["smtp_host"] == "smtp.gmail.com":
+                hint = " Gmail needs an app password (myaccount.google.com/apppasswords), not your normal password."
+            elif smtp["smtp_host"] == "smtp.office365.com":
+                hint = " Microsoft 365 needs Authenticated SMTP switched on by your admin, or use Option C."
+            elif smtp["smtp_host"].startswith("smtp.mail.yahoo") or smtp["smtp_host"].startswith("smtp.mail.me"):
+                hint = " This provider needs an app password from its security settings."
+            return _redirect("/mailbox", error=f"Could not sign in: {detail}.{hint} {note}")
+        ws.save_secrets(**smtp)
+        ws.set_mail_provider("smtp")
+        ws.rewrite_config()
+        return _redirect("/mailbox", msg=f"Signed in to {email}. {detail}")
+
     @app.post("/mailbox/smtp/test")
     async def mailbox_smtp_test(user: dict = Depends(current_user)):
         ws = workspace_for(user)
@@ -715,6 +745,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await render(request, "inbox.html", user, inbox=ws.inbox_settings(),
                             replies=await ws.inbox_replies(), max_links=MAX_INBOX_LINKS,
                             attachments=ws.attachments(), configured=ws.is_configured(),
+                            backlog_choices=Workspace.BACKLOG_CHOICES,
                             require_approval=ws.profile().get("require_approval", False))
 
     @app.post("/inbox")

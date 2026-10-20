@@ -452,7 +452,11 @@ class Workspace:
 
     # ── inbox auto-reply ──
 
-    INBOX_KEYS = ("inbox_autoreply", "inbox_instructions", "inbox_links", "inbox_attach_files")
+    INBOX_KEYS = ("inbox_autoreply", "inbox_instructions", "inbox_links", "inbox_attach_files",
+                  "inbox_backlog_days")
+    BACKLOG_CHOICES = ((0, "Only mail that arrives from now on"), (7, "Also unanswered mail from the last week"),
+                       (30, "Also unanswered mail from the last 30 days"),
+                       (90, "Also unanswered mail from the last 90 days"))
 
     def _inbox_section(self, form: dict) -> dict:
         """The inbox fields for harvey.yaml: from the form when the Inbox
@@ -470,10 +474,12 @@ class Workspace:
                 "inbox_instructions": str(form.get("inbox_instructions", "") or "").strip(),
                 "inbox_links": links,
                 "inbox_attach_files": bool(form.get("inbox_attach_files")),
+                "inbox_backlog_days": int(str(form.get("inbox_backlog_days", "0") or "0").strip() or 0)
+                if str(form.get("inbox_backlog_days", "0") or "0").strip().isdigit() else 0,
             }
         current = ((self.config() or {}).get("outreach") or {})
-        return {k: current.get(k, [] if k == "inbox_links" else (False if k != "inbox_instructions" else ""))
-                for k in self.INBOX_KEYS}
+        defaults = {"inbox_links": [], "inbox_instructions": "", "inbox_backlog_days": 0}
+        return {k: current.get(k, defaults.get(k, False)) for k in self.INBOX_KEYS}
 
     def inbox_settings(self) -> dict:
         out = self._inbox_section({})

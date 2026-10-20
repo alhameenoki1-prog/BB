@@ -182,6 +182,12 @@ class MailProvider(ABC):
     async def get_replies(self, limit: int = 50) -> list[InboundMessage]:
         """Fetch recent inbound messages (dedup is the caller's job)."""
 
+    async def get_unanswered(self, days: int = 30, limit: int = 100) -> list[InboundMessage]:
+        """Inbox mail from the last ``days`` days that nobody has replied to
+        from this mailbox (read or unread). Providers that can't tell
+        return [] and the backlog scan does nothing."""
+        return []
+
     @abstractmethod
     async def test_connection(self) -> tuple[bool, str]:
         """Cheap end-to-end credential check. Returns (ok, detail)."""

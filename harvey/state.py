@@ -1035,6 +1035,18 @@ class StateManager:
                 row = await cursor.fetchone()
                 return int(row[0] or 0) if row else 0
 
+    async def outbox_answers(self, message_id: str) -> bool:
+        """Whether an outbox item (queued, sent, or held) already replies to
+        this incoming Message-ID."""
+        if not message_id:
+            return False
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT 1 FROM outbox WHERE in_reply_to = ? AND status != 'cancelled' LIMIT 1",
+                (message_id,),
+            ) as cursor:
+                return (await cursor.fetchone()) is not None
+
     async def count_outbox_to_since(self, to_email: str, kind: str, since_iso: str) -> int:
         """Emails of one kind queued or sent to an address since a time —
         the loop guard for inbox auto-replies."""

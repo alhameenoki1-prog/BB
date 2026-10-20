@@ -127,6 +127,75 @@ class SmtpImapProvider(MailProvider):
                 pass
         return out
 
+    async def get_unanswered(self, days: int = 30, limit: int = 100) -> list[InboundMessage]:
+        loop = asyncio.get_event_loop()
+        try:
+            return await loop.run_in_executor(None, self._fetch_unanswered, days, limit)
+        except Exception as e:
+            logger.error(f"IMAP backlog scan failed: {e}")
+            return []
+
+    SENT_FOLDERS = ("Sent", "[Gmail]/Sent Mail", "Sent Items", "Sent Messages", "INBOX.Sent", "Sent Mail")
+
+    def _fetch_unanswered(self, days: int, limit: int) -> list[InboundMessage]:
+        """Inbox mail SINCE ``days`` ago (read or not) minus anything the
+        Sent folder answers (In-Reply-To / References naming its id).
+        When no Sent folder can be opened, only unread mail is returned,
+        so nothing already dealt with by hand is answered twice."""
+        from datetime import datetime, timedelta
+
+        since = (datetime.utcnow() - timedelta(days=max(1, int(days)))).strftime("%d-%b-%Y")
+        conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+        try:
+            conn.login(self.imap_user, self.imap_pass)
+            conn.select("INBOX", readonly=True)
+            status, data = conn.search(None, f'(SINCE "{since}")')
+            if status != "OK" or not data or not data[0]:
+                return []
+            ids = data[0].split()[-limit:]
+            inbox: list[InboundMessage] = []
+            for msg_id in ids:
+                status, parts = conn.fetch(msg_id, "(BODY.PEEK[])")
+                if status != "OK" or not parts or not isinstance(parts[0], tuple):
+                    continue
+                parsed = self._parse_rfc822(parts[0][1])
+                if parsed and parsed.from_email != (self.smtp_user or "").lower():
+                    inbox.append(parsed)
+            if not inbox:
+                return []
+            answered: set[str] = set()
+            sent_opened = False
+            for folder in self.SENT_FOLDERS:
+                try:
+                    status, _ = conn.select(f'"{folder}"', readonly=True)
+                except Exception:
+                    status = "NO"
+                if status != "OK":
+                    continue
+                sent_opened = True
+                status, data = conn.search(None, f'(SINCE "{since}")')
+                if status != "OK" or not data or not data[0]:
+                    break
+                for sid in data[0].split()[-500:]:
+                    status, parts = conn.fetch(sid, "(BODY.PEEK[HEADER.FIELDS (IN-REPLY-TO REFERENCES)])")
+                    if status != "OK" or not parts or not isinstance(parts[0], tuple):
+                        continue
+                    for token in parts[0][1].decode(errors="replace").split():
+                        if token.startswith("<") and token.endswith(">"):
+                            answered.add(token)
+                break
+            if not sent_opened:
+                conn.select("INBOX", readonly=True)
+                status, data = conn.search(None, f'(UNSEEN SINCE "{since}")')
+                unseen_ids = set(data[0].split()) if status == "OK" and data and data[0] else set()
+                return [m for i, m in zip(ids, inbox) if i in unseen_ids][:limit]
+            return [m for m in inbox if not m.message_id or m.message_id not in answered]
+        finally:
+            try:
+                conn.logout()
+            except Exception:
+                pass
+
     @staticmethod
     def _parse_rfc822(raw: bytes) -> InboundMessage | None:
         try:

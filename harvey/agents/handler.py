@@ -26,6 +26,7 @@ logger = logging.getLogger("harvey.handler")
 
 KILL_SWITCH_KEY = "sending_paused"
 INBOX_REPLY_COOLDOWN_DAYS = 3
+INBOX_BACKLOG_PER_CYCLE = 5
 BOUNCE_COUNT_KEY = "bounce_count"
 # Kill switch only engages after this many sends (a tiny sample lies).
 MIN_SENDS_FOR_KILL_SWITCH = 10
@@ -428,7 +429,49 @@ class Handler:
             logger.info(f"Handler: processed {handled} inbound message(s).")
         else:
             logger.info("Handler: no new replies.")
+        if complete and self.inbox_autoreply and self.inbox_backlog_days > 0:
+            complete = await self._scan_unanswered() and complete
         return complete
+
+    @property
+    def inbox_backlog_days(self) -> int:
+        outreach = getattr(self.config, "outreach", None)
+        return int(getattr(outreach, "inbox_backlog_days", 0) or 0)
+
+    async def _scan_unanswered(self) -> bool:
+        """Answer mail already sitting in the inbox that nobody replied to,
+        a few per cycle so a big backlog does not go out in one burst."""
+        try:
+            backlog = await self.provider.get_unanswered(days=self.inbox_backlog_days)
+        except Exception as e:
+            logger.error(f"Handler: backlog scan failed: {e}")
+            return False
+        answered = 0
+        for msg in backlog:
+            if answered >= INBOX_BACKLOG_PER_CYCLE:
+                break
+            dedup_key = msg.provider_id or msg.message_id
+            if not dedup_key or await self.state.is_reply_processed(dedup_key):
+                continue
+            if msg.is_bounce or not msg.body.strip() or await self.state.outbox_answers(msg.message_id):
+                await self.state.mark_reply_processed(dedup_key)
+                continue
+            known = await self.state.get_prospect_by_email(msg.from_email)
+            if known is not None and known.source != "inbox":
+                continue  # a reply to outreach: the regular path owns it
+            try:
+                if await self._auto_reply_inbox(msg):
+                    answered += 1
+            except BrainUnavailable as e:
+                logger.error(f"Handler: backlog scan stopped; left for later ({e}).")
+                return False
+            except Exception as e:
+                logger.error(f"Handler: backlog: error on {msg.from_email}: {e}")
+                continue
+            await self.state.mark_reply_processed(dedup_key)
+        if answered:
+            logger.info(f"Handler: answered {answered} older unanswered email(s) from the inbox.")
+        return True
 
     @property
     def inbox_autoreply(self) -> bool:

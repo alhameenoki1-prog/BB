@@ -5,6 +5,19 @@
 <div class="page-head"><div><div class="eyebrow">Setup</div><h1>Your mailbox</h1><p class="lead">Emails are sent from your own address and replies are read from its inbox. Nothing is sent on anyone's behalf but yours.</p></div></div>
 
 <div class="card">
+  <h2>Log in with your email</h2>
+  <p class="muted small">The quickest way in: your address and its password, and the servers are worked out for you. Gmail, Yahoo and iCloud want an <b>app password</b> (not your normal one): Gmail at myaccount.google.com/apppasswords after turning on 2-Step Verification. Replies are read from the same inbox.</p>
+  <form method="post" action="/mailbox/login">
+    <div class="row">
+      <div><label>Email address</label><input type="email" name="email" value="{{ smtp.smtp_username if smtp_configured else '' }}" placeholder="you@yourdomain.com" required autocomplete="username"></div>
+      <div><label>Password / app password</label><input type="password" name="password" autocomplete="current-password" required></div>
+      <div style="display:flex;align-items:flex-end"><button type="submit">{{ icon('mail', 15) }} Log in</button></div>
+    </div>
+  </form>
+  <p class="tiny" style="margin-top:8px">Need to set the servers yourself? The full form is under Option {{ 'B' if gmail_available else 'A' }} below.</p>
+</div>
+
+<div class="card">
   <h2>Active connection</h2>
   <form method="post" action="/mailbox/provider">
     <label class="choice"><input type="radio" name="provider" value="gmail" {{ 'checked' if provider == 'gmail' else '' }}><span><b>Gmail / Google Workspace</b><span class="small muted">{{ 'Connected as ' ~ account.email if gmail_connected and account.email else ('Connected' if gmail_connected else 'Not connected') }}</span></span></label>

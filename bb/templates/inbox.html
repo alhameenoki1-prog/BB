@@ -11,7 +11,10 @@
 <div class="card">
   <h2>Switch</h2>
   <label class="check"><input type="checkbox" name="inbox_autoreply" {{ 'checked' if inbox.inbox_autoreply else '' }}> Reply automatically to new emails that arrive in my mailbox <span class="muted">(from people not on my list)</span></label>
-  <p class="muted small">Mail that machines send (notifications, newsletters, receipts, out-of-office notes) is left alone, each sender is answered at most once every three days, and {{ 'every reply waits in the Outbox for your approval because approval is on in your profile' if require_approval else 'replies go out on their own because approval is off in your profile' }}. Each reply is read through the spam check like any other.</p>
+  <label style="margin-top:12px">Which emails</label>
+  <select name="inbox_backlog_days">{% for days, label in backlog_choices %}<option value="{{ days }}" {{ 'selected' if days == (inbox.inbox_backlog_days or 0) else '' }}>{{ label }}</option>{% endfor %}</select>
+  <div class="hint">"Unanswered" means nobody has replied from this mailbox, by hand or by BB. The backlog is worked through five emails a cycle so it does not go out in one burst.</div>
+  <p class="muted small" style="margin-top:12px">Mail that machines send (notifications, newsletters, receipts, out-of-office notes) is left alone, each sender is answered at most once every three days, and {{ 'every reply waits in the Outbox for your approval because approval is on in your profile' if require_approval else 'replies go out on their own because approval is off in your profile' }}. Each reply is read through the spam check like any other.</p>
 </div>
 <div class="card">
   <h2>How to answer</h2>

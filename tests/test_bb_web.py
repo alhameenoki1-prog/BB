@@ -1070,3 +1070,52 @@ def test_inbox_page_saves_settings_and_keeps_them_through_profile_saves(client):
     assert "sam@new.example" in page and "Here is the brochure" in page and 'action="/outbox/' in page
     assert client.get("/api/summary").json()["recipients"] == 0
     assert "Inbox" in client.get("/").text
+
+
+def test_mailbox_email_login_works_out_the_servers(client, monkeypatch):
+    _as_user(client)
+    client.post("/profile", data=PROFILE)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    assert "Log in with your email" in client.get("/mailbox").text
+
+    seen = {}
+    async def smtp_ok(smtp):
+        seen.update(smtp)
+        return (True, "Connected.") if smtp["smtp_password"] == "app-pass" else (False, "535 bad credentials")
+    monkeypatch.setattr("bb.app.test_smtp", smtp_ok)
+    monkeypatch.setattr("bb.mail_autoconfig._mx_hosts", lambda d: ["aspmx.l.google.com"] if d == "acme.test" else [])
+
+    r = client.post("/mailbox/login", data={"email": "Me@Gmail.com", "password": "wrong"})
+    assert "app%20password" in r.headers["location"] and not ws.smtp_configured()
+    r = client.post("/mailbox/login", data={"email": "me@gmail.com", "password": "app-pass"})
+    assert "Signed%20in%20to%20me%40gmail.com" in r.headers["location"]
+    assert seen["smtp_host"] == "smtp.gmail.com" and seen["imap_host"] == "imap.gmail.com" and seen["smtp_port"] == "587"
+    assert ws.smtp_configured() and ws.mail_provider() == "smtp" and ws.sending_address() == "me@gmail.com"
+
+    # A custom domain hosted on Google Workspace is found through its mail records.
+    client.post("/mailbox/login", data={"email": "jane@acme.test", "password": "app-pass"})
+    assert seen["smtp_host"] == "smtp.gmail.com" and seen["smtp_username"] == "jane@acme.test"
+    # An unknown host gets the conventional names.
+    client.post("/mailbox/login", data={"email": "jane@unknown-host.example", "password": "app-pass"})
+    assert seen["smtp_host"] == "smtp.unknown-host.example" and seen["imap_host"] == "imap.unknown-host.example"
+    r = client.post("/mailbox/login", data={"email": "x@proton.me", "password": "app-pass"})
+    assert "no%20plain%20SMTP" in r.headers["location"]
+
+
+def test_inbox_backlog_option(client):
+    _as_user(client)
+    client.post("/profile", data=PROFILE)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    page = client.get("/inbox").text
+    assert "Also unanswered mail from the last 30 days" in page
+    client.post("/inbox", data={"inbox_form": "1", "inbox_autoreply": "on", "inbox_backlog_days": "30",
+                                "inbox_instructions": "Answer briefly."})
+    cfg = yaml.safe_load(ws.config_file.read_text())["outreach"]
+    assert cfg["inbox_backlog_days"] == 30 and HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach.inbox_backlog_days == 30
+    assert 'value="30" selected' in client.get("/inbox").text
+    client.post("/profile", data={**PROFILE, "style": "concise"})
+    assert yaml.safe_load(ws.config_file.read_text())["outreach"]["inbox_backlog_days"] == 30
+    client.post("/inbox", data={"inbox_form": "1", "inbox_autoreply": "on", "inbox_backlog_days": "abc"})
+    assert yaml.safe_load(ws.config_file.read_text())["outreach"]["inbox_backlog_days"] == 0

@@ -197,6 +197,38 @@ class GmailProvider(MailProvider):
                 out.append(msg)
         return out
 
+    async def get_unanswered(self, days: int = 30, limit: int = 100) -> list[InboundMessage]:
+        """Inbox threads from the last ``days`` days with no message from
+        this mailbox in them. One threads.list call, then each thread is
+        read once; the newest incoming message in it is what gets answered."""
+        days = max(1, int(days))
+        listing = await self._request(
+            "GET", "/threads",
+            params={"q": f"in:inbox -from:me newer_than:{days}d", "maxResults": min(limit, 100)},
+        )
+        if not listing:
+            return []
+        me = ""
+        profile = await self._request("GET", "/profile")
+        if profile and profile.get("emailAddress"):
+            me = str(profile["emailAddress"]).lower()
+        out = []
+        for stub in listing.get("threads", [])[:limit]:
+            thread = await self._request("GET", f"/threads/{stub['id']}", params={"format": "full"})
+            if not thread:
+                continue
+            messages = thread.get("messages") or []
+            parsed = [m for m in (self._parse_message(d) for d in messages) if m]
+            # A reply from this mailbox anywhere in the thread means it was answered.
+            if me and any(p.from_email == me for p in parsed):
+                continue
+            if any("SENT" in (d.get("labelIds") or []) for d in messages):
+                continue
+            theirs = [p for p in parsed if p.from_email != me and not p.is_bounce]
+            if theirs:
+                out.append(theirs[-1])
+        return out
+
     @staticmethod
     def _parse_message(data: dict) -> InboundMessage | None:
         payload = data.get("payload") or {}
