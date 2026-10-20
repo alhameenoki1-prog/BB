@@ -65,6 +65,15 @@ class Handlers:
             await self.db.log("review", f"Held a reply to {draft['to_json'][:60]}: {e}", draft["mailbox_id"], draft_id=draft["id"])
             return {"status": "held", "reason": str(e)}
 
+    async def reply_run(self, job: dict):
+        from bb.mail import runs
+        from bb.mail.brain import MailBrain
+        brain = MailBrain(os.environ)
+        if not brain.configured:
+            raise RuntimeError("no AI provider is configured for this account (AI provider page)")
+        return await runs.process_mailbox(self.db, self.secret, self.env, brain, self.jobs, job["id"],
+                                          job["payload"].get("run_id", ""), job["mailbox_id"])
+
     async def run(self, job: dict) -> dict:
         handler = getattr(self, job["kind"], None)
         if handler is None:

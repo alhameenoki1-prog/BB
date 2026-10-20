@@ -184,6 +184,10 @@ MIGRATIONS = [
         value TEXT NOT NULL DEFAULT ''
     );
     """,
+    # v2 — reply runs carry their instructions
+    """
+    ALTER TABLE reply_runs ADD COLUMN instructions TEXT NOT NULL DEFAULT '';
+    """
 ]
 
 

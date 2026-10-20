@@ -9,6 +9,23 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Mail command center, phase 6 (batch reply runs).** `/mail/runs` lists
+  every thread waiting for a reply across the selected accounts, grouped
+  by the mailbox that received it, with checkboxes (senders on an
+  account's excluded list are shown but unticked). Start a run in one of
+  three modes: draft and hold for review, send the confident ones
+  (high-confidence drafts that pass the writing check go out, the rest
+  wait on Review), or dry run. A line of instructions and a Reply-To can
+  apply to the whole run. The worker takes one job per mailbox, so
+  accounts proceed side by side while each mailbox sends in order, paced
+  20 to 60 seconds apart, within its own daily cap (the cap is checked
+  before drafting, so nothing is spent on a reply that cannot go) and
+  send window; every reply leaves from the mailbox that received the
+  original. The run page shows "Replying 4 of 17", a progress bar and a
+  live per-thread status under each account, with Cancel; the overview
+  shows runs in progress. An item that fails to draft fails alone and the
+  run goes on; a worker that dies mid-draft picks the item up again.
+  (`bb/mail/runs.py`, `reply_run` job.)
 - **Mail command center, phase 5 (composer, drafting, sending).** On a
   thread page, "Draft a reply" asks the user's own model (the AI provider
   chosen on the site, Anthropic or any OpenAI-compatible endpoint, via

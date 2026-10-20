@@ -11,7 +11,7 @@
     <div>{% if d.box %}<span class="acct acct-{{ d.box.settings_model.color }}">{{ d.box.address }}</span> → {% endif %}<b>{{ d.to[0].name or d.to[0].email if d.to else '' }}</b> <span class="muted small">{{ d.to[0].email if d.to else '' }}</span></div>
     <div class="actions"><span class="tag {{ 'good' if d.confidence == 'high' else ('warn' if d.confidence == 'low' else '') }}">{{ d.confidence }}</span>{% if not d.qa.ok %}<span class="tag warn">{{ d.qa.reasons|join('; ') }}</span>{% endif %}<span class="tiny">{{ d.created_at }}</span></div>
   </div>
-  <p style="margin:8px 0"><b>{{ d.subject }}</b>{% if d.thread_id %} · <a class="small" href="/mail/threads/{{ d.thread_id }}?draft={{ d.id }}">open the thread</a>{% endif %}</p>
+  <p style="margin:8px 0"><b>{{ d.subject }}</b>{% if d.thread_id %} · <a class="small" href="/mail/threads/{{ d.thread_id }}?draft={{ d.id }}">open the thread</a>{% endif %}{% if d.run_id %} · <a class="small" href="/mail/runs/{{ d.run_id }}">from a reply run</a>{% endif %}</p>
   {% if d.error %}<p class="small" style="color:var(--bad)">{{ d.error }}</p>{% endif %}
   <form method="post" action="/mail/drafts/{{ d.id }}/send">
     <textarea name="body" rows="6">{{ d.body }}</textarea>

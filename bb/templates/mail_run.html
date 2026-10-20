@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Reply run{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Mail · <a href="/mail/runs">Reply runs</a></div><h1>Reply run <span class="tag {{ 'good' if run.status == 'done' else ('warn' if run.status in ('cancelled', 'failed') else '') }}" id="run-status">{{ run.status }}</span></h1>
+  <p class="lead" id="run-lead">{% if run.status in ('queued', 'running') %}Replying {{ run.done + 1 if run.done < run.total else run.total }} of {{ run.total }}…{% else %}{{ run.done }} of {{ run.total }} handled.{% endif %} Mode: {{ run.mode.replace('_', ' ') }}{% if run.instructions %} · instructions: “{{ run.instructions }}”{% endif %}{% if run.reply_to %} · Reply-To {{ run.reply_to }}{% endif %}</p></div>
+  <div class="actions">{% if run.status in ('queued', 'running') %}<form class="inline" method="post" action="/mail/runs/{{ run.id }}/cancel"><button class="secondary small" type="submit">Cancel</button></form>{% endif %}
+    {% if run.summary.needs_review %}<a class="button small" href="/mail/review">Review {{ run.summary.needs_review }} draft{{ 's' if run.summary.needs_review != 1 else '' }}</a>{% endif %}</div></div>
+<div class="card">
+  <div class="bar"><div class="fill" id="run-bar" style="width:{{ (100 * run.done / run.total) if run.total else 0 }}%"></div></div>
+  <div class="actions tiny" style="margin-top:6px;gap:14px" id="run-summary">
+    <span data-s="sent">{{ run.summary.sent }} sent</span><span data-s="needs_review">{{ run.summary.needs_review }} for review</span><span data-s="dry_run">{{ run.summary.dry_run }} dry run</span><span data-s="skipped">{{ run.summary.skipped }} skipped</span><span data-s="failed">{{ run.summary.failed }} failed</span>
+  </div>
+</div>
+{% for g in groups %}
+<div class="card" style="margin-top:12px">
+  <h2><span class="acct acct-{{ g.box.settings_model.color }}">{{ g.box.address }}</span> <span class="tiny" style="font-weight:400">{{ g.rows|length }} thread{{ 's' if g.rows|length != 1 else '' }} · replies leave from this mailbox</span></h2>
+  <table><thead><tr><th>Thread</th><th>From</th><th>Status</th><th>Detail</th><th></th></tr></thead><tbody>
+  {% for i in g.rows %}
+  <tr data-item="{{ i.id }}"><td><a href="/mail/threads/{{ i.thread_id }}{% if i.draft_id %}?draft={{ i.draft_id }}{% endif %}">{{ i.subject or '(no subject)' }}</a></td><td class="small">{{ i.last_from }}</td>
+    <td class="st"><span class="tag {{ {'sent':'good','needs_review':'warn','failed':'bad','dry_run':'','skipped':'','drafting':'','queued':''}[i.status] }}">{{ i.status.replace('_', ' ') }}</span>{% if i.confidence %} <span class="tiny conf">{{ i.confidence }}</span>{% endif %}</td>
+    <td class="small detail">{{ i.detail }}</td>
+    <td>{% if i.draft_id %}<a class="small" href="/mail/threads/{{ i.thread_id }}?draft={{ i.draft_id }}">open</a>{% endif %}</td></tr>
+  {% endfor %}
+  </tbody></table>
+</div>
+{% endfor %}
+<style>.bar { height:10px; border-radius:6px; background:var(--line); overflow:hidden; } .bar .fill { height:100%; background:var(--accent); transition:width .4s; }
+.acct { display:inline-flex; align-items:center; gap:6px; font-weight:600; } .acct::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--accent); }
+.acct-blue::before{background:#0a84ff} .acct-green::before{background:#30d158} .acct-orange::before{background:#ff9f0a} .acct-purple::before{background:#bf5af2} .acct-pink::before{background:#ff375f} .acct-teal::before{background:#64d2ff} .acct-red::before{background:#ff453a} .acct-slate::before{background:#8e8e93}</style>
+{% if run.status in ('queued', 'running') %}
+<script>
+  (function () {
+    const id = {{ run.id|tojson }}; const cls = {sent:'good', needs_review:'warn', failed:'bad'};
+    let busy = false;
+    async function refresh() {
+      if (busy) return; busy = true;
+      try {
+        const r = await fetch('/mail/runs/' + id + '/items.json'); if (!r.ok) return; const d = await r.json();
+        document.getElementById('run-bar').style.width = (d.total ? 100 * d.done / d.total : 0) + '%';
+        document.getElementById('run-lead').firstChild.textContent = (d.status === 'queued' || d.status === 'running')
+          ? 'Replying ' + Math.min(d.done + 1, d.total) + ' of ' + d.total + '… ' : d.done + ' of ' + d.total + ' handled. ';
+        Object.keys(d.summary).forEach(k => { const el = document.querySelector('#run-summary [data-s="' + k + '"]'); if (el) el.textContent = d.summary[k] + ' ' + el.textContent.replace(/^\d+\s*/, ''); });
+        d.items.forEach(i => { const row = document.querySelector('tr[data-item="' + i.id + '"]'); if (!row) return;
+          const tag = row.querySelector('.st .tag'); tag.textContent = i.status.replace('_', ' '); tag.className = 'tag ' + (cls[i.status] || '');
+          row.querySelector('.detail').textContent = i.detail;
+          if (i.confidence) { let c = row.querySelector('.conf'); if (!c) { c = document.createElement('span'); c.className = 'tiny conf'; row.querySelector('.st').append(' ', c); } c.textContent = i.confidence; } });
+        const st = document.getElementById('run-status'); st.textContent = d.status; st.className = 'tag ' + (d.status === 'done' ? 'good' : (d.status === 'cancelled' || d.status === 'failed' ? 'warn' : ''));
+        if (d.status !== 'queued' && d.status !== 'running') { clearInterval(timer); location.reload(); }
+      } finally { busy = false; }
+    }
+    const timer = setInterval(refresh, 2000);
+    try { const es = new EventSource('/mail/events'); es.addEventListener('state', refresh); } catch (e) {}
+  })();
+</script>
+{% endif %}
+{% endblock %}

@@ -49,10 +49,11 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     ok, why = service.ready_to_send(mailbox)
     if not ok:
         raise SendRefused(why)
-    if settings.daily_cap and await sent_today(db, mailbox["id"]) >= settings.daily_cap:
-        raise SendRefused(f"the daily cap of {settings.daily_cap} for {mailbox['address']} is reached; it sends again tomorrow")
-    if not within_hours(settings):
-        raise SendRefused(f"outside {mailbox['address']}'s send window ({settings.hours_start} to {settings.hours_end})")
+    if not dry_run:   # a dry run shows the email; the cap and the window depend on the day it is really sent
+        if settings.daily_cap and await sent_today(db, mailbox["id"]) >= settings.daily_cap:
+            raise SendRefused(f"the daily cap of {settings.daily_cap} for {mailbox['address']} is reached; it sends again tomorrow")
+        if not within_hours(settings):
+            raise SendRefused(f"outside {mailbox['address']}'s send window ({settings.hours_start} to {settings.hours_end})")
     import json
     to = json.loads(draft.get("to_json") or "[]")
     if not to:

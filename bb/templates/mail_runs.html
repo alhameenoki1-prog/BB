@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Reply runs{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Mail</div><h1>Reply runs</h1><p class="lead">Answer everything that is waiting in one go. Tick the threads, choose whether the drafts wait for you or go out on their own, and watch it work.</p></div></div>
+{% include "_mail_scope.html" %}
+{% if not brain_ok %}<div class="card flat" style="border-color:var(--warn)"><b>No AI provider yet.</b> Drafting needs a model: <a href="/apikey">set one up</a> first.</div>{% endif %}
+<form method="post" action="/mail/runs" id="run-form">
+<div class="card">
+  <div class="actions" style="justify-content:space-between;align-items:flex-start">
+    <div><h2 style="margin:0">{{ total }} thread{{ 's' if total != 1 else '' }} waiting for a reply</h2>
+      <p class="small muted" style="margin:4px 0 0">Grouped by the mailbox that received them. Each reply leaves from that mailbox.</p></div>
+    <div class="actions"><button type="button" class="small secondary" onclick="document.querySelectorAll('#run-form input[name=thread]:not(:disabled)').forEach(c => c.checked = true)">All</button>
+      <button type="button" class="small secondary" onclick="document.querySelectorAll('#run-form input[name=thread]').forEach(c => c.checked = false)">None</button></div>
+  </div>
+  {% for g in groups %}
+  <div class="run-group">
+    <div class="actions" style="justify-content:space-between;margin:14px 0 6px"><span class="acct acct-{{ g.box.settings_model.color }}">{{ g.box.address }}</span>
+      <span class="tiny">{{ g.threads|length }} waiting{% if g.excluded %} · {{ g.excluded }} excluded{% endif %}{% if not g.box.ready %} · <span style="color:var(--warn)">{{ g.box.ready_why }}</span>{% endif %}</span></div>
+    {% if g.threads %}
+    <table class="compact"><tbody>
+    {% for t in g.threads %}
+    <tr class="{{ 'muted' if t.excluded else '' }}"><td style="width:28px"><input type="checkbox" name="thread" value="{{ t.id }}" {{ 'disabled' if t.excluded else 'checked' }}></td>
+      <td><a href="/mail/threads/{{ t.id }}">{{ t.subject or '(no subject)' }}</a><div class="tiny">{{ t.last_from }}{% if t.excluded %} · excluded on this account{% endif %}</div></td>
+      <td class="tiny" style="white-space:nowrap">{{ t.last_message_at }}</td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}<p class="small muted">Nothing waiting.</p>{% endif %}
+  </div>
+  {% endfor %}
+  {% if not groups %}<div class="empty">{{ icon('mail') }}<div>No accounts in view. <a href="/mail/accounts">Connect a mailbox</a> or widen the scope.</div></div>{% endif %}
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h2>How this run should behave</h2>
+  <div class="radio-list">
+    <label><input type="radio" name="mode" value="review" checked> <b>Draft and hold for review</b> <span class="small muted">— every reply waits on <a href="/mail/review">Review</a>; nothing is sent until you approve it.</span></label>
+    <label><input type="radio" name="mode" value="auto"> <b>Send the confident ones</b> <span class="small muted">— high-confidence replies that pass the writing check go out, paced 20–60 seconds apart per mailbox and within each mailbox's daily cap and send window; the rest wait for review.</span></label>
+    <label><input type="radio" name="mode" value="dry_run"> <b>Dry run</b> <span class="small muted">— draft everything and show exactly what would have been sent; nothing leaves.</span></label>
+  </div>
+  <div class="two" style="margin-top:12px">
+    <label>Instructions for every reply <span class="small muted">(optional)</span><input name="instructions" placeholder="e.g. Offer a call next week; never quote prices"></label>
+    <label>Reply-To for this run <span class="small muted">(optional, overrides the accounts' default)</span><input name="reply_to" type="email" placeholder="you@yourdomain.com"></label>
+  </div>
+  <div class="actions" style="margin-top:12px"><button type="submit" {{ '' if (total and brain_ok) else 'disabled' }}>{{ icon('play', 15) }} Start the run</button>
+    <span class="tiny">Drafting uses your own model ({{ brain_label }}).</span></div>
+</div>
+</form>
+
+{% if recent %}
+<div class="card" style="margin-top:14px"><h2>Earlier runs</h2>
+  <table><thead><tr><th>Started</th><th>Accounts</th><th>Mode</th><th>Progress</th><th>Result</th><th></th></tr></thead><tbody>
+  {% for r in recent %}<tr><td class="tiny">{{ r.created_at }}</td><td>{% for b in r.boxes %}<span class="acct acct-{{ b.settings_model.color }}">{{ b.address }}</span> {% endfor %}</td>
+    <td>{{ r.mode.replace('_', ' ') }}</td><td>{{ r.done }} / {{ r.total }} <span class="tag {{ 'good' if r.status == 'done' else ('' if r.status in ('queued', 'running') else 'warn') }}">{{ r.status }}</span></td>
+    <td class="small">{% if r.summary.sent %}{{ r.summary.sent }} sent{% endif %}{% if r.summary.needs_review %} · {{ r.summary.needs_review }} for review{% endif %}{% if r.summary.dry_run %} · {{ r.summary.dry_run }} dry run{% endif %}{% if r.summary.skipped %} · {{ r.summary.skipped }} skipped{% endif %}{% if r.summary.failed %} · {{ r.summary.failed }} failed{% endif %}</td>
+    <td><a class="small" href="/mail/runs/{{ r.id }}">open</a></td></tr>{% endfor %}
+  </tbody></table></div>
+{% endif %}
+<style>.radio-list label { display:block; margin:6px 0; } .compact td { padding:6px 8px; } tr.muted { opacity:.55; }
+.acct { display:inline-flex; align-items:center; gap:6px; font-weight:600; font-size:13px; } .acct::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--accent); }
+.acct-blue::before{background:#0a84ff} .acct-green::before{background:#30d158} .acct-orange::before{background:#ff9f0a} .acct-purple::before{background:#bf5af2} .acct-pink::before{background:#ff375f} .acct-teal::before{background:#64d2ff} .acct-red::before{background:#ff453a} .acct-slate::before{background:#8e8e93}</style>
+{% endblock %}

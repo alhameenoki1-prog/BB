@@ -50,7 +50,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         c = await ctx(user)
         activity = await c["db"].activity(limit=40, mailbox_ids=c["scope_ids"])
         jobs = Jobs(c["db"])
-        return await render(request, "mail_overview.html", user, **page_ctx(c), activity=activity,
+        active_runs = await c["db"].query("SELECT * FROM reply_runs WHERE status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 5")
+        return await render(request, "mail_overview.html", user, **page_ctx(c), activity=activity, active_runs=active_runs,
                             job_counts=await jobs.counts(), msg=c["revived"] or request.query_params.get("msg", ""))
 
     @app.post("/mail/scope")
@@ -491,6 +492,100 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
              result["confidence"], now, now))
         return _redirect(f"/mail/compose?draft={draft_id}", msg="Draft ready. Edit it, then send.")
 
+    # ── reply runs: pick the unreplied threads, draft them all, route by mode ──
+
+    @app.get("/mail/runs", response_class=HTMLResponse)
+    async def mail_runs(request: Request, user: dict = Depends(current_user), mailbox: str = ""):
+        from bb.mail import runs as runs_mod
+        c = await ctx(user)
+        boxes = c["selected"]
+        if mailbox and mailbox in {m["id"] for m in c["mailboxes"]}:
+            boxes = [m for m in c["mailboxes"] if m["id"] == mailbox]
+        cands = await runs_mod.candidates(c["db"], boxes)
+        groups = []
+        for m in boxes:
+            mine = [t for t in cands if t["mailbox_id"] == m["id"]]
+            groups.append({"box": m, "threads": mine, "excluded": sum(1 for t in mine if t["excluded"])})
+        recent = await c["db"].query("SELECT * FROM reply_runs ORDER BY created_at DESC LIMIT 20")
+        names = {m["id"]: m for m in c["mailboxes"]}
+        for r in recent:
+            r["summary"] = json.loads(r.get("summary_json") or "{}")
+            r["boxes"] = [names[x] for x in json.loads(r.get("mailbox_ids_json") or "[]") if x in names]
+        brain = _brain(c["ws"])
+        return await render(request, "mail_runs.html", user, **page_ctx(c), groups=groups, recent=recent,
+                            total=sum(len(g["threads"]) for g in groups), mailbox=mailbox,
+                            brain_ok=brain.configured, brain_label=brain.label)
+
+    @app.post("/mail/runs")
+    async def mail_runs_create(request: Request, user: dict = Depends(current_user)):
+        from bb.mail import runs as runs_mod
+        c = await ctx(user)
+        form = await request.form()
+        thread_ids = [str(x) for x in form.getlist("thread")]
+        mode = str(form.get("mode", "review") or "review")
+        if mode not in runs_mod.MODES:
+            mode = "review"
+        reply_to = str(form.get("reply_to", "") or "").strip().lower()
+        if reply_to and ("@" not in reply_to or " " in reply_to):
+            return _redirect("/mail/runs", error="Reply-To must be an email address.")
+        if not thread_ids:
+            return _redirect("/mail/runs", error="Tick at least one thread.")
+        if not _brain(c["ws"]).configured:
+            return _redirect("/mail/runs", error="Set up an AI provider first; drafting needs a model.")
+        boxes = list(c["mailboxes"])
+        if mode == "auto":
+            not_ready = [m["address"] for m in boxes if not m["ready"]]
+            boxes = [m for m in boxes if m["ready"]]
+            if not boxes:
+                return _redirect("/mail/runs", error="None of the accounts can send yet: " + "; ".join(not_ready))
+        run = await runs_mod.create_run(c["db"], boxes, thread_ids, mode=mode, reply_to=reply_to,
+                                        instructions=str(form.get("instructions", "") or ""), created_by=user.get("email", ""))
+        if not run:
+            return _redirect("/mail/runs", error="None of those threads still needs a reply.")
+        if not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        return _redirect(f"/mail/runs/{run['id']}", msg=f"Run started: {run['total']} threads across {len(run['per_mailbox'])} account(s).")
+
+    async def _run_page_data(c, run_id):
+        from bb.mail import runs as runs_mod
+        run = await c["db"].one("SELECT * FROM reply_runs WHERE id = ?", (run_id,))
+        if not run:
+            raise HTTPException(404)
+        run["summary"] = await runs_mod.run_summary(c["db"], run_id)
+        run["done"] = sum(v for k, v in run["summary"].items() if k not in ("queued", "drafting"))
+        items = await c["db"].query(
+            "SELECT ri.*, t.subject, t.last_from, t.last_message_at, d.confidence, d.status AS draft_status "
+            "FROM run_items ri JOIN threads t ON t.id = ri.thread_id LEFT JOIN drafts d ON d.id = ri.draft_id "
+            "WHERE ri.run_id = ? ORDER BY ri.mailbox_id, t.last_message_at", (run_id,))
+        names = {m["id"]: m for m in c["mailboxes"]}
+        groups = []
+        for mid in json.loads(run.get("mailbox_ids_json") or "[]"):
+            groups.append({"box": names.get(mid, {"id": mid, "address": "(removed account)", "settings_model": MailboxSettings()}),
+                           "rows": [i for i in items if i["mailbox_id"] == mid]})
+        return run, groups, items
+
+    @app.get("/mail/runs/{run_id}", response_class=HTMLResponse)
+    async def mail_run(request: Request, run_id: str, user: dict = Depends(current_user)):
+        c = await ctx(user)
+        run, groups, items = await _run_page_data(c, run_id)
+        return await render(request, "mail_run.html", user, **page_ctx(c), run=run, groups=groups)
+
+    @app.get("/mail/runs/{run_id}/items.json")
+    async def mail_run_items(run_id: str, user: dict = Depends(current_user)):
+        c = await ctx(user)
+        run, groups, items = await _run_page_data(c, run_id)
+        return {"status": run["status"], "done": run["done"], "total": run["total"], "summary": run["summary"],
+                "items": [{"id": i["id"], "status": i["status"], "detail": i["detail"], "draft_id": i["draft_id"],
+                           "confidence": i.get("confidence") or ""} for i in items]}
+
+    @app.post("/mail/runs/{run_id}/cancel")
+    async def mail_run_cancel(run_id: str, user: dict = Depends(current_user)):
+        from bb.mail import runs as runs_mod
+        c = await ctx(user)
+        ok = await runs_mod.cancel_run(c["db"], run_id)
+        return _redirect(f"/mail/runs/{run_id}", msg="Cancelled; threads not yet drafted are skipped." if ok else "",
+                         error="" if ok else "That run is already finished.")
+
     # ── jobs (dead-letter page) ──
 
     @app.get("/mail/jobs", response_class=HTMLResponse)
@@ -543,9 +638,11 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                     "SELECT id, kind, mailbox_id, progress_json, status FROM jobs WHERE status = 'running'")
                 boxes = [{"id": m["id"], "address": m["address"], "status": m["status"],
                           "detail": m["status_detail"], "counts": m["counts"]} for m in await db.mailboxes()]
+                active = await db.query("SELECT id, status, total, done, mode FROM reply_runs WHERE status IN ('queued', 'running') "
+                                        "ORDER BY created_at DESC LIMIT 10")
                 yield "event: state\ndata: " + json.dumps({
                     "jobs": [{**r, "progress": json.loads(r.get("progress_json") or "{}")} for r in running],
-                    "mailboxes": boxes, "worker": ws.mail_worker_alive()}) + "\n\n"
+                    "mailboxes": boxes, "worker": ws.mail_worker_alive(), "runs": active}) + "\n\n"
                 ticks += 1
                 if ticks % 10 == 0:
                     yield ": keep-alive\n\n"

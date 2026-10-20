@@ -100,9 +100,11 @@ user's model, Anthropic or OpenAI-compatible, from `BB_LLM_*` env),
 `drafting.py` (draft_reply / draft_new, `qa_check` writing check,
 `finalize` adds greeting + signature + project link at send time),
 `sending.py` (cap, window, dry run, send from the receiving mailbox,
-mirror into the thread). Phases 1 to 3 and 5 are done (foundation, sync,
-reply state, thread pages, composer / review / compose); batch reply runs,
-the command bar and Microsoft Graph follow.
+mirror into the thread), `runs.py` (batch reply runs: one `reply_run`
+job per mailbox, review / auto / dry-run modes, confidence routing, cap
+checked before drafting, 20–60 s pacing, cancel). Phases 1 to 3, 5 and 6
+are done (foundation, sync, reply state, thread pages, composer / review
+/ compose, reply runs); the command bar and Microsoft Graph follow.
 
 ---
 

@@ -309,6 +309,18 @@ being built in phases; sync, reply state, the composer and sending are in.
   cannot send. The daily cap and send window per account are enforced at
   send time too. The reply leaves from the mailbox that received the
   original and is mirrored into the thread, which becomes *replied*.
+- **Reply runs** (`/mail/runs`): answer everything that is waiting in one
+  go. The page lists the unreplied threads of the selected accounts,
+  grouped by mailbox, all ticked (excluded senders unticked). Choose how
+  the run behaves: *draft and hold for review* (nothing is sent until you
+  approve it on Review), *send the confident ones* (high-confidence drafts
+  that pass the writing check go out; the rest wait for review), or *dry
+  run* (draft everything, send nothing). Optional instructions and a
+  Reply-To apply to the whole run. Accounts work side by side; within one
+  mailbox replies go out in order, 20 to 60 seconds apart, inside that
+  mailbox's daily cap and send window, each from the mailbox that
+  received the original. The run page shows "Replying 4 of 17" with a
+  per-thread status under each account and a Cancel button.
 - **Review** (`/mail/review`): every draft waiting on a person, across
   the selected accounts, with approve / edit / discard and approve-all.
 - **Compose** (`/mail/compose`): a new email from a short brief, through
