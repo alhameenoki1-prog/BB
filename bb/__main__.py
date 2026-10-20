@@ -3,6 +3,7 @@
     python -m bb                                  # start the site
     python -m bb create-user EMAIL [--admin]      # make a login (asks for the password)
     python -m bb reset-password EMAIL             # change a login's password
+    python -m bb make-admin EMAIL                 # give an existing login the admin role
     python -m bb list-users                       # who exists
 
 Accounts live in BB_HOME/bb.db, the same database the running site reads,
@@ -78,6 +79,16 @@ def cmd_reset_password(args):
     print(f"Password changed for {user['email']}. Their open sessions were signed out.")
 
 
+def cmd_make_admin(args):
+    settings, accounts = _accounts()
+    user = accounts.get_by_email(args.email)
+    if not user:
+        print(f"No account for {args.email}. Use: python -m bb create-user {args.email} --admin")
+        raise SystemExit(1)
+    accounts.set_role(user["id"], "admin")
+    print(f"{user['email']} is now an admin. Sign in again and open {settings.base_url}/admin/users to create logins.")
+
+
 def cmd_list_users(args):
     settings, accounts = _accounts()
     users = accounts.list_users()
@@ -101,6 +112,9 @@ def main(argv=None):
     p.add_argument("email")
     p.add_argument("--password", help="set it here instead of being asked")
     p.set_defaults(func=cmd_reset_password)
+    p = sub.add_parser("make-admin", help="give an existing login the admin role")
+    p.add_argument("email")
+    p.set_defaults(func=cmd_make_admin)
     sub.add_parser("list-users", help="list accounts").set_defaults(func=cmd_list_users)
     args = parser.parse_args(argv)
     (getattr(args, "func", None) or cmd_serve)(args)

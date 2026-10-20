@@ -146,7 +146,16 @@ Caddy fetches and renews the certificate itself. nginx or Traefik work the
 same way; forward `Host` and `X-Forwarded-*` headers.
 
 Sign in at `https://outreach.example.com` with `BB_ADMIN_EMAIL` /
-`BB_ADMIN_PASSWORD`, then go to **Users** and create a login for each person.
+`BB_ADMIN_PASSWORD`, then go to **Users** (the Admin section at the bottom
+of the left menu, or `/admin/users`) and create a login for each person.
+Only accounts with the admin role see that section. The admin account is
+created once, on the very first start, from those two variables; changing
+them later does nothing. If you are signed in as a plain user, or the
+first start ran without them, give your login the role from the terminal:
+
+```bash
+python -m bb make-admin you@example.com      # or: python -m bb create-user you@example.com --admin
+```
 There is no self-registration. Tell them their email and password; you can
 reset it from the same page.
 

@@ -1174,3 +1174,16 @@ def test_dashboard_explains_the_warm_up_cap(client):
     s = _a.run(ws.summary())
     assert not s["allowance"]["warming"] and s["allowance"]["allowed"] == 500
     assert "0 of 500 sent today (your daily limit)" in client.get("/").text
+
+
+def test_cli_make_admin(tmp_path, monkeypatch, capsys):
+    from bb import __main__ as cli
+    monkeypatch.setenv("BB_HOME", str(tmp_path)); monkeypatch.setenv("BB_BASE_URL", "http://x.test")
+    monkeypatch.setenv("BB_ADMIN_EMAIL", "a@x.test"); monkeypatch.setenv("BB_ADMIN_PASSWORD", "p" * 12)
+    cli.main(["create-user", "u@x.test", "--password", "s3cret-password"])
+    settings, accounts = cli._accounts()
+    assert accounts.get_by_email("u@x.test")["role"] == "user"
+    cli.main(["make-admin", "u@x.test"])
+    assert accounts.get_by_email("u@x.test")["role"] == "admin" and "/admin/users" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cli.main(["make-admin", "nobody@x.test"])

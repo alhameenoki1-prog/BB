@@ -131,6 +131,12 @@ class Accounts:
             db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(password), user_id))
             db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
 
+    def set_role(self, user_id: str, role: str):
+        if role not in ROLES:
+            raise ValueError(f"Unknown role {role!r}.")
+        with self._connect() as db:
+            db.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+
     def set_disabled(self, user_id: str, disabled: bool):
         with self._connect() as db:
             db.execute("UPDATE users SET disabled = ? WHERE id = ?", (1 if disabled else 0, user_id))
