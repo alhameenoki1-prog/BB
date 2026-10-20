@@ -11,6 +11,7 @@ import pytz
 from harvey.brain import Brain
 from harvey.config import ConfigError, load_config, load_env, HarveyConfig
 from harvey.pipeline import run_profile_stage
+from harvey.integrations.mail_provider import NATIVE_PROVIDERS
 from harvey.state import StateManager
 
 logging.basicConfig(
@@ -46,20 +47,76 @@ QUIET_HOURS_POLL_SECONDS = 300
 # Phase-1 tasks that read replies; sending waits for all of them to succeed.
 REPLY_READERS = ("handle_replies", "read_replies")
 
+# Replies are read and mail is sent by one task at a time: the send loop and
+# the heartbeat share the mailbox, and two drains at once would send twice.
+_mail_lock = asyncio.Lock()
+
+
+async def _mail_pass(handler, sender, brain, config, max_calls: int) -> str:
+    """Read replies, then send what is due, in that order, under the lock.
+    Returns "" when mail went out (or there was nothing to send) and a
+    reason when sending was skipped."""
+    if in_quiet_hours(config):
+        return "quiet hours"
+    # No brain gate here on purpose: an SMTP or Gmail send needs no model
+    # call, and the handler only asks the model when a human reply arrived
+    # (and returns False, holding the drain, if that fails).
+    async with _mail_lock:
+        read = await asyncio.wait_for(handler.run(backlog=False), timeout=CYCLE_TIMEOUT_SECONDS)
+        if read is not True:
+            return "replies couldn't all be read and handled"
+        await asyncio.wait_for(sender.run(), timeout=CYCLE_TIMEOUT_SECONDS)
+    return ""
+
+
+SKIP_REASON_KEY = "sender_skip_reason"   # settings row the dashboard reads
+
+
+async def _send_loop(handler, sender, brain, config, stop_event: asyncio.Event, every: int, max_calls: int, state=None):
+    """Native providers with channels.email.send_every_seconds: drain the
+    outbox every ``every`` seconds on its own clock, so sending never waits
+    for research or writing. Stop-on-reply order is kept: every pass reads
+    replies first and sends nothing if that failed."""
+    logger.info(f"Sender: draining the outbox every {every}s, independently of the heartbeat.")
+    last_skip = ""
+    while not stop_event.is_set():
+        try:
+            skipped = await _mail_pass(handler, sender, brain, config, max_calls)
+            if skipped and skipped != last_skip:
+                logger.info(f"Sender: not sending right now: {skipped}.")
+            if skipped != last_skip and state is not None:
+                try:
+                    await state.set_setting(SKIP_REASON_KEY, skipped)
+                except Exception:
+                    pass
+            last_skip = skipped
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            logger.error("Sender: a send pass timed out; trying again next time.")
+        except Exception as e:
+            logger.error(f"Sender: send pass failed: {e}")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=every)
+        except asyncio.TimeoutError:
+            pass
+
 
 def in_quiet_hours(config: HarveyConfig) -> bool:
     """Check if we're currently in quiet hours."""
     qh = config.usage.quiet_hours
+    if not getattr(qh, "enabled", True):
+        return False
     tz = pytz.timezone(qh.timezone)
     now = datetime.now(tz).time()
     start = time.fromisoformat(qh.start)
     end = time.fromisoformat(qh.end)
 
     if start <= end:
-        return start <= now <= end
+        return start <= now < end
     else:
         # Quiet hours cross midnight (e.g., 22:00 - 07:00)
-        return now >= start or now <= end
+        return now >= start or now < end
 
 
 def seconds_until_quiet_hours_end(config: HarveyConfig) -> int:
@@ -99,9 +156,10 @@ async def decide_next_action(
     draft_campaigns = summary.get("draft_campaigns", 0) or 0
     open_conversations = summary.get("open_conversations", 0) or 0
 
+    native = config.channels.email.provider in NATIVE_PROVIDERS
     if open_conversations > 0:
         action, reason = "handle_replies", f"{open_conversations} open conversation(s) waiting"
-    elif draft_campaigns > 0:
+    elif draft_campaigns > 0 and not native:
         action, reason = "send_campaign", f"{draft_campaigns} draft campaign(s) ready to deploy"
     elif new_prospects > 0:
         action, reason = "write_campaign", f"{new_prospects} new prospect(s) with no drafts ready"
@@ -124,6 +182,11 @@ async def _bounded_profile(state, limit: int = PROFILE_PER_CYCLE):
     except asyncio.TimeoutError:
         logger.info(f"profile: stopped after {PROFILE_BUDGET_SECONDS}s this cycle; the rest waits for the next heartbeat.")
         return None
+
+
+async def _locked(coro):
+    async with _mail_lock:
+        return await coro
 
 
 async def _run_agents(tasks: list) -> dict:
@@ -220,15 +283,42 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
     analyst = Analyst(state)
 
     interval = config.usage.heartbeat_interval_minutes * 60
-    max_calls = max(int(200 * (config.usage.max_daily_claude_percent / 100)), 1)
+    # The daily call counter stands in for the ChatGPT plan's quota when it
+    # cannot be read (Codex). An API key is bounded by usage.max_daily_cost_usd
+    # (Claude) or the provider's own limits: 160 calls a day would stop a
+    # 10,000-row list after the first few batches.
+    max_calls = max(int(200 * (config.usage.max_daily_claude_percent / 100)), 1) if brain.provider == "codex" else 10 ** 9
     consecutive_errors = 0
 
+    # Native providers can send on their own clock (see _send_loop); the
+    # heartbeat then only researches, writes and reads replies.
+    send_every = int(getattr(config.channels.email, "send_every_seconds", 0) or 0)
+    send_task = None
+    if sender.is_native and send_every > 0:
+        send_task = asyncio.create_task(_send_loop(handler, sender, brain, config, stop_event, send_every, max_calls, state))
+
+    try:
+        await _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sender, handler, analyst,
+                                interval, max_calls, consecutive_errors, send_task is not None)
+    finally:
+        if send_task is not None:
+            send_task.cancel()
+            try:
+                await send_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
+async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sender, handler, analyst,
+                            interval, max_calls, consecutive_errors, has_send_loop):
     while not stop_event.is_set():
         try:
             # 1. Check quiet hours
             if in_quiet_hours(config):
                 sleep_for = seconds_until_quiet_hours_end(config)
-                logger.info(f"Quiet hours. Sleeping for {sleep_for // 60} minutes.")
+                logger.info(f"Quiet hours until {config.usage.quiet_hours.end} {config.usage.quiet_hours.timezone} "
+                            f"({sleep_for // 60} minutes; checked every {QUIET_HOURS_POLL_SECONDS // 60} minutes). "
+                            "Untick \"Only send during these hours\" on the profile to send around the clock.")
                 # Sleep in short polled chunks rather than one multi-hour
                 # wait: found in production that a system sleep/wake cycle
                 # during a long asyncio.wait_for left the process silently
@@ -312,10 +402,13 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
             send_tasks = []
             if action == "send_campaign":
                 send_tasks.append(("send_campaign", sender.run))
-            elif sender.is_native:
+            elif sender.is_native and not has_send_loop:
                 send_tasks.append(("send_outbox", sender.run))
-            if sender.is_native and not any(n == "handle_replies" for n, _ in tasks):
+            if sender.is_native and not has_send_loop and not any(n == "handle_replies" for n, _ in tasks):
                 tasks.append(("read_replies", handler.run()))
+            # The send loop owns the mailbox: anything here that reads replies
+            # or sends takes the same lock so the two never overlap.
+            tasks = [(n, _locked(c) if n in REPLY_READERS else c) for n, c in tasks]
 
             # Profiling rides along every cycle. It is three HTTP requests per
             # business with no model call, so it costs nothing against the
@@ -342,7 +435,7 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
                         "until replies can be read again."
                     )
                 else:
-                    await _run_agents([(name, run()) for name, run in send_tasks])
+                    await _run_agents([(name, _locked(run())) for name, run in send_tasks])
 
             # 6. Log the action (best-effort; never kills the loop)
             try:

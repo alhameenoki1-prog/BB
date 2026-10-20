@@ -9,6 +9,46 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **Sending has its own clock.** With a native mailbox the worker now
+  runs a sender loop beside the heartbeat: every `send_every_seconds`
+  (30 s at Fast and Relay, 2 min at Normal, 5 min at Gentle) it reads
+  replies and then drains the outbox, whatever research and writing are
+  doing. The heartbeat and the loop share one lock so two drains never
+  overlap, every outbox row is claimed atomically before it is sent, and
+  rows left mid-send by a dead worker are failed rather than sent twice.
+  Sending no longer waits on the AI provider at all: the mailbox needs no
+  model, and stop-on-reply is done before any model call. On native
+  mailboxes the heartbeat keeps writing while drafts wait to be staged.
+- **Quiet hours are optional.** A new profile sends around the clock;
+  "Only send during these hours" switches the window on. The window's end
+  minute is no longer counted as quiet, the log line says when it ends
+  and how to turn it off, and changing the mailbox or the inbox settings
+  keeps the choice instead of switching quiet hours back on.
+- **Temporary refusals are retried.** A 4xx from the SMTP server (Gmail's
+  "try again later", a relay's throttling), a network error, or a 429 /
+  403 / 5xx from the Gmail API puts the email back in the queue for ten
+  minutes (up to five times) and ends that pass, instead of marking it
+  failed and burning through the list. TLS is chosen from what the server
+  offers (so ports 25, 2525 and 2587 work), IMAP sockets time out, and a
+  sending-only relay (SES, Brevo, Postmark, Mailgun, SendGrid...) is not
+  polled for replies.
+- **The bounce kill switch needs a real sample.** It now engages after 50
+  sends (was 10) and the web app's threshold is 15% (was 5%), so one
+  bounce in an uploaded, unverified list no longer pauses everything.
+- **The writer keeps up.** Its backlog counts only first emails the
+  sender can actually send (not follow-ups scheduled days ahead, not rows
+  held for review), it loads at most 2,000 new rows per cycle instead of
+  the whole list, a segment written in the last day reuses its sequence
+  instead of calling the model again, the spam rewrite in segment mode
+  now lands, and creating a campaign cannot be cut in half by the cycle
+  timeout. The daily call counter applies to Codex only; API keys are
+  bounded by the spend cap.
+- **Personal mailboxes are protected.** Fast and Relay are held to
+  Normal's pace on Gmail (connected through Google or by SMTP), Outlook,
+  Yahoo, iCloud, Zoho and the like, and the profile says so. The
+  dashboard's Worker card now says in one line what the sender is doing
+  and why it is not sending (quiet hours, a cap, warm-up, approval, held
+  mail, a paused provider, a dead worker), with the thing to change.
 - **Sending in parallel, and a Relay speed.** The sender now gates every
   due email first and then sends through several lanes at once
   (`channels.email.send_concurrency`), each lane pausing between its own
@@ -37,6 +77,18 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Keep it running.** `python -m bb install-service` writes a launchd
+  agent (macOS, with caffeinate so the Mac does not idle to sleep) or a
+  systemd user unit (Linux) that starts the site at login or boot and
+  restarts it if it stops; `uninstall-service` removes it. The site also
+  checks every two minutes for workers that should be running and starts
+  them again, and a worker's pid is verified to be a worker before it is
+  trusted. `deploy/install.sh` installs the whole thing on a fresh Ubuntu
+  server with Docker and Caddy (automatic HTTPS on your domain) in one
+  command; `docker compose --profile tls` adds Caddy to an existing
+  server install. A mailbox change restarts a running worker, as a
+  profile save does, and when the site starts after an update it
+  restarts every worker that is still running the previous code.
 - **The site runs its own public tunnel.** With `BB_TUNNEL=cloudflare` in
   `bb.env` (and cloudflared installed) the site starts a Cloudflare quick
   tunnel itself, reads the `trycloudflare.com` address, prints "Share

@@ -32,6 +32,8 @@ python -m bb
 
 On start it prints the address, where the data lives, and who the admins
 are. `python -m bb status` prints the same without starting the server.
+After `git pull`, restarting the site is enough: workers that are still
+running the previous code are restarted on the new one.
 
 Open <http://localhost:8000>, sign in with the admin email and password,
 go to **Users** and create a login for each person.
@@ -85,7 +87,36 @@ BB_BASE_URL=https://outreach.yourdomain.com
 
 Or move to a server as below.
 
+**Keeping it running on the Mac.** `python -m bb` stops when the Terminal
+window closes or the Mac restarts. Install it as a login service once and
+it starts by itself, restarts if it crashes, and keeps the Mac from
+idling to sleep while it runs:
+
+```bash
+python -m bb install-service      # python -m bb uninstall-service to undo
+```
+
+The site then reads `bb.env` on every start (including `BB_TUNNEL`), and
+the log is at `data/bb/site.log`. Keep the lid open or set "prevent
+automatic sleeping" in System Settings → Energy; a closed laptop still
+sleeps. A Mac that stays on is a server with a tunnel; for something that
+does not depend on a laptop at all, use a small server as below.
+
 ## Hosting on a server
+
+The short way, on a fresh Ubuntu server (any provider: Hetzner, DigitalOcean,
+Linode, a Lightsail box) with a domain name already pointing at its IP:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alhameenoki1-prog/BB/main/deploy/install.sh | sudo bash -s -- \
+    outreach.example.com you@example.com 'a-long-password'
+```
+
+That installs Docker, fetches the code into `/opt/bb`, writes `.env`, and
+starts the site behind Caddy with a real certificate. It survives reboots
+(`restart: unless-stopped`), the address never changes, and nothing
+depends on your laptop. Update with `cd /opt/bb && git pull && docker
+compose --profile tls up -d --build`. The long way follows.
 
 ### What you need
 
@@ -142,6 +173,7 @@ workers; users bring their own provider and key.
 ## 3. Run
 
 ```bash
+mkdir -p data && sudo chown -R 1000:1000 data   # the container runs as uid 1000
 docker compose up -d --build
 ```
 
@@ -366,6 +398,16 @@ being built in phases; sync, reply state, the composer and sending are in.
   the same check, composer and send rules.
 - **AI provider**: the mail center uses the key and model chosen on the
   site's AI provider page, so it costs the user, never the site.
+
+## Why is nothing sending?
+
+The Worker card on the dashboard says, in one line, what the sender is
+doing right now and what to change when it is stuck: quiet hours (untick
+"Only send during these hours" on the profile to send around the clock),
+the daily maximum or the warm-up ramp, emails waiting for approval or
+held by the spam check (Outbox), a paused AI provider, a worker that is
+not running. Sending itself runs on its own clock and needs no AI call;
+only writing new emails and answering replies do.
 
 ## Speed
 

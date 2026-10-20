@@ -30,10 +30,30 @@ from harvey.integrations.mail_provider import (
     InboundMessage,
     MailProvider,
     SendResult,
+    is_relay_host,
     looks_like_bounce,
 )
 
 logger = logging.getLogger("harvey.smtp")
+
+
+def _retryable_smtp_error(e: Exception) -> bool:
+    """4xx replies, throttling and network trouble are temporary; 5xx and
+    bad credentials are not."""
+    text = str(e).lower()
+    if any(w in text for w in ("sending limit", "limit for sending", "5.4.5", "quota exceeded")):
+        return True   # the mailbox's daily ceiling: it sends again tomorrow
+    code = getattr(e, "code", None)
+    if isinstance(code, int):
+        return 400 <= code < 500
+    if isinstance(e, aiosmtplib.SMTPRecipientsRefused):
+        codes = [getattr(r, "code", 0) for r in (getattr(e, "recipients", None) or [])]
+        return any(400 <= c < 500 for c in codes)
+    if isinstance(e, (aiosmtplib.SMTPConnectError, aiosmtplib.SMTPTimeoutError, aiosmtplib.SMTPServerDisconnected,
+                      OSError, asyncio.TimeoutError)):
+        return True
+    text = str(e).lower()
+    return any(w in text for w in ("try again", "throttl", "rate limit", "too many", "temporar", "4.7.0", "421", "450", "451", "454"))
 
 
 class SmtpImapProvider(MailProvider):
@@ -86,16 +106,31 @@ class SmtpImapProvider(MailProvider):
                 port=self.smtp_port,
                 username=self.smtp_user,
                 password=self.smtp_pass,
-                start_tls=(self.smtp_port == 587),
-                use_tls=(self.smtp_port == 465),
+                start_tls=self._start_tls(),
+                use_tls=self._use_tls(),
                 timeout=30,
             )
         except Exception as e:
-            logger.error(f"SMTP send failed to {to_email}: {e}")
-            return SendResult(ok=False, error=str(e)[:300])
+            retryable = _retryable_smtp_error(e)
+            logger.error(f"SMTP send failed to {to_email}: {e}" + (" (temporary; will retry)" if retryable else ""))
+            return SendResult(ok=False, error=str(e)[:300], retryable=retryable)
         return SendResult(ok=True, message_id=message_id, thread_ref=message_id)
 
+    def _use_tls(self) -> bool:
+        return self.smtp_port in (465, 2465)
+
+    def _start_tls(self):
+        # None = upgrade whenever the server offers STARTTLS (587, 25, 2525, 2587...)
+        return False if self._use_tls() else None
+
+    def _no_inbox(self) -> bool:
+        """A sending-only relay (SES, Brevo, Postmark...) has no inbox to read."""
+        return is_relay_host(self.imap_host)
+
     async def get_replies(self, limit: int = 50) -> list[InboundMessage]:
+        if self._no_inbox():
+            logger.debug(f"IMAP: {self.imap_host} is a sending relay; nothing to read.")
+            return []
         loop = asyncio.get_event_loop()
         try:
             return await loop.run_in_executor(None, self._fetch_unseen, limit)
@@ -105,7 +140,7 @@ class SmtpImapProvider(MailProvider):
 
     def _fetch_unseen(self, limit: int) -> list[InboundMessage]:
         out: list[InboundMessage] = []
-        conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+        conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port, timeout=30)
         try:
             conn.login(self.imap_user, self.imap_pass)
             conn.select("INBOX")
@@ -145,7 +180,7 @@ class SmtpImapProvider(MailProvider):
         from datetime import datetime, timedelta
 
         since = (datetime.utcnow() - timedelta(days=max(1, int(days)))).strftime("%d-%b-%Y")
-        conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+        conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port, timeout=30)
         try:
             conn.login(self.imap_user, self.imap_pass)
             conn.select("INBOX", readonly=True)
@@ -238,8 +273,8 @@ class SmtpImapProvider(MailProvider):
         try:
             smtp = aiosmtplib.SMTP(
                 hostname=self.smtp_host, port=self.smtp_port,
-                start_tls=(self.smtp_port == 587),
-                use_tls=(self.smtp_port == 465), timeout=15,
+                start_tls=self._start_tls(),
+                use_tls=self._use_tls(), timeout=15,
             )
             await smtp.connect()
             await smtp.login(self.smtp_user, self.smtp_pass)
@@ -250,7 +285,7 @@ class SmtpImapProvider(MailProvider):
         loop = asyncio.get_event_loop()
 
         def _imap_check():
-            conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+            conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port, timeout=30)
             try:
                 conn.login(self.imap_user, self.imap_pass)
             finally:

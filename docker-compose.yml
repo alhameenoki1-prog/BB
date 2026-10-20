@@ -20,3 +20,26 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # HTTPS on your own domain with no other setup: `docker compose --profile tls up -d`
+  # with BB_DOMAIN in .env (and BB_BASE_URL=https://that domain). Caddy gets
+  # and renews the certificate itself. Without the profile, put your own
+  # reverse proxy in front of port 8000.
+  caddy:
+    image: caddy:2
+    profiles: ["tls"]
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - bb
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

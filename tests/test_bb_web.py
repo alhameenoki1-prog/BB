@@ -520,6 +520,7 @@ def test_ai_provider_free_endpoint(client, monkeypatch):
 
 
 def test_mailbox_smtp_settings(client, monkeypatch):
+    monkeypatch.setattr(ws_mod, "STOP_GRACE_SECONDS", 0.5)   # the fake worker never exits
     _as_user(client)
     monkeypatch.setattr("bb.app.test_smtp", _smtp_ok)
     client.post("/profile", data=PROFILE)
@@ -862,6 +863,7 @@ async def _m365_bad(settings_dict):
 
 
 def test_mailbox_microsoft_admin_app(client, monkeypatch):
+    monkeypatch.setattr(ws_mod, "STOP_GRACE_SECONDS", 0.5)   # the fake worker never exits
     _as_user(client)
     client.post("/profile", data=PROFILE)
     user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
@@ -1219,3 +1221,93 @@ def test_admin_link_sits_near_the_top_of_the_menu(client):
     client.cookies.clear()
     _login(client, **USER)
     assert 'href="/admin/users"' not in client.get("/").text
+
+
+def test_quiet_hours_can_be_switched_off(client):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    assert ws.profile()["quiet_enabled"] is False            # a new profile sends at any hour
+    page = client.get("/profile").text
+    assert "Only send during these hours" in page and 'name="quiet_enabled"' in page
+    client.post("/profile", data={**PROFILE, "quiet_form": "1"})   # box unticked
+    cfg = yaml.safe_load(ws.config_file.read_text())
+    assert cfg["usage"]["quiet_hours"]["enabled"] is False and cfg["usage"]["quiet_hours"]["start"] == "20:00"
+    from harvey.main import in_quiet_hours
+    assert in_quiet_hours(HarveyConfig(**cfg)) is False
+    client.post("/profile", data={**PROFILE, "quiet_form": "1", "quiet_enabled": "on", "quiet_start": "00:00", "quiet_end": "23:59"})
+    cfg = yaml.safe_load(ws.config_file.read_text())
+    assert cfg["usage"]["quiet_hours"]["enabled"] is True and ws.profile()["quiet_enabled"] is True
+    assert in_quiet_hours(HarveyConfig(**cfg)) is True
+    # An older page without the checkbox keeps quiet hours on.
+    client.post("/profile", data=PROFILE)
+    assert yaml.safe_load(ws.config_file.read_text())["usage"]["quiet_hours"]["enabled"] is True
+
+
+def test_speed_is_held_on_personal_mailboxes_and_dashboard_says_why_not_sending(client):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    # No mailbox yet: the chosen pace is written as is.
+    client.post("/profile", data={**PROFILE, "speed": "relay", "max_daily_sends": "0", "quiet_form": "1"})
+    email = yaml.safe_load(ws.config_file.read_text())["channels"]["email"]
+    assert email["send_every_seconds"] == 30 and email["send_concurrency"] == 8 and email["sends_per_cycle"] == 100
+    assert ws.profile()["speed"] == "relay"
+    # A Gmail SMTP mailbox: Relay is held to Normal's pace, the radio stays on Relay, the page says so.
+    ws.save_secrets(smtp_host="smtp.gmail.com", smtp_port=587, smtp_username="me@gmail.com", smtp_password="app-pw")
+    ws.set_mail_provider("smtp")
+    client.post("/profile", data={**PROFILE, "speed": "relay", "max_daily_sends": "0", "quiet_form": "1"})
+    email = yaml.safe_load(ws.config_file.read_text())["channels"]["email"]
+    assert email["send_concurrency"] == 1 and email["sends_per_cycle"] == 10 and email["send_every_seconds"] == 120
+    assert ws.profile()["speed"] == "relay"
+    page = client.get("/profile").text
+    assert "Right now: smtp.gmail.com is a personal or office mailbox" in page
+    # The dashboard explains the current state in one line.
+    s = asyncio.run(ws.summary())
+    assert s["sending"]["state"] == "stuck" and "not running" in s["sending"]["text"]
+    page = client.get("/").text
+    assert "Not sending." in page and "The worker is not running" in page
+
+
+def test_gmail_mailboxes_get_their_own_daily_ceiling(client):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    from bb.workspaces import is_personal_smtp_host
+    assert is_personal_smtp_host("smtp.gmail.com") and is_personal_smtp_host("smtp.office365.com") and is_personal_smtp_host("mail.gmail.com")
+    assert not is_personal_smtp_host("smtp-relay.gmail.com") and not is_personal_smtp_host("email-smtp.eu-west-1.amazonaws.com")
+    ws.save_secrets(smtp_host="smtp.gmail.com", smtp_port=587, smtp_username="someone@gmail.com", smtp_password="app-pw")
+    ws.set_mail_provider("smtp")
+    assert ws.mailbox_daily_ceiling() == 450
+    client.post("/profile", data={**PROFILE, "speed": "relay", "max_daily_sends": "0", "quiet_form": "1"})
+    assert yaml.safe_load(ws.config_file.read_text())["channels"]["email"]["max_daily_sends"] == 450
+    client.post("/profile", data={**PROFILE, "max_daily_sends": "100", "quiet_form": "1"})
+    assert yaml.safe_load(ws.config_file.read_text())["channels"]["email"]["max_daily_sends"] == 100
+    ws.save_secrets(smtp_username="ops@acme-workspace.com")
+    assert ws.mailbox_daily_ceiling() == 1800
+    ws.save_secrets(smtp_host="email-smtp.eu-west-1.amazonaws.com")
+    assert ws.mailbox_daily_ceiling() == 0
+    client.post("/profile", data={**PROFILE, "max_daily_sends": "0", "quiet_form": "1"})
+    assert yaml.safe_load(ws.config_file.read_text())["channels"]["email"]["max_daily_sends"] == 0
+
+
+def test_workers_on_old_code_are_restarted_when_the_site_starts(client, monkeypatch):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    monkeypatch.setattr("bb.app.check_anthropic_key", _accept_key)
+    client.post("/apikey", data={"api_key": "sk-ant-user-key-2"})
+    client.post("/profile", data=PROFILE)
+    ws.save_secrets(smtp_host="smtp.example.com", smtp_port=587, smtp_username="me@example.com", smtp_password="pw")
+    ws.set_mail_provider("smtp")
+    starts = []
+    monkeypatch.setattr(ws_mod.subprocess, "Popen", lambda cmd, **kw: starts.append(cmd) or _FakeProc())
+    monkeypatch.setattr(ws_mod.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(ws_mod, "STOP_GRACE_SECONDS", 0.5)
+    monkeypatch.setattr(ws_mod, "code_version", lambda: "v1")
+    assert "Started" in client.post("/worker/start").headers["location"]
+    assert ws.pid_file.with_suffix(".version").read_text() == "v1" and len(starts) == 1
+    assert asyncio.run(ws.restart_workers_on_old_code()) == []           # same code: left alone
+    monkeypatch.setattr(ws_mod, "code_version", lambda: "v2")
+    assert asyncio.run(ws.restart_workers_on_old_code()) == ["worker"]   # new code: restarted
+    assert len(starts) == 2 and ws.pid_file.with_suffix(".version").read_text() == "v2"

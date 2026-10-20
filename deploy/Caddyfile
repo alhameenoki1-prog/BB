@@ -1,0 +1,5 @@
+# Caddy terminates TLS for the site and renews the certificate itself.
+# BB_DOMAIN comes from .env (docker compose --profile tls).
+{$BB_DOMAIN} {
+    reverse_proxy bb:8000
+}

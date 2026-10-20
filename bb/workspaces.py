@@ -67,16 +67,35 @@ SMTP_FIELDS = ("smtp_host", "smtp_port", "smtp_username", "smtp_password",
                "imap_host", "imap_port", "imap_username", "imap_password", "from_email", "reply_to")
 M365_FIELDS = ("m365_tenant_id", "m365_client_id", "m365_client_secret", "m365_mailbox")
 # How fast the worker runs: minutes between cycles and emails per cycle.
+# Each speed: how often the worker's heartbeat (research, writing) runs, and
+# how the sender drains the outbox on its own clock: a batch of per_cycle
+# every send_every seconds, through `concurrency` lanes, `jitter` seconds
+# apart at most. Sending never waits for research or writing.
 SPEEDS = {
     "gentle": {"label": "Gentle", "note": "8 emails every 5 minutes, one at a time with a pause between them (about 95 an hour)",
-               "interval": 5, "per_cycle": 8, "concurrency": 1, "jitter": 15.0},
+               "interval": 5, "per_cycle": 8, "send_every": 300, "concurrency": 1, "jitter": 15.0},
     "normal": {"label": "Normal", "note": "10 emails every 2 minutes, a few seconds apart (about 300 an hour)",
-               "interval": 2, "per_cycle": 10, "concurrency": 1, "jitter": 6.0},
-    "fast": {"label": "Fast", "note": "25 emails every minute, two at a time (about 1,500 an hour; a personal Gmail or Outlook mailbox may block this)",
-             "interval": 1, "per_cycle": 25, "concurrency": 2, "jitter": 2.0},
-    "relay": {"label": "Relay", "note": "100 emails every minute, eight at a time (about 6,000 an hour). For an SMTP sending service such as Amazon SES, Brevo, Postmark or Mailgun, never a personal mailbox",
-              "interval": 1, "per_cycle": 100, "concurrency": 8, "jitter": 0.8},
+               "interval": 2, "per_cycle": 10, "send_every": 120, "concurrency": 1, "jitter": 6.0},
+    "fast": {"label": "Fast", "note": "25 emails every 30 seconds, two at a time (about 3,000 an hour; a personal Gmail or Outlook mailbox is held to Normal's pace automatically)",
+             "interval": 1, "per_cycle": 25, "send_every": 30, "concurrency": 2, "jitter": 2.0},
+    "relay": {"label": "Relay", "note": "100 emails every 30 seconds, eight at a time (about 12,000 an hour). For an SMTP sending service such as Amazon SES, Brevo, Postmark, Mailgun or SendGrid, never a personal mailbox",
+              "interval": 1, "per_cycle": 100, "send_every": 30, "concurrency": 8, "jitter": 0.8},
 }
+# Mail hosts that belong to a personal or office mailbox, not a sending
+# service: they throttle or lock an account that opens several connections
+# or sends a burst, so Fast and Relay are held to Normal's pace on them.
+PERSONAL_SMTP_HOSTS = ("smtp.gmail.com", "smtp.googlemail.com", "smtp-mail.outlook.com", "smtp.office365.com",
+                       "smtp.live.com", "smtp.mail.yahoo.com", "smtp.mail.me.com", "smtp.aol.com", "smtp.zoho.com",
+                       "smtp.zoho.eu", "smtp.fastmail.com", "smtp.mail.com", "smtp.gmx.com", "smtp.gmx.net")
+PERSONAL_SMTP_SUFFIXES = ("gmail.com", "googlemail.com", "outlook.com", "office365.com", "live.com", "hotmail.com",
+                          "yahoo.com", "icloud.com", "me.com", "aol.com")
+
+
+def is_personal_smtp_host(host: str) -> bool:
+    host = (host or "").strip().lower()
+    if not host or host.startswith("smtp-relay."):   # Google Workspace's relay is a relay
+        return False
+    return host in PERSONAL_SMTP_HOSTS or host.endswith(PERSONAL_SMTP_SUFFIXES)
 GREETINGS = ("Hi", "Hello", "Hey", "Dear", "Good day")
 # Sectors the writer sorts contacts into, with labels for the form.
 SECTOR_LABELS = {
@@ -128,6 +147,7 @@ STYLES = {
     "concise": "Concise: under 75 words, one observation and one question",
 }
 MAIL_PROVIDERS = ("gmail", "smtp", "microsoft_app")
+STOP_GRACE_SECONDS = 30   # how long a worker gets to finish after SIGTERM before SIGKILL
 MAX_SIGNATURE_IMAGE = 1024 * 1024
 
 COMMON_TIMEZONES = (
@@ -315,6 +335,48 @@ class Workspace:
         secrets = self.secrets()
         return {k: secrets.get(k, "") for k in SMTP_FIELDS}
 
+    @property
+    def speed_file(self):
+        return self.data_dir / "speed.txt"
+
+    def _held_speed_marker(self) -> str:
+        try:
+            return self.speed_file.read_text().strip()
+        except OSError:
+            return ""
+
+    def pace_held_reason(self, speed: dict) -> str:
+        """Why a chosen speed is held to Normal's pace on this mailbox, or ""."""
+        if speed.get("concurrency", 1) <= 1 and speed.get("per_cycle", 0) <= SPEEDS["normal"]["per_cycle"]:
+            return ""
+        provider = self.mail_provider()
+        if provider == "gmail" and self.gmail_connected():
+            return "a Gmail mailbox connected through Google allows about one email every few seconds"
+        if provider == "smtp":
+            host = str(self.smtp_settings().get("smtp_host") or "").strip().lower()
+            if is_personal_smtp_host(host):
+                return f"{host} is a personal or office mailbox, which throttles or locks an account that sends in bursts"
+        return ""
+
+    def _capped_daily(self, wanted: int) -> int:
+        ceiling = self.mailbox_daily_ceiling()
+        if not ceiling:
+            return wanted
+        return ceiling if wanted == 0 else min(wanted, ceiling)
+
+    def mailbox_daily_ceiling(self) -> int:
+        """What the mailbox itself allows per day, when known: 500 for a
+        gmail.com address, 2,000 for Google Workspace, 0 = unknown. Past
+        it Google refuses with "daily user sending limit exceeded", so the
+        daily maximum is capped a little under it."""
+        provider = self.mail_provider()
+        address = (self.sending_address() or "").lower()
+        host = str(self.smtp_settings().get("smtp_host") or "").strip().lower() if provider == "smtp" else ""
+        google = (provider == "gmail" and self.gmail_connected()) or host.endswith(("gmail.com", "googlemail.com"))
+        if not google or host.startswith("smtp-relay."):
+            return 0
+        return 450 if address.endswith(("@gmail.com", "@googlemail.com")) else 1800
+
     def smtp_configured(self) -> bool:
         s = self.smtp_settings()
         return bool(s["smtp_host"] and s["smtp_username"] and s["smtp_password"])
@@ -437,6 +499,9 @@ class Workspace:
             "auto_prospect": bool(icp.get("auto_prospect", False)),
             "max_daily_sends": int(email.get("max_daily_sends", 0)),
             "require_approval": bool(email.get("require_approval", False)),
+            # A profile that exists keeps whatever it has (older files have no
+            # flag and meant "on"); a brand-new profile starts with no quiet hours.
+            "quiet_enabled": bool(quiet.get("enabled", True)) if cfg else False,
             "quiet_start": quiet.get("start", "20:00"),
             "quiet_end": quiet.get("end", "08:00"),
             "timezone": quiet.get("timezone", "UTC"),
@@ -464,7 +529,10 @@ class Workspace:
             "signature_html": outreach.get("signature_html", ""),
             "speed": next((k for k, v in SPEEDS.items()
                            if v["interval"] == usage.get("heartbeat_interval_minutes")
-                           and v["per_cycle"] == email.get("sends_per_cycle")), "normal"),
+                           and (v["per_cycle"] == email.get("sends_per_cycle")
+                                or (k != "normal" and email.get("send_every_seconds") and v["interval"] == 1
+                                    and email.get("send_concurrency", 1) == 1 and k == self._held_speed_marker()))),
+                          "normal"),
             "warmup_ramp": bool(email.get("warmup_ramp", True)),
         }
 
@@ -511,7 +579,9 @@ class Workspace:
             raise ValueError("Fill in your profile first.")
         prof = self.profile()
         merged = {**prof, "auto_prospect": "on" if prof["auto_prospect"] else "",
-                  "require_approval": "on" if prof["require_approval"] else "", **form, "inbox_form": "1"}
+                  "require_approval": "on" if prof["require_approval"] else "",
+                  "quiet_form": "1", "quiet_enabled": "on" if prof.get("quiet_enabled") else "",
+                  "warmup_ramp": "on" if prof.get("warmup_ramp") else "", **form, "inbox_form": "1"}
         return self.write_profile(merged)
 
     async def inbox_replies(self, limit: int = 100) -> list[dict]:
@@ -565,7 +635,17 @@ class Workspace:
                 "Say what you want from the people you write to, in a sentence or two (for example "
                 "\"quotes for a two-storey extension in Lagos, starting in March\"). Every email is "
                 "built around it; without it they come out vague.")
-        speed = SPEEDS.get(text("speed") or "normal", SPEEDS["normal"])
+        speed = dict(SPEEDS.get(text("speed") or "normal", SPEEDS["normal"]))
+        try:
+            self.ensure()
+            self.speed_file.write_text(text("speed") if text("speed") in SPEEDS else "normal")
+        except OSError:
+            pass
+        speed["held"] = self.pace_held_reason(speed)
+        if speed["held"]:
+            speed.update(per_cycle=min(speed["per_cycle"], SPEEDS["normal"]["per_cycle"]),
+                         send_every=max(speed["send_every"], SPEEDS["normal"]["send_every"]),
+                         concurrency=1, jitter=max(speed["jitter"], SPEEDS["normal"]["jitter"]))
         signature_html = str(form.get("signature_html", "") or "").strip()
         cfg = {
             "persona": {
@@ -600,11 +680,14 @@ class Workspace:
                 "email": {
                     "enabled": True,
                     "provider": self.mail_provider(),
-                    "max_daily_sends": max(0, int(text("max_daily_sends", "0") or 0)),  # 0 = no limit
+                    "max_daily_sends": self._capped_daily(max(0, int(text("max_daily_sends", "0") or 0))),  # 0 = no limit
                     "require_approval": flag("require_approval"),
                     "send_to_risky": False,
-                    "max_bounce_rate": 0.05,
+                    # An uploaded list that was never verified bounces 5-15%;
+                    # the switch is for a list that is clearly bad.
+                    "max_bounce_rate": 0.15,
                     "sends_per_cycle": speed["per_cycle"],
+                    "send_every_seconds": speed["send_every"],
                     "send_concurrency": speed["concurrency"],
                     "send_jitter_seconds": speed["jitter"],
                     # Checkbox: absent in the form means off; a brand-new form
@@ -622,6 +705,9 @@ class Workspace:
                 "max_daily_claude_percent": 80,
                 "heartbeat_interval_minutes": speed["interval"],
                 "quiet_hours": {
+                    # The checkbox: absent in a posted form means off. A form
+                    # that never had the box (an older page) keeps the old "on".
+                    "enabled": flag("quiet_enabled") if "quiet_form" in form else True,
                     "start": text("quiet_start") or "20:00",
                     "end": text("quiet_end") or "08:00",
                     "timezone": text("timezone") or "UTC",
@@ -665,7 +751,9 @@ class Workspace:
             return None
         prof = self.profile()
         form = {**prof, "auto_prospect": "on" if prof["auto_prospect"] else "",
-                "require_approval": "on" if prof["require_approval"] else ""}
+                "require_approval": "on" if prof["require_approval"] else "",
+                "quiet_form": "1", "quiet_enabled": "on" if prof.get("quiet_enabled") else "",
+                "warmup_ramp": "on" if prof.get("warmup_ramp") else ""}
         try:
             return self.write_profile(form)
         except Exception as e:  # a stale config must never break a mailbox change
@@ -770,6 +858,7 @@ class Workspace:
         }
         if not await self._table_exists("prospects"):
             out["allowance"] = await self._send_allowance(0)
+            out["sending"] = await self._sending_status(out)
             return out
         for row in await self._query("SELECT status, COUNT(*) AS n FROM prospects "
                                      "WHERE source != 'inbox' OR source IS NULL GROUP BY status"):
@@ -788,7 +877,7 @@ class Workspace:
         out["bounced"] = rows[0]["n"] if rows else 0
         if await self._table_exists("outbox"):
             for row in await self._query("SELECT status, COUNT(*) AS n FROM outbox GROUP BY status"):
-                key = {"pending_review": "outbox_pending", "approved": "outbox_scheduled",
+                key = {"pending_review": "outbox_pending", "approved": "outbox_scheduled", "sending": "outbox_scheduled",
                        "sent": "outbox_sent", "failed": "outbox_failed",
                        "rejected": "outbox_rejected", "cancelled": "outbox_rejected"}.get(row["status"])
                 if key:
@@ -807,7 +896,75 @@ class Workspace:
             out["sending_paused"] = (rows[0]["value"] or "") if rows else ""
         out["not_sent"] = out["waiting"] + out["queued"]
         out["allowance"] = await self._send_allowance(out["sent_today"])
+        out["sending"] = await self._sending_status(out)
         return out
+
+    async def _sending_status(self, out: dict) -> dict:
+        """What the sender is doing right now, in one sentence, with the
+        thing to change when it is stuck: {state, text, link}. state is
+        'sending', 'waiting' (nothing to send yet) or 'stuck'."""
+        cfg = self.config() or {}
+        email = (cfg.get("channels") or {}).get("email") or {}
+        usage = cfg.get("usage") or {}
+        speed = dict(SPEEDS.get(self._held_speed_marker() or "normal", SPEEDS["normal"]))
+        held = self.pace_held_reason(speed)
+        if not out["worker_running"]:
+            if out["worker_paused"]:
+                return {"state": "stuck", "text": "Paused for edits: nothing is written or sent until you press Resume.", "link": ""}
+            return {"state": "stuck", "text": "The worker is not running, so nothing is written or sent.", "link": ""}
+        if out["sending_paused"]:
+            return {"state": "stuck", "text": f"All sending is paused ({out['sending_paused']}). Press Resume sending.", "link": ""}
+        quiet = usage.get("quiet_hours") or {}
+        if quiet.get("enabled", True) and quiet.get("start") and quiet.get("end"):
+            try:
+                from harvey.config import HarveyConfig
+                from harvey.main import in_quiet_hours, seconds_until_quiet_hours_end
+                hc = HarveyConfig(**cfg)
+                if in_quiet_hours(hc):
+                    mins = seconds_until_quiet_hours_end(hc) // 60
+                    return {"state": "stuck", "text": f"Quiet hours: the worker sleeps for another {mins // 60}h {mins % 60}m "
+                                                       f"(it sends only between {quiet.get('end')} and {quiet.get('start')} {quiet.get('timezone', '')}). "
+                                                       "Untick \"Only send during these hours\" on the profile to send around the clock.",
+                            "link": "/profile#sending"}
+            except Exception:
+                pass
+        if await self._table_exists("settings"):
+            rows = await self._query("SELECT value FROM settings WHERE key = 'sender_skip_reason'")
+            skip = (rows[0]["value"] or "") if rows else ""
+            if skip and "quiet" not in skip:
+                return {"state": "stuck", "text": f"The sender is skipping its passes: {skip}.", "link": ""}
+        for line in reversed(self.log_tail(80)):
+            low = line.lower()
+            if "harvey is paused" in low or "usage limit reached" in low or "not sending" in low:
+                text = line.split(" - ", 2)[-1] if " - " in line else line
+                text = text.split("INFO:")[-1].split("ERROR:")[-1].strip()
+                if "usage limit" in low:
+                    return {"state": "stuck", "text": f"The AI spend cap stopped the worker until tomorrow: {text[:160]} Raise the cap on the profile.", "link": "/profile"}
+                if "paused" in low and "harvey is paused" in low:
+                    return {"state": "stuck", "text": f"The AI provider is refusing calls: {text[:200]}", "link": "/apikey"}
+                if "quiet hours" in low or "sleeping" in low:
+                    continue
+                return {"state": "stuck", "text": text[:220], "link": ""}
+            if "sent step" in low or "sent this cycle" in low or "cycle complete" in low or "checking pipeline" in low:
+                break
+        a = out["allowance"]
+        if a.get("reached"):
+            return {"state": "stuck", "text": a["text"] + (" Switch off warm-up or raise the daily maximum on the profile." if a.get("warming") else " Raise the daily maximum on the profile."), "link": "/profile#sending"}
+        if out["outbox_pending"]:
+            why = "they wait for your approval" if email.get("require_approval") else "the spam check held them for your review"
+            return {"state": "stuck", "text": f"{out['outbox_pending']} emails are written but {why}. Approve them in the Outbox"
+                                               + ("" if email.get("require_approval") else ", or edit the request on the profile and they are rewritten") + ".",
+                    "link": "/outbox"}
+        if out["recipients"] == 0:
+            return {"state": "waiting", "text": "No recipients yet. Upload a list and the worker starts writing.", "link": "/recipients"}
+        if out["outbox_scheduled"]:
+            pace = (f"{email.get('sends_per_cycle') or speed['per_cycle']} every "
+                    f"{email.get('send_every_seconds') or speed['send_every']} seconds")
+            return {"state": "sending", "text": f"Sending: {out['outbox_scheduled']} emails are approved and leave at {pace}"
+                                                 + (f" (held to this pace because {held})" if held else "") + f"; {out['sent_today']} went out today.", "link": ""}
+        if out["waiting"]:
+            return {"state": "waiting", "text": f"Writing: {out['waiting']} recipients still need an email; the next batch is written this cycle and sends right after.", "link": ""}
+        return {"state": "waiting", "text": "Everything on the list has been sent or is scheduled as a follow-up.", "link": ""}
 
     async def _send_allowance(self, sent_today: int) -> dict:
         """Today's send limit as the sender computes it, with the reason in
@@ -916,9 +1073,13 @@ class Workspace:
         try:
             pid = int(self.pid_file.read_text().strip())
             os.kill(pid, 0)
-            return pid
         except (OSError, ValueError):
             return None
+        if not _is_harvey_process(pid):
+            # After a reboot the number can belong to anything: forget it.
+            self.pid_file.unlink(missing_ok=True)
+            return None
+        return pid
 
     def worker_env(self) -> dict:
         env = {**os.environ, **self.settings.worker_env(), "HARVEY_HOME": str(self.root),
@@ -982,6 +1143,7 @@ class Workspace:
             return False, f"Could not start: {e}"
         self.pid_file.write_text(str(proc.pid))
         self.autostart_file.write_text(str(int(time.time())))
+        self._stamp_version(self.pid_file)
         return True, f"Started (pid {proc.pid})."
 
     async def stop_worker(self, reason: str = "Stop pressed on the dashboard") -> tuple[bool, str]:
@@ -993,7 +1155,7 @@ class Workspace:
         self._note_in_log(f"BB is stopping the worker: {reason}.")
         try:
             os.kill(pid, signal.SIGTERM)
-            for _ in range(20):
+            for _ in range(int(STOP_GRACE_SECONDS / 0.25)):   # a worker mid-send finishes the email first
                 await asyncio.sleep(0.25)
                 try:
                     os.kill(pid, 0)
@@ -1077,6 +1239,7 @@ class Workspace:
             return False, f"Could not start: {e}"
         self.mail_pid_file.write_text(str(proc.pid))
         self.mail_autostart_file.write_text(str(int(time.time())))
+        self._stamp_version(self.mail_pid_file)
         return True, f"Started (pid {proc.pid})."
 
     async def stop_mail_worker(self) -> tuple[bool, str]:
@@ -1176,6 +1339,34 @@ class Workspace:
         except OSError:
             pass
 
+    # ── code version: a worker started on older code is restarted after an update ──
+
+    def _stamp_version(self, pid_file):
+        try:
+            pid_file.with_suffix(".version").write_text(code_version())
+        except OSError:
+            pass
+
+    def _started_on(self, pid_file) -> str:
+        try:
+            return pid_file.with_suffix(".version").read_text().strip()
+        except OSError:
+            return ""
+
+    async def restart_workers_on_old_code(self) -> list[str]:
+        """After `git pull` and a site restart, running workers still carry
+        the previous code (they are separate processes). Restart those that
+        were started on a different version. Returns what was restarted."""
+        current = code_version()
+        out = []
+        if self.worker_running() and self._started_on(self.pid_file) != current:
+            if await self.restart_worker_if_running("the updated code"):
+                out.append("worker")
+        if self.mail_worker_running() and self._started_on(self.mail_pid_file) != current:
+            if await self.restart_mail_worker_if_running():
+                out.append("mail worker")
+        return out
+
     def revive_worker(self) -> str:
         """If the worker should be running (it was started and never
         stopped from here) but its process is gone — the Mac rebooted, the
@@ -1260,6 +1451,53 @@ def parse_activity(lines: list[str], limit: int = 30) -> list[dict]:
         out.append({"when": when, "agent": agent, "kind": kind, "text": text, "count": 1, "level": level.upper()})
     out.reverse()
     return out[:limit]
+
+
+_CODE_VERSION: dict = {}
+
+
+def code_version() -> str:
+    """The code the workers run: the git commit when there is one, else the
+    newest change time of the source tree. Computed once per site process."""
+    if "v" not in _CODE_VERSION:
+        _CODE_VERSION["v"] = _compute_code_version()
+    return _CODE_VERSION["v"]
+
+
+def _compute_code_version() -> str:
+    try:
+        r = subprocess.run(["git", "-C", str(PROJECT_ROOT), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except Exception:
+        pass
+    newest = 0.0
+    for folder in ("harvey", "bb"):
+        for path in (PROJECT_ROOT / folder).rglob("*.py"):
+            try:
+                newest = max(newest, path.stat().st_mtime)
+            except OSError:
+                pass
+    return str(int(newest))
+
+
+code_version()
+
+
+def _is_harvey_process(pid: int) -> bool:
+    """True when the process with this pid is one of our workers (or we
+    cannot tell). A reused pid after a reboot must not count as running."""
+    try:
+        proc = Path(f"/proc/{pid}/cmdline")
+        if proc.exists():
+            cmd = proc.read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            return "harvey" in cmd or "bb.mail" in cmd
+        if sys.platform == "darwin":
+            out = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout
+            return ("harvey" in out or "bb.mail" in out) if out.strip() else False
+    except Exception:
+        return True
+    return True
 
 
 def all_workspaces(settings, accounts) -> list[Workspace]:

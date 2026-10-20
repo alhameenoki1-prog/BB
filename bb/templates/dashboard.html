@@ -54,6 +54,11 @@
         {% endif %}
       </div>
       {% if summary.sending_paused %}<p class="tiny" style="margin-top:8px">Reason: {{ summary.sending_paused }}</p>{% endif %}
+      {% if summary.sending %}
+      <div class="card flat" id="sending-status" style="margin-top:12px;{{ 'border-color:var(--warn)' if summary.sending.state == 'stuck' else ('border-color:var(--good)' if summary.sending.state == 'sending' else '') }}">
+        <b>{{ {'sending': 'Sending now.', 'waiting': 'Nothing to send yet.', 'stuck': 'Not sending.'}[summary.sending.state] }}</b> {{ summary.sending.text }}{% if summary.sending.link %} <a href="{{ summary.sending.link }}">Open</a>{% endif %}
+      </div>
+      {% endif %}
       <details style="margin-top:16px">
         <summary class="small muted" style="cursor:pointer">Start over with a new list</summary>
         <p class="small muted" style="margin-top:8px">Clears every recipient, every written and sent email, all replies and the counters, so you can upload a fresh list and begin again. Your profile, mailbox, AI provider, attachments and signature are kept. This cannot be undone.</p>

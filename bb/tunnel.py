@@ -69,8 +69,6 @@ class Tunnel:
                 logger.warning("tunnel: %s", self.detail)
                 return
             self.started_at = time.time()
-            if self.mode == "named":
-                self.status = "up"
             assert self._proc.stderr is not None
             try:
                 while True:
@@ -78,6 +76,11 @@ class Tunnel:
                     if not line:
                         break
                     text = line.decode("utf-8", errors="replace").strip()
+                    if self.mode == "named" and self.status != "up" and ("registered" in text.lower() and "connection" in text.lower()):
+                        self.status, self.detail = "up", ""
+                        self._restarts = 0
+                        logger.info("tunnel: connected; public address %s", self.url)
+                        print(f"Share this link with your users: {self.url}", flush=True)
                     m = URL_RE.search(text)
                     if m and self.mode == "quick" and m.group(0) != self.url:
                         self.url, self.status, self.detail = m.group(0), "up", ""

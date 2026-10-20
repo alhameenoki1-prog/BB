@@ -59,6 +59,16 @@ async def test_quick_tunnel_reports_its_address_and_restarts(tmp_path):
     assert missing.status == "missing" and "not installed" in missing.detail
     named = Tunnel("named", 8000, token="tok", public_url="https://out.example", binary=_fake(tmp_path))
     assert named.url == "https://out.example" and named.command()[-2:] == ["--token", "tok"] and not named.describe()["changes"]
+    # A named tunnel is "up" only once cloudflared reports a registered connection.
+    named = Tunnel("named", 8000, token="tok", public_url="https://out.example",
+                   binary=_fake(tmp_path, FAKE.replace("https://sunny-ridge-example.trycloudflare.com", "Registered tunnel connection connIndex=0")))
+    await named.start()
+    for _ in range(50):
+        await asyncio.sleep(0.1)
+        if named.status == "up":
+            break
+    assert named.status == "up" and named.url == "https://out.example"
+    await named.stop()
     assert not Tunnel("", 8000).enabled
 
 

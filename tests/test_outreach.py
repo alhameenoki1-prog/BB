@@ -384,3 +384,42 @@ async def test_writer_runs_model_calls_in_parallel(state):
     assert brain.peak >= 2 and brain.peak <= writer_mod.MODEL_CONCURRENCY
     assert len([p for p in brain.prompts if "Sort these contacts" in p]) == 3   # 60 contacts, 25 a call
     assert (await state.count_prospects_by_status()).get("queued", 0) == 60
+
+
+@pytest.mark.asyncio
+async def test_writer_backlog_ignores_follow_ups_scheduled_days_ahead(state):
+    """Three-step sequences stage two follow-ups per person days ahead; those
+    must not make the writer believe the outbox is full."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i in range(3):
+        await state.add_outbox_item(prospect_id=f"p{i}", campaign_id="c", step=1, to_email=f"p{i}@x.co",
+                                    subject="s", body="b", send_at=now.isoformat(), status="approved", provider="smtp")
+        await state.add_outbox_item(prospect_id=f"p{i}", campaign_id="c", step=2, to_email=f"p{i}@x.co",
+                                    subject="s", body="b", send_at=(now + timedelta(days=3)).isoformat(), status="approved", provider="smtp")
+    assert await state.count_outbox_queued() == 3
+    assert await state.count_outbox_queued(first_step_only=False) == 6
+    await state.update_outbox_item((await state.get_outbox(status="approved"))[0]["id"], status="pending_review")
+    assert await state.count_outbox_queued(statuses=("approved",)) == 2      # held rows are not a backlog in autopilot
+    assert await state.count_outbox_queued() == 3
+
+
+@pytest.mark.asyncio
+async def test_segment_sequences_are_reused_within_a_day(state):
+    """The second batch of the same sector and tier costs no sequence call."""
+    cfg = _config(mode="inquiry", intent="hire a builder", personalize_each=False)
+    for i in range(4):
+        await state.add_prospect(Prospect(id=f"s{i}", first_name=f"P{i}", last_name="X", email=f"p{i}@build.co",
+                                          email_status="provided", title="Owner", company="Build"))
+    brain = _ClassifyingBrain()
+    writer = Writer(brain, state, cfg, EnvConfig())
+    await writer.run()
+    seq_calls = len([p for p in brain.prompts if "3-email" in p])
+    assert seq_calls >= 1
+    for i in range(4, 8):
+        await state.add_prospect(Prospect(id=f"s{i}", first_name=f"P{i}", last_name="X", email=f"p{i}@build.co",
+                                          email_status="provided", title="Owner", company="Build"))
+    await writer.run()
+    assert len([p for p in brain.prompts if "3-email" in p]) == seq_calls          # reused
+    drafts = await state.get_campaigns_by_status("draft")
+    assert len(drafts) == 2 and drafts[0].sequence[0].subject == drafts[1].sequence[0].subject

@@ -5,6 +5,7 @@ user sees is scoped to their own workspace (their Harvey home), so one
 install serves many people without any of Harvey's code knowing.
 """
 
+import asyncio
 import logging
 import secrets
 from contextlib import asynccontextmanager
@@ -191,15 +192,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.info("Created the admin account %s", settings.admin_email)
             except ValueError as e:
                 logger.error("Could not create the admin account: %s", e)
-        # Workers that were running before a restart come back.
+        # Workers that were running before a restart come back; workers that
+        # kept running on older code are restarted on the new one.
         for ws in all_workspaces(settings, accounts):
+            try:
+                for what in await ws.restart_workers_on_old_code():
+                    logger.info("Restarted the %s for %s on the updated code", what, ws.user["email"])
+            except Exception as e:
+                logger.warning("version check failed for %s: %s", ws.user["email"], e)
             if ws.wants_autostart() and not ws.worker_running() and not ws.user["disabled"]:
                 ok, detail = ws.start_worker()
                 logger.info("Autostart worker for %s: %s", ws.user["email"], detail)
             if ws.mail_autostart_file.exists() and not ws.mail_worker_running() and not ws.user["disabled"]:
                 ok, detail = ws.start_mail_worker()
                 logger.info("Autostart mail worker for %s: %s", ws.user["email"], detail)
+        async def keep_workers_alive():
+            # Every two minutes: any worker that should be running and is not
+            # comes back, whether or not anyone is looking at the dashboard.
+            while True:
+                await asyncio.sleep(120)
+                try:
+                    for ws in all_workspaces(settings, accounts):
+                        note = ws.revive_worker()
+                        if note:
+                            logger.info("Revived worker for %s", ws.user["email"])
+                        ws.revive_mail_worker()
+                except Exception as e:
+                    logger.warning("worker check failed: %s", e)
+
+        keeper = asyncio.create_task(keep_workers_alive())
         yield
+        keeper.cancel()
         await tunnel.stop()
 
     app = FastAPI(title="BB", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -339,7 +362,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return dict(profile=profile, tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES,
                     modes=OUTREACH_MODES, policies=ATTACH_POLICIES, attachments=ws.attachments(),
                     speeds=SPEEDS, styles=STYLES, greetings=GREETINGS, asks=ASKS, sector_labels=SECTOR_LABELS,
-                    max_sector_messages=MAX_SECTOR_MESSAGES, signature_image=ws.signature_image())
+                    max_sector_messages=MAX_SECTOR_MESSAGES, signature_image=ws.signature_image(),
+                    pace_held=ws.pace_held_reason(SPEEDS.get(profile.get("speed") or "normal", SPEEDS["normal"])))
 
     @app.get("/profile", response_class=HTMLResponse)
     async def profile_page(request: Request, user: dict = Depends(current_user)):
@@ -463,6 +487,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws.save_secrets(**m365)
         ws.set_mail_provider("microsoft_app")
         ws.rewrite_config()
+        await ws.restart_worker_if_running("the new mailbox settings")
         return _redirect("/mailbox", msg=f"Microsoft 365 saved. {detail}")
 
     @app.post("/mailbox/m365/test")
@@ -481,6 +506,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws.save_secrets(**{k: "" for k in ws.m365_settings()})
         ws.set_mail_provider("gmail" if ws.gmail_connected() else "smtp")
         ws.rewrite_config()
+        await ws.restart_worker_if_running("the new mailbox settings")
         return _redirect("/mailbox", msg="Microsoft 365 settings removed.")
 
     # ── signature image ──
@@ -523,9 +549,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as e:
             return _redirect("/mailbox", error=str(e))
         ws.rewrite_config()
+        await ws.restart_worker_if_running("the new mailbox settings")
         label = "Gmail" if provider == "gmail" else "your mailbox's SMTP/IMAP settings"
         return _redirect("/mailbox", msg=f"Emails will go through {label}."
-                         + (" Restart the worker to apply." if ws.worker_running() else ""))
+                         + (" The worker was restarted with it." if ws.worker_running() else ""))
 
     @app.post("/mailbox/smtp")
     async def mailbox_smtp_save(request: Request, user: dict = Depends(current_user)):
@@ -548,6 +575,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws.save_secrets(**smtp)
         ws.set_mail_provider("smtp")
         ws.rewrite_config()
+        await ws.restart_worker_if_running("the new mailbox settings")
         return _redirect("/mailbox", msg=f"Mailbox saved. {detail}")
 
     @app.post("/mailbox/login")
@@ -576,6 +604,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws.save_secrets(**smtp)
         ws.set_mail_provider("smtp")
         ws.rewrite_config()
+        await ws.restart_worker_if_running("the new mailbox settings")
         return _redirect("/mailbox", msg=f"Signed in to {email}. {detail}")
 
     @app.post("/mailbox/smtp/test")
@@ -595,6 +624,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if ws.gmail_connected():
             ws.set_mail_provider("gmail")
         ws.rewrite_config()
+        await ws.restart_worker_if_running("the new mailbox settings")
         return _redirect("/mailbox", msg="SMTP settings removed.")
 
     # ── attachments sent with replies ──
@@ -657,6 +687,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         gmail_oauth.save_token(ws, data, email)
         ws.set_mail_provider("gmail")
         ws.rewrite_config()  # the persona sends from the connected mailbox
+        await ws.restart_worker_if_running("the new mailbox settings")
         response = _redirect("/mailbox", msg=f"Gmail connected as {email}.")
         response.delete_cookie(GMAIL_NONCE_COOKIE, path="/gmail")
         return response
@@ -670,6 +701,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if ws.smtp_configured():
             ws.set_mail_provider("smtp")
         ws.rewrite_config()
+        await ws.restart_worker_if_running("the new mailbox settings")
         return _redirect("/mailbox", msg="Gmail disconnected.")
 
     @app.post("/gmail/test")

@@ -6,6 +6,8 @@
     python -m bb make-admin EMAIL                 # give an existing login the admin role
     python -m bb list-users                       # who exists
     python -m bb status                           # address, data folder, admins, settings file
+    python -m bb install-service                  # keep it running: starts at login/boot, restarts if it stops
+    python -m bb uninstall-service
 
 Settings (BB_BASE_URL, BB_ADMIN_EMAIL, BB_ADMIN_PASSWORD, ...) are read from
 the environment, and from bb.env or .env next to the code when present.
@@ -99,6 +101,26 @@ def cmd_serve(args):
                 forwarded_allow_ips="*")
 
 
+def cmd_install_service(args):
+    from bb import service
+
+    settings, accounts = _accounts()
+    env = {}
+    path, notes = service.install(PROJECT_ROOT, settings.home, load=not args.no_start, env=env)
+    for line in notes:
+        print(line)
+    if not (PROJECT_ROOT / "bb.env").is_file():
+        print("Note: no bb.env next to the code. The service reads it on every start; put BB_BASE_URL, BB_ADMIN_EMAIL, "
+              "BB_ADMIN_PASSWORD (and BB_TUNNEL=cloudflare or BB_TUNNEL_TOKEN) there.")
+
+
+def cmd_uninstall_service(args):
+    from bb import service
+
+    for line in service.uninstall():
+        print(line)
+
+
 def cmd_status(args):
     settings, accounts = _accounts()
     for line in startup_report(settings, accounts):
@@ -177,6 +199,10 @@ def main(argv=None):
     p.set_defaults(func=cmd_make_admin)
     sub.add_parser("list-users", help="list accounts").set_defaults(func=cmd_list_users)
     sub.add_parser("status", help="where the site is, where its data lives, who the admins are").set_defaults(func=cmd_status)
+    p = sub.add_parser("install-service", help="start the site at login/boot and restart it if it stops (launchd on a Mac, systemd on Linux)")
+    p.add_argument("--no-start", action="store_true", help="write the service file but do not start it")
+    p.set_defaults(func=cmd_install_service)
+    sub.add_parser("uninstall-service", help="remove the login/boot service").set_defaults(func=cmd_uninstall_service)
     args = parser.parse_args(argv)
     args._env_files_read = load_env_files()
     (getattr(args, "func", None) or cmd_serve)(args)

@@ -307,3 +307,34 @@ async def test_profile_stage_has_its_own_time_budget(monkeypatch):
         return 3, 9, "r"
     monkeypatch.setattr(main_mod, "run_profile_stage", quick)
     assert await main_mod._bounded_profile(None) == (3, 9, "r")
+
+
+@pytest.mark.asyncio
+async def test_native_providers_keep_writing_while_drafts_wait_and_quiet_hours_end_is_exclusive():
+    from datetime import datetime
+    import pytz
+    import harvey.main as main_mod
+    class _Cfg:
+        class icp:
+            auto_prospect = False
+        class channels:
+            class email:
+                provider = "smtp"
+    summary = {"prospects": {"new": 5}, "draft_campaigns": 2, "open_conversations": 0}
+    assert await main_mod.decide_next_action(None, None, _Cfg(), summary=summary) == "write_campaign"
+    _Cfg.channels.email.provider = "instantly"
+    assert await main_mod.decide_next_action(None, None, _Cfg(), summary=summary) == "send_campaign"
+
+    from harvey.config import QuietHoursConfig
+
+    class _QCfg:
+        class usage:
+            quiet_hours = None
+    now = datetime.now(pytz.timezone("UTC")).time()
+    hhmm = now.strftime("%H:%M")
+    _QCfg.usage.quiet_hours = QuietHoursConfig(start="00:00", end=hhmm, timezone="UTC")   # ends right now
+    assert main_mod.in_quiet_hours(_QCfg()) is False     # the end minute is not quiet any more
+    _QCfg.usage.quiet_hours = QuietHoursConfig(enabled=False, start="00:00", end="23:59", timezone="UTC")
+    assert main_mod.in_quiet_hours(_QCfg()) is False
+    _QCfg.usage.quiet_hours = QuietHoursConfig(start="00:00", end="23:59", timezone="UTC")
+    assert main_mod.in_quiet_hours(_QCfg()) is (hhmm != "23:59")

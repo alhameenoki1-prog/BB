@@ -7,6 +7,7 @@ threshold — flips the global kill switch so a bad list can't torch the
 sending domain while nobody's watching.
 """
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -29,7 +30,7 @@ INBOX_REPLY_COOLDOWN_DAYS = 3
 INBOX_BACKLOG_PER_CYCLE = 5
 BOUNCE_COUNT_KEY = "bounce_count"
 # Kill switch only engages after this many sends (a tiny sample lies).
-MIN_SENDS_FOR_KILL_SWITCH = 10
+MIN_SENDS_FOR_KILL_SWITCH = 50
 
 INTENT_LABELS = {
     "interested",
@@ -107,8 +108,9 @@ class Handler:
             and self.provider is not None
         )
 
-    async def run(self):
-        """Check for new replies and handle them.
+    async def run(self, backlog: bool = True):
+        """Check for new replies and handle them. ``backlog`` False skips the
+        older-unanswered-mail sweep (the sender's frequent passes).
 
         Returns True only if every reply could be fetched and handled. The
         heartbeat sends nothing in a cycle where this isn't True, because a
@@ -123,7 +125,7 @@ class Handler:
             return True
 
         if self.is_native:
-            return await self._run_native()
+            return await self._run_native(backlog=backlog)
 
         # 1. Fetch active campaigns
         active_campaigns = await self.state.get_campaigns_by_status("active")
@@ -372,7 +374,7 @@ class Handler:
 
     # ── Native provider path (Gmail / SMTP) ──
 
-    async def _run_native(self) -> bool:
+    async def _run_native(self, backlog: bool = True) -> bool:
         """Poll the mailbox, split bounces from human replies, handle both.
         Returns True only if the mailbox was read and every message handled."""
         if not self.provider.is_configured():
@@ -413,6 +415,9 @@ class Handler:
                             },
                         )
                 handled += 1
+            except asyncio.CancelledError:
+                consumed = False   # cut off mid-way: the reply is read again next time
+                raise
             except BrainUnavailable as e:
                 consumed = False
                 complete = False
@@ -429,7 +434,7 @@ class Handler:
             logger.info(f"Handler: processed {handled} inbound message(s).")
         else:
             logger.info("Handler: no new replies.")
-        if complete and self.inbox_autoreply and self.inbox_backlog_days > 0:
+        if backlog and complete and self.inbox_autoreply and self.inbox_backlog_days > 0:
             complete = await self._scan_unanswered() and complete
         return complete
 

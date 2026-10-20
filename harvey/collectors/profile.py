@@ -534,6 +534,12 @@ async def profile_companies(state, companies: list[dict]) -> tuple[int, str]:
             n = await collector.run(companies, run_id=run_id)
         await state.finish_run(run_id, records=n, cost_usd=0.0)
         return n, run_id
+    except asyncio.CancelledError:
+        try:
+            await state.finish_run(run_id, status="partial", error="stopped at the cycle's time budget")
+        except Exception:
+            pass
+        raise
     except Exception as e:
         await state.finish_run(run_id, status="failed", error=str(e))
         raise

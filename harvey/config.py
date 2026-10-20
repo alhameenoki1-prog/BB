@@ -99,6 +99,10 @@ class EmailChannelConfig(BaseModel):
     # quarter of it). Together these are the pace inside one heartbeat.
     send_concurrency: int = 1
     send_jitter_seconds: float = 15.0
+    # Native providers: drain the outbox (after reading replies) this often,
+    # on its own clock, instead of once per heartbeat. 0 = once per heartbeat,
+    # after research and writing, as before.
+    send_every_seconds: int = 0
     # Warm-up: a mailbox that has never sent cold email starts at 20 a day
     # and may send 10 more each day, up to max_daily_sends. Off = full speed
     # from day one (fine for a mailbox that already sends a lot).
@@ -111,6 +115,12 @@ class EmailChannelConfig(BaseModel):
     @classmethod
     def _concurrency(cls, v: int) -> int:
         return max(1, min(int(v or 1), 16))
+
+    @field_validator("send_every_seconds")
+    @classmethod
+    def _send_every(cls, v: int) -> int:
+        v = int(v or 0)
+        return 0 if v <= 0 else max(10, min(v, 3600))
 
     @field_validator("send_jitter_seconds")
     @classmethod
@@ -372,6 +382,8 @@ class OutreachConfig(BaseModel):
 
 
 class QuietHoursConfig(BaseModel):
+    # enabled False = send at any hour; start/end are then ignored.
+    enabled: bool = True
     start: str = "22:00"
     end: str = "07:00"
     timezone: str = "America/New_York"

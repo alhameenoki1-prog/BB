@@ -61,6 +61,15 @@ def _attachment_paths(raw) -> list:
             logger.warning(f"Sender: attachment {name!r} is missing; sending without it.")
     return paths
 SEND_JITTER_SECONDS = (4, 15)
+# A temporary refusal (throttling, a 4xx, the network) puts the email back
+# in the queue for later, a few times, before it counts as failed.
+MAX_SEND_RETRIES = 5
+RETRY_DELAY_SECONDS = 600
+
+
+def _retry_count(error: str) -> int:
+    m = re.match(r"retry (\d+)/", error or "")
+    return int(m.group(1)) if m else 0
 
 # Prospect pipeline statuses that mean "stop emailing this person".
 STOP_STATUSES = {"replied", "opted_out", "lost", "meeting", "closed"}
@@ -539,6 +548,9 @@ class Sender:
             return
 
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+        stale = await self.state.release_stale_sending()
+        if stale:
+            logger.warning(f"Sender: {stale} email(s) were left mid-send by an earlier worker; marked failed.")
         due = await self.state.get_outbox(
             status="approved", due_before=now, limit=budget * 3
         )
@@ -636,10 +648,12 @@ class Sender:
         queue = list(ready)
         sent = 0
 
+        self._throttled = False
+
         async def lane():
             nonlocal sent
             first = True
-            while queue:
+            while queue and not self._throttled:
                 item, prospect, receipt_id = queue.pop(0)
                 if self.send_pacing and jitter_max > 0 and not first:
                     await asyncio.sleep(random.uniform(jitter_max / 4, jitter_max))
@@ -655,6 +669,8 @@ class Sender:
 
     async def _send_one(self, item: dict, prospect, receipt_id: str) -> bool:
         """Send one gated outbox item and record the outcome. True when it went."""
+        if not await self.state.claim_outbox_item(item["id"]):
+            return False   # another pass took it, or it was approved no more
         send_kwargs = {}
         files = _attachment_paths(item.get("attachments_json"))
         if files:
@@ -666,6 +682,20 @@ class Sender:
             **send_kwargs,
         )
         if not result.ok:
+            if getattr(result, "retryable", False):
+                tries = _retry_count(item.get("error") or "") + 1
+                daily = any(w in (result.error or "").lower() for w in ("sending limit", "limit for sending", "5.4.5", "quota"))
+                if tries <= MAX_SEND_RETRIES:
+                    delay = 24 * 3600 if daily else RETRY_DELAY_SECONDS * tries
+                    later = (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=delay)).isoformat()
+                    await self.state.update_outbox_item(
+                        item["id"], status="approved", send_at=later,
+                        error=f"retry {tries}/{MAX_SEND_RETRIES}: {result.error[:200]}")
+                    self._throttled = True   # the provider is asking for a pause: this pass ends
+                    logger.warning(f"Sender: temporary refusal for {item['to_email']}; trying again in "
+                                   f"{delay // 60} min ({tries}/{MAX_SEND_RETRIES})."
+                                   + (" The mailbox's daily sending limit is reached." if daily else ""))
+                    return False
             await self.state.update_outbox_item(
                 item["id"], status="failed", error=result.error[:300]
             )

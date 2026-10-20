@@ -716,12 +716,22 @@ class StateManager:
                 row = await cursor.fetchone()
                 return self._prospect_from_row(row) if row else None
 
-    async def get_prospects_by_status(self, status: str) -> list[Prospect]:
+    async def get_prospects_by_status(self, status: str, limit: int | None = None,
+                                      email_statuses: tuple | None = None) -> list[Prospect]:
+        """Prospects in a status, newest first. ``email_statuses`` narrows to
+        deliverable addresses in SQL, so a page limit never stalls on rows
+        the writer would skip anyway."""
+        params: list = [status]
+        where = "status = ?"
+        if email_statuses:
+            where += f" AND COALESCE(NULLIF(email_status, ''), 'guess') IN ({','.join('?' for _ in email_statuses)})"
+            params += list(email_statuses)
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT * FROM prospects WHERE status = ? ORDER BY created_at DESC",
-                (status,),
+                f"SELECT * FROM prospects WHERE {where} ORDER BY created_at DESC"
+                + (f" LIMIT {int(limit)}" if limit else ""),
+                params,
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [self._prospect_from_row(r) for r in rows]
@@ -981,6 +991,30 @@ class StateManager:
             )
             await db.commit()
 
+    async def claim_outbox_item(self, item_id: str) -> bool:
+        """Move one approved row to 'sending'. False when someone else got
+        it first (or it is no longer approved): never send a row twice."""
+        async with self._connect() as db:
+            cur = await db.execute(
+                "UPDATE outbox SET status = 'sending', updated_at = ? WHERE id = ? AND status = 'approved'",
+                (_utcnow().isoformat(), item_id))
+            await db.commit()
+            return cur.rowcount == 1
+
+    async def release_stale_sending(self, minutes: int = 15) -> int:
+        """Rows left in 'sending' by a process that died mid-send. Whether
+        the email left is unknown, so they are failed with a note rather
+        than sent again."""
+        from datetime import timedelta
+        cutoff = (_utcnow() - timedelta(minutes=minutes)).isoformat()
+        async with self._connect() as db:
+            cur = await db.execute(
+                "UPDATE outbox SET status = 'failed', error = 'the worker stopped while this was being sent; "
+                "it may or may not have left', updated_at = ? WHERE status = 'sending' AND updated_at < ?",
+                (_utcnow().isoformat(), cutoff))
+            await db.commit()
+            return cur.rowcount
+
     async def approve_outbox(self, item_id: str | None = None) -> int:
         """Approve one pending item, or ALL pending when item_id is None."""
         async with self._connect() as db:
@@ -1012,13 +1046,19 @@ class StateManager:
             await db.commit()
             return cursor.rowcount
 
-    async def count_outbox_queued(self, kind: str = "sequence") -> int:
-        """Emails written but not yet sent (awaiting approval or scheduled).
-        The writer keeps this to a couple of days of sends."""
+    async def count_outbox_queued(self, kind: str = "sequence", statuses: tuple = ("pending_review", "approved"),
+                                  first_step_only: bool = True) -> int:
+        """Emails written but not yet sent. The writer keeps this to a
+        couple of days of sends, so it counts what the sender is actually
+        waiting on: first emails (follow-ups are scheduled days ahead) in
+        the given statuses (held-for-review rows are not a backlog in
+        autopilot; they wait for a person)."""
+        params: list = [kind, *statuses]
+        marks = ",".join("?" for _ in statuses) or "''"
         async with self._connect() as db:
             async with db.execute(
-                "SELECT COUNT(*) FROM outbox WHERE status IN ('pending_review', 'approved') "
-                "AND kind = ?", (kind,)
+                f"SELECT COUNT(*) FROM outbox WHERE kind = ? AND status IN ({marks})"
+                + (" AND step = 1" if first_step_only else ""), params
             ) as cursor:
                 row = await cursor.fetchone()
                 return int(row[0] or 0) if row else 0
@@ -1634,6 +1674,25 @@ class StateManager:
             )
             await db.commit()
         return campaign.id
+
+    async def latest_campaign_named(self, name: str, hours: int = 24) -> Campaign | None:
+        """The newest campaign with this name created within ``hours``, so a
+        segment's sequence can be reused instead of written again."""
+        from datetime import datetime, timedelta, timezone
+        since = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)).isoformat()
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM campaigns WHERE name = ? AND created_at >= ? AND status != 'failed' "
+                "ORDER BY created_at DESC LIMIT 1", (name, since)
+            ) as cursor:
+                r = await cursor.fetchone()
+                if not r:
+                    return None
+                d = dict(r)
+                d["sequence"] = Campaign.sequence_from_json(d.pop("sequence_json"))
+                d["prospect_ids"] = json.loads(d.pop("prospect_ids_json") or "[]")
+                return Campaign(**d)
 
     async def get_campaigns_by_status(self, status: str) -> list[Campaign]:
         async with self._connect() as db:

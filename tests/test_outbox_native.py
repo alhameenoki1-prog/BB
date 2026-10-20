@@ -302,7 +302,9 @@ async def test_reply_cancels_pending_outbox(state):
 
 
 @pytest.mark.asyncio
-async def test_bounce_marks_invalid_and_kill_switch(state):
+async def test_bounce_marks_invalid_and_kill_switch(state, monkeypatch):
+    import harvey.agents.handler as handler_mod
+    monkeypatch.setattr(handler_mod, "MIN_SENDS_FOR_KILL_SWITCH", 10)   # a small sample, for the test
     pid = await seed_prospect(state, status="contacted")
     # A sent item whose message-id the bounce references
     item_id = await state.add_outbox_item(
@@ -392,3 +394,103 @@ async def test_drain_sends_several_at_once_when_the_channel_allows(state):
     sender.config.channels.email.send_concurrency = 1
     await sender._run_native()
     assert provider.peak == 1 and len(await state.get_outbox(status="sent")) == 12
+
+
+@pytest.mark.asyncio
+async def test_outbox_rows_are_claimed_once_and_stale_sends_are_failed(state):
+    from datetime import datetime, timedelta, timezone
+    pid = await seed_prospect(state)
+    await seed_campaign(state, [pid])
+    provider = FakeProvider()
+    sender = make_sender(state, provider, require_approval=False)
+    await sender._run_native()
+    assert len(provider.sent) == 1
+    item = (await state.get_outbox(status="approved"))[0]          # step 2, days ahead
+    assert await state.claim_outbox_item(item["id"]) is True and await state.claim_outbox_item(item["id"]) is False
+    assert (await state.get_outbox_item(item["id"]))["status"] == "sending"
+    # A row stuck in 'sending' for a long time is failed, not resent.
+    old = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=30)).isoformat()
+    async with state._connect() as db:
+        await db.execute("UPDATE outbox SET updated_at = ? WHERE id = ?", (old, item["id"])); await db.commit()
+    assert await state.release_stale_sending() == 1
+    assert (await state.get_outbox_item(item["id"]))["status"] == "failed"
+    # _send_one on a row that is not approved sends nothing.
+    assert await sender._send_one({**item, "status": "failed"}, await state.get_prospect(pid), "") is False
+    assert len(provider.sent) == 1
+
+
+class FlakyProvider(FakeProvider):
+    """Refuses with a temporary error until told otherwise."""
+    def __init__(self):
+        super().__init__()
+        self.throttle = True
+    async def send_email(self, to_email, subject, body, thread_ref="", in_reply_to=""):
+        if self.throttle:
+            return SendResult(ok=False, error="454 4.7.0 Too many login attempts, please try again later", retryable=True)
+        return await super().send_email(to_email, subject, body, thread_ref, in_reply_to)
+
+
+@pytest.mark.asyncio
+async def test_temporary_refusals_are_retried_later_not_buried(state):
+    from harvey.agents.sender import MAX_SEND_RETRIES
+    pids = [await seed_prospect(state, email=f"r{i}@acme{i}.com") for i in range(3)]
+    await seed_campaign(state, pids)
+    provider = FlakyProvider()
+    sender = make_sender(state, provider, require_approval=False)
+    sender.config.channels.email.send_concurrency = 2
+    sender.config.channels.email.send_jitter_seconds = 0
+    await sender._run_native()
+    rows = await state.get_outbox(status="approved")
+    retried = [r for r in rows if (r["error"] or "").startswith("retry 1/")]
+    assert len(retried) >= 1 and all(r["send_at"] > _now_iso() for r in retried)   # pushed out, still approved
+    assert not await state.get_outbox(status="failed")
+    assert len(rows) == 6 and provider.sent == []                                 # the pass ended at the first refusal
+    # Once the provider recovers, the next drain sends them.
+    provider.throttle = False
+    for r in rows:
+        if r["step"] == 1:
+            await state.update_outbox_item(r["id"], send_at=_now_iso())
+    await sender._drain_due()
+    assert len(provider.sent) == 3
+    # After the last allowed retry the row is failed for good.
+    item = (await state.get_outbox(status="approved"))[0]
+    await state.update_outbox_item(item["id"], error=f"retry {MAX_SEND_RETRIES}/{MAX_SEND_RETRIES}: x", send_at=_now_iso())
+    provider.throttle = True
+    await sender._drain_due()
+    assert (await state.get_outbox_item(item["id"]))["status"] == "failed"
+
+
+def test_smtp_errors_are_classified_and_relays_have_no_inbox():
+    import aiosmtplib
+    from harvey.integrations.smtp_mail import SmtpImapProvider, _retryable_smtp_error
+    from harvey.integrations.mail_provider import is_relay_host
+    assert _retryable_smtp_error(aiosmtplib.SMTPResponseException(421, "4.7.0 Try again later"))
+    assert not _retryable_smtp_error(aiosmtplib.SMTPResponseException(550, "5.1.1 User unknown"))
+    assert not _retryable_smtp_error(aiosmtplib.SMTPAuthenticationError(535, "bad credentials"))
+    assert _retryable_smtp_error(aiosmtplib.SMTPConnectError("refused")) and _retryable_smtp_error(OSError("reset"))
+    assert is_relay_host("email-smtp.eu-west-1.amazonaws.com") and is_relay_host("smtp-relay.brevo.com") and not is_relay_host("imap.gmail.com")
+
+    class Env:
+        smtp_host = "email-smtp.eu-west-1.amazonaws.com"; smtp_port = 2587; smtp_username = "AKIA"; smtp_password = "x"
+        imap_host = ""; imap_port = 993; imap_username = ""; imap_password = ""; smtp_reply_to = ""
+    p = SmtpImapProvider(Cfg(), Env())
+    assert p._no_inbox() and p._start_tls() is None and not p._use_tls()
+    Env.smtp_port = 465
+    assert SmtpImapProvider(Cfg(), Env())._use_tls()
+
+
+@pytest.mark.asyncio
+async def test_daily_limit_refusals_wait_for_tomorrow(state):
+    from datetime import datetime, timedelta, timezone
+    pid = await seed_prospect(state, email="d@acme.com")
+    await seed_campaign(state, [pid])
+
+    class LimitProvider(FakeProvider):
+        async def send_email(self, *a, **k):
+            return SendResult(ok=False, error="550 5.4.5 Daily user sending limit exceeded", retryable=True)
+    sender = make_sender(state, LimitProvider(), require_approval=False)
+    sender.config.channels.email.send_jitter_seconds = 0
+    await sender._run_native()
+    row = [r for r in await state.get_outbox(status="approved") if r["step"] == 1][0]
+    tomorrow = (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=23)).isoformat()
+    assert row["error"].startswith("retry 1/") and row["send_at"] > tomorrow

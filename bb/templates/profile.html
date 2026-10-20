@@ -136,6 +136,10 @@
   <h2>Sending</h2>
   <div class="row">
     <div><label>Max emails per day <span class="muted" style="font-weight:400">(0 = no limit)</span></label><input type="number" name="max_daily_sends" min="0" max="5000" value="{{ profile.max_daily_sends }}"><div class="hint">With no limit, your mailbox's own ceiling applies: Google allows 500 a day on free Gmail and 2,000 on Workspace. Cold email near those numbers gets an account flagged, so a new mailbox is safer around 30–50.</div></div>
+  </div>
+  <input type="hidden" name="quiet_form" value="1">
+  <label class="check" style="margin-top:12px"><input type="checkbox" name="quiet_enabled" id="quiet_enabled" {{ 'checked' if profile.quiet_enabled else '' }} onchange="document.getElementById('quiet-hours').style.opacity = this.checked ? 1 : .45"> Only send during these hours <span class="muted">(off = the worker sends around the clock and never sleeps)</span></label>
+  <div class="row" id="quiet-hours" style="{{ '' if profile.quiet_enabled else 'opacity:.45' }}">
     <div><label>Don't send before</label><input type="time" name="quiet_end" value="{{ profile.quiet_end }}"></div>
     <div><label>Don't send after</label><input type="time" name="quiet_start" value="{{ profile.quiet_start }}"></div>
     <div><label>Your time zone</label><select name="timezone">{% for tz in timezones %}<option value="{{ tz }}" {{ 'selected' if tz == profile.timezone else '' }}>{{ tz }}</option>{% endfor %}</select></div>
@@ -145,7 +149,7 @@
   {% for k, v in speeds.items() %}
   <label class="choice"><input type="radio" name="speed" value="{{ k }}" {{ 'checked' if profile.speed == k else '' }}><span><b>{{ v.label }}</b><span class="small muted">{{ v.note }}</span></span></label>
   {% endfor %}
-  <div class="hint">The worker wakes up this often, sends this many, reads replies, then waits. Gmail and most SMTP mailboxes throttle anything faster than Normal; Fast suits a Microsoft 365 admin app or an aged Workspace mailbox.</div>
+  <div class="hint">Sending runs on its own clock at the pace above, whatever research and writing are doing. On a personal or office mailbox (Gmail, Outlook, Yahoo, iCloud and the like, whether connected through Google or by SMTP) Fast and Relay are held to Normal's pace automatically, because those mailboxes throttle or lock an account that sends in bursts.{% if pace_held %} <b>Right now: {{ pace_held }}.</b>{% endif %}</div>
   <label class="check"><input type="checkbox" name="warmup_ramp" {{ 'checked' if profile.warmup_ramp else '' }}> Warm this mailbox up: start at 20 a day and add 10 a day <span class="muted">(switch off only for a mailbox that already sends plenty of mail)</span></label>
 </div>
 <div class="card">

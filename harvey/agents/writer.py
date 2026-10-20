@@ -32,6 +32,7 @@ LEGACY_BATCH_CAP = 50
 # sector × role segment, sent to everyone in it, so a segment can be large.
 SEGMENT_BATCH_CAP = 250
 SEGMENT_ROOM = 500
+NEW_PROSPECTS_PAGE = 2000  # 'new' rows loaded per cycle; the rest wait their turn
 # Team pages fetched per cycle to recover names the upload left out; the
 # rest wait for the next cycle, so a 1-minute heartbeat stays quick.
 MAX_NAME_LOOKUPS = 15  # contacts considered per cycle in segment mode
@@ -129,8 +130,10 @@ class Writer:
         # Load foundational skills for this agent
         self.skills = self.brain.load_skills_for_agent("writer")
 
-        # Get prospects that haven't been contacted yet
-        new_prospects = await self.state.get_prospects_by_status("new")
+        # Get prospects that haven't been contacted yet (a bounded page: a
+        # 10,000-row upload is not loaded whole every cycle)
+        new_prospects = await self.state.get_prospects_by_status(
+            "new", limit=NEW_PROSPECTS_PAGE, email_statuses=("verified", "provided", "risky"))
         if not new_prospects:
             logger.info("Writer: No new prospects to write for.")
             return
@@ -158,9 +161,13 @@ class Writer:
             max_daily = int(self.config.channels.email.max_daily_sends or 0)
             # No daily limit: keep roughly a day of 15-minute cycles ahead.
             ahead = 2 * max(1, max_daily) if max_daily else 200
+            per_cycle = int(getattr(self.config.channels.email, "sends_per_cycle", 0) or 0)
             if not self.personalize_each:
-                ahead = max(ahead, SEGMENT_ROOM)
-            backlog = await self.state.count_outbox_queued()
+                # Segment mode is cheap to write: stay ten send batches ahead.
+                ahead = max(ahead, SEGMENT_ROOM, 10 * per_cycle)
+            approval = bool(getattr(self.config.channels.email, "require_approval", True))
+            backlog = await self.state.count_outbox_queued(
+                statuses=("pending_review", "approved") if approval else ("approved",))
             room = max(0, ahead - backlog)
             if room == 0:
                 logger.info(
@@ -195,7 +202,16 @@ class Writer:
         todo = [(name, ps) for name, ps in batches.items() if ps]
         gate = asyncio.Semaphore(MODEL_CONCURRENCY)
 
-        async def write(ps):
+        async def write(ps, name):
+            # A segment written in the last day keeps its sequence: the next
+            # batch of the same sector and tier costs no model call.
+            try:
+                earlier = await self.state.latest_campaign_named(name)
+            except Exception:
+                earlier = None
+            if earlier and earlier.sequence and self._written_after_config_change(earlier):
+                logger.info(f"Writer: reusing today's sequence for '{name}'.")
+                return list(earlier.sequence)
             async with gate:
                 try:
                     return await self._write_sequence(ps)
@@ -205,7 +221,7 @@ class Writer:
 
         for name, ps in todo:
             logger.info(f"Writer: Creating campaign '{name}' for {len(ps)} prospects.")
-        sequences = await asyncio.gather(*(write(ps) for _, ps in todo))
+        sequences = await asyncio.gather(*(write(ps, name) for name, ps in todo))
 
         for (batch_name, prospects), sequence in zip(todo, sequences):
             if not sequence:
@@ -221,11 +237,10 @@ class Writer:
                 prospect_ids=[p.id for p in prospects],
                 status="draft",
             )
-            campaign_id = await self.state.add_campaign(campaign)
-
-            # Mark prospects so they aren't picked up again
-            for p in prospects:
-                await self.state.update_prospect_status(p.id, "queued")
+            # Creating the campaign and marking its people as queued is one
+            # step: cut between the two, the same people would be written
+            # for again next cycle and get two emails.
+            campaign_id = await asyncio.shield(self._commit_campaign(campaign, prospects))
 
             # Native providers: replace the shared template for email 1 with
             # a per-prospect draft grounded in that company's actual facts —
@@ -247,6 +262,26 @@ class Writer:
                 f"Writer: Campaign '{batch_name}' created with "
                 f"{len(sequence)} emails for {len(prospects)} prospects."
             )
+
+    def _written_after_config_change(self, campaign) -> bool:
+        """A sequence is reused only if it was written after the last edit of
+        harvey.yaml: a changed request, style or ask must not ride on yesterday's words."""
+        try:
+            from datetime import datetime, timezone
+            from harvey.config import _find_config_file
+            mtime = datetime.fromtimestamp(_find_config_file().stat().st_mtime, tz=timezone.utc).replace(tzinfo=None)
+            created = campaign.created_at
+            if created.tzinfo is not None:
+                created = created.astimezone(timezone.utc).replace(tzinfo=None)
+            return created >= mtime
+        except Exception:
+            return True
+
+    async def _commit_campaign(self, campaign, prospects: list) -> str:
+        campaign_id = await self.state.add_campaign(campaign)
+        for p in prospects:
+            await self.state.update_prospect_status(p.id, "queued")
+        return campaign_id
 
     async def _personalize_first_emails(self, campaign_id: str, prospects: list):
         """Draft a grounded, per-prospect email 1 and stage it in the outbox.
@@ -471,10 +506,8 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
                 id="", name=name, channel="email", sequence=self.template_steps(message),
                 prospect_ids=[p.id for p in group], status="draft",
             )
-            campaign_id = await self.state.add_campaign(campaign)
+            campaign_id = await asyncio.shield(self._commit_campaign(campaign, group))
             ids.append(campaign_id)
-            for p in group:
-                await self.state.update_prospect_status(p.id, "queued")
             await self.state.log_action(
                 action_type="write_campaign", agent="writer",
                 details={"campaign_id": campaign_id, "campaign_name": name,
@@ -769,7 +802,10 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         steps = self._parse_sequence(result, forbidden=self._forbidden_terms(prospects))
         if steps:
             first = {"subject": steps[0].subject, "body": steps[0].body}
-            fixed, reasons = await self._spam_safe(prompt, first, "sequence")
+            single = (prompt.split("Return ONLY a JSON array")[0]
+                      + "Write ONLY email 1 (step 1) of that sequence. Return ONLY a JSON object: "
+                        '{"subject": "...", "body": "..."}')
+            fixed, reasons = await self._spam_safe(single, first, "sequence")
             if fixed is not first:
                 steps[0].subject = _scrub(str(fixed.get("subject") or steps[0].subject), self._forbidden_terms(prospects))
                 steps[0].body = _scrub(str(fixed.get("body") or steps[0].body), self._forbidden_terms(prospects))

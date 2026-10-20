@@ -100,9 +100,10 @@ class GmailProvider(MailProvider):
             logger.error(f"Gmail token refresh failed: {e}")
             return None
         if resp.status_code != 200:
+            self._last_status = 401   # the sign-in is dead: reconnect, no retry will help
             logger.error(
                 f"Gmail token refresh rejected ({resp.status_code}). "
-                "Re-run 'harvey gmail auth'."
+                "Re-run 'harvey gmail auth' (on the site: reconnect Gmail on the Mailbox page)."
             )
             return None
         data = resp.json()
@@ -123,6 +124,7 @@ class GmailProvider(MailProvider):
         except httpx.HTTPError as e:
             logger.error(f"Gmail request failed ({path}): {e}")
             return None
+        self._last_status = resp.status_code
         if resp.status_code >= 400:
             logger.error(f"Gmail API {resp.status_code} on {path}: {resp.text[:200]}")
             return None
@@ -157,9 +159,17 @@ class GmailProvider(MailProvider):
         if thread_ref:
             payload["threadId"] = thread_ref
 
+        self._last_status = 0
         data = await self._request("POST", "/messages/send", json=payload)
         if data is None:
-            return SendResult(ok=False, error="gmail send failed")
+            status = getattr(self, "_last_status", 0)
+            if status == 401:
+                return SendResult(ok=False, error="Gmail sign-in expired or revoked: reconnect Gmail on the Mailbox page")
+            # 429 and 5xx are Google asking for a pause; 403 is its daily
+            # quota or a rate limit on this account. All come back later.
+            return SendResult(ok=False, error=f"gmail send failed ({status or 'network'})"
+                              + (" daily sending limit" if status == 403 else ""),
+                              retryable=status in (0, 403, 429) or status >= 500)
 
         # Fetch the assigned RFC Message-ID for bounce/thread matching later.
         message_id = ""

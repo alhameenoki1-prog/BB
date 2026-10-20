@@ -30,6 +30,19 @@ class SendResult:
     message_id: str = ""     # RFC Message-ID (or provider id) of the sent mail
     thread_ref: str = ""     # provider thread handle (Gmail threadId, etc.)
     error: str = ""
+    retryable: bool = False  # a temporary refusal (throttling, 4xx, network): try again later
+
+
+# Mail hosts that only send: there is no inbox to read there, so reply
+# polling is skipped instead of failing every pass.
+RELAY_HOST_HINTS = ("amazonaws.com", "sendgrid.net", "mailgun.org", "postmarkapp.com", "brevo.com",
+                    "sendinblue.com", "sparkpostmail.com", "mailjet.com", "smtp2go.com", "elasticemail.com",
+                    "mandrillapp.com", "resend.com")
+
+
+def is_relay_host(host: str) -> bool:
+    host = (host or "").lower()
+    return any(h in host for h in RELAY_HOST_HINTS)
 
 
 @dataclass
