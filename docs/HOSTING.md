@@ -309,6 +309,15 @@ being built in phases; sync, reply state, the composer and sending are in.
   cannot send. The daily cap and send window per account are enforced at
   send time too. The reply leaves from the mailbox that received the
   original and is mirrored into the thread, which becomes *replied*.
+- **Command bar** (top of `/mail`): say what you want in plain words.
+  "What needs a reply in sales@?", "reply to everything for review", "dry
+  run the two from Acme", "summarise the thread from Ann and draft a
+  yes". It works on the accounts selected in the scope unless you name
+  others. Questions and review or dry-run runs happen at once; anything
+  that would send mail shows you the accounts and counts and waits for
+  Confirm. With Anthropic as the AI provider the bar has full tool use;
+  on other providers it follows a simpler protocol and tells you when it
+  cannot act on a request rather than guessing.
 - **Reply runs** (`/mail/runs`): answer everything that is waiting in one
   go. The page lists the unreplied threads of the selected accounts,
   grouped by mailbox, all ticked (excluded senders unticked). Choose how

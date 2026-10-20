@@ -14,6 +14,28 @@
 <div class="card flat" style="border-color:var(--warn);margin-bottom:12px"><b>{{ m.address }} needs reconnecting.</b> {{ m.status_detail }} <a href="/mail/accounts/{{ m.id }}">Reconnect</a>. Nothing is sent from it meanwhile; everything else keeps running.</div>
 {% endfor %}
 
+<div class="card" id="command" style="margin-bottom:14px">
+  <form method="post" action="/mail/command" class="actions" style="gap:8px">
+    <input name="q" placeholder="{{ 'Tell it what to do: “what needs a reply in sales@?”, “reply to everything for review”, “summarise the thread from Ann”' if brain_ok else 'Set up an AI provider to use the command bar' }}" style="flex:1" {{ '' if brain_ok else 'disabled' }} autocomplete="off" maxlength="1000">
+    <button type="submit" {{ '' if brain_ok and not command_pending else 'disabled' }}>{{ icon('bolt', 14) }} Go</button>
+  </form>
+  <p class="tiny" style="margin:6px 0 0">Works on the accounts selected above unless you name others. Anything that sends mail asks you to confirm first.{% if brain_ok and not brain_tools %} On {{ brain_label }} the bar follows a simpler protocol and will say when it cannot act on a request.{% endif %}</p>
+  {% if command_pending %}
+  <div class="card flat" style="border-color:var(--warn);margin-top:12px">
+    <b>Confirm before anything is sent.</b> {{ command_pending.description }}
+    <ul class="small" style="margin:6px 0">{% for a in command_pending.accounts %}<li>{{ a.account }}: {{ a.threads }} thread{{ 's' if a.threads != 1 else '' }}{% if not a.can_send %} (cannot send yet){% endif %}</li>{% endfor %}</ul>
+    <div class="actions"><form class="inline" method="post" action="/mail/command/confirm"><button type="submit" class="small">{{ icon('check', 13) }} Confirm and go</button></form>
+      <form class="inline" method="post" action="/mail/command/cancel"><button type="submit" class="small secondary">Cancel</button></form></div>
+  </div>
+  {% endif %}
+  {% if command_history %}
+  <div class="convo" style="margin-top:12px">
+    {% for x in command_history[:6] %}<div class="turn"><div class="q small muted">{{ x.q }} <span class="tiny">{{ x.at }}{% if x.tools %} · {{ x.tools|join(', ')|replace('_', ' ') }}{% endif %}</span></div><div class="a">{{ x.a }}</div></div>{% endfor %}
+    <form method="post" action="/mail/command/clear" class="inline"><button class="small secondary" type="submit" style="margin-top:6px">Clear</button></form>
+  </div>
+  {% endif %}
+</div>
+
 <div class="grid" id="stat-cards">
   {% set unreplied = selected|map(attribute='counts.needs_reply')|map('default', 0)|sum %}
   {% set replied = selected|map(attribute='counts.replied')|map('default', 0)|sum %}
@@ -54,6 +76,7 @@
   </div>
 </div>
 <style>
+  .convo .turn { padding:8px 0; border-top:1px solid var(--line); } .convo .a { white-space:pre-wrap; margin-top:4px; }
   .feed { list-style:none; margin:0; padding:0; } .feed li { display:flex; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); font-size:14px; align-items:baseline; }
   .feed .ic { width:16px; text-align:center; color:var(--ink-3); } .feed .when { margin-left:auto; white-space:nowrap; }
   .feed-replied .ic, .feed-connected .ic { color:var(--good); } .feed-warning .ic, .feed-review .ic { color:var(--warn); }

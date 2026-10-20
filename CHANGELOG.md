@@ -9,6 +9,20 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Mail command center, phase 7 (the command bar).** A plain-language
+  bar at the top of `/mail`: "how many need a reply in sales@?", "reply
+  to everything for review", "summarise the thread from Ann and draft a
+  yes". With Anthropic as the provider the model drives real tools
+  (list accounts, counts, threads, a thread summary, a draft, a reply
+  run, a send) in a short loop; on any other provider the same actions
+  are reached through a one-call-per-turn JSON protocol, and when the
+  model cannot follow it the bar says so plainly instead of guessing.
+  The bar works on the selected accounts unless the request names
+  others. Anything that sends mail (an auto reply run, sending a draft)
+  is never done on the model's word: it becomes a pending action showing
+  the exact accounts and counts, with Confirm and Cancel, and the bar
+  refuses new requests until that is settled. The last exchanges stay on
+  the page. (`bb/mail/commands.py`, `MailBrain.tool_turn`.)
 - **Mail command center, phase 6 (batch reply runs).** `/mail/runs` lists
   every thread waiting for a reply across the selected accounts, grouped
   by the mailbox that received it, with checkboxes (senders on an

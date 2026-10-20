@@ -51,8 +51,62 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         activity = await c["db"].activity(limit=40, mailbox_ids=c["scope_ids"])
         jobs = Jobs(c["db"])
         active_runs = await c["db"].query("SELECT * FROM reply_runs WHERE status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 5")
+        from bb.mail import commands
+        brain = _brain(c["ws"])
         return await render(request, "mail_overview.html", user, **page_ctx(c), activity=activity, active_runs=active_runs,
-                            job_counts=await jobs.counts(), msg=c["revived"] or request.query_params.get("msg", ""))
+                            job_counts=await jobs.counts(), msg=c["revived"] or request.query_params.get("msg", ""),
+                            command_history=list(reversed(await commands.history(c["db"]))), command_pending=await commands.pending(c["db"]),
+                            brain_ok=brain.configured, brain_tools=brain.supports_tools, brain_label=brain.label)
+
+    # ── the command bar ──
+
+    def _center(c, user):
+        from bb.mail.commands import CommandCenter
+        ws = c["ws"]
+        return CommandCenter(c["db"], _brain(ws), c["mailboxes"], c["selected"], settings.secret_key(), {},
+                             user.get("email", ""), on_worker_needed=lambda: (ws.mail_worker_running() or ws.start_mail_worker()))
+
+    @app.post("/mail/command")
+    async def mail_command(request: Request, user: dict = Depends(current_user)):
+        from bb.mail import commands
+        c = await ctx(user)
+        form = await request.form()
+        text = str(form.get("q", "") or "").strip()[:1000]
+        if await commands.pending(c["db"]):
+            return _redirect("/mail", error="Confirm or cancel the pending action first.")
+        center = _center(c, user)
+        result = await center.run(text)
+        await commands.remember(c["db"], text, result["reply"], result["steps"])
+        await commands.set_pending(c["db"], result["pending"])
+        return _redirect("/mail#command")
+
+    @app.post("/mail/command/{action}")
+    async def mail_command_action(action: str, user: dict = Depends(current_user)):
+        from bb.mail import commands
+        from bb.mail.brain import BrainError
+        c = await ctx(user)
+        if action == "clear":
+            await c["db"].set_setting(commands.HISTORY_KEY, "[]")
+            await commands.set_pending(c["db"], None)
+            return _redirect("/mail")
+        pend = await commands.pending(c["db"])
+        if not pend:
+            return _redirect("/mail", error="Nothing is waiting for confirmation.")
+        if action == "cancel":
+            await commands.set_pending(c["db"], None)
+            await commands.remember(c["db"], "(cancelled)", f"Not done: {pend['description']}", [])
+            return _redirect("/mail#command")
+        if action != "confirm":
+            raise HTTPException(404)
+        try:
+            line = await commands.confirm(_center(c, user), pend)
+        except BrainError as e:
+            await commands.set_pending(c["db"], None)
+            return _redirect("/mail#command", error=str(e))
+        await commands.set_pending(c["db"], None)
+        await commands.remember(c["db"], "(confirmed)", f"Done: {pend['description']}. {line}", [pend["kind"]])
+        return _redirect("/mail#command", msg="Confirmed.")
+
 
     @app.post("/mail/scope")
     async def mail_scope(request: Request, user: dict = Depends(current_user)):

@@ -100,6 +100,35 @@ class MailBrain:
             raise BrainError(f"Anthropic error: {str(e)[:200]}") from e
         return "".join(getattr(b, "text", "") for b in msg.content)
 
+    async def tool_turn(self, system: str, messages: list, tools: list, max_tokens: int = 1500) -> dict:
+        """One model turn with tools (Anthropic only). Returns
+        {text, tool_calls: [{id, name, input}], content: [blocks for the
+        assistant turn], stop_reason}. ``messages`` is the running
+        conversation in Anthropic's shape."""
+        if not self.supports_tools:
+            raise BrainError(f"{self.label} has no tool use here.")
+        import anthropic
+
+        from harvey.brain import anthropic_headers
+        client = anthropic.AsyncAnthropic(api_key=self.api_key, max_retries=1, timeout=120,
+                                          default_headers=anthropic_headers(self.workspace_id))
+        try:
+            msg = await client.messages.create(model=self.model or DEFAULT_ANTHROPIC_MODEL, max_tokens=max_tokens,
+                                               system=system, messages=messages, tools=tools)
+        except anthropic.APIStatusError as e:
+            raise BrainError(f"Anthropic answered {e.status_code}: {str(e)[:200]}") from e
+        except anthropic.APIError as e:
+            raise BrainError(f"Anthropic error: {str(e)[:200]}") from e
+        content, calls, text = [], [], []
+        for b in msg.content:
+            if getattr(b, "type", "") == "tool_use":
+                content.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
+                calls.append({"id": b.id, "name": b.name, "input": dict(b.input or {})})
+            elif getattr(b, "type", "") == "text":
+                content.append({"type": "text", "text": b.text})
+                text.append(b.text)
+        return {"text": "".join(text), "tool_calls": calls, "content": content, "stop_reason": msg.stop_reason}
+
     async def _openai(self, system: str, user: str, max_tokens: int) -> str:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         body = {"model": self.model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],

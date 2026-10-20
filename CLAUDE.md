@@ -102,9 +102,10 @@ user's model, Anthropic or OpenAI-compatible, from `BB_LLM_*` env),
 `sending.py` (cap, window, dry run, send from the receiving mailbox,
 mirror into the thread), `runs.py` (batch reply runs: one `reply_run`
 job per mailbox, review / auto / dry-run modes, confidence routing, cap
-checked before drafting, 20–60 s pacing, cancel). Phases 1 to 3, 5 and 6
-are done (foundation, sync, reply state, thread pages, composer / review
-/ compose, reply runs); the command bar and Microsoft Graph follow.
+checked before drafting, 20–60 s pacing, cancel), `commands.py` (the
+command bar: Anthropic tool use via `MailBrain.tool_turn`, JSON fallback
+on other providers, sends become a pending action a person confirms).
+Phases 1 to 3 and 5 to 7 are done; Microsoft Graph and hardening follow.
 
 ---
 
