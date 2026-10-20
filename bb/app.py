@@ -191,6 +191,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if ws.wants_autostart() and not ws.worker_running() and not ws.user["disabled"]:
                 ok, detail = ws.start_worker()
                 logger.info("Autostart worker for %s: %s", ws.user["email"], detail)
+            if ws.mail_autostart_file.exists() and not ws.mail_worker_running() and not ws.user["disabled"]:
+                ok, detail = ws.start_mail_worker()
+                logger.info("Autostart mail worker for %s: %s", ws.user["email"], detail)
         yield
 
     app = FastAPI(title="BB", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -736,6 +739,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def replies_page(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
         return await render(request, "replies.html", user, conversations=await ws.conversations())
+
+    # ── the mail command center ──
+    from bb.mail.routes import register_mail_routes
+    register_mail_routes(app, settings, current_user, workspace_for, render, _redirect, templates)
 
     # ── inbox auto-reply ──
 

@@ -9,6 +9,22 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Mail command center, phase 1 (foundation).** A new `bb/mail` package
+  and pages under `/mail`: several mailboxes per user with credentials
+  sealed by AES-256-GCM (`bb/mail/crypto.py`), a per-user SQLite in WAL
+  mode with tables for mailboxes, threads, messages, participants, reply
+  runs, drafts, activity, rules and jobs (`bb/mail/db.py`), a SQLite job
+  queue with atomic claims, exponential backoff, stale-lock recovery and
+  a dead-letter page (`bb/mail/jobs.py`, `/mail/jobs`), a background
+  worker process per user that runs jobs for different mailboxes
+  concurrently (`bb/mail/worker.py`), Gmail (OAuth) and IMAP/SMTP
+  ("limited mode") adapters whose connection checks turn an expired
+  sign-in into a Reconnect banner rather than a crash, per-mailbox
+  settings with a required signature and project link (sending refuses
+  without them), an account scope selector that persists, a plain-English
+  activity feed streamed over server-sent events, and a one-time
+  migration of the old single mailbox and profile values.
+
 - **Backlog scan for the inbox auto-reply.** `outreach.inbox_backlog_days`
   (0, 7, 30 or 90 on the Inbox page) also answers mail already in the
   inbox from that many days back that nobody replied to, from this

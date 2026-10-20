@@ -952,6 +952,101 @@ class Workspace:
     def wants_autostart(self) -> bool:
         return self.autostart_file.exists()
 
+    # ── the mail command center (bb/mail) ──
+
+    @property
+    def mail_db_path(self):
+        return self.data_dir / "mail.db"
+
+    def mail_db(self):
+        from bb.mail.db import MailDB
+        self.ensure()
+        return MailDB(self.mail_db_path)
+
+    def gmail_token(self) -> dict:
+        try:
+            data = json.loads(self.gmail_token_file.read_text())
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    @property
+    def mail_pid_file(self):
+        return self.data_dir / "mailworker.pid"
+
+    @property
+    def mail_autostart_file(self):
+        return self.data_dir / "mailworker.autostart"
+
+    @property
+    def mail_log_file(self):
+        return self.data_dir / "mailworker.log"
+
+    def mail_worker_running(self) -> int | None:
+        try:
+            pid = int(self.mail_pid_file.read_text().strip())
+            os.kill(pid, 0)
+            return pid
+        except (OSError, ValueError):
+            return None
+
+    def mail_worker_alive(self) -> bool:
+        """Running and heartbeating within the last minute."""
+        if not self.mail_worker_running():
+            return False
+        try:
+            return time.time() - int((self.data_dir / "mailworker.heartbeat").read_text().strip()) < 60
+        except (OSError, ValueError):
+            return False
+
+    def start_mail_worker(self) -> tuple[bool, str]:
+        if pid := self.mail_worker_running():
+            return True, f"Already running (pid {pid})."
+        self.ensure()
+        env = {k: v for k, v in os.environ.items() if not k.startswith("BB_")}
+        env.update(self.settings.worker_env())
+        env["BB_SECRET_KEY"] = self.settings.secret_key()
+        env["PYTHONUNBUFFERED"] = "1"
+        try:
+            with open(self.mail_log_file, "a") as log:
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "bb.mail.worker", str(self.root)], cwd=str(PROJECT_ROOT),
+                    env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                )
+        except Exception as e:
+            logger.error("Could not start the mail worker for %s: %s", self.user["email"], e)
+            return False, f"Could not start: {e}"
+        self.mail_pid_file.write_text(str(proc.pid))
+        self.mail_autostart_file.write_text(str(int(time.time())))
+        return True, f"Started (pid {proc.pid})."
+
+    async def stop_mail_worker(self) -> tuple[bool, str]:
+        self.mail_autostart_file.unlink(missing_ok=True)
+        pid = self.mail_worker_running()
+        if not pid:
+            self.mail_pid_file.unlink(missing_ok=True)
+            return True, "Not running."
+        try:
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(20):
+                await asyncio.sleep(0.25)
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+            else:
+                os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        self.mail_pid_file.unlink(missing_ok=True)
+        return True, "Stopped."
+
+    def revive_mail_worker(self) -> str:
+        if self.user.get("disabled") or self.mail_worker_running() or not self.mail_autostart_file.exists():
+            return ""
+        ok, detail = self.start_mail_worker()
+        return f"The background worker had stopped and was started again ({detail})." if ok else ""
+
     def worker_paused(self) -> bool:
         return self.paused_file.exists() and not self.worker_running()
 

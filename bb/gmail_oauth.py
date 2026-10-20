@@ -58,14 +58,14 @@ def auth_url(settings, state: str, login_hint: str = "") -> str:
     return AUTH_URL + "?" + urllib.parse.urlencode(params)
 
 
-async def exchange_code(settings, code: str) -> dict:
+async def exchange_code(settings, code: str, redirect_uri: str = "") -> dict:
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(TOKEN_URL, data={
             "client_id": settings.gmail_client_id,
             "client_secret": settings.gmail_client_secret,
             "code": code,
             "grant_type": "authorization_code",
-            "redirect_uri": redirect_uri(settings),
+            "redirect_uri": redirect_uri or globals()["redirect_uri"](settings),
         })
     if resp.status_code != 200:
         raise RuntimeError(f"Google rejected the sign-in ({resp.status_code}): {resp.text[:200]}")

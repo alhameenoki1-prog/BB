@@ -1,0 +1,13 @@
+{% from "_icons.html" import icon %}
+<div class="card" style="padding:12px 16px;margin-bottom:16px">
+  <form method="post" action="/mail/scope" class="actions" style="gap:14px;align-items:center;flex-wrap:wrap">
+    <input type="hidden" name="back" value="{{ request.url.path }}">
+    <b class="small">Accounts in view</b>
+    <label class="check" style="margin:0"><input type="checkbox" name="all" {{ 'checked' if scope_ids is none else '' }}> All accounts</label>
+    {% for m in mailboxes if m.enabled %}
+    <label class="check" style="margin:0"><input type="checkbox" name="mailbox" value="{{ m.id }}" {{ 'checked' if scope_ids is not none and m.id in scope_ids else '' }}> <span class="acct acct-{{ m.settings_model.color }}">{{ m.address }}</span></label>
+    {% endfor %}
+    <button class="secondary small" type="submit">Apply</button>
+    {% if not mailboxes %}<span class="muted small">No accounts yet. <a href="/mail/accounts">Connect one.</a></span>{% endif %}
+  </form>
+</div>

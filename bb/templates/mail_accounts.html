@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Mail accounts{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Mail</div><h1>Accounts</h1><p class="lead">Connect as many mailboxes as you like. Each one keeps its own signature, project link, caps and rules, and replies always go out from the mailbox that received the email.</p></div></div>
+
+<div class="card">
+  <h2>Connected</h2>
+  {% if mailboxes %}
+  <table><thead><tr><th>Mailbox</th><th>How</th><th>Status</th><th>Sending</th><th></th></tr></thead><tbody>
+  {% for m in mailboxes %}
+  <tr><td><a href="/mail/accounts/{{ m.id }}"><span class="acct acct-{{ m.settings_model.color }}">{{ m.address }}</span></a>{% if m.settings_model.display_name %} <span class="muted small">{{ m.settings_model.display_name }}</span>{% endif %}</td>
+    <td class="small">{{ {'gmail':'Google sign-in','imap':'Password (limited mode)','graph':'Microsoft 365'}[m.provider] }}</td>
+    <td>{% if not m.enabled %}<span class="tag">disabled</span>{% elif m.status == 'ok' %}<span class="tag good">connected</span>{% elif m.status == 'reconnect' %}<span class="tag bad">reconnect</span>{% elif m.status == 'error' %}<span class="tag warn">unreachable</span>{% else %}<span class="tag">{{ m.status }}</span>{% endif %}</td>
+    <td>{% if m.ready %}<span class="tag good">ready</span>{% else %}<span class="tag warn" title="{{ m.ready_why }}">needs signature &amp; link</span>{% endif %}</td>
+    <td style="text-align:right"><a href="/mail/accounts/{{ m.id }}" class="small">Settings</a></td></tr>
+  {% endfor %}</tbody></table>
+  {% else %}<div class="empty">{{ icon('mail') }}<div>No mailboxes connected yet.</div></div>{% endif %}
+</div>
+
+<div class="two">
+  <div class="card">
+    <h2>Gmail <span class="tiny" style="font-weight:400">Google sign-in, full mode</span></h2>
+    {% if gmail_available %}
+    <p class="muted small">Sign in with Google and the mailbox syncs through the Gmail API with push-style history updates. While the Google client is in testing mode, Google ends the sign-in after about seven days; the account then shows a Reconnect banner and one click signs it in again. Nothing crashes.</p>
+    <form method="post" action="/mail/gmail/connect"><div class="row"><div><label>Address (optional hint)</label><input type="email" name="email" placeholder="you@gmail.com"></div><div style="display:flex;align-items:flex-end"><button type="submit">{{ icon('mail', 15) }} Connect with Google</button></div></div></form>
+    {% else %}
+    <p class="muted small">Not switched on yet. {% if user.role == 'admin' %}Create a Google Cloud OAuth client of type <i>Web application</i> with redirect URI <code>{{ redirect_uri }}</code>, add your own addresses as test users while it is in testing mode, enable the Gmail API, and start the site with <code>GMAIL_CLIENT_ID</code> and <code>GMAIL_CLIENT_SECRET</code>.{% else %}Ask the admin to add the Google client. Until then, use the password sign-in.{% endif %}</p>
+    {% endif %}
+  </div>
+  <div class="card">
+    <h2>Email and password <span class="tiny" style="font-weight:400">any mailbox, limited mode</span></h2>
+    <p class="muted small">Works with Gmail, Outlook, Yahoo, iCloud, Zoho, Fastmail and custom domains. The servers are worked out from the address. Gmail, Yahoo and iCloud want an <b>app password</b>. Limited mode means the mailbox is polled rather than pushed, so new mail shows up within a couple of minutes instead of seconds. The password is stored encrypted.</p>
+    <form method="post" action="/mail/accounts/imap">
+      <div class="row"><div><label>Email address</label><input type="email" name="email" required autocomplete="username"></div><div><label>Password / app password</label><input type="password" name="password" required autocomplete="current-password"></div></div>
+      <details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">Set the servers myself</summary>
+        <div class="row" style="margin-top:8px"><div><label>SMTP server</label><input type="text" name="smtp_host" placeholder="smtp.example.com"></div><div><label>SMTP port</label><input type="number" name="smtp_port" placeholder="587"></div><div><label>Username</label><input type="text" name="username" placeholder="blank = the address"></div>
+        <div><label>IMAP server</label><input type="text" name="imap_host" placeholder="imap.example.com"></div><div><label>IMAP port</label><input type="number" name="imap_port" placeholder="993"></div></div>
+      </details>
+      <p style="margin-top:12px"><button type="submit">{{ icon('check', 15) }} Connect</button></p>
+    </form>
+  </div>
+</div>
+<style>.acct { display:inline-flex; align-items:center; gap:6px; font-weight:600; } .acct::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--accent); }
+.acct-blue::before{background:#0a84ff} .acct-green::before{background:#30d158} .acct-orange::before{background:#ff9f0a} .acct-purple::before{background:#bf5af2} .acct-pink::before{background:#ff375f} .acct-teal::before{background:#64d2ff} .acct-red::before{background:#ff453a} .acct-slate::before{background:#8e8e93}</style>
+{% endblock %}

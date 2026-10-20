@@ -268,6 +268,28 @@ they do), so upload rows with a website or a company email address rather
 than a personal one where you can. The brief the writer follows is
 `prompts/inquiry_writer.md`; edit it to change the voice for everyone.
 
+## The mail command center (`/mail`)
+
+A second, newer side of the app: connect several mailboxes, mirror them,
+see what needs a reply, and reply in batches or from a command bar. It is
+being built in phases; phase 1 is the foundation.
+
+- **Accounts** (`/mail/accounts`): connect with Google (needs the site's
+  OAuth client; while it is in testing mode Google ends the sign-in after
+  about a week and the account shows a Reconnect banner) or with an email
+  address and app password ("limited mode": polled, not pushed).
+  Passwords and tokens are stored encrypted. Each account has its own
+  settings: display name, signature, **project link** (both required
+  before anything is sent from it), default Reply-To, persona notes,
+  auto-send, daily cap, send window, excluded senders, colour.
+- **Scope**: the checkboxes at the top of every mail page choose which
+  accounts the views work on; the choice is remembered.
+- **Worker**: one background process per user runs sync, drafting and
+  sending as jobs with retries. A job that fails every attempt waits on
+  `/mail/jobs` to be retried or discarded. The worker is started when the
+  first account connects, restarts with the site, and is revived if it dies.
+- **Activity**: the feed on `/mail` is plain sentences, updated live.
+
 ## Inbox auto-reply
 
 The Inbox page answers mail from people who are not on the list. Switch

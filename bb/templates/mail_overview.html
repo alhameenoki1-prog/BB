@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Mail{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Mail</div><h1>Command center</h1><p class="lead">Every connected mailbox, what needs a reply, and what the background worker is doing right now.</p></div>
+  <div class="actions">
+    {% if mail_worker %}<span class="tag good" id="worker-tag">Worker running</span><form class="inline" method="post" action="/mail/worker/stop"><button class="secondary small" type="submit">Stop</button></form>
+    {% else %}<span class="tag" id="worker-tag">Worker stopped</span><form class="inline" method="post" action="/mail/worker/start"><button class="small" type="submit">{{ icon('play', 14) }} Start worker</button></form>{% endif %}
+  </div>
+</div>
+{% include "_mail_scope.html" %}
+
+{% for m in selected if m.status == 'reconnect' %}
+<div class="card flat" style="border-color:var(--warn);margin-bottom:12px"><b>{{ m.address }} needs reconnecting.</b> {{ m.status_detail }} <a href="/mail/accounts/{{ m.id }}">Reconnect</a>. Nothing is sent from it meanwhile; everything else keeps running.</div>
+{% endfor %}
+
+<div class="grid" id="stat-cards">
+  {% set unreplied = selected|map(attribute='counts.needs_reply')|map('default', 0)|sum %}
+  {% set replied = selected|map(attribute='counts.replied')|map('default', 0)|sum %}
+  {% set awaiting = selected|map(attribute='counts.awaiting_them')|map('default', 0)|sum %}
+  {% set total = selected|map(attribute='counts.total')|map('default', 0)|sum %}
+  <div class="stat hero"><div class="l">Unreplied</div><div class="n" data-sum="needs_reply">{{ unreplied }}</div><div class="sub">across {{ selected|length }} account{{ 's' if selected|length != 1 else '' }}</div></div>
+  <div class="stat"><div class="l">Replied</div><div class="n" data-sum="replied">{{ replied }}</div><div class="sub">you sent the last word</div></div>
+  <div class="stat"><div class="l">Awaiting them</div><div class="n" data-sum="awaiting_them">{{ awaiting }}</div><div class="sub">ball in their court</div></div>
+  <div class="stat"><div class="l">Total synced</div><div class="n" data-sum="total">{{ total }}</div><div class="sub">messages mirrored</div></div>
+</div>
+
+<div class="two" style="margin-top:18px">
+  <div class="card">
+    <h2>Accounts</h2>
+    {% if selected %}
+    <table><thead><tr><th>Mailbox</th><th>Status</th><th>Unreplied</th><th>Replied</th><th>Awaiting</th></tr></thead>
+      <tbody>{% for m in selected %}
+      <tr data-mailbox="{{ m.id }}">
+        <td><a href="/mail/accounts/{{ m.id }}"><span class="acct acct-{{ m.settings_model.color }}">{{ m.address }}</span></a>{% if m.mode == 'limited' %} <span class="tag" title="Password sign-in: polling only">limited</span>{% endif %}{% if not m.ready %} <span class="tag warn" title="{{ m.ready_why }}">needs signature &amp; link</span>{% endif %}</td>
+        <td class="status">{% if m.status == 'ok' %}<span class="tag good">connected</span>{% elif m.status == 'reconnect' %}<span class="tag bad">reconnect</span>{% elif m.status == 'error' %}<span class="tag warn">unreachable</span>{% else %}<span class="tag">{{ m.status }}</span>{% endif %}</td>
+        <td data-k="needs_reply">{{ m.counts.needs_reply or 0 }}</td><td data-k="replied">{{ m.counts.replied or 0 }}</td><td data-k="awaiting_them">{{ m.counts.awaiting_them or 0 }}</td>
+      </tr>{% endfor %}</tbody></table>
+    <p class="tiny" style="margin-top:8px">Counts fill in once the mailbox has been synced (phase 2).</p>
+    {% else %}<div class="empty">{{ icon('mail') }}<div>No accounts in view. <a href="/mail/accounts">Connect a mailbox</a> or widen the scope above.</div></div>{% endif %}
+  </div>
+  <div class="card">
+    <h2>Recent activity <span class="tiny" id="live-dot" style="font-weight:400">live</span></h2>
+    <ul class="feed" id="feed">
+      {% for a in activity %}<li class="feed-{{ a.kind }}"><span class="ic">{{ {'replied':'✓','synced':'↻','review':'⚠','warning':'⚠','connected':'●','info':'·'}.get(a.kind, '·') }}</span><span>{{ a.text }}</span><span class="tiny when">{{ a.at }}</span></li>{% endfor %}
+      {% if not activity %}<li class="muted small">Nothing yet.</li>{% endif %}
+    </ul>
+    <p class="tiny"><a href="/mail/jobs">Jobs</a>: {{ job_counts.queued }} queued · {{ job_counts.running }} running · {{ job_counts.dead }} failed and waiting</p>
+  </div>
+</div>
+<style>
+  .feed { list-style:none; margin:0; padding:0; } .feed li { display:flex; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); font-size:14px; align-items:baseline; }
+  .feed .ic { width:16px; text-align:center; color:var(--ink-3); } .feed .when { margin-left:auto; white-space:nowrap; }
+  .feed-replied .ic, .feed-connected .ic { color:var(--good); } .feed-warning .ic, .feed-review .ic { color:var(--warn); }
+  .acct { display:inline-flex; align-items:center; gap:6px; font-weight:600; } .acct::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--accent); }
+  .acct-blue::before{background:#0a84ff} .acct-green::before{background:#30d158} .acct-orange::before{background:#ff9f0a} .acct-purple::before{background:#bf5af2}
+  .acct-pink::before{background:#ff375f} .acct-teal::before{background:#64d2ff} .acct-red::before{background:#ff453a} .acct-slate::before{background:#8e8e93}
+</style>
+<script>
+  (function () {
+    const feed = document.getElementById('feed'); let last = {{ (activity[0].id if activity else 0) }};
+    const icons = {replied:'✓', synced:'↻', review:'⚠', warning:'⚠', connected:'●', info:'·'};
+    const es = new EventSource('/mail/events?after=' + last);
+    es.addEventListener('activity', e => {
+      const a = JSON.parse(e.data); if (a.id <= last) return; last = a.id;
+      const li = document.createElement('li'); li.className = 'feed-' + a.kind;
+      li.innerHTML = '<span class="ic"></span><span></span><span class="tiny when"></span>';
+      li.children[0].textContent = icons[a.kind] || '·'; li.children[1].textContent = a.text; li.children[2].textContent = a.at;
+      const empty = feed.querySelector('li.muted'); if (empty) empty.remove();
+      feed.prepend(li);
+    });
+    es.addEventListener('state', e => {
+      const s = JSON.parse(e.data); const tag = document.getElementById('worker-tag');
+      if (tag) { tag.textContent = s.worker ? 'Worker running' : 'Worker stopped'; tag.className = 'tag ' + (s.worker ? 'good' : ''); }
+      const sums = {needs_reply:0, replied:0, awaiting_them:0, total:0};
+      s.mailboxes.forEach(m => { const row = document.querySelector('tr[data-mailbox="' + m.id + '"]'); if (!row) return;
+        ['needs_reply','replied','awaiting_them'].forEach(k => { const c = row.querySelector('[data-k=' + k + ']'); if (c) c.textContent = m.counts[k] || 0; });
+        Object.keys(sums).forEach(k => sums[k] += (m.counts[k] || 0)); });
+      Object.keys(sums).forEach(k => { const el = document.querySelector('[data-sum=' + k + ']'); if (el && document.querySelector('tr[data-mailbox]')) el.textContent = sums[k]; });
+    });
+    es.onerror = () => { document.getElementById('live-dot').textContent = 'reconnecting…'; };
+    es.onopen = () => { document.getElementById('live-dot').textContent = 'live'; };
+  })();
+</script>
+{% endblock %}

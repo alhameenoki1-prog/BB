@@ -89,6 +89,13 @@ application* OAuth client are optional). Deployment and Mac quick-start:
 `bb/workspaces.py` (per-user home, config writer, worker control),
 `bb/recipients.py` (CSV import), `bb/gmail_oauth.py`, `bb/accounts.py`.
 When someone asks to "host this" or "give users logins", that is this.
+The **mail command center** (`bb/mail/`, pages under `/mail`) is the newer
+multi-mailbox side: `db.py` (per-user `data/mail.db`, WAL), `crypto.py`
+(sealed credentials), `jobs.py` (SQLite queue, retries, dead-letter),
+`worker.py` (`python -m bb.mail.worker <workspace>`), `providers/` (gmail,
+imap, graph adapters), `service.py` (connect/check/scope/migration),
+`routes.py`. Phase 1 (foundation) is done; sync, reply state, thread
+views, reply runs and the command bar follow in later phases.
 
 ---
 

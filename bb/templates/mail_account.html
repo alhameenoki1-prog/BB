@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}{{ box.address }}{% endblock %}
+{% block content %}
+{% set s = box.settings_model %}
+<div class="page-head"><div><div class="eyebrow">Mail · account</div><h1>{{ box.address }}</h1><p class="lead">{{ {'gmail':'Connected through Google (full mode).','imap':'Connected with a password (limited mode: polled, not pushed).','graph':'Microsoft 365.'}[box.provider] }} {% if box.status == 'ok' %}{{ box.status_detail }}{% endif %}</p></div>
+  <div class="actions"><form class="inline" method="post" action="/mail/accounts/{{ box.id }}/check"><button class="secondary small" type="submit">Test connection</button></form></div></div>
+
+{% if box.status == 'reconnect' %}
+<div class="card flat" style="border-color:var(--bad)"><b>This mailbox needs reconnecting.</b> {{ box.status_detail }}
+  {% if box.provider == 'gmail' %}{% if gmail_available %}<form class="inline" method="post" action="/mail/gmail/connect" style="margin-left:8px"><input type="hidden" name="email" value="{{ box.address }}"><button class="small" type="submit">Reconnect with Google</button></form>{% else %}The site's Google client is missing; the admin must add it.{% endif %}
+  {% else %}Enter the password again below.{% endif %}
+</div>
+{% elif box.status == 'error' %}
+<div class="card flat" style="border-color:var(--warn)"><b>Could not reach the mailbox just now.</b> {{ box.status_detail }} The worker keeps trying; nothing else is affected.</div>
+{% endif %}
+{% if not box.ready %}<div class="card flat" style="border-color:var(--warn)"><b>Not ready to send.</b> {{ box.ready_why }}</div>{% endif %}
+
+<form method="post" action="/mail/accounts/{{ box.id }}">
+<div class="card">
+  <h2>Identity <span class="tiny" style="font-weight:400">required before anything is sent</span></h2>
+  <div class="row">
+    <div><label>Display name</label><input type="text" name="display_name" value="{{ s.display_name }}" placeholder="Jane Doe"></div>
+    <div><label>Project link *</label><input type="url" name="project_link" value="{{ s.project_link }}" placeholder="https://yourproject.com" required><div class="hint">Added to every outgoing email from this mailbox, no matter what the draft says.</div></div>
+    <div><label>Colour</label><select name="color">{% for c in colors %}<option value="{{ c }}" {{ 'selected' if c == s.color else '' }}>{{ c }}</option>{% endfor %}</select></div>
+  </div>
+  <label>Signature *</label>
+  <textarea name="signature_html" rows="4" placeholder="Jane Doe&lt;br&gt;Founder, Acme&lt;br&gt;&lt;a href=&quot;https://yourproject.com&quot;&gt;yourproject.com&lt;/a&gt;" required>{{ s.signature_html }}</textarea>
+  <div class="hint">Plain text or simple HTML. The project link is appended automatically if the signature does not already contain it.</div>
+</div>
+<div class="card">
+  <h2>How replies are written</h2>
+  <label>Persona notes for the AI</label>
+  <textarea name="persona_notes" rows="4" placeholder="I'm Jane, founder of Acme; warm but direct. We build residential extensions in Lagos. Never quote prices by email; offer a call instead.">{{ s.persona_notes }}</textarea>
+  <div class="row" style="margin-top:12px">
+    <div><label>Default Reply-To</label><input type="email" name="reply_to" value="{{ s.reply_to }}" placeholder="blank = this mailbox"><div class="hint">Where answers land when this mailbox sends. Per-run and per-draft choices override it.</div></div>
+    <div><label>Daily send cap</label><input type="number" name="daily_cap" value="{{ s.daily_cap }}" min="0" max="2000"><div class="hint">0 = no cap (the provider's own limit applies).</div></div>
+    <div><label>Send window</label><div class="actions"><input type="time" name="hours_start" value="{{ s.hours_start }}"><span class="muted">to</span><input type="time" name="hours_end" value="{{ s.hours_end }}"></div><div class="hint">Blank = any time.</div></div>
+  </div>
+  <label>Never auto-reply to</label>
+  <input type="text" name="excluded" value="{{ s.excluded|join(', ') }}" placeholder="boss@company.com, competitor.com">
+  <label class="check" style="margin-top:12px"><input type="checkbox" name="auto_send" {{ 'checked' if s.auto_send else '' }}> Auto-send replies from this mailbox without review <span class="muted">(low-confidence drafts still wait for you)</span></label>
+</div>
+<p class="actions"><button type="submit">{{ icon('check', 15) }} Save settings</button></p>
+</form>
+
+<div class="card">
+  <h2>Connection</h2>
+  <table><tbody>
+    {% for k, v in creds.items() %}<tr><td class="muted small">{{ k.replace('_', ' ') }}</td><td><code>{{ v }}</code></td></tr>{% endfor %}
+    <tr><td class="muted small">last checked</td><td>{{ box.last_checked_at or 'never' }}</td></tr>
+  </tbody></table>
+  {% if box.provider == 'imap' %}
+  <details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">Change the password</summary>
+    <form method="post" action="/mail/accounts/imap" style="margin-top:8px"><input type="hidden" name="email" value="{{ box.address }}"><div class="row"><div><label>New password / app password</label><input type="password" name="password" required></div><div style="display:flex;align-items:flex-end"><button class="secondary" type="submit">Reconnect</button></div></div></form>
+  </details>
+  {% endif %}
+  <div class="actions" style="margin-top:14px">
+    <form class="inline" method="post" action="/mail/accounts/{{ box.id }}/enable"><button class="secondary small" type="submit">{{ 'Disable' if box.enabled else 'Enable' }}</button></form>
+    <form class="inline" method="post" action="/mail/accounts/{{ box.id }}/remove" onsubmit="return confirm('Remove {{ box.address }} and everything synced from it?')"><button class="danger small" type="submit">{{ icon('trash', 13) }} Remove</button></form>
+  </div>
+</div>
+{% endblock %}
