@@ -41,6 +41,15 @@
     </form>
   </div>
 </div>
+<div class="card" style="margin-top:14px">
+  <h2>Microsoft 365 <span class="tiny" style="font-weight:400">app registration, full mode</span></h2>
+  <p class="muted small">For a mailbox on Microsoft 365: an admin registers an app in Entra (Azure AD), grants it the <b>Mail.ReadWrite</b> and <b>Mail.Send</b> <i>application</i> permissions with admin consent, and creates a client secret. Reads and sends go through the Graph API as that mailbox; replies keep Outlook's conversation. The secret is stored encrypted.</p>
+  <form method="post" action="/mail/accounts/graph">
+    <div class="row"><div><label>Mailbox address</label><input type="email" name="email" required placeholder="you@yourcompany.com"></div><div><label>Tenant id</label><input type="text" name="tenant_id" required placeholder="00000000-0000-…"></div>
+    <div><label>Client id</label><input type="text" name="client_id" required></div><div><label>Client secret</label><input type="password" name="client_secret" required autocomplete="off"></div></div>
+    <p style="margin-top:12px"><button type="submit">{{ icon('check', 15) }} Connect Microsoft 365</button></p>
+  </form>
+</div>
 <style>.acct { display:inline-flex; align-items:center; gap:6px; font-weight:600; } .acct::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--accent); }
 .acct-blue::before{background:#0a84ff} .acct-green::before{background:#30d158} .acct-orange::before{background:#ff9f0a} .acct-purple::before{background:#bf5af2} .acct-pink::before{background:#ff375f} .acct-teal::before{background:#64d2ff} .acct-red::before{background:#ff453a} .acct-slate::before{background:#8e8e93}</style>
 {% endblock %}

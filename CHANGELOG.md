@@ -9,6 +9,19 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Mail command center, phase 8 (Microsoft 365, audit log, hardening).**
+  A Microsoft 365 mailbox connects through the Graph API with an app
+  registration's tenant id, client id and client secret (`Mail.ReadWrite`
+  and `Mail.Send` application permissions): backfill and incremental sync
+  by received time with Graph's conversation id as the thread, replies
+  created with `createReply` so Outlook keeps the conversation, new mail
+  sent as a draft so its Message-ID is known and the sent copy is stored
+  once. An expired secret shows the Reconnect banner with the credentials
+  form open. `/mail/audit` is the audit log: every activity line with
+  kind and account filters and paging, plus every email that was sent,
+  dry-run, held or discarded with the account, the recipient, the run it
+  came from and its confidence. The Jobs page gained "Retry all failed".
+  (`bb/mail/providers/graph.py`, `service.connect_graph`.)
 - **Mail command center, phase 7 (the command bar).** A plain-language
   bar at the top of `/mail`: "how many need a reply in sales@?", "reply
   to everything for review", "summarise the thread from Ann and draft a

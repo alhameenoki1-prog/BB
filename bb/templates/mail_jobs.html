@@ -2,7 +2,8 @@
 {% from "_icons.html" import icon %}
 {% block title %}Jobs{% endblock %}
 {% block content %}
-<div class="page-head"><div><div class="eyebrow">Mail</div><h1>Background jobs</h1><p class="lead">Sync, drafting and sending run as jobs with retries. A job that fails every attempt is kept here, never dropped, until you retry or discard it.</p></div></div>
+<div class="page-head"><div><div class="eyebrow">Mail</div><h1>Background jobs</h1><p class="lead">Sync, drafting and sending run as jobs with retries. A job that fails every attempt is kept here, never dropped, until you retry or discard it.</p></div>
+  <div class="actions">{% if counts.dead %}<form class="inline" method="post" action="/mail/jobs/retry-all"><button class="small" type="submit">{{ icon('play', 13) }} Retry all {{ counts.dead }} failed</button></form>{% endif %}</div></div>
 <div class="segs" style="margin-bottom:18px">
   {% for s, label in [('', 'All'), ('queued', 'Queued'), ('running', 'Running'), ('dead', 'Failed and waiting'), ('done', 'Done'), ('cancelled', 'Discarded')] %}
   <a class="{{ 'on' if s == status else '' }}" href="/mail/jobs?status={{ s }}">{{ label }}{% if s and counts[s] %} ({{ counts[s] }}){% endif %}</a>

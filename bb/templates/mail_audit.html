@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Audit log{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Mail</div><h1>Audit log</h1><p class="lead">Everything the mail center did, in order: connections, syncs, drafts held, replies sent, runs, failures. Below it, every email that left or was held, with who approved it.</p></div></div>
+{% include "_mail_scope.html" %}
+<div class="segs" style="margin-bottom:14px">
+  <a class="{{ 'on' if not kind else '' }}" href="/mail/audit?mailbox={{ mailbox }}">All</a>
+  {% for k in kinds %}<a class="{{ 'on' if k == kind else '' }}" href="/mail/audit?kind={{ k }}&mailbox={{ mailbox }}">{{ k }}</a>{% endfor %}
+  {% if mailboxes|length > 1 %}<span class="tiny" style="margin-left:auto">Account: <a href="/mail/audit?kind={{ kind }}">all in scope</a>{% for m in mailboxes %} · <a href="/mail/audit?kind={{ kind }}&mailbox={{ m.id }}" class="{{ 'on' if m.id == mailbox else '' }}">{{ m.address }}</a>{% endfor %}</span>{% endif %}
+</div>
+<div class="card">
+  {% if rows %}
+  <table><thead><tr><th>When</th><th>Kind</th><th>Account</th><th>What happened</th><th></th></tr></thead><tbody>
+  {% for r in rows %}<tr><td class="tiny" style="white-space:nowrap">{{ r.at }}</td><td><span class="tag {{ {'replied':'good','connected':'good','warning':'bad','review':'warn'}.get(r.kind, '') }}">{{ r.kind }}</span></td>
+    <td class="small">{% if r.box %}<span class="acct acct-{{ r.box.settings_model.color }}">{{ r.box.address }}</span>{% endif %}</td><td>{{ r.text }}</td>
+    <td class="tiny">{% if r.meta.run_id %}<a href="/mail/runs/{{ r.meta.run_id }}">run</a>{% endif %}{% if r.meta.draft_id %} <a href="/mail/review">draft</a>{% endif %}</td></tr>{% endfor %}
+  </tbody></table>
+  <div class="actions" style="margin-top:10px">{% if page > 1 %}<a class="small" href="/mail/audit?kind={{ kind }}&mailbox={{ mailbox }}&page={{ page - 1 }}">← newer</a>{% endif %}{% if more %}<a class="small" href="/mail/audit?kind={{ kind }}&mailbox={{ mailbox }}&page={{ page + 1 }}">older →</a>{% endif %}</div>
+  {% else %}<div class="empty">{{ icon('clock') }}<div>Nothing recorded yet.</div></div>{% endif %}
+</div>
+<div class="card" style="margin-top:14px"><h2>Emails sent, dry-run or held</h2>
+  {% if sends %}
+  <table><thead><tr><th>When</th><th>From</th><th>To</th><th>Subject</th><th>Outcome</th><th>How</th></tr></thead><tbody>
+  {% for d in sends %}<tr><td class="tiny" style="white-space:nowrap">{{ d.sent_at or d.updated_at }}</td><td class="small">{{ d.box.address if d.box else '' }}</td><td class="small">{{ d.to[0].email if d.to else '' }}</td>
+    <td>{{ d.subject }}{% if d.thread_id %} <a class="tiny" href="/mail/threads/{{ d.thread_id }}">thread</a>{% endif %}</td>
+    <td><span class="tag {{ 'good' if d.status == 'sent' else ('bad' if d.status == 'failed' else '') }}">{{ d.status.replace('_', ' ') }}</span>{% if d.error %} <span class="tiny">{{ d.error }}</span>{% endif %}</td>
+    <td class="tiny">{% if d.run_id %}<a href="/mail/runs/{{ d.run_id }}">reply run</a> · {% endif %}{{ 'confidence ' + d.confidence if d.confidence else 'written by hand' }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% else %}<p class="muted small">No emails yet.</p>{% endif %}
+</div>
+<style>.acct { display:inline-flex; align-items:center; gap:6px; font-weight:600; } .acct::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--accent); }
+.acct-blue::before{background:#0a84ff} .acct-green::before{background:#30d158} .acct-orange::before{background:#ff9f0a} .acct-purple::before{background:#bf5af2} .acct-pink::before{background:#ff375f} .acct-teal::before{background:#64d2ff} .acct-red::before{background:#ff453a} .acct-slate::before{background:#8e8e93}</style>
+{% endblock %}

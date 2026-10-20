@@ -3,13 +3,13 @@
 {% block title %}{{ box.address }}{% endblock %}
 {% block content %}
 {% set s = box.settings_model %}
-<div class="page-head"><div><div class="eyebrow">Mail · account</div><h1>{{ box.address }}</h1><p class="lead">{{ {'gmail':'Connected through Google (full mode).','imap':'Connected with a password (limited mode: polled, not pushed).','graph':'Microsoft 365.'}[box.provider] }} {% if box.status == 'ok' %}{{ box.status_detail }}{% endif %}</p></div>
+<div class="page-head"><div><div class="eyebrow">Mail · account</div><h1>{{ box.address }}</h1><p class="lead">{{ {'gmail':'Connected through Google (full mode).','imap':'Connected with a password (limited mode: polled, not pushed).','graph':'Microsoft 365 through the Graph API (full mode).'}[box.provider] }} {% if box.status == 'ok' %}{{ box.status_detail }}{% endif %}</p></div>
   <div class="actions"><form class="inline" method="post" action="/mail/accounts/{{ box.id }}/check"><button class="secondary small" type="submit">Test connection</button></form></div></div>
 
 {% if box.status == 'reconnect' %}
 <div class="card flat" style="border-color:var(--bad)"><b>This mailbox needs reconnecting.</b> {{ box.status_detail }}
   {% if box.provider == 'gmail' %}{% if gmail_available %}<form class="inline" method="post" action="/mail/gmail/connect" style="margin-left:8px"><input type="hidden" name="email" value="{{ box.address }}"><button class="small" type="submit">Reconnect with Google</button></form>{% else %}The site's Google client is missing; the admin must add it.{% endif %}
-  {% else %}Enter the password again below.{% endif %}
+  {% elif box.provider == 'graph' %}Enter the app's client secret again below (a new one if the old one expired).{% else %}Enter the password again below.{% endif %}
 </div>
 {% elif box.status == 'error' %}
 <div class="card flat" style="border-color:var(--warn)"><b>Could not reach the mailbox just now.</b> {{ box.status_detail }} The worker keeps trying; nothing else is affected.</div>
@@ -50,6 +50,12 @@
     {% for k, v in creds.items() %}<tr><td class="muted small">{{ k.replace('_', ' ') }}</td><td><code>{{ v }}</code></td></tr>{% endfor %}
     <tr><td class="muted small">last checked</td><td>{{ box.last_checked_at or 'never' }}</td></tr>
   </tbody></table>
+  {% if box.provider == 'graph' %}
+  <details style="margin-top:10px" {{ 'open' if box.status == 'reconnect' else '' }}><summary class="small muted" style="cursor:pointer">Change the app credentials</summary>
+    <form method="post" action="/mail/accounts/graph" style="margin-top:8px"><input type="hidden" name="email" value="{{ box.address }}">
+      <div class="row"><div><label>Tenant id</label><input type="text" name="tenant_id" value="{{ creds.tenant_id }}" required></div><div><label>Client id</label><input type="text" name="client_id" value="{{ creds.client_id }}" required></div><div><label>Client secret</label><input type="password" name="client_secret" required autocomplete="off"></div><div style="display:flex;align-items:flex-end"><button class="secondary" type="submit">Reconnect</button></div></div></form>
+  </details>
+  {% endif %}
   {% if box.provider == 'imap' %}
   <details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">Change the password</summary>
     <form method="post" action="/mail/accounts/imap" style="margin-top:8px"><input type="hidden" name="email" value="{{ box.address }}"><div class="row"><div><label>New password / app password</label><input type="password" name="password" required></div><div style="display:flex;align-items:flex-end"><button class="secondary" type="submit">Reconnect</button></div></div></form>

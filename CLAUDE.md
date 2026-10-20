@@ -105,7 +105,9 @@ job per mailbox, review / auto / dry-run modes, confidence routing, cap
 checked before drafting, 20–60 s pacing, cancel), `commands.py` (the
 command bar: Anthropic tool use via `MailBrain.tool_turn`, JSON fallback
 on other providers, sends become a pending action a person confirms).
-Phases 1 to 3 and 5 to 7 are done; Microsoft Graph and hardening follow.
+`providers/graph.py` (Microsoft 365 by client credentials: sync by
+received time, createReply for threading, drafts for known Message-IDs),
+`/mail/audit` (audit log). All phases of the build brief are in.
 
 ---
 

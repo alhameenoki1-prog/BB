@@ -112,6 +112,33 @@ def _next_color(mailboxes: list[dict]) -> str:
     return COLORS[len(mailboxes) % len(COLORS)]
 
 
+async def connect_graph(db: MailDB, secret: str, *, address: str, tenant_id: str, client_id: str,
+                        client_secret: str, env: dict) -> tuple[str, str]:
+    """Verify and store a Microsoft 365 mailbox read through an app
+    registration (client credentials). Raises AuthError / TransientError / ValueError."""
+    address = (address or "").strip().lower()
+    if "@" not in address:
+        raise ValueError("Enter the mailbox address.")
+    creds = {"tenant_id": tenant_id.strip(), "client_id": client_id.strip(), "client_secret": client_secret.strip()}
+    if not all(creds.values()):
+        raise ValueError("The tenant id, client id and client secret are all needed.")
+    probe = {"address": address, "provider": "graph"}
+    note = await account_for(probe, creds, env).test()
+    existing = await db.mailbox_by_address(address)
+    sealed = crypto.seal_json(secret, creds)
+    if existing:
+        await db.update_mailbox(existing["id"], creds=sealed, provider="graph", mode="full",
+                                status="ok", status_detail=note, last_checked_at=now_iso(), enabled=1)
+        await db.log("connected", f"Reconnected {address} through Microsoft 365.", existing["id"])
+        return existing["id"], note
+    mid = await db.add_mailbox(address=address, provider="graph", creds=sealed, mode="full",
+                               settings=MailboxSettings(color=_next_color(await db.mailboxes())).model_dump(),
+                               status="ok")
+    await db.update_mailbox(mid, status_detail=note, last_checked_at=now_iso())
+    await db.log("connected", f"Connected {address} through Microsoft 365.", mid)
+    return mid, note
+
+
 async def check_mailbox(db: MailDB, secret: str, mailbox: dict, env: dict) -> str:
     """Verify one mailbox's credentials and record the result. Returns the
     new status. An auth failure is 'reconnect' (shown as a banner, never a

@@ -140,6 +140,28 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                             gmail_available=bool(settings.gmail_client_id and settings.gmail_client_secret),
                             redirect_uri=settings.base_url + "/mail/gmail/callback")
 
+    @app.post("/mail/accounts/graph")
+    async def mail_connect_graph(request: Request, user: dict = Depends(current_user)):
+        """Microsoft 365 through an app registration: tenant, client id, secret."""
+        c = await ctx(user)
+        form = dict(await request.form())
+        email = str(form.get("email", "") or "").strip().lower()
+        try:
+            mid, detail = await service.connect_graph(
+                c["db"], settings.secret_key(), address=email, tenant_id=str(form.get("tenant_id", "") or ""),
+                client_id=str(form.get("client_id", "") or ""), client_secret=str(form.get("client_secret", "") or ""),
+                env=settings.worker_env())
+        except AuthError as e:
+            return _redirect("/mail/accounts", error=f"Microsoft refused: {e}")
+        except TransientError as e:
+            return _redirect("/mail/accounts", error=f"Could not connect: {e}")
+        except ValueError as e:
+            return _redirect("/mail/accounts", error=str(e))
+        if not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        return _redirect(f"/mail/accounts/{mid}", msg=f"Connected {email} through Microsoft 365. {detail} "
+                                                     "Now set its signature and project link below.")
+
     @app.post("/mail/accounts/imap")
     async def mail_connect_imap(request: Request, user: dict = Depends(current_user)):
         """Email + password → servers worked out → tested → stored sealed."""
@@ -640,6 +662,38 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         return _redirect(f"/mail/runs/{run_id}", msg="Cancelled; threads not yet drafted are skipped." if ok else "",
                          error="" if ok else "That run is already finished.")
 
+    # ── audit log ──
+
+    @app.get("/mail/audit", response_class=HTMLResponse)
+    async def mail_audit(request: Request, user: dict = Depends(current_user), kind: str = "", mailbox: str = "",
+                         page: int = 1):
+        c = await ctx(user)
+        ids = [m["id"] for m in c["selected"]]
+        if mailbox and mailbox in {m["id"] for m in c["mailboxes"]}:
+            ids = [mailbox]
+        marks = ",".join("?" for _ in ids) or "''"
+        where, params = [f"(mailbox_id = '' OR mailbox_id IN ({marks}))"], list(ids)
+        if kind:
+            where.append("kind = ?"); params.append(kind)
+        page = max(1, page)
+        rows = await c["db"].query(f"SELECT * FROM activity WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT 101 OFFSET ?",
+                                   (*params, (page - 1) * 100))
+        more = len(rows) > 100
+        rows = rows[:100]
+        names = {m["id"]: m for m in c["mailboxes"]}
+        for r in rows:
+            r["meta"] = json.loads(r.pop("meta_json", "{}") or "{}")
+            r["box"] = names.get(r["mailbox_id"])
+        sends = await c["db"].query(
+            f"SELECT d.id, d.mailbox_id, d.kind, d.to_json, d.subject, d.status, d.confidence, d.run_id, d.thread_id, d.sent_at, d.updated_at, d.error "
+            f"FROM drafts d WHERE d.mailbox_id IN ({marks}) AND d.status IN ('sent', 'dry_run', 'failed', 'rejected') "
+            f"ORDER BY d.updated_at DESC LIMIT 100", ids)
+        for d in sends:
+            d["to"] = json.loads(d.get("to_json") or "[]"); d["box"] = names.get(d["mailbox_id"])
+        kinds = [r["kind"] for r in await c["db"].query("SELECT DISTINCT kind FROM activity ORDER BY kind")]
+        return await render(request, "mail_audit.html", user, **page_ctx(c), rows=rows, sends=sends, kind=kind,
+                            kinds=kinds, mailbox=mailbox, page=page, more=more)
+
     # ── jobs (dead-letter page) ──
 
     @app.get("/mail/jobs", response_class=HTMLResponse)
@@ -654,6 +708,17 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             r["mailbox"] = names.get(r["mailbox_id"], "")
         return await render(request, "mail_jobs.html", user, **page_ctx(c), jobs=rows, status=status,
                             counts=await jobs.counts())
+
+    @app.post("/mail/jobs/retry-all")
+    async def mail_jobs_retry_all(user: dict = Depends(current_user)):
+        c = await ctx(user)
+        jobs = Jobs(c["db"])
+        n = 0
+        for j in await jobs.list("dead", limit=500):
+            n += 1 if await jobs.retry(j["id"]) else 0
+        if n and not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        return _redirect("/mail/jobs", msg=f"Queued {n} failed job{'s' if n != 1 else ''} again.")
 
     @app.post("/mail/jobs/{job_id}/{action}")
     async def mail_job_action(job_id: str, action: str, user: dict = Depends(current_user)):

@@ -278,7 +278,11 @@ being built in phases; sync, reply state, the composer and sending are in.
   OAuth client; while it is in testing mode Google ends the sign-in after
   about a week and the account shows a Reconnect banner) or with an email
   address and app password ("limited mode": polled, not pushed).
-  Passwords and tokens are stored encrypted. Each account has its own
+  Microsoft 365 mailboxes connect through the Graph API with an app
+  registration (tenant id, client id, client secret; the app needs the
+  Mail.ReadWrite and Mail.Send *application* permissions with admin
+  consent). Passwords, tokens and secrets are stored encrypted. Each
+  account has its own
   settings: display name, signature, **project link** (both required
   before anything is sent from it), default Reply-To, persona notes,
   auto-send, daily cap, send window, excluded senders, colour.
@@ -332,6 +336,10 @@ being built in phases; sync, reply state, the composer and sending are in.
   per-thread status under each account and a Cancel button.
 - **Review** (`/mail/review`): every draft waiting on a person, across
   the selected accounts, with approve / edit / discard and approve-all.
+- **Audit log** (`/mail/audit`): everything the mail center did, in
+  order, filtered by kind and account, and every email that was sent,
+  dry-run, held or discarded with the account it left from, the run it
+  belonged to and the confidence it had.
 - **Compose** (`/mail/compose`): a new email from a short brief, through
   the same check, composer and send rules.
 - **AI provider**: the mail center uses the key and model chosen on the

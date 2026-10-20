@@ -181,6 +181,7 @@
       <a href="/mail/compose" class="{{ 'active' if path.startswith('/mail/compose') else '' }}">{{ icon('send') }}<span class="t">Compose</span></a>
       <a href="/mail/accounts" class="{{ 'active' if path.startswith('/mail/accounts') or path.startswith('/mail/gmail') else '' }}">{{ icon('users') }}<span class="t">Accounts</span></a>
       <a href="/mail/jobs" class="{{ 'active' if path.startswith('/mail/jobs') else '' }}">{{ icon('clock') }}<span class="t">Jobs</span></a>
+      <a href="/mail/audit" class="{{ 'active' if path.startswith('/mail/audit') else '' }}">{{ icon('shield') }}<span class="t">Audit log</span></a>
       <div class="sep">Setup</div>
       <a href="/profile" class="{{ 'active' if path.startswith('/profile') else '' }}">{{ icon('person') }}<span class="t">Profile</span></a>
       <a href="/mailbox" class="{{ 'active' if path.startswith('/mailbox') or path.startswith('/gmail') else '' }}">{{ icon('mail') }}<span class="t">Mailbox</span></a>
