@@ -9,6 +9,18 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **Sending in parallel, and a Relay speed.** The sender now gates every
+  due email first and then sends through several lanes at once
+  (`channels.email.send_concurrency`), each lane pausing between its own
+  sends (`send_jitter_seconds`, the shortest pause a quarter of it). The
+  Profile's speeds set both: Gentle and Normal stay one at a time with a
+  pause, Fast sends two at a time two seconds apart (1,500 an hour), and
+  the new **Relay** speed sends eight at a time, 100 a minute, for an
+  SMTP sending service such as Amazon SES, Brevo, Postmark or Mailgun.
+  The daily limit and warm-up still apply on top.
+- **Research four times faster again.** 24 websites at once (was 6), 200
+  businesses per heartbeat (was 40), shorter timeouts, a connection pool
+  sized to match.
 - **Big uploads move faster.** Website research now reads six sites at
   once, 40 per heartbeat, on its own two-minute clock: slow sites stop the
   research stage for that cycle instead of running the whole heartbeat

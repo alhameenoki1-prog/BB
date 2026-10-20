@@ -562,12 +562,12 @@ class Sender:
             return
 
         allow_risky = getattr(self.config.channels.email, "send_to_risky", False)
-        sent = 0
         # Set when Precleared can't be asked (allowance used up, network):
         # cold emails wait for a later cycle, replies still go out.
         compliance_paused = False
+        ready: list[tuple[dict, object, str]] = []   # (item, prospect, receipt_id)
         for item in due:
-            if sent >= budget:
+            if len(ready) >= budget:
                 break
             needs_check = self.precleared is not None and item["kind"] == "sequence"
             if needs_check and compliance_paused:
@@ -626,66 +626,85 @@ class Sender:
                     )
                     continue
                 receipt_id = clearance.receipt_id
+            ready.append((item, prospect, receipt_id))
 
-            send_kwargs = {}
-            files = _attachment_paths(item.get("attachments_json"))
-            if files:
-                send_kwargs["attachments"] = files
-            result = await self.provider.send_email(
-                item["to_email"], item["subject"], item["body"],
-                thread_ref=item.get("thread_ref", ""),
-                in_reply_to=item.get("in_reply_to", ""),
-                **send_kwargs,
-            )
-            if not result.ok:
-                await self.state.update_outbox_item(
-                    item["id"], status="failed", error=result.error[:300]
-                )
-                continue
+        # Send: several at once when the channel allows it, each lane pausing
+        # a little between its sends. With send_concurrency 1 this is the
+        # one-at-a-time, few-seconds-apart behaviour a personal mailbox needs.
+        lanes = max(1, int(getattr(email_cfg, "send_concurrency", 1) or 1))
+        jitter_max = float(getattr(email_cfg, "send_jitter_seconds", SEND_JITTER_SECONDS[1]) or 0)
+        queue = list(ready)
+        sent = 0
 
-            sent += 1
-            now_iso = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-            await self.state.update_outbox_item(
-                item["id"], status="sent", sent_at=now_iso,
-                message_id=result.message_id, thread_ref=result.thread_ref,
-            )
-            if prospect.status in ("new", "queued"):
-                await self.state.update_prospect_status(prospect.id, "contacted")
+        async def lane():
+            nonlocal sent
+            first = True
+            while queue:
+                item, prospect, receipt_id = queue.pop(0)
+                if self.send_pacing and jitter_max > 0 and not first:
+                    await asyncio.sleep(random.uniform(jitter_max / 4, jitter_max))
+                first = False
+                if await self._send_one(item, prospect, receipt_id):
+                    sent += 1
 
-            # A sent reply belongs in its conversation thread.
-            if item["kind"] == "reply" and item.get("conversation_id"):
-                try:
-                    convo = await self.state.get_conversation(item["conversation_id"])
-                    if convo:
-                        from harvey.models.conversation import Message
-                        convo.thread.append(
-                            Message(sender="harvey", content=item["body"])
-                        )
-                        await self.state.update_conversation(
-                            convo.id, thread_json=convo.thread_json()
-                        )
-                except Exception as e:
-                    logger.debug(f"Sender: convo append failed: {e}")
-            details = {
-                "to": item["to_email"], "step": item["step"],
-                "kind": item["kind"], "provider": self.provider.name,
-            }
-            if receipt_id:
-                details["precleared_receipt"] = receipt_id
-            await self.state.log_action(
-                action_type="email_sent",
-                agent="sender",
-                details=details,
-            )
-            logger.info(
-                f"Sender: sent step {item['step']} to {item['to_email']} "
-                f"via {self.provider.name}."
-            )
-            # Human-ish pacing BETWEEN sends (not after the last, and never
-            # in tests where pacing is disabled).
-            if self.send_pacing and sent < budget:
-                await asyncio.sleep(random.uniform(*SEND_JITTER_SECONDS))
+        await asyncio.gather(*(lane() for _ in range(min(lanes, len(queue)) or 1)))
 
         if sent:
             logger.info(f"Sender: {sent} email(s) sent this cycle "
                         f"({sent_today + sent}/{max_daily or 'no limit'} today).")
+
+    async def _send_one(self, item: dict, prospect, receipt_id: str) -> bool:
+        """Send one gated outbox item and record the outcome. True when it went."""
+        send_kwargs = {}
+        files = _attachment_paths(item.get("attachments_json"))
+        if files:
+            send_kwargs["attachments"] = files
+        result = await self.provider.send_email(
+            item["to_email"], item["subject"], item["body"],
+            thread_ref=item.get("thread_ref", ""),
+            in_reply_to=item.get("in_reply_to", ""),
+            **send_kwargs,
+        )
+        if not result.ok:
+            await self.state.update_outbox_item(
+                item["id"], status="failed", error=result.error[:300]
+            )
+            return False
+        now_iso = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+        await self.state.update_outbox_item(
+            item["id"], status="sent", sent_at=now_iso,
+            message_id=result.message_id, thread_ref=result.thread_ref,
+        )
+        if prospect.status in ("new", "queued"):
+            await self.state.update_prospect_status(prospect.id, "contacted")
+
+        # A sent reply belongs in its conversation thread.
+        if item["kind"] == "reply" and item.get("conversation_id"):
+            try:
+                convo = await self.state.get_conversation(item["conversation_id"])
+                if convo:
+                    from harvey.models.conversation import Message
+                    convo.thread.append(
+                        Message(sender="harvey", content=item["body"])
+                    )
+                    await self.state.update_conversation(
+                        convo.id, thread_json=convo.thread_json()
+                    )
+            except Exception as e:
+                logger.debug(f"Sender: convo append failed: {e}")
+        details = {
+            "to": item["to_email"], "step": item["step"],
+            "kind": item["kind"], "provider": self.provider.name,
+        }
+        if receipt_id:
+            details["precleared_receipt"] = receipt_id
+        await self.state.log_action(
+            action_type="email_sent",
+            agent="sender",
+            details=details,
+        )
+        logger.info(
+            f"Sender: sent step {item['step']} to {item['to_email']} "
+            f"via {self.provider.name}."
+        )
+        return True

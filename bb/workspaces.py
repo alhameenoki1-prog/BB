@@ -68,9 +68,14 @@ SMTP_FIELDS = ("smtp_host", "smtp_port", "smtp_username", "smtp_password",
 M365_FIELDS = ("m365_tenant_id", "m365_client_id", "m365_client_secret", "m365_mailbox")
 # How fast the worker runs: minutes between cycles and emails per cycle.
 SPEEDS = {
-    "gentle": {"label": "Gentle", "note": "8 emails every 5 minutes (about 95 an hour)", "interval": 5, "per_cycle": 8},
-    "normal": {"label": "Normal", "note": "10 emails every 2 minutes (about 300 an hour)", "interval": 2, "per_cycle": 10},
-    "fast": {"label": "Fast", "note": "25 emails every minute (about 1,500 an hour; needs a mailbox that allows it)", "interval": 1, "per_cycle": 25},
+    "gentle": {"label": "Gentle", "note": "8 emails every 5 minutes, one at a time with a pause between them (about 95 an hour)",
+               "interval": 5, "per_cycle": 8, "concurrency": 1, "jitter": 15.0},
+    "normal": {"label": "Normal", "note": "10 emails every 2 minutes, a few seconds apart (about 300 an hour)",
+               "interval": 2, "per_cycle": 10, "concurrency": 1, "jitter": 6.0},
+    "fast": {"label": "Fast", "note": "25 emails every minute, two at a time (about 1,500 an hour; a personal Gmail or Outlook mailbox may block this)",
+             "interval": 1, "per_cycle": 25, "concurrency": 2, "jitter": 2.0},
+    "relay": {"label": "Relay", "note": "100 emails every minute, eight at a time (about 6,000 an hour). For an SMTP sending service such as Amazon SES, Brevo, Postmark or Mailgun, never a personal mailbox",
+              "interval": 1, "per_cycle": 100, "concurrency": 8, "jitter": 0.8},
 }
 GREETINGS = ("Hi", "Hello", "Hey", "Dear", "Good day")
 # Sectors the writer sorts contacts into, with labels for the form.
@@ -600,6 +605,8 @@ class Workspace:
                     "send_to_risky": False,
                     "max_bounce_rate": 0.05,
                     "sends_per_cycle": speed["per_cycle"],
+                    "send_concurrency": speed["concurrency"],
+                    "send_jitter_seconds": speed["jitter"],
                     # Checkbox: absent in the form means off; a brand-new form
                     # (no key at all) defaults to on.
                     "warmup_ramp": flag("warmup_ramp") if "warmup_ramp" in form or "speed" in form else True,

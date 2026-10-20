@@ -64,8 +64,7 @@ own SMTP/IMAP settings, fills a profile that becomes their `harvey.yaml`
 (including `outreach:` — inquiry vs offer mode, what they want from
 recipients, how replies are answered, attachments for replies), uploads
 recipients (stored with `email_status: provided`, which sends), and runs a
-worker process. Per-user settings also cover speed (1/2/5-minute cycles via
-`heartbeat_interval_minutes` + `channels.email.sends_per_cycle`), a warm-up
+worker process. Per-user settings also cover speed (gentle/normal/fast/relay: `heartbeat_interval_minutes` + `channels.email.sends_per_cycle` + `send_concurrency` lanes + `send_jitter_seconds`; the sender gates first, then sends through parallel lanes), a warm-up
 ramp, the writing style (`outreach.style`), the closing ask (`outreach.ask`: zoom / phone / coffee / in_person / visit / email, plus `ask_detail`; `Writer._ask_block`, `Handler._outreach_context`), an email signature with an
 inline image (`outreach.signature_html/_image`), and a Microsoft 365
 admin-app mailbox (`channels.email.provider: microsoft_app`, Graph client

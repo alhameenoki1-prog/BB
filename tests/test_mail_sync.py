@@ -276,7 +276,7 @@ async def test_worker_backfills_then_syncs_and_counts(tmp_path, monkeypatch):
     box = await db.mailbox(mid)
     assert box["sync"]["backfill_done"] and box["counts"]["total"] == 3 and box["counts"]["awaiting_them"] == 1
     assert box["counts"]["no_reply_needed"] == 1 and box["last_sync_at"]
-    done = (await jobs.list("done"))[0]
+    done = next(j for j in await jobs.list("done") if j["kind"] == "sync_backfill")
     assert done["progress"]["phase"] == "backfill" and done["progress"]["done"] == 3 and done["progress"]["new"] == 3
     texts = [r["text"] for r in await db.activity()]
     assert any(t.startswith("Finished syncing me@mine.example: 3 messages in 2 conversations") for t in texts)

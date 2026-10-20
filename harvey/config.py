@@ -93,6 +93,12 @@ class EmailChannelConfig(BaseModel):
     # How many emails one heartbeat may send (with a few seconds between
     # each). Together with usage.heartbeat_interval_minutes this is the speed.
     sends_per_cycle: int = 8
+    # How many emails are in flight at once (SMTP relays take several
+    # connections; a personal Gmail or Outlook mailbox should stay at 1) and
+    # the longest pause between two sends in seconds (the shortest is a
+    # quarter of it). Together these are the pace inside one heartbeat.
+    send_concurrency: int = 1
+    send_jitter_seconds: float = 15.0
     # Warm-up: a mailbox that has never sent cold email starts at 20 a day
     # and may send 10 more each day, up to max_daily_sends. Off = full speed
     # from day one (fine for a mailbox that already sends a lot).
@@ -100,6 +106,16 @@ class EmailChannelConfig(BaseModel):
     # Add a List-Unsubscribe header (mailto) so Gmail/Yahoo show "Unsubscribe"
     # and count the mail as compliant bulk rather than suspicious.
     list_unsubscribe: bool = True
+
+    @field_validator("send_concurrency")
+    @classmethod
+    def _concurrency(cls, v: int) -> int:
+        return max(1, min(int(v or 1), 16))
+
+    @field_validator("send_jitter_seconds")
+    @classmethod
+    def _jitter(cls, v: float) -> float:
+        return max(0.0, min(float(v or 0), 120.0))
 
     @field_validator("max_daily_sends")
     @classmethod

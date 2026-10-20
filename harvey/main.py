@@ -34,7 +34,7 @@ CYCLE_TIMEOUT_SECONDS = 600
 # Research (website profiling) per heartbeat: how many businesses, and how
 # long before it yields to the next cycle. It runs beside the writer and
 # sender, never ahead of them.
-PROFILE_PER_CYCLE = 40
+PROFILE_PER_CYCLE = 200
 PROFILE_BUDGET_SECONDS = 120
 
 # Cap on a single quiet-hours sleep chunk. See the quiet-hours block in

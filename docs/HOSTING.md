@@ -359,6 +359,21 @@ being built in phases; sync, reply state, the composer and sending are in.
 - **AI provider**: the mail center uses the key and model chosen on the
   site's AI provider page, so it costs the user, never the site.
 
+## Speed
+
+Profile → Sending has four speeds. Gentle and Normal send one email at a
+time with a pause between them, the way a person would. Fast sends two
+at a time, two seconds apart, about 1,500 an hour. Relay sends eight at
+a time, 100 a minute, and is meant for an SMTP sending service (Amazon
+SES, Brevo, Postmark, Mailgun, SendGrid) connected on the Mailbox page
+with its SMTP details; a personal Gmail, Outlook or Workspace mailbox
+will be throttled or blocked at that rate. Whatever the speed, "Max
+emails per day" and the warm-up ramp still cap the day, so for a big
+list set the maximum high and switch the ramp off only on a mailbox
+that already sends a lot. In harvey.yaml the speed is
+`usage.heartbeat_interval_minutes` plus `channels.email.sends_per_cycle`,
+`send_concurrency` and `send_jitter_seconds`.
+
 ## What you'd like to happen next
 
 On the Profile page, under Writing style, pick the one thing every first

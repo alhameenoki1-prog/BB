@@ -354,3 +354,41 @@ async def test_inbound_dedup(state):
     await handler._run_native()   # same message again → ignored via dedup
     second = await state.get_conversations_by_status("closed")
     assert len(first) == len(second) == 1
+
+
+class SlowProvider(FakeProvider):
+    """Records how many sends are in flight at once."""
+    def __init__(self):
+        super().__init__()
+        self.in_flight = 0; self.peak = 0
+
+    async def send_email(self, to_email, subject, body, thread_ref="", in_reply_to=""):
+        import asyncio as _a
+        self.in_flight += 1; self.peak = max(self.peak, self.in_flight)
+        try:
+            await _a.sleep(0.02)
+            return await super().send_email(to_email, subject, body, thread_ref, in_reply_to)
+        finally:
+            self.in_flight -= 1
+
+
+@pytest.mark.asyncio
+async def test_drain_sends_several_at_once_when_the_channel_allows(state):
+    """send_concurrency lanes run side by side; 1 keeps the one-at-a-time order."""
+    pids = [await seed_prospect(state, email=f"p{i}@acme{i}.com") for i in range(8)]
+    await seed_campaign(state, pids)
+    provider = SlowProvider()
+    sender = make_sender(state, provider, require_approval=False)
+    sender.config.channels.email.sends_per_cycle = 8
+    sender.config.channels.email.send_concurrency = 4
+    sender.config.channels.email.send_jitter_seconds = 0
+    await sender._run_native()
+    assert len(await state.get_outbox(status="sent")) == 8 and 2 <= provider.peak <= 4
+    assert len({s["to"] for s in provider.sent}) == 8
+    # A second batch, one lane: never more than one in flight.
+    pids = [await seed_prospect(state, email=f"q{i}@acme{i}.com") for i in range(4)]
+    await seed_campaign(state, pids)
+    provider.peak = 0
+    sender.config.channels.email.send_concurrency = 1
+    await sender._run_native()
+    assert provider.peak == 1 and len(await state.get_outbox(status="sent")) == 12

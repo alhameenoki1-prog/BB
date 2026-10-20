@@ -20,7 +20,7 @@ import httpx
 
 logger = logging.getLogger("harvey.collectors.profile")
 
-TIMEOUT = httpx.Timeout(connect=8.0, read=12.0, write=8.0, pool=8.0)
+TIMEOUT = httpx.Timeout(connect=6.0, read=8.0, write=6.0, pool=10.0)
 USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -165,7 +165,7 @@ def _text(html: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"(?s)<[^>]+>", " ", _strip_code(html)))
 
 
-PROFILE_CONCURRENCY = 6   # sites read at once; each is a different host
+PROFILE_CONCURRENCY = 24  # sites read at once; each is a different host
 
 
 class ProfileCollector:
@@ -187,6 +187,7 @@ class ProfileCollector:
     async def __aenter__(self):
         self._client = httpx.AsyncClient(
             timeout=TIMEOUT, follow_redirects=True,
+            limits=httpx.Limits(max_connections=PROFILE_CONCURRENCY * 2, max_keepalive_connections=PROFILE_CONCURRENCY),
             headers={"User-Agent": random.choice(USER_AGENTS),
                      "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"},
         )
