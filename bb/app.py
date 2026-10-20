@@ -405,6 +405,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/apikey", error=detail)
         ws.save_llm(provider, key, model=model, base_url=base_url, workspace_id=workspace_id)
         restarted = await ws.restart_worker_if_running("the new AI provider")
+        await ws.restart_mail_worker_if_running()
         return _redirect("/apikey", msg=f"{preset['label']} saved and verified ({model or 'default model'})."
                          + (" The worker was restarted to use it." if restarted else ""))
 

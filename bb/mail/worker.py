@@ -50,6 +50,21 @@ class Handlers:
             return {"skipped": "mailbox gone"}
         return await service.run_sync(self.db, self.secret, mailbox, self.env, self.jobs, job["id"], backfill=False)
 
+    async def send_draft(self, job: dict):
+        from bb.mail.sending import SendRefused, send_draft
+        draft = await self.db.one("SELECT * FROM drafts WHERE id = ?", (job["payload"].get("draft_id", ""),))
+        if not draft:
+            return {"skipped": "draft gone"}
+        if draft["status"] not in ("approved",):
+            return {"skipped": f"draft is {draft['status']}"}
+        try:
+            return await send_draft(self.db, self.secret, self.env, draft, dry_run=bool(job["payload"].get("dry_run")))
+        except SendRefused as e:
+            await self.db.execute("UPDATE drafts SET status = 'pending_review', error = ?, updated_at = ? WHERE id = ?",
+                                  (f"Not sent: {e}", service.now_iso(), draft["id"]))
+            await self.db.log("review", f"Held a reply to {draft['to_json'][:60]}: {e}", draft["mailbox_id"], draft_id=draft["id"])
+            return {"status": "held", "reason": str(e)}
+
     async def run(self, job: dict) -> dict:
         handler = getattr(self, job["kind"], None)
         if handler is None:

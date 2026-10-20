@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Compose{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Mail</div><h1>New email</h1><p class="lead">One-to-one, written for this person from your instruction. You edit before it goes.</p></div></div>
+{% if draft %}
+<div class="card">
+  <h2>Your draft</h2>
+  <div class="actions" style="margin:6px 0 10px"><span class="tag {{ 'good' if draft.confidence == 'high' else ('warn' if draft.confidence == 'low' else '') }}">confidence: {{ draft.confidence }}</span>{% if draft.qa.ok %}<span class="tag good">passed the writing check</span>{% else %}<span class="tag warn">{{ draft.qa.reasons|join('; ') }}</span>{% endif %}</div>
+  {% if draft.error %}<p class="small" style="color:var(--bad)">{{ draft.error }}</p>{% endif %}
+  <form method="post" action="/mail/drafts/{{ draft.id }}/send">
+    <div class="row"><div><label>To</label><input type="text" value="{{ draft.to[0].name ~ ' <' ~ draft.to[0].email ~ '>' if draft.to else '' }}" readonly></div>
+      <div><label>Subject</label><input type="text" name="subject" value="{{ draft.subject }}" maxlength="200"></div>
+      <div><label>Reply-To</label><input type="email" name="reply_to" value="{{ draft.reply_to }}" placeholder="blank = the sending mailbox"></div></div>
+    <label>Email</label><textarea name="body" rows="9">{{ draft.body }}</textarea>
+    <div class="hint">Greeting, signature and project link are added at send time.</div>
+    <div class="actions" style="margin-top:12px"><button type="submit">{{ icon('send', 15) }} Send</button><button type="submit" name="dry_run" value="1" class="secondary">Dry run</button><button type="submit" formaction="/mail/drafts/{{ draft.id }}/reject" class="secondary danger">Discard</button></div>
+  </form>
+</div>
+{% endif %}
+<div class="card">
+  <h2>{{ 'Another one' if draft else 'Write one' }}</h2>
+  <form method="post" action="/mail/compose">
+    <div class="row">
+      <div><label>From</label><select name="mailbox">{% for m in ready %}<option value="{{ m.id }}">{{ m.address }}{{ '' if m.ready else ' (needs signature & link)' }}</option>{% endfor %}</select></div>
+      <div><label>To (email)</label><input type="email" name="to" required placeholder="john@example.com"></div>
+      <div><label>Their name</label><input type="text" name="to_name" placeholder="John"></div>
+    </div>
+    <label>What should it say?</label>
+    <textarea name="instruction" rows="4" required placeholder="Ask John whether Thursday's call can move to Friday afternoon; mention I'll send the agenda before."></textarea>
+    <p class="actions" style="margin-top:10px"><button type="submit">{{ icon('spark', 15) }} Draft it</button></p>
+  </form>
+</div>
+{% endblock %}

@@ -82,6 +82,44 @@ class ImapAccount(MailAccount):
         except Exception:
             pass
 
+    # ── sending ──
+
+    async def send(self, *, to, subject, body_text, body_html, in_reply_to="", references="",
+                   reply_to="", from_name="", attachments=None) -> tuple[str, str, str]:
+        import aiosmtplib
+
+        msg = self.build_mime(to=to, subject=subject, body_text=body_text, body_html=body_html,
+                              in_reply_to=in_reply_to, references=references, reply_to=reply_to, from_name=from_name)
+        c = self.creds
+        port = int(c.get("smtp_port") or 587)
+        try:
+            await aiosmtplib.send(msg, hostname=c["smtp_host"], port=port, username=c["username"],
+                                  password=c["password"], start_tls=(port == 587), use_tls=(port == 465), timeout=40)
+        except aiosmtplib.SMTPAuthenticationError as e:
+            raise AuthError(f"SMTP sign-in refused: {str(e)[:160]}") from e
+        except (aiosmtplib.SMTPException, OSError) as e:
+            raise TransientError(f"send failed: {str(e)[:200]}") from e
+        message_id = msg["Message-ID"]
+        # Best effort: a copy in the Sent folder, so the mailbox itself shows it.
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, self._append_sent, msg.as_bytes())
+        except Exception:
+            pass
+        return message_id, "", ""
+
+    def _append_sent(self, raw: bytes):
+        import imaplib as _imaplib
+        conn = self._imap()
+        try:
+            folders = self._folders(conn)
+            sent = next((f for f, is_sent in folders if is_sent), None)
+            if sent is None and folders and folders[0][0] == ALL_MAIL:
+                sent = "[Gmail]/Sent Mail"
+            if sent:
+                conn.append(f'"{sent}"', "(\\Seen)", _imaplib.Time2Internaldate(__import__("time").time()), raw)
+        finally:
+            self._logout(conn)
+
     # ── folders ──
 
     def _folders(self, conn) -> list[tuple[str, bool]]:

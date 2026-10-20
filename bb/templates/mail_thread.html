@@ -16,7 +16,43 @@
   </div>
   {% endfor %}
 </div>
-<p class="muted small" style="margin-top:14px">Replying from here arrives in phase 5. Until then, answer in your mail client; the state updates on the next sync.</p>
+{% if in_flight %}{% for d in in_flight %}<div class="card flat" style="margin-top:14px;border-color:{{ 'var(--bad)' if d.status == 'failed' else 'var(--accent)' }}">{% if d.status == 'approved' %}<b>Sending…</b> the worker picks it up within seconds; this page updates on reload.{% else %}<b>Send failed.</b> {{ d.error }}{% endif %}</div>{% endfor %}{% endif %}
+
+<div class="card" style="margin-top:18px" id="composer">
+  {% if draft %}
+  <h2>Your reply <span class="tiny" style="font-weight:400">drafted by the AI from the whole thread; edit anything</span></h2>
+  <div class="actions" style="margin:6px 0 10px">
+    <span class="tag {{ 'good' if draft.confidence == 'high' else ('warn' if draft.confidence == 'low' else '') }}">confidence: {{ draft.confidence }}</span>
+    {% if draft.qa.ok %}<span class="tag good">passed the writing check</span>{% else %}<span class="tag warn" title="{{ draft.qa.reasons|join('; ') }}">writing check: {{ draft.qa.reasons|join('; ') }}</span>{% endif %}
+    {% if draft.qa.attempts and draft.qa.attempts > 1 %}<span class="tiny">rewritten once</span>{% endif %}
+    {% if draft.qa.confidence_reason %}<span class="tiny">{{ draft.qa.confidence_reason }}</span>{% endif %}
+  </div>
+  {% if draft.error %}<p class="small" style="color:var(--bad)">{{ draft.error }}</p>{% endif %}
+  <form method="post" action="/mail/drafts/{{ draft.id }}/send">
+    <div class="row">
+      <div><label>To</label><input type="text" value="{{ draft.to[0].name ~ ' <' ~ draft.to[0].email ~ '>' if draft.to else '' }}" readonly></div>
+      <div><label>Subject</label><input type="text" name="subject" value="{{ draft.subject }}" maxlength="200"></div>
+      <div><label>Reply-To <span class="muted" style="font-weight:400">(where their answer lands)</span></label><input type="email" name="reply_to" value="{{ draft.reply_to }}" placeholder="blank = {{ box.address if box else 'this mailbox' }}"></div>
+    </div>
+    <label>Reply</label>
+    <textarea name="body" rows="9">{{ draft.body }}</textarea>
+    <div class="hint">The greeting, your signature and the project link are added when it is sent, whatever is written here.</div>
+    <div class="actions" style="margin-top:12px">
+      <button type="submit" {{ '' if box_ready[0] else 'disabled title="' ~ box_ready[1] ~ '"' }}>{{ icon('send', 15) }} Send</button>
+      <button type="submit" name="dry_run" value="1" class="secondary">Dry run</button>
+      <button type="submit" formaction="/mail/drafts/{{ draft.id }}/reject" class="secondary danger">Discard draft</button>
+      {% if not box_ready[0] %}<span class="small" style="color:var(--warn)">{{ box_ready[1] }}</span>{% endif %}
+    </div>
+  </form>
+  {% else %}
+  <h2>Reply</h2>
+  <form method="post" action="/mail/threads/{{ thread.id }}/draft">
+    <label>Anything the AI should know <span class="muted" style="font-weight:400">(optional)</span></label>
+    <input type="text" name="instructions" placeholder="e.g. say yes to Tuesday, ask them to bring the drawings">
+    <p class="actions" style="margin-top:10px"><button type="submit">{{ icon('spark', 15) }} Draft a reply</button> <span class="muted small">Written from the whole thread in your voice; you edit before anything goes out.</span></p>
+  </form>
+  {% endif %}
+</div>
 <style>
   .timeline { display:flex; flex-direction:column; gap:12px; }
   .msg { padding:14px 16px; border-radius:var(--r-sm); border:1px solid var(--line); background:var(--surface); max-width:82%; }

@@ -144,6 +144,25 @@ class GmailAccount(MailAccount):
             headers=keep, folder=folder, sent_at=sent_at, outbound=outbound,
         )
 
+    async def send(self, *, to, subject, body_text, body_html, in_reply_to="", references="",
+                   reply_to="", from_name="", attachments=None) -> tuple[str, str, str]:
+        msg = self.build_mime(to=to, subject=subject, body_text=body_text, body_html=body_html,
+                              in_reply_to=in_reply_to, references=references, reply_to=reply_to, from_name=from_name)
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        body = {"raw": raw}
+        token = await self._token()
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(API + "/messages/send", json=body, headers={"Authorization": f"Bearer {token}"})
+        except httpx.HTTPError as e:
+            raise TransientError(f"could not reach Gmail: {e}") from e
+        if r.status_code in (401, 403):
+            raise AuthError(f"Gmail refused the send ({r.status_code}): reconnect the account")
+        if r.status_code >= 400:
+            raise TransientError(f"Gmail send failed {r.status_code}: {r.text[:160]}")
+        data = r.json()
+        return msg["Message-ID"], str(data.get("id", "")), str(data.get("threadId", ""))
+
     async def _read_many(self, ids: list[str]) -> list[RawMessage]:
         out = []
         for mid in ids:

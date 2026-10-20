@@ -1003,8 +1003,10 @@ class Workspace:
         if pid := self.mail_worker_running():
             return True, f"Already running (pid {pid})."
         self.ensure()
+        from bb.mail.brain import env_from_llm
         env = {k: v for k, v in os.environ.items() if not k.startswith("BB_")}
         env.update(self.settings.worker_env())
+        env.update(env_from_llm(self.llm()))
         env["BB_SECRET_KEY"] = self.settings.secret_key()
         env["PYTHONUNBUFFERED"] = "1"
         try:
@@ -1040,6 +1042,18 @@ class Workspace:
             pass
         self.mail_pid_file.unlink(missing_ok=True)
         return True, "Stopped."
+
+    def mail_brain_env(self) -> dict:
+        """The same BB_LLM_* the worker gets, for drafting inside a request."""
+        from bb.mail.brain import env_from_llm
+        return {**self.settings.worker_env(), **env_from_llm(self.llm())}
+
+    async def restart_mail_worker_if_running(self) -> bool:
+        if not self.mail_worker_running():
+            return False
+        await self.stop_mail_worker()
+        ok, _ = self.start_mail_worker()
+        return ok
 
     def revive_mail_worker(self) -> str:
         if self.user.get("disabled") or self.mail_worker_running() or not self.mail_autostart_file.exists():

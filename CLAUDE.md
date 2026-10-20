@@ -95,9 +95,14 @@ multi-mailbox side: `db.py` (per-user `data/mail.db`, WAL), `crypto.py`
 `worker.py` (`python -m bb.mail.worker <workspace>`), `providers/` (gmail,
 imap, graph adapters), `service.py` (connect/check/scope/migration),
 `routes.py`, `ingest.py` (idempotent store + threading + counts),
-`state.py` (reply-state rules), `parse.py` (RFC 822). Phases 1 to 3 are
-done (foundation, sync, reply state, thread pages); reply composer, batch
-runs, the command bar and Microsoft Graph follow.
+`state.py` (reply-state rules), `parse.py` (RFC 822), `brain.py` (the
+user's model, Anthropic or OpenAI-compatible, from `BB_LLM_*` env),
+`drafting.py` (draft_reply / draft_new, `qa_check` writing check,
+`finalize` adds greeting + signature + project link at send time),
+`sending.py` (cap, window, dry run, send from the receiving mailbox,
+mirror into the thread). Phases 1 to 3 and 5 are done (foundation, sync,
+reply state, thread pages, composer / review / compose); batch reply runs,
+the command bar and Microsoft Graph follow.
 
 ---
 

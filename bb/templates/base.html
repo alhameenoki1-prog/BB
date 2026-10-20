@@ -176,6 +176,8 @@
       <div class="sep">Mail center</div>
       <a href="/mail" class="{{ 'active' if path == '/mail' else '' }}">{{ icon('bolt') }}<span class="t">Command center</span></a>
       <a href="/mail/threads" class="{{ 'active' if path.startswith('/mail/threads') else '' }}">{{ icon('chat') }}<span class="t">Threads</span></a>
+      <a href="/mail/review" class="{{ 'active' if path.startswith('/mail/review') else '' }}">{{ icon('eye') }}<span class="t">Review</span></a>
+      <a href="/mail/compose" class="{{ 'active' if path.startswith('/mail/compose') else '' }}">{{ icon('send') }}<span class="t">Compose</span></a>
       <a href="/mail/accounts" class="{{ 'active' if path.startswith('/mail/accounts') or path.startswith('/mail/gmail') else '' }}">{{ icon('users') }}<span class="t">Accounts</span></a>
       <a href="/mail/jobs" class="{{ 'active' if path.startswith('/mail/jobs') else '' }}">{{ icon('clock') }}<span class="t">Jobs</span></a>
       <div class="sep">Setup</div>

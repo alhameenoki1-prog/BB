@@ -45,6 +45,13 @@ class Ingest:
                     row = await cur.fetchone()
                 if row:
                     continue
+                if raw.message_id:
+                    async with db.execute(
+                        "SELECT thread_id FROM messages WHERE mailbox_id = ? AND message_id = ?",
+                        (self.mailbox_id, raw.message_id)) as cur:
+                        dup = await cur.fetchone()
+                    if dup:
+                        continue   # the same email seen through another folder or the send path
                 thread_id = await self._thread_for(db, raw)
                 outbound = raw.outbound or (raw.from_email or "").lower() in self.me
                 automated = (not outbound) and looks_automated(raw.from_email, raw.subject, raw.headers)

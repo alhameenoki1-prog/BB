@@ -55,6 +55,27 @@ class MailAccount:
         raise NotImplementedError
 
     async def send(self, *, to, subject, body_text, body_html, in_reply_to="", references="",
-                   reply_to="", attachments=None) -> str:
-        """Phase 5: send; returns the Message-ID."""
+                   reply_to="", from_name="", attachments=None) -> tuple[str, str, str]:
+        """Send one message. Returns (Message-ID, provider id of the sent
+        copy or "", provider thread key or "")."""
         raise NotImplementedError
+
+    def build_mime(self, *, to, subject, body_text, body_html, in_reply_to="", references="",
+                   reply_to="", from_name=""):
+        from email.message import EmailMessage
+        from email.utils import make_msgid
+
+        msg = EmailMessage()
+        msg["From"] = f"{from_name} <{self.address}>" if from_name else self.address
+        msg["To"] = ", ".join(to)
+        msg["Subject"] = subject
+        msg["Message-ID"] = make_msgid(domain=self.address.split("@")[-1])
+        if reply_to and reply_to.lower() != self.address:
+            msg["Reply-To"] = reply_to
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+            msg["References"] = (references + " " + in_reply_to).strip() if references else in_reply_to
+        msg.set_content(body_text)
+        if body_html:
+            msg.add_alternative(body_html, subtype="html")
+        return msg

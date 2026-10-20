@@ -9,6 +9,26 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Mail command center, phase 5 (composer, drafting, sending).** On a
+  thread page, "Draft a reply" asks the user's own model (the AI provider
+  chosen on the site, Anthropic or any OpenAI-compatible endpoint, via
+  `bb/mail/brain.py`) for an answer written in the first person from that
+  mailbox's persona notes. Every draft passes a deterministic writing
+  check (`bb/mail/drafting.py`: boilerplate, spam score, list formatting,
+  length; money/legal/commitment topics lower the confidence) and is
+  regenerated once with the findings when it fails. The draft lands in an
+  editable composer with its confidence and reason; sending is a job that
+  refuses an account with no signature or project link, enforces the
+  daily cap and send window, can run as a dry run, and always puts the
+  greeting on top and the signature plus project link at the bottom
+  (`finalize`), whatever the model wrote. Replies go out from the mailbox
+  that received the original (SMTP + IMAP append to Sent in limited mode,
+  Gmail `messages/send` with the thread id), with an optional Reply-To,
+  and the sent message is mirrored into the thread so its state flips to
+  *replied*. `/mail/review` lists every draft waiting on a person with
+  approve / edit / discard and approve-all; `/mail/compose` writes a
+  brand-new email from a short brief. Sent mail is stored once even when
+  the next sync sees it again (Message-ID dedup).
 - **Mail command center, phases 2 and 3 (sync and reply state).** Each
   mailbox is mirrored into the local database: a backfill (the last 365
   days by default, `backfill_days` per mailbox, 0 for everything) with

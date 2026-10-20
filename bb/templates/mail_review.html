@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Review{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Mail</div><h1>Pending review</h1><p class="lead">Replies the AI has drafted and is waiting for you to approve. Open one to edit it, or approve them all.</p></div>
+  <div class="actions">{% if drafts %}<form class="inline" method="post" action="/mail/review/approve-all" onsubmit="return confirm('Send all {{ drafts|length }} drafts as they are?')"><button type="submit">{{ icon('check', 15) }} Approve all {{ drafts|length }}</button></form>{% endif %}</div></div>
+{% include "_mail_scope.html" %}
+{% for d in drafts %}
+<div class="card">
+  <div class="actions" style="justify-content:space-between">
+    <div>{% if d.box %}<span class="acct acct-{{ d.box.settings_model.color }}">{{ d.box.address }}</span> → {% endif %}<b>{{ d.to[0].name or d.to[0].email if d.to else '' }}</b> <span class="muted small">{{ d.to[0].email if d.to else '' }}</span></div>
+    <div class="actions"><span class="tag {{ 'good' if d.confidence == 'high' else ('warn' if d.confidence == 'low' else '') }}">{{ d.confidence }}</span>{% if not d.qa.ok %}<span class="tag warn">{{ d.qa.reasons|join('; ') }}</span>{% endif %}<span class="tiny">{{ d.created_at }}</span></div>
+  </div>
+  <p style="margin:8px 0"><b>{{ d.subject }}</b>{% if d.thread_id %} · <a class="small" href="/mail/threads/{{ d.thread_id }}?draft={{ d.id }}">open the thread</a>{% endif %}</p>
+  {% if d.error %}<p class="small" style="color:var(--bad)">{{ d.error }}</p>{% endif %}
+  <form method="post" action="/mail/drafts/{{ d.id }}/send">
+    <textarea name="body" rows="6">{{ d.body }}</textarea>
+    <div class="actions" style="margin-top:8px">
+      <button class="small" type="submit" {{ '' if (d.box and d.box.ready) else 'disabled' }}>{{ icon('send', 13) }} Send</button>
+      <button class="small secondary" type="submit" name="dry_run" value="1">Dry run</button>
+      <button class="small secondary danger" type="submit" formaction="/mail/drafts/{{ d.id }}/reject">Discard</button>
+      {% if d.box and not d.box.ready %}<span class="small" style="color:var(--warn)">{{ d.box.ready_why }}</span>{% endif %}
+    </div>
+  </form>
+</div>
+{% endfor %}
+{% if not drafts %}<div class="card"><div class="empty">{{ icon('check') }}<div>Nothing waiting for review.</div></div></div>{% endif %}
+{% if recent %}
+<div class="card"><h2>Recently sent</h2>
+  <table><thead><tr><th>To</th><th>Subject</th><th>From</th><th>Status</th><th>When</th></tr></thead><tbody>
+  {% for d in recent %}<tr><td>{{ d.to[0].name or d.to[0].email if d.to else '' }}</td><td>{{ d.subject }}</td><td class="small">{{ d.box.address if d.box else '' }}</td>
+    <td><span class="tag {{ 'good' if d.status == 'sent' else ('bad' if d.status == 'failed' else '') }}">{{ d.status.replace('_', ' ') }}</span></td><td class="tiny">{{ d.sent_at or d.updated_at }}</td></tr>{% endfor %}
+  </tbody></table></div>
+{% endif %}
+<style>.acct { display:inline-flex; align-items:center; gap:6px; font-weight:600; font-size:13px; } .acct::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--accent); }
+.acct-blue::before{background:#0a84ff} .acct-green::before{background:#30d158} .acct-orange::before{background:#ff9f0a} .acct-purple::before{background:#bf5af2} .acct-pink::before{background:#ff375f} .acct-teal::before{background:#64d2ff} .acct-red::before{background:#ff453a} .acct-slate::before{background:#8e8e93}</style>
+{% endblock %}

@@ -301,10 +301,22 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             t["participants"] = json.loads(t.get("participants_json") or "[]")
         except ValueError:
             t["participants"] = []
-        return await render(request, "mail_thread.html", user, **page_ctx(c), thread=t, box=box, messages=messages)
+        draft_id = request.query_params.get("draft", "")
+        draft = await _draft_row(c["db"], draft_id) if draft_id else None
+        if draft is None:
+            draft = await c["db"].one("SELECT * FROM drafts WHERE thread_id = ? AND status = 'pending_review' ORDER BY created_at DESC LIMIT 1", (thread_id,))
+            if draft:
+                draft["to"] = json.loads(draft.get("to_json") or "[]"); draft["qa"] = json.loads(draft.get("qa_json") or "{}")
+        in_flight = await c["db"].query("SELECT * FROM drafts WHERE thread_id = ? AND status IN ('approved', 'failed') ORDER BY updated_at DESC LIMIT 3", (thread_id,))
+        box_ready = service.ready_to_send(box) if box else (False, "")
+        return await render(request, "mail_thread.html", user, **page_ctx(c), thread=t, box=box, messages=messages,
+                            draft=draft, in_flight=in_flight, box_ready=box_ready)
 
-    @app.post("/mail/threads/{thread_id}/{action}")
-    async def mail_thread_action(thread_id: str, action: str, user: dict = Depends(current_user)):
+    @app.post("/mail/threads/{thread_id}/snooze")
+    @app.post("/mail/threads/{thread_id}/dismiss")
+    @app.post("/mail/threads/{thread_id}/reopen")
+    async def mail_thread_action(request: Request, thread_id: str, user: dict = Depends(current_user)):
+        action = request.url.path.rstrip("/").rsplit("/", 1)[-1]
         c = await ctx(user)
         t = await c["db"].one("SELECT * FROM threads WHERE id = ?", (thread_id,))
         if not t:
@@ -322,6 +334,162 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             raise HTTPException(404)
         await Ingest(c["db"], box).refresh_counts()
         return _redirect(f"/mail/threads/{thread_id}", msg={"snooze": "Snoozed.", "dismiss": "Dismissed.", "reopen": "Back in the queue."}[action])
+
+    # ── drafts: the composer, the review tray, compose ──
+
+    def _brain(ws):
+        from bb.mail.brain import MailBrain
+        return MailBrain(ws.mail_brain_env())
+
+    async def _draft_row(db, draft_id: str) -> dict | None:
+        d = await db.one("SELECT * FROM drafts WHERE id = ?", (draft_id,))
+        if d:
+            d["to"] = json.loads(d.get("to_json") or "[]")
+            d["qa"] = json.loads(d.get("qa_json") or "{}")
+        return d
+
+    @app.post("/mail/threads/{thread_id}/draft")
+    async def mail_thread_draft(request: Request, thread_id: str, user: dict = Depends(current_user)):
+        """Ask the model for a reply to this thread; the draft lands in the
+        composer on the thread page for editing before anything is sent."""
+        from bb.mail.brain import BrainError
+        from bb.mail.drafting import draft_reply
+        c = await ctx(user)
+        db = c["db"]
+        t = await db.one("SELECT * FROM threads WHERE id = ?", (thread_id,))
+        if not t:
+            raise HTTPException(404)
+        box = await db.mailbox(t["mailbox_id"])
+        form = dict(await request.form())
+        messages = await db.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY sent_at, created_at", (thread_id,))
+        them = next((m for m in reversed(messages) if m["direction"] == "inbound"), None)
+        if not them:
+            return _redirect(f"/mail/threads/{thread_id}", error="There is no message from them to answer in this thread.")
+        try:
+            result = await draft_reply(_brain(c["ws"]), service.settings_of(box), box, t, messages,
+                                       instructions=str(form.get("instructions", "") or ""))
+        except BrainError as e:
+            return _redirect(f"/mail/threads/{thread_id}", error=str(e))
+        subject = t["subject"] if t["subject"].lower().startswith("re:") else f"Re: {t['subject']}"
+        refs = (them.get("references_text") or "")
+        draft_id = service.new_id()
+        now = service.now_iso()
+        await db.execute(
+            "INSERT INTO drafts(id, mailbox_id, thread_id, kind, to_json, reply_to, subject, body, in_reply_to, references_text, "
+            "status, qa_json, confidence, created_at, updated_at) VALUES (?, ?, ?, 'reply', ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?)",
+            (draft_id, box["id"], thread_id, json.dumps([{"name": them["from_name"], "email": them["from_email"]}]),
+             service.settings_of(box).reply_to, subject[:200], result["body"], them.get("message_id") or "", refs,
+             json.dumps({**result["qa"], "attempts": result["attempts"], "confidence_reason": result["confidence_reason"]}),
+             result["confidence"], now, now))
+        return _redirect(f"/mail/threads/{thread_id}?draft={draft_id}", msg="Draft ready. Edit it, then send.")
+
+    @app.post("/mail/drafts/{draft_id}/send")
+    async def mail_draft_send(request: Request, draft_id: str, user: dict = Depends(current_user)):
+        """Save the edited draft, approve it and queue the send (the worker
+        sends within seconds; a dry run records instead)."""
+        c = await ctx(user)
+        db = c["db"]
+        d = await _draft_row(db, draft_id)
+        if not d:
+            raise HTTPException(404)
+        if d["status"] in ("sent", "dry_run"):
+            return _redirect(f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review",
+                             error="That draft was already sent.")
+        form = dict(await request.form())
+        body = str(form.get("body", "") or d["body"]).strip()
+        subject = str(form.get("subject", "") or d["subject"]).strip()[:200]
+        reply_to = str(form.get("reply_to", "") or "").strip().lower()
+        box = await db.mailbox(d["mailbox_id"])
+        ok, why = service.ready_to_send(box) if box else (False, "mailbox missing")
+        if not ok:
+            return _redirect(f"/mail/threads/{d['thread_id']}?draft={draft_id}" if d["thread_id"] else "/mail/review", error=why)
+        if not body:
+            return _redirect(f"/mail/threads/{d['thread_id']}?draft={draft_id}", error="The reply is empty.")
+        dry = bool(form.get("dry_run"))
+        await db.execute("UPDATE drafts SET body = ?, subject = ?, reply_to = ?, status = 'approved', error = '', updated_at = ? WHERE id = ?",
+                         (body, subject, reply_to, service.now_iso(), draft_id))
+        await Jobs(db).enqueue("send_draft", d["mailbox_id"], {"draft_id": draft_id, "dry_run": dry}, max_attempts=4)
+        if not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        back = f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review"
+        return _redirect(back, msg="Dry run queued; nothing will be sent." if dry else "Sending…")
+
+    @app.post("/mail/drafts/{draft_id}/reject")
+    async def mail_draft_reject(draft_id: str, user: dict = Depends(current_user)):
+        c = await ctx(user)
+        d = await _draft_row(c["db"], draft_id)
+        if not d:
+            raise HTTPException(404)
+        await c["db"].execute("UPDATE drafts SET status = 'rejected', updated_at = ? WHERE id = ? AND status != 'sent'",
+                              (service.now_iso(), draft_id))
+        return _redirect(f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review", msg="Draft discarded.")
+
+    @app.get("/mail/review", response_class=HTMLResponse)
+    async def mail_review(request: Request, user: dict = Depends(current_user)):
+        c = await ctx(user)
+        ids = [m["id"] for m in c["selected"]]
+        marks = ",".join("?" for _ in ids) or "''"
+        rows = await c["db"].query(
+            f"SELECT d.*, t.subject AS thread_subject, t.last_from FROM drafts d LEFT JOIN threads t ON t.id = d.thread_id "
+            f"WHERE d.mailbox_id IN ({marks}) AND d.status = 'pending_review' ORDER BY d.created_at DESC", ids)
+        boxes = {m["id"]: m for m in c["mailboxes"]}
+        for r in rows:
+            r["to"] = json.loads(r.get("to_json") or "[]")
+            r["qa"] = json.loads(r.get("qa_json") or "{}")
+            r["box"] = boxes.get(r["mailbox_id"])
+        recent = await c["db"].query(
+            f"SELECT d.*, t.subject AS thread_subject FROM drafts d LEFT JOIN threads t ON t.id = d.thread_id "
+            f"WHERE d.mailbox_id IN ({marks}) AND d.status IN ('sent', 'dry_run', 'approved', 'failed') ORDER BY d.updated_at DESC LIMIT 30", ids)
+        for r in recent:
+            r["to"] = json.loads(r.get("to_json") or "[]"); r["box"] = boxes.get(r["mailbox_id"])
+        return await render(request, "mail_review.html", user, **page_ctx(c), drafts=rows, recent=recent)
+
+    @app.post("/mail/review/approve-all")
+    async def mail_review_approve_all(user: dict = Depends(current_user)):
+        c = await ctx(user)
+        ids = [m["id"] for m in c["selected"] if m["ready"]]
+        marks = ",".join("?" for _ in ids) or "''"
+        rows = await c["db"].query(f"SELECT id, mailbox_id FROM drafts WHERE mailbox_id IN ({marks}) AND status = 'pending_review'", ids)
+        jobs = Jobs(c["db"])
+        for r in rows:
+            await c["db"].execute("UPDATE drafts SET status = 'approved', error = '', updated_at = ? WHERE id = ?", (service.now_iso(), r["id"]))
+            await jobs.enqueue("send_draft", r["mailbox_id"], {"draft_id": r["id"]}, max_attempts=4)
+        if rows and not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        return _redirect("/mail/review", msg=f"Approved {len(rows)}; sending.")
+
+    @app.get("/mail/compose", response_class=HTMLResponse)
+    async def mail_compose(request: Request, user: dict = Depends(current_user), draft: str = ""):
+        c = await ctx(user)
+        d = await _draft_row(c["db"], draft) if draft else None
+        return await render(request, "mail_compose.html", user, **page_ctx(c), draft=d,
+                            ready=[m for m in c["mailboxes"] if m["enabled"]])
+
+    @app.post("/mail/compose")
+    async def mail_compose_draft(request: Request, user: dict = Depends(current_user)):
+        from bb.mail.brain import BrainError
+        from bb.mail.drafting import draft_new
+        c = await ctx(user)
+        form = dict(await request.form())
+        box = await c["db"].mailbox(str(form.get("mailbox", "")))
+        to_email = str(form.get("to", "") or "").strip().lower()
+        to_name = str(form.get("to_name", "") or "").strip()
+        instruction = str(form.get("instruction", "") or "").strip()
+        if not box or "@" not in to_email or len(instruction) < 5:
+            return _redirect("/mail/compose", error="Pick a mailbox, enter the recipient, and say what the email should do.")
+        try:
+            result = await draft_new(_brain(c["ws"]), service.settings_of(box), box, to_name, to_email, instruction)
+        except BrainError as e:
+            return _redirect("/mail/compose", error=str(e))
+        draft_id = service.new_id(); now = service.now_iso()
+        await c["db"].execute(
+            "INSERT INTO drafts(id, mailbox_id, kind, to_json, reply_to, subject, body, status, qa_json, confidence, created_at, updated_at) "
+            "VALUES (?, ?, 'new', ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?)",
+            (draft_id, box["id"], json.dumps([{"name": to_name, "email": to_email}]), service.settings_of(box).reply_to,
+             result["subject"], result["body"], json.dumps({**result["qa"], "attempts": result["attempts"],
+                                                          "confidence_reason": result["confidence_reason"]}),
+             result["confidence"], now, now))
+        return _redirect(f"/mail/compose?draft={draft_id}", msg="Draft ready. Edit it, then send.")
 
     # ── jobs (dead-letter page) ──
 

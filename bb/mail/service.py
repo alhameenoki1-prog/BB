@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from bb.mail import crypto
-from bb.mail.db import MailDB, now_iso
+from bb.mail.db import MailDB, new_id, now_iso  # noqa: F401  (re-exported for routes)
 from bb.mail.jobs import Jobs
 from bb.mail.models import MailboxSettings
 from bb.mail.providers import AuthError, TransientError, account_for

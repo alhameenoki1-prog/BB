@@ -206,8 +206,8 @@ def html_to_text(html: str) -> str:
     text = re.sub(r"(?is)<br\s*/?>", "\n", text)
     text = re.sub(r"(?is)</(p|div|tr|li|h\d)>", "\n", text)
     text = re.sub(r'(?is)<a\s[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-                  lambda m: f"{re.sub(r'<[^>]+>', '', m.group(2)).strip()} ({m.group(1)})"
-                  if re.sub(r'<[^>]+>', '', m.group(2)).strip() else m.group(1), text)
+                  lambda m: (lambda label: m.group(1) if not label or label == m.group(1) else f"{label} ({m.group(1)})")(
+                      re.sub(r'<[^>]+>', '', m.group(2)).strip()), text)
     text = re.sub(r"(?is)<img[^>]*>", "", text)
     text = re.sub(r"(?s)<[^>]+>", "", text)
     text = _html.unescape(text)

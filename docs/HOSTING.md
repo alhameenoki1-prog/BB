@@ -272,7 +272,7 @@ than a personal one where you can. The brief the writer follows is
 
 A second, newer side of the app: connect several mailboxes, mirror them,
 see what needs a reply, and reply in batches or from a command bar. It is
-being built in phases; phase 1 is the foundation.
+being built in phases; sync, reply state, the composer and sending are in.
 
 - **Accounts** (`/mail/accounts`): connect with Google (needs the site's
   OAuth client; while it is in testing mode Google ends the sign-in after
@@ -297,6 +297,24 @@ being built in phases; phase 1 is the foundation.
   them* (you did, in a two-way thread), *replied* (you did and nobody has
   written back), *no reply needed* (automated or bulk mail). Open one for
   the full timeline; snooze or dismiss it by hand.
+- **Replying**: on a thread, "Draft a reply" (optionally with a line of
+  instructions) has the model write an answer in the first person using
+  that account's persona notes. The draft shows its confidence and why,
+  and the result of the writing check (no boilerplate, no spam patterns,
+  no lists, long enough to be an answer); a draft that fails is rewritten
+  once with the findings. Edit it, pick a Reply-To, tick "dry run" to see
+  exactly what would go out, then Send. The greeting, the signature and
+  the project link are added at send time, so they are on every email
+  whatever the model wrote; an account with no signature or project link
+  cannot send. The daily cap and send window per account are enforced at
+  send time too. The reply leaves from the mailbox that received the
+  original and is mirrored into the thread, which becomes *replied*.
+- **Review** (`/mail/review`): every draft waiting on a person, across
+  the selected accounts, with approve / edit / discard and approve-all.
+- **Compose** (`/mail/compose`): a new email from a short brief, through
+  the same check, composer and send rules.
+- **AI provider**: the mail center uses the key and model chosen on the
+  site's AI provider page, so it costs the user, never the site.
 
 ## Inbox auto-reply
 
