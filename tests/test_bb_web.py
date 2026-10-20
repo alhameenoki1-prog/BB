@@ -1205,3 +1205,17 @@ def test_cli_status_and_env_file(tmp_path, monkeypatch, capsys):
     assert "No admin account" in capsys.readouterr().out
     cli.main(["make-admin", "u@x.test"]); cli.main(["status"])
     assert "Admins (they see Users at https://site.test/admin/users): u@x.test" in capsys.readouterr().out
+
+
+def test_admin_link_sits_near_the_top_of_the_menu(client):
+    """The menu grew past a laptop screen once; the Admin entry must not
+    depend on scrolling, and the menu itself must scroll."""
+    _admin(client)
+    page = client.get("/").text
+    menu = page.split('<nav class="nav">')[1].split("</nav>")[0]
+    assert menu.index('href="/admin/users"') < menu.index('href="/mail"')
+    assert ".nav { flex:1 1 auto; min-height:0; overflow-y:auto;" in page
+    _make_user(client)
+    client.cookies.clear()
+    _login(client, **USER)
+    assert 'href="/admin/users"' not in client.get("/").text
