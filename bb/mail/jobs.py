@@ -73,11 +73,18 @@ class Jobs:
         await self.db.execute("UPDATE jobs SET progress_json = ?, updated_at = ? WHERE id = ?",
                               (json.dumps(progress), now_iso(), job_id))
 
-    async def complete(self, job_id: str, **progress):
+    async def complete(self, job_id: str, **result):
+        """Mark done; the result is merged into the progress already recorded."""
         now = now_iso()
+        row = await self.db.one("SELECT progress_json FROM jobs WHERE id = ?", (job_id,))
+        try:
+            progress = json.loads((row or {}).get("progress_json") or "{}")
+        except ValueError:
+            progress = {}
+        progress.update(result)
         await self.db.execute(
             "UPDATE jobs SET status = 'done', locked_at = NULL, progress_json = ?, updated_at = ?, finished_at = ? "
-            "WHERE id = ?", (json.dumps(progress) if progress else "{}", now, now, job_id))
+            "WHERE id = ?", (json.dumps(progress), now, now, job_id))
 
     async def fail(self, job_id: str, error: str) -> str:
         """Retry with backoff, or mark dead after the last attempt. Returns

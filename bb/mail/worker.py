@@ -38,6 +38,18 @@ class Handlers:
         status = await service.check_mailbox(self.db, self.secret, mailbox, self.env)
         return {"status": status}
 
+    async def sync_backfill(self, job: dict):
+        mailbox = await self.db.mailbox(job["mailbox_id"])
+        if not mailbox or not mailbox.get("enabled", 1):
+            return {"skipped": "mailbox gone"}
+        return await service.run_sync(self.db, self.secret, mailbox, self.env, self.jobs, job["id"], backfill=True)
+
+    async def sync_incremental(self, job: dict):
+        mailbox = await self.db.mailbox(job["mailbox_id"])
+        if not mailbox or not mailbox.get("enabled", 1):
+            return {"skipped": "mailbox gone"}
+        return await service.run_sync(self.db, self.secret, mailbox, self.env, self.jobs, job["id"], backfill=False)
+
     async def run(self, job: dict) -> dict:
         handler = getattr(self, job["kind"], None)
         if handler is None:
@@ -86,6 +98,7 @@ class Worker:
             if time.time() - last_schedule > SCHEDULE_EVERY:
                 try:
                     await service.schedule_checks(self.db, self.jobs)
+                    await service.schedule_syncs(self.db, self.jobs)
                     await self.jobs.prune()
                 except Exception as e:
                     logger.warning("scheduling failed: %s", e)

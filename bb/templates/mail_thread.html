@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}{{ thread.subject }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Mail · thread{% if box %} · <span class="acct acct-{{ box.settings_model.color }}">{{ box.address }}</span>{% endif %}</div><h1 style="font-size:22px">{{ thread.subject or '(no subject)' }}</h1>
+  <p class="lead"><span class="tag {{ 'warn' if thread.state == 'needs_reply' else ('good' if thread.state in ('replied','awaiting_them') else '') }}">{{ thread.state.replace('_',' ') }}</span> <span class="small muted">{{ thread.state_reason }}</span> · {{ thread.message_count }} message{{ 's' if thread.message_count != 1 else '' }} · with {% for p in thread.participants if p.role == 'them' %}{{ p.name or p.email }}{{ ', ' if not loop.last else '' }}{% endfor %}</p></div>
+  <div class="actions">
+    {% if thread.state in ('snoozed','dismissed') %}<form class="inline" method="post" action="/mail/threads/{{ thread.id }}/reopen"><button class="secondary small" type="submit">Back in the queue</button></form>
+    {% else %}<form class="inline" method="post" action="/mail/threads/{{ thread.id }}/snooze"><button class="secondary small" type="submit">Snooze</button></form><form class="inline" method="post" action="/mail/threads/{{ thread.id }}/dismiss"><button class="secondary small" type="submit">Dismiss</button></form>{% endif %}
+  </div></div>
+<div class="timeline">
+  {% for m in messages %}
+  <div class="msg {{ 'me' if m.direction == 'outbound' else 'them' }}{{ ' auto' if m.automated else '' }}">
+    <div class="who"><b>{% if m.direction == 'outbound' %}{{ 'AI, as you' if m.sent_by == 'ai' else 'You' }}{% else %}{{ m.from_name or m.from_email }}{% endif %}</b> <span class="muted small">{{ m.from_email }}{% if m.automated %} · automated{% endif %}</span><span class="tiny when">{{ m.sent_at }}</span></div>
+    <div class="email">{{ m.body or m.snippet }}</div>
+  </div>
+  {% endfor %}
+</div>
+<p class="muted small" style="margin-top:14px">Replying from here arrives in phase 5. Until then, answer in your mail client; the state updates on the next sync.</p>
+<style>
+  .timeline { display:flex; flex-direction:column; gap:12px; }
+  .msg { padding:14px 16px; border-radius:var(--r-sm); border:1px solid var(--line); background:var(--surface); max-width:82%; }
+  .msg.me { align-self:flex-end; background:var(--accent-soft); border-color:transparent; } .msg.auto { opacity:.75; }
+  .msg .who { display:flex; gap:8px; align-items:baseline; margin-bottom:6px; } .msg .when { margin-left:auto; }
+  .msg .email { white-space:pre-wrap; font-size:14px; line-height:1.5; max-height:420px; overflow:auto; }
+  .acct { display:inline-flex; align-items:center; gap:6px; font-weight:600; } .acct::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--accent); }
+  .acct-blue::before{background:#0a84ff} .acct-green::before{background:#30d158} .acct-orange::before{background:#ff9f0a} .acct-purple::before{background:#bf5af2} .acct-pink::before{background:#ff375f} .acct-teal::before{background:#64d2ff} .acct-red::before{background:#ff453a} .acct-slate::before{background:#8e8e93}
+</style>
+{% endblock %}

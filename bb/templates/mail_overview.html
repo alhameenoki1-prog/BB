@@ -33,10 +33,11 @@
       <tbody>{% for m in selected %}
       <tr data-mailbox="{{ m.id }}">
         <td><a href="/mail/accounts/{{ m.id }}"><span class="acct acct-{{ m.settings_model.color }}">{{ m.address }}</span></a>{% if m.mode == 'limited' %} <span class="tag" title="Password sign-in: polling only">limited</span>{% endif %}{% if not m.ready %} <span class="tag warn" title="{{ m.ready_why }}">needs signature &amp; link</span>{% endif %}</td>
-        <td class="status">{% if m.status == 'ok' %}<span class="tag good">connected</span>{% elif m.status == 'reconnect' %}<span class="tag bad">reconnect</span>{% elif m.status == 'error' %}<span class="tag warn">unreachable</span>{% else %}<span class="tag">{{ m.status }}</span>{% endif %}</td>
+        <td class="status">{% if m.status == 'ok' %}<span class="tag good">connected</span>{% elif m.status == 'reconnect' %}<span class="tag bad">reconnect</span>{% elif m.status == 'error' %}<span class="tag warn">unreachable</span>{% else %}<span class="tag">{{ m.status }}</span>{% endif %}<div class="tiny sync" data-sync="{{ m.id }}">{% if m.sync.backfill_done %}synced {{ m.last_sync_at }}{% else %}not synced yet{% endif %}</div>
+          <form class="inline" method="post" action="/mail/accounts/{{ m.id }}/sync"><button class="small secondary" type="submit" style="padding:2px 8px">Sync now</button></form></td>
         <td data-k="needs_reply">{{ m.counts.needs_reply or 0 }}</td><td data-k="replied">{{ m.counts.replied or 0 }}</td><td data-k="awaiting_them">{{ m.counts.awaiting_them or 0 }}</td>
       </tr>{% endfor %}</tbody></table>
-    <p class="tiny" style="margin-top:8px">Counts fill in once the mailbox has been synced (phase 2).</p>
+    <p class="tiny" style="margin-top:8px">Counts are threads: <a href="/mail/threads?state=needs_reply">open the queue</a>.</p>
     {% else %}<div class="empty">{{ icon('mail') }}<div>No accounts in view. <a href="/mail/accounts">Connect a mailbox</a> or widen the scope above.</div></div>{% endif %}
   </div>
   <div class="card">
@@ -72,10 +73,14 @@
     es.addEventListener('state', e => {
       const s = JSON.parse(e.data); const tag = document.getElementById('worker-tag');
       if (tag) { tag.textContent = s.worker ? 'Worker running' : 'Worker stopped'; tag.className = 'tag ' + (s.worker ? 'good' : ''); }
+      document.querySelectorAll('[data-sync]').forEach(el => { if (el.dataset.live) { el.textContent = el.dataset.live; } });
+      s.jobs.forEach(j => { const el = document.querySelector('[data-sync="' + j.mailbox_id + '"]'); if (!el) return;
+        const p = j.progress || {}; if (p.total) { el.textContent = (p.phase === 'backfill' ? 'Synced ' : 'Checking… ') + (p.done || 0).toLocaleString() + ' / ' + p.total.toLocaleString(); } else { el.textContent = j.kind.replace('_', ' ') + '…'; } });
       const sums = {needs_reply:0, replied:0, awaiting_them:0, total:0};
       s.mailboxes.forEach(m => { const row = document.querySelector('tr[data-mailbox="' + m.id + '"]'); if (!row) return;
         ['needs_reply','replied','awaiting_them'].forEach(k => { const c = row.querySelector('[data-k=' + k + ']'); if (c) c.textContent = m.counts[k] || 0; });
-        Object.keys(sums).forEach(k => sums[k] += (m.counts[k] || 0)); });
+        Object.keys(sums).forEach(k => sums[k] += (m.counts[k] || 0));
+        const st = row.querySelector('.status .tag'); if (st) { st.textContent = {ok:'connected', reconnect:'reconnect', error:'unreachable'}[m.status] || m.status; st.className = 'tag ' + ({ok:'good', reconnect:'bad', error:'warn'}[m.status] || ''); } });
       Object.keys(sums).forEach(k => { const el = document.querySelector('[data-sum=' + k + ']'); if (el && document.querySelector('tr[data-mailbox]')) el.textContent = sums[k]; });
     });
     es.onerror = () => { document.getElementById('live-dot').textContent = 'reconnecting…'; };

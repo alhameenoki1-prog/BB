@@ -289,6 +289,14 @@ being built in phases; phase 1 is the foundation.
   `/mail/jobs` to be retried or discarded. The worker is started when the
   first account connects, restarts with the site, and is revived if it dies.
 - **Activity**: the feed on `/mail` is plain sentences, updated live.
+- **Sync**: a connected mailbox is backfilled (the last year by default)
+  with progress shown on the overview, then kept current every 90
+  seconds; all accounts sync side by side. Nothing is stored twice.
+- **Threads** (`/mail/threads`): every conversation with its state, which
+  the app computes from who wrote last: *needs reply* (they did), *awaiting
+  them* (you did, in a two-way thread), *replied* (you did and nobody has
+  written back), *no reply needed* (automated or bulk mail). Open one for
+  the full timeline; snooze or dismiss it by hand.
 
 ## Inbox auto-reply
 

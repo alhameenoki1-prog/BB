@@ -138,6 +138,77 @@ async def check_mailbox(db: MailDB, secret: str, mailbox: dict, env: dict) -> st
     return status
 
 
+SYNC_EVERY_SECONDS = 90
+DEFAULT_BACKFILL_DAYS = 365
+
+
+async def run_sync(db: MailDB, secret: str, mailbox: dict, env: dict, jobs: Jobs, job_id: str,
+                   backfill: bool) -> dict:
+    """Mirror new mail into the database. Progress is written to the job
+    as it goes ("Synced 2,340 / 11,200"), the mailbox's sync state is
+    saved after every batch so a crash resumes rather than restarts, and
+    an auth failure turns into the Reconnect banner."""
+    from bb.mail.ingest import Ingest
+
+    creds = open_creds(secret, mailbox)
+    account = account_for(mailbox, creds, env)
+    ingest = Ingest(db, mailbox)
+    totals = {"new": 0, "seen": 0, "total": 0}
+
+    async def on_batch(msgs, done, total):
+        totals["new"] += await ingest.store_batch(msgs)
+        totals["seen"], totals["total"] = done, max(total, done)
+        await jobs.progress(job_id, done=done, total=totals["total"], new=totals["new"], phase="backfill" if backfill else "sync")
+
+    try:
+        if backfill:
+            days = int((mailbox.get("settings") or {}).get("backfill_days", DEFAULT_BACKFILL_DAYS) or 0)
+            await db.log("synced", f"Started syncing {mailbox['address']}"
+                         + (f" (the last {days} days)." if days else " (everything)."), mailbox["id"])
+            state = await account.backfill(days, on_batch)
+        else:
+            state = await account.sync(mailbox.get("sync") or {}, on_batch)
+    except AuthError as e:
+        await db.update_mailbox(mailbox["id"], status="reconnect", status_detail=str(e)[:300], last_checked_at=now_iso())
+        await db.log("warning", f"{mailbox['address']} needs reconnecting: {e}", mailbox["id"])
+        return {"status": "reconnect", **totals}
+    except TransientError as e:
+        await db.update_mailbox(mailbox["id"], status="error", status_detail=str(e)[:300], last_checked_at=now_iso())
+        raise  # the queue retries with backoff
+    merged = {**(mailbox.get("sync") or {}), **state}
+    await db.update_mailbox(mailbox["id"], sync=merged, last_sync_at=now_iso(), status="ok",
+                            status_detail=mailbox.get("status_detail") or "", last_checked_at=now_iso())
+    counts = await ingest.refresh_counts()
+    if backfill:
+        await db.log("synced", f"Finished syncing {mailbox['address']}: {totals['new']:,} messages in "
+                               f"{counts.get('threads', 0):,} conversations, {counts.get('needs_reply', 0):,} waiting for a reply.",
+                     mailbox["id"])
+    elif totals["new"]:
+        await db.log("synced", f"Synced {mailbox['address']}: {totals['new']} new message{'s' if totals['new'] != 1 else ''}.",
+                     mailbox["id"])
+    return {"status": "ok", **totals}
+
+
+async def schedule_syncs(db: MailDB, jobs: Jobs):
+    """A backfill for every connected mailbox that has none, then an
+    incremental sync every SYNC_EVERY_SECONDS. All mailboxes are queued
+    independently and the worker runs them side by side."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=SYNC_EVERY_SECONDS)).replace(microsecond=0)
+    for m in await db.mailboxes(include_disabled=False):
+        if m.get("status") in ("reconnect", "disabled"):
+            continue
+        if not (m.get("sync") or {}).get("backfill_done"):
+            await jobs.enqueue("sync_backfill", m["id"], dedupe=True, max_attempts=8)
+            continue
+        last = m.get("last_sync_at") or ""
+        try:
+            last_dt = datetime.fromisoformat(last.replace("Z", "+00:00")) if last else None
+        except ValueError:
+            last_dt = None
+        if last_dt is None or last_dt < cutoff:
+            await jobs.enqueue("sync_incremental", m["id"], dedupe=True)
+
+
 async def schedule_checks(db: MailDB, jobs: Jobs):
     """Queue a connection check for any mailbox not checked recently."""
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=CHECK_EVERY_MINUTES)).replace(microsecond=0)

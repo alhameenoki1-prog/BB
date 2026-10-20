@@ -225,6 +225,104 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         response.delete_cookie(GMAIL_STATE_COOKIE, path="/")
         return response
 
+    @app.post("/mail/accounts/{mailbox_id}/sync")
+    async def mail_account_sync(mailbox_id: str, user: dict = Depends(current_user)):
+        c = await ctx(user)
+        m = await c["db"].mailbox(mailbox_id)
+        if not m:
+            raise HTTPException(404)
+        jobs = Jobs(c["db"])
+        kind = "sync_incremental" if (m.get("sync") or {}).get("backfill_done") else "sync_backfill"
+        await jobs.enqueue(kind, mailbox_id, dedupe=True, max_attempts=8)
+        if not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        return _redirect("/mail", msg=f"Sync queued for {m['address']}.")
+
+    @app.post("/mail/accounts/{mailbox_id}/resync")
+    async def mail_account_resync(mailbox_id: str, user: dict = Depends(current_user)):
+        """Forget the sync position and read the mailbox again (messages
+        already stored are kept; nothing is duplicated)."""
+        c = await ctx(user)
+        m = await c["db"].mailbox(mailbox_id)
+        if not m:
+            raise HTTPException(404)
+        await c["db"].update_mailbox(mailbox_id, sync={})
+        await Jobs(c["db"]).enqueue("sync_backfill", mailbox_id, dedupe=True, max_attempts=8)
+        return _redirect(f"/mail/accounts/{mailbox_id}", msg="A full re-sync is queued.")
+
+    # ── threads ──
+
+    @app.get("/mail/threads", response_class=HTMLResponse)
+    async def mail_threads(request: Request, user: dict = Depends(current_user), state: str = "needs_reply",
+                           mailbox: str = "", q: str = "", page: int = 1):
+        c = await ctx(user)
+        boxes = {m["id"]: m for m in c["selected"]}
+        if mailbox and mailbox in {m["id"] for m in c["mailboxes"]}:
+            boxes = {mailbox: await c["db"].mailbox(mailbox)}
+            boxes[mailbox]["settings_model"] = service.settings_of(boxes[mailbox])
+        where, params = ["mailbox_id IN (%s)" % (",".join("?" for _ in boxes) or "''")], list(boxes)
+        if state and state != "all":
+            where.append("state = ?"); params.append(state)
+        if q:
+            like = f"%{q.strip()}%"
+            where.append("(subject LIKE ? OR last_from LIKE ? OR snippet LIKE ? OR participants_json LIKE ?)")
+            params += [like, like, like, like]
+        page = max(1, page)
+        rows = await c["db"].query(
+            f"SELECT * FROM threads WHERE {' AND '.join(where)} ORDER BY last_message_at DESC LIMIT 51 OFFSET ?",
+            (*params, (page - 1) * 50))
+        more = len(rows) > 50
+        rows = rows[:50]
+        for r in rows:
+            r["box"] = boxes.get(r["mailbox_id"])
+        state_counts = {}
+        for r in await c["db"].query(
+                f"SELECT state, COUNT(*) AS n FROM threads WHERE mailbox_id IN ({','.join('?' for _ in boxes) or "''"}) GROUP BY state",
+                list(boxes)):
+            state_counts[r["state"]] = r["n"]
+        return await render(request, "mail_threads.html", user, **page_ctx(c), threads=rows, state=state,
+                            mailbox=mailbox, q=q, page=page, more=more, state_counts=state_counts)
+
+    @app.get("/mail/threads/{thread_id}", response_class=HTMLResponse)
+    async def mail_thread(request: Request, thread_id: str, user: dict = Depends(current_user)):
+        c = await ctx(user)
+        t = await c["db"].one("SELECT * FROM threads WHERE id = ?", (thread_id,))
+        if not t:
+            raise HTTPException(404)
+        box = await c["db"].mailbox(t["mailbox_id"])
+        if box:
+            box["settings_model"] = service.settings_of(box)
+        messages = await c["db"].query(
+            "SELECT id, direction, sent_by, from_email, from_name, to_json, cc_json, subject, body, snippet, sent_at, automated, folder "
+            "FROM messages WHERE thread_id = ? ORDER BY sent_at, created_at", (thread_id,))
+        for m in messages:
+            m["to"] = json.loads(m.get("to_json") or "[]")
+        try:
+            t["participants"] = json.loads(t.get("participants_json") or "[]")
+        except ValueError:
+            t["participants"] = []
+        return await render(request, "mail_thread.html", user, **page_ctx(c), thread=t, box=box, messages=messages)
+
+    @app.post("/mail/threads/{thread_id}/{action}")
+    async def mail_thread_action(thread_id: str, action: str, user: dict = Depends(current_user)):
+        c = await ctx(user)
+        t = await c["db"].one("SELECT * FROM threads WHERE id = ?", (thread_id,))
+        if not t:
+            raise HTTPException(404)
+        from bb.mail.ingest import Ingest
+        box = await c["db"].mailbox(t["mailbox_id"])
+        if action in ("snooze", "dismiss"):
+            await c["db"].execute("UPDATE threads SET state = ?, state_reason = 'set by hand', updated_at = ? WHERE id = ?",
+                                  ("snoozed" if action == "snooze" else "dismissed", service.now_iso(), thread_id))
+        elif action == "reopen":
+            await c["db"].execute("UPDATE threads SET state = 'unknown', updated_at = ? WHERE id = ?",
+                                  (service.now_iso(), thread_id))
+            await Ingest(c["db"], box).refresh_thread(thread_id)
+        else:
+            raise HTTPException(404)
+        await Ingest(c["db"], box).refresh_counts()
+        return _redirect(f"/mail/threads/{thread_id}", msg={"snooze": "Snoozed.", "dismiss": "Dismissed.", "reopen": "Back in the queue."}[action])
+
     # ── jobs (dead-letter page) ──
 
     @app.get("/mail/jobs", response_class=HTMLResponse)

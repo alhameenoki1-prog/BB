@@ -94,8 +94,10 @@ multi-mailbox side: `db.py` (per-user `data/mail.db`, WAL), `crypto.py`
 (sealed credentials), `jobs.py` (SQLite queue, retries, dead-letter),
 `worker.py` (`python -m bb.mail.worker <workspace>`), `providers/` (gmail,
 imap, graph adapters), `service.py` (connect/check/scope/migration),
-`routes.py`. Phase 1 (foundation) is done; sync, reply state, thread
-views, reply runs and the command bar follow in later phases.
+`routes.py`, `ingest.py` (idempotent store + threading + counts),
+`state.py` (reply-state rules), `parse.py` (RFC 822). Phases 1 to 3 are
+done (foundation, sync, reply state, thread pages); reply composer, batch
+runs, the command bar and Microsoft Graph follow.
 
 ---
 

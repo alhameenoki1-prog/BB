@@ -348,3 +348,46 @@ def test_mail_worker_process_starts_and_heartbeats(tmp_path, monkeypatch):
     finally:
         asyncio.run(ws.stop_mail_worker())
     assert ws.mail_worker_running() is None
+
+
+def test_thread_pages_list_and_show_conversations(mail_client):
+    client = mail_client
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    client.post("/mail/accounts/imap", data={"email": "me@mine.example", "password": "pw"})
+
+    async def seed():
+        from bb.mail.ingest import Ingest
+        from bb.mail.providers.base import RawMessage
+        db = ws.mail_db(); await db.init()
+        box = (await db.mailboxes())[0]
+        ing = Ingest(db, box)
+        await ing.store_batch([
+            RawMessage(provider_id="1", thread_key="T1", from_email="ann@x.example", from_name="Ann Lee", subject="Quote for a roof",
+                       body="Could you quote for a roof?", sent_at="2026-01-01T10:00:00Z", to=[{"name": "", "email": "me@mine.example"}]),
+            RawMessage(provider_id="2", thread_key="T1", from_email="me@mine.example", subject="Re: Quote for a roof", body="Tuesday?",
+                       sent_at="2026-01-01T11:00:00Z", outbound=True),
+            RawMessage(provider_id="3", thread_key="T1", from_email="ann@x.example", from_name="Ann Lee", subject="Re: Quote for a roof",
+                       body="Tuesday works.", sent_at="2026-01-01T12:00:00Z"),
+            RawMessage(provider_id="4", thread_key="T2", from_email="news@shop.example", subject="Digest", body="deals",
+                       sent_at="2026-01-02T10:00:00Z", headers={"list-id": "<x>"}),
+        ])
+        return (await db.query("SELECT id FROM threads WHERE provider_thread_id = 'T1'"))[0]["id"]
+    tid = asyncio.run(seed())
+
+    page = client.get("/mail/threads").text
+    assert "Quote for a roof" in page and "Digest" not in page and "Needs reply (1)" in page
+    assert "Digest" in client.get("/mail/threads?state=no_reply_needed").text
+    assert "Quote for a roof" in client.get("/mail/threads?state=all&q=roof").text
+    assert "Nothing here" in client.get("/mail/threads?state=all&q=zzz").text
+    page = client.get(f"/mail/threads/{tid}").text
+    assert page.count('class="msg') == 3 and "Tuesday works." in page and ">You<" in page and "Ann Lee" in page
+    assert "needs reply" in page and "Ann Lee wrote last" in page
+    assert "Snoozed." in client.post(f"/mail/threads/{tid}/snooze").headers["location"]
+    assert "Snoozed (1)" in client.get("/mail/threads?state=snoozed").text
+    assert "Back%20in%20the%20queue" in client.post(f"/mail/threads/{tid}/reopen").headers["location"]
+    assert "Needs reply (1)" in client.get("/mail/threads").text
+    overview = client.get("/mail").text
+    assert "Sync now" in overview and "open the queue" in overview
+    assert "Sync%20queued" in client.post(f"/mail/accounts/{(asyncio.run(ws.mail_db().mailboxes()))[0]['id']}/sync").headers["location"]

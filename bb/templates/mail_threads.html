@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Threads{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Mail</div><h1>Threads</h1><p class="lead">Every conversation in the accounts in view, by what it needs from you.</p></div></div>
+{% include "_mail_scope.html" %}
+<div class="segs" style="margin-bottom:14px">
+  {% for s, label in [('needs_reply','Needs reply'),('awaiting_them','Awaiting them'),('replied','Replied'),('no_reply_needed','No reply needed'),('snoozed','Snoozed'),('dismissed','Dismissed'),('all','All')] %}
+  <a class="{{ 'on' if s == state else '' }}" href="/mail/threads?state={{ s }}&mailbox={{ mailbox }}&q={{ q|urlencode }}">{{ label }}{% if s != 'all' and state_counts.get(s) %} ({{ state_counts.get(s) }}){% endif %}</a>
+  {% endfor %}
+</div>
+<form method="get" action="/mail/threads" class="actions" style="margin-bottom:14px">
+  <input type="hidden" name="state" value="{{ state }}">
+  <select name="mailbox"><option value="">Accounts in view</option>{% for m in mailboxes if m.enabled %}<option value="{{ m.id }}" {{ 'selected' if m.id == mailbox else '' }}>{{ m.address }}</option>{% endfor %}</select>
+  <input type="search" name="q" value="{{ q }}" placeholder="sender, subject, words…" style="max-width:320px">
+  <button class="secondary small" type="submit">Filter</button>
+</form>
+<div class="card">
+  {% if threads %}
+  <table><thead><tr><th>Account</th><th>From / subject</th><th>State</th><th>Last</th></tr></thead><tbody>
+  {% for t in threads %}
+  <tr><td>{% if t.box %}<span class="acct acct-{{ t.box.settings_model.color }}" title="{{ t.box.address }}">{{ t.box.address }}</span>{% endif %}</td>
+    <td><a href="/mail/threads/{{ t.id }}"><b>{{ t.last_from }}</b> · {{ t.subject or '(no subject)' }}</a><div class="small muted">{{ t.snippet }}</div></td>
+    <td><span class="tag {{ 'warn' if t.state == 'needs_reply' else ('good' if t.state in ('replied', 'awaiting_them') else '') }}">{{ t.state.replace('_', ' ') }}</span></td>
+    <td class="tiny">{{ t.last_message_at }}<div>{{ t.message_count }} msg</div></td></tr>
+  {% endfor %}</tbody></table>
+  <div class="actions" style="margin-top:12px">{% if page > 1 %}<a class="small" href="/mail/threads?state={{ state }}&mailbox={{ mailbox }}&q={{ q|urlencode }}&page={{ page - 1 }}">← Newer</a>{% endif %}{% if more %}<a class="small" href="/mail/threads?state={{ state }}&mailbox={{ mailbox }}&q={{ q|urlencode }}&page={{ page + 1 }}">Older →</a>{% endif %}</div>
+  {% else %}<div class="empty">{{ icon('chat') }}<div>Nothing here{% if not selected %} — connect an account first{% endif %}.</div></div>{% endif %}
+</div>
+<style>.acct { display:inline-flex; align-items:center; gap:6px; font-weight:600; font-size:13px; } .acct::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--accent); }
+.acct-blue::before{background:#0a84ff} .acct-green::before{background:#30d158} .acct-orange::before{background:#ff9f0a} .acct-purple::before{background:#bf5af2} .acct-pink::before{background:#ff375f} .acct-teal::before{background:#64d2ff} .acct-red::before{background:#ff453a} .acct-slate::before{background:#8e8e93}</style>
+{% endblock %}

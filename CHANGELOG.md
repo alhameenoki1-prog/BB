@@ -9,6 +9,19 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Mail command center, phases 2 and 3 (sync and reply state).** Each
+  mailbox is mirrored into the local database: a backfill (the last 365
+  days by default, `backfill_days` per mailbox, 0 for everything) with
+  live "Synced 2,340 / 11,200" progress, then an incremental sync every
+  90 seconds (Gmail History API; IMAP UID ranges per folder with
+  UIDVALIDITY resets; Gmail's All Mail folder when present). Messages
+  are stored once per provider id, threaded by provider thread id or
+  In-Reply-To / References, and every thread carries a persisted state
+  (needs reply, awaiting them, replied, no reply needed, snoozed,
+  dismissed) with per-mailbox live counts. Pages: `/mail/threads`
+  (filter by state, account, text) and `/mail/threads/<id>` (the full
+  timeline, who sent what, snooze / dismiss). Sync now and full re-sync
+  per account; a sign-in that dies mid-sync becomes the Reconnect banner.
 - **Mail command center, phase 1 (foundation).** A new `bb/mail` package
   and pages under `/mail`: several mailboxes per user with credentials
   sealed by AES-256-GCM (`bb/mail/crypto.py`), a per-user SQLite in WAL
