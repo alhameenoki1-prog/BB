@@ -5,6 +5,10 @@
     python -m bb reset-password EMAIL             # change a login's password
     python -m bb make-admin EMAIL                 # give an existing login the admin role
     python -m bb list-users                       # who exists
+    python -m bb status                           # address, data folder, admins, settings file
+
+Settings (BB_BASE_URL, BB_ADMIN_EMAIL, BB_ADMIN_PASSWORD, ...) are read from
+the environment, and from bb.env or .env next to the code when present.
 
 Accounts live in BB_HOME/bb.db, the same database the running site reads,
 so these work whether or not the server is up.
@@ -14,6 +18,27 @@ import argparse
 import getpass
 import os
 import sys
+from pathlib import Path
+
+from harvey.paths import PROJECT_ROOT
+
+# Site settings can live in a file next to the code, so a restart in a new
+# terminal does not forget them. Exported variables still win.
+ENV_FILES = (PROJECT_ROOT / "bb.env", PROJECT_ROOT / ".env")
+
+
+def load_env_files(files=None) -> list[str]:
+    """Read KEY=VALUE lines from the files that exist; never override a
+    variable that is already exported. Returns the files that were read."""
+    from dotenv import load_dotenv
+
+    read = []
+    for path in (ENV_FILES if files is None else files):
+        path = Path(path)
+        if path.is_file():
+            load_dotenv(path, override=False)
+            read.append(str(path))
+    return read
 
 
 def _accounts():
@@ -36,15 +61,46 @@ def _password(args) -> str:
     return first
 
 
+def startup_report(settings, accounts) -> list[str]:
+    """What an operator needs to see when the site starts: where it is,
+    where its data lives, who can create logins."""
+    users = accounts.list_users()
+    admins = [u["email"] for u in users if u["role"] == "admin" and not u["disabled"]]
+    lines = [f"BB Outreach at {settings.base_url}  (listening on port {os.environ.get('BB_PORT', '8000')})",
+             f"Accounts and workspaces: {settings.home}"]
+    if admins:
+        lines.append(f"Admins (they see Users at {settings.base_url}/admin/users): {', '.join(admins)}")
+    elif users:
+        lines.append("No admin account: nobody can create logins. Fix: python -m bb make-admin EMAIL")
+    elif settings.admin_email and settings.admin_password:
+        lines.append(f"First start: the admin account {settings.admin_email} will be created now.")
+    else:
+        lines.append("No accounts and no BB_ADMIN_EMAIL / BB_ADMIN_PASSWORD set. Fix: python -m bb create-user EMAIL --admin")
+    if settings.base_url.startswith("http://localhost"):
+        lines.append("Only this computer can reach it. For other people, run a tunnel and set BB_BASE_URL to its address (docs/HOSTING.md).")
+    return lines
+
+
 def cmd_serve(args):
     import uvicorn
 
     from bb.app import create_app
 
+    settings, accounts = _accounts()
+    for line in startup_report(settings, accounts):
+        print(line)
     host = os.environ.get("BB_HOST", "0.0.0.0")
     port = int(os.environ.get("BB_PORT", "8000"))
     uvicorn.run(create_app(), host=host, port=port, proxy_headers=True,
                 forwarded_allow_ips="*")
+
+
+def cmd_status(args):
+    settings, accounts = _accounts()
+    for line in startup_report(settings, accounts):
+        print(line)
+    read = getattr(args, "_env_files_read", None) or []
+    print("Settings file: " + (", ".join(read) if read else "none (put BB_BASE_URL, BB_ADMIN_EMAIL, BB_ADMIN_PASSWORD in bb.env next to the code)"))
 
 
 def cmd_create_user(args):
@@ -116,7 +172,9 @@ def main(argv=None):
     p.add_argument("email")
     p.set_defaults(func=cmd_make_admin)
     sub.add_parser("list-users", help="list accounts").set_defaults(func=cmd_list_users)
+    sub.add_parser("status", help="where the site is, where its data lives, who the admins are").set_defaults(func=cmd_status)
     args = parser.parse_args(argv)
+    args._env_files_read = load_env_files()
     (getattr(args, "func", None) or cmd_serve)(args)
 
 

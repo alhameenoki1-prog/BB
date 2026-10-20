@@ -25,6 +25,13 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Site settings in a file, and a startup report.** `python -m bb` reads
+  `bb.env` (or `.env`) next to the code, so a restart in a new terminal
+  keeps `BB_BASE_URL`, the admin login and the Google client. On start it
+  prints the address, where accounts and workspaces live, and who the
+  admins are (with the fix when there is none); `python -m bb status`
+  prints the same without starting, and `python -m bb make-admin EMAIL`
+  gives an existing login the admin role.
 - **"What you'd like to happen next"** on the Profile page: a video call,
   a phone call, coffee, meeting in person, a visit or tour, or details by
   email (or nothing, for an email that ends on an easy question). The

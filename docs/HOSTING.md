@@ -22,14 +22,16 @@ brew install python@3.13
 git clone https://github.com/alhameenoki1-prog/BB.git && cd BB
 python3.13 -m venv .venv && source .venv/bin/activate && pip install -e .
 
-# 3. Settings for the site (your login; users add their own AI key and mailbox later)
-export BB_BASE_URL=http://localhost:8000
-export BB_ADMIN_EMAIL=you@example.com
-export BB_ADMIN_PASSWORD='choose-a-long-password'
+# 3. Settings for the site, in a file so a restart never forgets them
+#    (your login; users add their own AI key and mailbox later)
+printf 'BB_BASE_URL=http://localhost:8000\nBB_ADMIN_EMAIL=you@example.com\nBB_ADMIN_PASSWORD=choose-a-long-password\n' > bb.env
 
 # 4. Start it
 python -m bb
 ```
+
+On start it prints the address, where the data lives, and who the admins
+are. `python -m bb status` prints the same without starting the server.
 
 Open <http://localhost:8000>, sign in with the admin email and password,
 go to **Users** and create a login for each person.
@@ -45,9 +47,9 @@ python -m bb reset-password you@example.com          # change it later
 python -m bb list-users
 ``` Everything is stored
 under `BB/data/bb/` on your Mac. `Ctrl-C` stops it; `source
-.venv/bin/activate && python -m bb` starts it again (the settings in step 3
-need exporting again in a new Terminal window, or put them in a file you
-`source`).
+.venv/bin/activate && python -m bb` starts it again, reading `bb.env`.
+Keep using the same `BB` folder: a fresh `git clone` elsewhere is a fresh
+site with no accounts.
 
 **Gmail one-click sign-in on a Mac:** Google only redirects to `localhost`
 or to a real https domain, so for local use register
@@ -65,12 +67,15 @@ brew install cloudflared
 cloudflared tunnel --url http://localhost:8000
 ```
 
-It prints a `https://something.trycloudflare.com` address. Set
-`BB_BASE_URL` to that address and restart `python -m bb`, then send people
-the address. The free quick tunnel changes its address every time you start
-it; for a stable one, create a named tunnel on your own domain
-(`cloudflared tunnel login`, then follow Cloudflare's "named tunnel"
-steps) or move to a server as below.
+It prints a `https://something.trycloudflare.com` address. Put it in
+`bb.env` as `BB_BASE_URL`, restart `python -m bb`, then send people the
+address. **The free quick tunnel gets a new address every time it starts**,
+so after any restart of `cloudflared` yesterday's link is dead: send the
+new one and update `BB_BASE_URL`. For a link that stays the same, create a
+named tunnel on your own domain (`cloudflared tunnel login`, then
+Cloudflare's "named tunnel" steps) or move to a server as below. The
+tunnel and `python -m bb` are two separate programs in two Terminal
+windows; both must be running.
 
 ## Hosting on a server
 

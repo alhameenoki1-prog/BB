@@ -1187,3 +1187,21 @@ def test_cli_make_admin(tmp_path, monkeypatch, capsys):
     assert accounts.get_by_email("u@x.test")["role"] == "admin" and "/admin/users" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         cli.main(["make-admin", "nobody@x.test"])
+
+
+def test_cli_status_and_env_file(tmp_path, monkeypatch, capsys):
+    from bb import __main__ as cli
+    for k in ("BB_BASE_URL", "BB_ADMIN_EMAIL", "BB_ADMIN_PASSWORD"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("BB_HOME", str(tmp_path / "home"))
+    env_file = tmp_path / "bb.env"
+    env_file.write_text("BB_BASE_URL=https://site.test\nBB_ADMIN_EMAIL=boss@x.test\nBB_ADMIN_PASSWORD=pw-pw-pw-pw-pw\n")
+    monkeypatch.setattr(cli, "ENV_FILES", (env_file,))
+    cli.main(["status"])
+    out = capsys.readouterr().out
+    assert "https://site.test" in out and "boss@x.test will be created" in out and str(env_file) in out
+    cli.main(["create-user", "u@x.test", "--password", "s3cret-password"])
+    cli.main(["status"])
+    assert "No admin account" in capsys.readouterr().out
+    cli.main(["make-admin", "u@x.test"]); cli.main(["status"])
+    assert "Admins (they see Users at https://site.test/admin/users): u@x.test" in capsys.readouterr().out
