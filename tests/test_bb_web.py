@@ -1017,3 +1017,56 @@ def test_profile_sector_versions_of_own_message(client):
     assert 'name="sm_sectors_0"' in page and "builders&#39; version" in page and "Add a version for other sectors" in page
     assert 'value="construction" selected' in page and 'value="real_estate" selected' in page
     assert ws.profile()["sector_messages"][0]["sectors"] == ["construction", "real_estate"]
+
+
+def test_inbox_page_saves_settings_and_keeps_them_through_profile_saves(client):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    assert "profile" in client.post("/inbox", data={"inbox_form": "1", "inbox_autoreply": "on"}).headers["location"].lower() \
+        or "Fill%20in%20your" in client.post("/inbox", data={"inbox_form": "1"}).headers["location"]
+    client.post("/profile", data=PROFILE)
+    page = client.get("/inbox").text
+    assert "Inbox auto-reply" in page and "Documents it can share" in page and 'name="link_url_0"' in page
+
+    r = client.post("/inbox", data={"inbox_form": "1", "inbox_autoreply": "on", "inbox_attach_files": "on",
+                                     "inbox_instructions": "Send the brochure when they ask what we do.",
+                                     "link_label_0": "Brochure", "link_url_0": "drive.google.com/brochure",
+                                     "link_when_0": "they ask what we do",
+                                     "link_label_1": "", "link_url_1": "", "link_when_1": "",
+                                     "link_label_2": "Booking", "link_url_2": "https://cal.com/jane", "link_when_2": "they want a call"})
+    assert "auto-reply%20is%20on" in r.headers["location"]
+    cfg = yaml.safe_load(ws.config_file.read_text())["outreach"]
+    assert cfg["inbox_autoreply"] is True and cfg["inbox_attach_files"] is True
+    assert cfg["inbox_instructions"].startswith("Send the brochure")
+    assert [l["label"] for l in cfg["inbox_links"]] == ["Brochure", "Booking"]
+    assert HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach.inbox_links[0].url == "https://drive.google.com/brochure"
+    page = client.get("/inbox").text
+    assert 'value="Brochure"' in page and 'value="https://cal.com/jane"' in page and "checked" in page
+
+    # Saving the profile again does not lose the inbox settings.
+    client.post("/profile", data={**PROFILE, "style": "concise"})
+    cfg = yaml.safe_load(ws.config_file.read_text())["outreach"]
+    assert cfg["inbox_autoreply"] is True and len(cfg["inbox_links"]) == 2
+
+    # Switching it off keeps the instructions and links for later.
+    r = client.post("/inbox", data={"inbox_form": "1", "inbox_instructions": "Send the brochure when they ask what we do.",
+                                     "link_label_0": "Brochure", "link_url_0": "https://drive.google.com/brochure"})
+    assert "auto-reply%20is%20off" in r.headers["location"]
+    cfg = yaml.safe_load(ws.config_file.read_text())["outreach"]
+    assert cfg["inbox_autoreply"] is False and cfg["inbox_links"][0]["label"] == "Brochure"
+
+    # Inbox replies are listed on the page, and inbox contacts are not counted as recipients.
+    async def seed():
+        state = ws.state(); await state.init_db()
+        from harvey.models.prospect import Prospect
+        await state.add_prospect(Prospect(id="ib1", email="sam@new.example", first_name="Sam", source="inbox",
+                                          status="replied", email_status="provided"))
+        await state.add_outbox_item(prospect_id="ib1", to_email="sam@new.example", subject="Re: What do you do?",
+                                    body="Hi Sam,\n\nHere is the brochure.\n\nBrochure: https://x", send_at="2026-01-01T00:00:00",
+                                    status="pending_review", kind="inbox_reply")
+    asyncio.run(seed())
+    page = client.get("/inbox").text
+    assert "sam@new.example" in page and "Here is the brochure" in page and 'action="/outbox/' in page
+    assert client.get("/api/summary").json()["recipients"] == 0
+    assert "Inbox" in client.get("/").text

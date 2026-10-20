@@ -268,6 +268,19 @@ they do), so upload rows with a website or a company email address rather
 than a personal one where you can. The brief the writer follows is
 `prompts/inquiry_writer.md`; edit it to change the voice for everyone.
 
+## Inbox auto-reply
+
+The Inbox page answers mail from people who are not on the list. Switch
+it on, write instructions as you would brief an assistant (what to say,
+what never to promise, what to leave for you), and add the documents it
+may share: a name, the link, and when that link is the right thing to
+send. The worker reads each new email, decides whether a person would
+answer it (notifications, newsletters, receipts and pitches are left
+alone), writes a short reply in your name, and puts the exact links at
+the bottom. With approval on, the reply waits in the Outbox; the Inbox
+page lists every reply drafted or sent. Each sender is answered at most
+once every three days so two auto-responders never loop.
+
 ## Names and greetings
 
 Every email opens with a greeting line. The first name comes from the

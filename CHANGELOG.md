@@ -9,6 +9,17 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Inbox auto-reply.** With `outreach.inbox_autoreply` on, new mail from
+  anyone not on the list is answered in the operator's name following
+  `outreach.inbox_instructions`, with the fitting entries from
+  `outreach.inbox_links` (label, url, when to share) appended as exact
+  links and, optionally, the reply attachments. Automated mail
+  (notifications, newsletters, receipts, auto-replies, lists) is skipped,
+  each sender is answered at most once in three days, the sender becomes
+  an `inbox` contact with a conversation, and the reply goes through the
+  outbox like any other (approval, spam check, threading). Web app: the
+  Inbox page.
+
 - **Sector versions of your own message.** `outreach.sector_messages`: a
   list of {sectors, subject, body, follow-ups}. Contacts are sorted into
   sectors (one model call per 25, no writing), everyone in a listed sector

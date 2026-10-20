@@ -70,7 +70,9 @@ ramp, the writing style (`outreach.style`), an email signature with an
 inline image (`outreach.signature_html/_image`), and a Microsoft 365
 admin-app mailbox (`channels.email.provider: microsoft_app`, Graph client
 credentials). The Mailbox page runs SPF/DKIM/DMARC/MX checks
-(`bb/deliverability.py`). `harvey/spamcheck.py` scores every draft like a filter would (rewrite once,
+(`bb/deliverability.py`). `outreach.inbox_autoreply` + `inbox_instructions` + `inbox_links` answer
+mail from strangers with the right document links (Handler
+`_auto_reply_inbox`; web Inbox page). `harvey/spamcheck.py` scores every draft like a filter would (rewrite once,
 then hold for review); `outreach.use_template` sends the user's own message
 instead of AI text. `harvey/names.py` resolves missing recipient
 names (LinkedIn slug, first.last address, team page) and puts the greeting

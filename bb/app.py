@@ -20,8 +20,8 @@ from bb import deliverability, gmail_oauth, recipients as recipients_mod
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
 from bb.workspaces import (ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
-                           MAX_SECTOR_MESSAGES, OUTREACH_MODES, SECTOR_LABELS, SPEEDS, STYLES, TONES,
-                           Workspace, all_workspaces)
+                           MAX_INBOX_LINKS, MAX_SECTOR_MESSAGES, OUTREACH_MODES, SECTOR_LABELS, SPEEDS,
+                           STYLES, TONES, Workspace, all_workspaces)
 
 logger = logging.getLogger("bb.app")
 
@@ -706,6 +706,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def replies_page(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
         return await render(request, "replies.html", user, conversations=await ws.conversations())
+
+    # ── inbox auto-reply ──
+
+    @app.get("/inbox", response_class=HTMLResponse)
+    async def inbox_page(request: Request, user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        return await render(request, "inbox.html", user, inbox=ws.inbox_settings(),
+                            replies=await ws.inbox_replies(), max_links=MAX_INBOX_LINKS,
+                            attachments=ws.attachments(), configured=ws.is_configured(),
+                            require_approval=ws.profile().get("require_approval", False))
+
+    @app.post("/inbox")
+    async def inbox_save(request: Request, user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        form = dict(await request.form())
+        try:
+            ws.write_inbox(form)
+        except ValidationError as e:
+            first = e.errors()[0]
+            return _redirect("/inbox", error=f"Could not save: {'.'.join(str(p) for p in first['loc'])}: {first['msg']}")
+        except ValueError as e:
+            return _redirect("/inbox", error=str(e))
+        restarted = await ws.restart_worker_if_running("the inbox settings")
+        on = bool(form.get("inbox_autoreply"))
+        return _redirect("/inbox", msg=("Inbox auto-reply is on." if on else "Inbox auto-reply is off.")
+                         + (" The worker was restarted." if restarted else ""))
 
     # ── admin ──
 

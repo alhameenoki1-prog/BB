@@ -85,6 +85,7 @@ SECTOR_LABELS = {
     "other": "Other",
 }
 MAX_SECTOR_MESSAGES = 12
+MAX_INBOX_LINKS = 12
 
 
 def _sector_messages_from_form(form) -> list[dict]:
@@ -449,6 +450,55 @@ class Workspace:
             "warmup_ramp": bool(email.get("warmup_ramp", True)),
         }
 
+    # ── inbox auto-reply ──
+
+    INBOX_KEYS = ("inbox_autoreply", "inbox_instructions", "inbox_links", "inbox_attach_files")
+
+    def _inbox_section(self, form: dict) -> dict:
+        """The inbox fields for harvey.yaml: from the form when the Inbox
+        page posted them, else carried over from the current file."""
+        if "inbox_form" in form:
+            links = []
+            for i in range(MAX_INBOX_LINKS):
+                url = str(form.get(f"link_url_{i}", "") or "").strip()
+                if not url:
+                    continue
+                links.append({"label": str(form.get(f"link_label_{i}", "") or "").strip()[:80],
+                              "url": url[:500], "when": str(form.get(f"link_when_{i}", "") or "").strip()[:300]})
+            return {
+                "inbox_autoreply": bool(form.get("inbox_autoreply")),
+                "inbox_instructions": str(form.get("inbox_instructions", "") or "").strip(),
+                "inbox_links": links,
+                "inbox_attach_files": bool(form.get("inbox_attach_files")),
+            }
+        current = ((self.config() or {}).get("outreach") or {})
+        return {k: current.get(k, [] if k == "inbox_links" else (False if k != "inbox_instructions" else ""))
+                for k in self.INBOX_KEYS}
+
+    def inbox_settings(self) -> dict:
+        out = self._inbox_section({})
+        out["inbox_links"] = [l for l in (out.get("inbox_links") or []) if isinstance(l, dict)]
+        return out
+
+    def write_inbox(self, form: dict) -> dict:
+        """Save the Inbox page: the rest of harvey.yaml is rewritten from the
+        stored profile, with these fields replaced."""
+        if not self.is_configured():
+            raise ValueError("Fill in your profile first.")
+        prof = self.profile()
+        merged = {**prof, "auto_prospect": "on" if prof["auto_prospect"] else "",
+                  "require_approval": "on" if prof["require_approval"] else "", **form, "inbox_form": "1"}
+        return self.write_profile(merged)
+
+    async def inbox_replies(self, limit: int = 100) -> list[dict]:
+        """Replies drafted or sent to people who wrote in, newest first."""
+        if not await self._table_exists("outbox"):
+            return []
+        return await self._query(
+            "SELECT o.*, p.first_name, p.last_name, p.company FROM outbox o "
+            "LEFT JOIN prospects p ON p.id = o.prospect_id WHERE o.kind = 'inbox_reply' "
+            "ORDER BY o.created_at DESC LIMIT ?", (limit,))
+
     def template_warning(self) -> str:
         """What a spam filter would flag in the operator's own message, as a
         sentence for the page, or ""."""
@@ -570,6 +620,7 @@ class Workspace:
                 "greeting": text("greeting") if text("greeting") in GREETINGS else "Hi",
                 "signature_html": signature_html,
                 "signature_image": self.signature_image(),
+                **self._inbox_section(form),
             },
         }
         HarveyConfig(**cfg)  # raises pydantic.ValidationError with the field
@@ -691,7 +742,8 @@ class Workspace:
         }
         if not await self._table_exists("prospects"):
             return out
-        for row in await self._query("SELECT status, COUNT(*) AS n FROM prospects GROUP BY status"):
+        for row in await self._query("SELECT status, COUNT(*) AS n FROM prospects "
+                                     "WHERE source != 'inbox' OR source IS NULL GROUP BY status"):
             status, n = row["status"] or "", row["n"]
             out["recipients"] += n
             if status in WAITING_STATUSES:

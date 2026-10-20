@@ -1,0 +1,157 @@
+"""Inbox auto-reply: answering mail from people who are not on the list,
+following the operator's instructions and sharing the right documents."""
+
+import json
+
+import pytest
+
+from harvey.config import HarveyConfig, OutreachConfig
+from harvey.integrations.mail_provider import InboundMessage, looks_automated
+from harvey.models.prospect import Prospect
+
+from tests.test_outbox_native import Env, FakeProvider, state  # noqa: F401
+from tests.test_outreach import BASE
+
+
+def test_automated_mail_is_recognised():
+    assert looks_automated("noreply@github.com")
+    assert looks_automated("notifications@slack.com")
+    assert looks_automated("news@shop.example", "Weekly digest")
+    assert looks_automated("jane@acme.com", "Automatic reply: out of office")
+    assert looks_automated("jane@acme.com", "hello", {"Auto-Submitted": "auto-replied"})
+    assert looks_automated("jane@acme.com", "hello", {"Precedence": "bulk"})
+    assert looks_automated("jane@acme.com", "hello", {"List-Unsubscribe": "<mailto:x>"})
+    assert not looks_automated("jane@acme.com", "Quote for a kitchen", {"from": "Jane Doe <jane@acme.com>"})
+    assert not looks_automated("team.lead@acme.com", "hello")   # "team" as a real person's prefix is fine
+
+
+def test_inbox_config_fields():
+    cfg = OutreachConfig(inbox_autoreply=True, inbox_links=[{"label": "Brochure", "url": "drive.google.com/x", "when": "asked"}])
+    assert cfg.inbox_links[0].url == "https://drive.google.com/x" and cfg.inbox_links[0].label == "Brochure"
+    assert OutreachConfig().inbox_autoreply is False and OutreachConfig().inbox_links == []
+
+
+class _InboxBrain:
+    """Answers the inbox prompt with a canned decision; records prompts."""
+
+    def __init__(self, decisions):
+        self.decisions = list(decisions)
+        self.prompts = []
+        self.paused_reason = ""
+
+    def load_skills_for_agent(self, *_):
+        return ""
+
+    def load_prompt(self, *_a, **_k):
+        return ""
+
+    async def think(self, prompt, **kw):
+        return "question"
+
+    async def think_json(self, prompt, **kw):
+        self.prompts.append(prompt)
+        return self.decisions.pop(0)
+
+
+def _handler(state, provider, brain, **outreach):
+    from harvey.agents.handler import Handler
+    cfg = HarveyConfig(**{**BASE, "persona": {**BASE["persona"], "name": "Jane Doe", "role": "Architect",
+                                               "email": "jane@acme.test"},
+                          "channels": {"email": {**BASE["channels"]["email"], "require_approval": False}},
+                          "outreach": {"inbox_autoreply": True,
+                                       "inbox_instructions": "Send the brochure when they ask what we do. Never quote a price.",
+                                       "inbox_links": [{"label": "Brochure", "url": "https://acme.test/brochure.pdf",
+                                                        "when": "they ask what we do or about prices"},
+                                                       {"label": "Booking page", "url": "https://cal.com/jane",
+                                                        "when": "they want a call"}],
+                                       "reply_attachments": ["brief.pdf"], **outreach}})
+    handler = Handler(brain=brain, state=state, config=cfg, env=Env())
+    handler.provider = provider
+    return handler
+
+
+def _mail(i, sender, subject, body, headers=None):
+    return InboundMessage(provider_id=f"in{i}", from_email=sender, subject=subject, body=body,
+                          message_id=f"<{i}@theirs>", thread_ref=f"t{i}", headers=headers or {})
+
+
+@pytest.mark.asyncio
+async def test_inbox_mail_gets_an_answer_with_the_right_link(state):  # noqa: F811
+    provider = FakeProvider()
+    provider.inbound = [
+        _mail(1, "sam@newclient.example", "What do you do?", "Hi, we saw your work. Could you tell us what services you offer and roughly what things cost?",
+              headers={"from": "Sam Okafor <sam@newclient.example>"}),
+        _mail(2, "noreply@github.com", "[GitHub] Security alert", "Something happened."),
+        _mail(3, "vendor@seo-spam.example", "Rank #1 on Google!!!", "We can boost your rankings."),
+    ]
+    brain = _InboxBrain([
+        {"action": "reply", "reason": "asks about services", "share": [1],
+         "reply": "Hi Sam,\n\nThanks for getting in touch. We design and manage residential builds and extensions. I have attached our brochure, which covers the kind of work we do. Prices depend on the site and size, so I would rather talk those through once I know more about your project.\n\nBest,\nJane"},
+        {"action": "ignore", "reason": "sales pitch", "reply": "", "share": []},
+    ])
+    handler = _handler(state, provider, brain)
+    assert await handler._run_native() is True
+    # One prompt for Sam, one for the pitch; the GitHub notice never reached the model.
+    assert len(brain.prompts) == 2
+    assert "Jane Doe'S INSTRUCTIONS" not in brain.prompts[0] and "JANE DOE'S INSTRUCTIONS" in brain.prompts[0]
+    assert "[1] Brochure: share when they ask what we do or about prices" in brain.prompts[0]
+    assert "roughly what things cost" in brain.prompts[0]
+
+    items = await state.get_outbox()
+    assert len(items) == 1
+    item = items[0]
+    assert item["kind"] == "inbox_reply" and item["to_email"] == "sam@newclient.example"
+    assert item["subject"] == "Re: What do you do?" and item["status"] == "approved"
+    assert item["in_reply_to"] == "<1@theirs>" and item["thread_ref"] == "t1"
+    body = item["body"]
+    assert body.startswith("Hi Sam,\n\n") and body.count("Hi Sam,") == 1
+    assert "Brochure: https://acme.test/brochure.pdf" in body and "cal.com" not in body
+    assert body.rstrip().endswith("Jane") and "Best,\nJane\n" not in body
+    assert not json.loads(item["attachments_json"] or "[]")   # attach_files is off
+
+    # The sender is recorded as an inbox contact, not an upload, with a conversation.
+    p = await state.get_prospect_by_email("sam@newclient.example")
+    assert p.source == "inbox" and p.first_name == "Sam" and p.last_name == "Okafor" and p.status == "replied"
+    convos = await state.get_conversations_by_status("open")
+    assert any(c.prospect_id == p.id and c.intent == "inbox" and len(c.thread) == 2 for c in convos)
+
+    # Writing again within three days: no second reply, no model call.
+    provider.inbound = [_mail(4, "sam@newclient.example", "Re: What do you do?", "Thanks, one more thing...")]
+    await handler._run_native()
+    assert len(brain.prompts) == 2 and len(await state.get_outbox()) == 1
+
+
+@pytest.mark.asyncio
+async def test_inbox_reply_waits_for_approval_and_attaches_files(state):  # noqa: F811
+    provider = FakeProvider()
+    provider.inbound = [_mail(7, "lee@north-west-build.co.uk", "Booking a call", "Can we set up a call next week?")]
+    brain = _InboxBrain([{"action": "reply", "reason": "wants a call", "share": [2, 9],
+                          "reply": "Happy to. Pick any slot that suits you on my booking page and I will confirm."}])
+    handler = _handler(state, provider, brain, inbox_attach_files=True)
+    handler.config.channels.email.require_approval = True
+    await handler._run_native()
+    [item] = await state.get_outbox()
+    assert item["status"] == "pending_review"
+    assert item["body"].startswith("Hi there,\n\n")          # lee@ alone is not a name
+    assert "Booking page: https://cal.com/jane" in item["body"] and "brochure" not in item["body"].lower()
+    assert json.loads(item["attachments_json"]) == ["brief.pdf"]
+    p = await state.get_prospect_by_email("lee@north-west-build.co.uk")
+    assert p.company == "North West Build"
+
+
+@pytest.mark.asyncio
+async def test_inbox_autoreply_off_leaves_strangers_alone(state):  # noqa: F811
+    provider = FakeProvider()
+    provider.inbound = [_mail(1, "sam@newclient.example", "Hello", "Anyone there?")]
+    brain = _InboxBrain([])
+    handler = _handler(state, provider, brain, inbox_autoreply=False)
+    await handler._run_native()
+    assert brain.prompts == [] and await state.get_outbox() == []
+
+    # Someone on the list is still handled as a reply to outreach, not as inbox mail.
+    await state.add_prospect(Prospect(first_name="Ann", last_name="Lee", email="ann@listed.example",
+                                      email_status="provided", status="contacted", title="CEO", company="Listed"))
+    provider.inbound = [_mail(2, "ann@listed.example", "Re: your note", "Tell me more?")]
+    handler = _handler(state, provider, _InboxBrain([]))
+    await handler._run_native()
+    assert not [i for i in await state.get_outbox() if i["kind"] == "inbox_reply"]

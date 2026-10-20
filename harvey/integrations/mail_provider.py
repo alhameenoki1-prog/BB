@@ -116,6 +116,40 @@ def bounce_reason(body: str) -> tuple[str, str]:
         "same way, slow down and check the Mailbox page's deliverability table.")
 
 
+AUTOMATED_LOCAL_PARTS = (
+    "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply", "notification", "notifications",
+    "newsletter", "newsletters", "mailer", "bounce", "bounces", "alerts", "alert", "news", "marketing",
+    "updates", "digest", "billing", "receipts", "receipt", "invoice", "invoices", "calendar",
+    "calendar-notification", "jira", "github", "linkedin", "facebookmail", "noreply-",
+    "system", "daemon", "robot", "bot", "automated", "auto",
+)
+AUTOMATED_SUBJECTS = (
+    "automatic reply", "auto-reply", "autoreply", "out of office", "out-of-office", "unsubscribe",
+    "your receipt", "your invoice", "password reset", "verify your email", "confirm your email",
+    "security alert", "newsletter", "weekly digest",
+)
+
+
+def looks_automated(from_email: str, subject: str = "", headers: dict | None = None) -> bool:
+    """Mail a person did not write by hand: notifications, newsletters,
+    receipts, auto-replies, mailing lists. Never worth an auto-reply."""
+    local = (from_email or "").lower().split("@", 1)[0]
+    if any(local == m or local.startswith(m + "-") or local.startswith(m + ".") or local.startswith(m + "_")
+           for m in AUTOMATED_LOCAL_PARTS) or "noreply" in local or "no-reply" in local:
+        return True
+    s = (subject or "").lower()
+    if any(m in s for m in AUTOMATED_SUBJECTS):
+        return True
+    h = {str(k).lower(): str(v).lower() for k, v in (headers or {}).items()}
+    if h.get("auto-submitted", "no") not in ("", "no"):
+        return True
+    if h.get("precedence") in ("bulk", "list", "junk"):
+        return True
+    if "list-id" in h or "list-unsubscribe" in h or h.get("x-auto-response-suppress"):
+        return True
+    return False
+
+
 def looks_like_bounce(from_email: str, subject: str) -> bool:
     f = (from_email or "").lower()
     s = (subject or "").lower()

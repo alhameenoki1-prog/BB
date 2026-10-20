@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Inbox{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Mail</div><h1>Inbox auto-reply</h1><p class="lead">Answer new emails from people who are not on your list: the worker reads what they ask, follows your instructions, and sends back the right document link. Replies to your own outreach are handled on the Replies page as before.</p></div></div>
+
+{% if not configured %}<div class="card flat" style="border-color:var(--warn)">Fill in your <a href="/profile">profile</a> first; the replies are written in your name.</div>{% endif %}
+
+<form method="post" action="/inbox">
+<input type="hidden" name="inbox_form" value="1">
+<div class="card">
+  <h2>Switch</h2>
+  <label class="check"><input type="checkbox" name="inbox_autoreply" {{ 'checked' if inbox.inbox_autoreply else '' }}> Reply automatically to new emails that arrive in my mailbox <span class="muted">(from people not on my list)</span></label>
+  <p class="muted small">Mail that machines send (notifications, newsletters, receipts, out-of-office notes) is left alone, each sender is answered at most once every three days, and {{ 'every reply waits in the Outbox for your approval because approval is on in your profile' if require_approval else 'replies go out on their own because approval is off in your profile' }}. Each reply is read through the spam check like any other.</p>
+</div>
+<div class="card">
+  <h2>How to answer</h2>
+  <p class="muted small">Tell it what to say and what not to say, as you would brief an assistant. Who you are, what you can and cannot promise, how to handle quotes, bookings, complaints, and what needs a human.</p>
+  <textarea name="inbox_instructions" rows="7" placeholder="e.g. I run a small architecture practice. If someone asks about our services or prices, send the brochure and say I will call them within two days. If they ask for a quote, ask for the site address and rough size and say I need those before pricing. If it is a complaint or anything legal, do not answer; I will handle it myself. Never give a price by email.">{{ inbox.inbox_instructions }}</textarea>
+  <label class="check" style="margin-top:12px"><input type="checkbox" name="inbox_attach_files" {{ 'checked' if inbox.inbox_attach_files else '' }}> Also attach my uploaded files to every inbox reply <span class="muted">({{ attachments|length }} file{{ 's' if attachments|length != 1 else '' }} on the <a href="/profile">profile</a>)</span></label>
+</div>
+<div class="card">
+  <h2>Documents it can share</h2>
+  <p class="muted small">Links to a brochure, a price list, a booking page, a Google Drive folder, anything. Say when each one is the right thing to send; the reply picks the ones that fit and puts the exact link at the bottom. Leave a row blank to remove it.</p>
+  <div id="links">
+    {% set rows = inbox.inbox_links or [] %}
+    {% for l in rows %}
+    <div class="row link-row" style="margin:8px 0">
+      <div><label>Name</label><input type="text" name="link_label_{{ loop.index0 }}" value="{{ l.label }}" placeholder="Brochure"></div>
+      <div><label>Link</label><input type="url" name="link_url_{{ loop.index0 }}" value="{{ l.url }}" placeholder="https://drive.google.com/…"></div>
+      <div><label>Share it when…</label><input type="text" name="link_when_{{ loop.index0 }}" value="{{ l.when }}" placeholder="they ask what we do or about prices"></div>
+    </div>
+    {% endfor %}
+    {% for i in range(rows|length, rows|length + 2) %}
+    <div class="row link-row" style="margin:8px 0">
+      <div><label>Name</label><input type="text" name="link_label_{{ i }}" placeholder="Brochure"></div>
+      <div><label>Link</label><input type="url" name="link_url_{{ i }}" placeholder="https://drive.google.com/…"></div>
+      <div><label>Share it when…</label><input type="text" name="link_when_{{ i }}" placeholder="they ask what we do or about prices"></div>
+    </div>
+    {% endfor %}
+  </div>
+  <p><button type="button" class="secondary small" id="link-add">+ Add another link</button></p>
+</div>
+<p class="actions"><button type="submit">{{ icon('check', 15) }} Save</button></p>
+</form>
+
+<div class="card">
+  <h2>Replies to people who wrote in</h2>
+  {% if replies %}
+  {% for it in replies %}
+  <div class="card flat" style="margin:10px 0">
+    <div class="actions" style="justify-content:space-between">
+      <div><b>{{ (it.first_name ~ ' ' ~ (it.last_name or '')).strip() or it.to_email }}</b> <span class="muted">{{ it.to_email }}</span></div>
+      <div class="actions"><span class="tag {{ 'good' if it.status == 'sent' else ('warn' if it.status == 'pending_review' else '') }}">{{ it.status.replace('_', ' ') }}</span><span class="tiny">{{ it.sent_at or it.send_at or it.created_at }}</span></div>
+    </div>
+    <p style="margin:8px 0 6px"><b>{{ it.subject }}</b></p>
+    <div class="email">{{ it.body }}</div>
+    {% if it.error %}<p class="small" style="color:var(--bad);margin-top:6px">{{ it.error }}</p>{% endif %}
+    {% if it.status == 'pending_review' %}<div class="actions" style="margin-top:8px"><form class="inline" method="post" action="/outbox/{{ it.id }}/approve"><button class="small" type="submit">{{ icon('check', 13) }} Approve</button></form><form class="inline" method="post" action="/outbox/{{ it.id }}/reject"><button class="small danger" type="submit">{{ icon('x', 13) }} Reject</button></form></div>{% endif %}
+  </div>
+  {% endfor %}
+  {% else %}<div class="empty">{{ icon('mail') }}<div>Nothing yet. Once the switch is on and someone writes in, their email and the reply appear here.</div></div>{% endif %}
+</div>
+<script>
+  (function () {
+    const list = document.getElementById('links'), max = {{ max_links }};
+    document.getElementById('link-add').addEventListener('click', () => {
+      const rows = list.querySelectorAll('.link-row');
+      if (rows.length >= max) return;
+      const i = rows.length, row = rows[rows.length - 1].cloneNode(true);
+      row.querySelectorAll('input').forEach(el => { el.value = ''; el.name = el.name.replace(/_\d+$/, '_' + i); });
+      list.appendChild(row);
+    });
+  })();
+</script>
+{% endblock %}

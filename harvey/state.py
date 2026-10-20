@@ -1035,6 +1035,17 @@ class StateManager:
                 row = await cursor.fetchone()
                 return int(row[0] or 0) if row else 0
 
+    async def count_outbox_to_since(self, to_email: str, kind: str, since_iso: str) -> int:
+        """Emails of one kind queued or sent to an address since a time —
+        the loop guard for inbox auto-replies."""
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM outbox WHERE lower(to_email) = ? AND kind = ? "
+                "AND created_at >= ? AND status != 'cancelled'",
+                (_norm(to_email), kind, since_iso),
+            ) as cursor:
+                return (await cursor.fetchone())[0]
+
     async def count_outbox_sent(self) -> int:
         async with self._connect() as db:
             async with db.execute(

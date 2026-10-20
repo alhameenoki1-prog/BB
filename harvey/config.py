@@ -205,6 +205,23 @@ class SectorMessage(BaseModel):
         return out
 
 
+class SharedLink(BaseModel):
+    """A document or folder the inbox auto-reply may send: its name, the
+    link, and when it is the right thing to share."""
+
+    label: str = ""
+    url: str = ""
+    when: str = ""
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _http_url(cls, v) -> str:
+        v = str(v or "").strip()
+        if v and not v.lower().startswith(("http://", "https://")):
+            v = "https://" + v
+        return v
+
+
 class OutreachConfig(BaseModel):
     """What kind of email this is, and how replies are answered.
 
@@ -250,6 +267,12 @@ class OutreachConfig(BaseModel):
     # Different versions of your own message for particular sectors; the
     # fields above are the default for everyone else.
     sector_messages: list[SectorMessage] = Field(default_factory=list)
+    # Inbox auto-reply: answer new mail from people who are not on the
+    # list, following inbox_instructions, sharing the right inbox_links.
+    inbox_autoreply: bool = False
+    inbox_instructions: str = ""
+    inbox_links: list[SharedLink] = Field(default_factory=list)
+    inbox_attach_files: bool = False
 
     @field_validator("mode", mode="before")
     @classmethod
