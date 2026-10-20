@@ -39,6 +39,14 @@ class Settings:
         self.default_daily_cost_usd = float(get("BB_DEFAULT_DAILY_COST_USD", "5") or 5)
         self.session_days = int(get("BB_SESSION_DAYS", "14") or 14)
         self._secret = get("BB_SECRET_KEY")
+        # A public address from this computer: BB_TUNNEL=cloudflare starts a
+        # quick cloudflared tunnel; BB_TUNNEL_TOKEN runs a named one whose
+        # address is BB_BASE_URL.
+        self.tunnel_token = get("BB_TUNNEL_TOKEN").strip()
+        raw = get("BB_TUNNEL").strip().lower()
+        self.tunnel_mode = "named" if self.tunnel_token else ("quick" if raw in ("cloudflare", "cloudflared", "quick", "on", "1", "true", "yes") else "")
+        self.cloudflared = get("BB_CLOUDFLARED").strip() or "cloudflared"
+        self.port = int(get("BB_PORT", "8000") or 8000)
 
     @property
     def accounts_db(self) -> Path:
@@ -80,4 +88,12 @@ class Settings:
                        "Gmail with one click (they can still use their mailbox's SMTP settings).")
         if not self.secure_cookies and "localhost" not in self.base_url and "127.0.0.1" not in self.base_url:
             out.append("BB_BASE_URL is not https: session cookies travel in clear text.")
+        if not self.tunnel_mode and ("localhost" in self.base_url or "127.0.0.1" in self.base_url):
+            out.append("Only this computer can reach the site. For other people, add BB_TUNNEL=cloudflare to bb.env "
+                       "(and install cloudflared); the link to share then appears on this page.")
         return out
+
+    def set_public_url(self, url: str):
+        """The tunnel told us the public address: cookies and links follow it."""
+        self.base_url = url.rstrip("/")
+        self.secure_cookies = self.base_url.startswith("https://")

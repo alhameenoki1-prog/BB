@@ -84,7 +84,7 @@ Start over, and uploading recipients confirms the free signals so the
 profile stage runs without the CLI's confirm step. Start it with `python -m bb` (needs `BB_BASE_URL`,
 `BB_ADMIN_EMAIL`, `BB_ADMIN_PASSWORD`; `GMAIL_CLIENT_ID`/`SECRET` of a *Web
 application* OAuth client are optional). Deployment and Mac quick-start:
-`docs/HOSTING.md`. Code: `bb/app.py` (routes),
+`docs/HOSTING.md`. `BB_TUNNEL=cloudflare` makes the site run a cloudflared quick tunnel itself (`bb/tunnel.py`; the link is printed and shown on Users; `BB_TUNNEL_TOKEN` for a named tunnel). Code: `bb/app.py` (routes),
 `bb/workspaces.py` (per-user home, config writer, worker control),
 `bb/recipients.py` (CSV import), `bb/gmail_oauth.py`, `bb/accounts.py`.
 When someone asks to "host this" or "give users logins", that is this.

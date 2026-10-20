@@ -4,6 +4,25 @@
 {% block content %}
 <div class="page-head"><div><div class="eyebrow">Admin</div><h1>Users</h1><p class="lead">There is no self-registration. Create an account here and send the person their email and password; you can reset it any time.</p></div></div>
 {% for p in problems %}<div class="card flat" style="border-color:var(--bad);color:var(--bad)">Server setup: {{ p }}</div>{% endfor %}
+<div class="card" id="public-link" style="margin-bottom:14px">
+  <div class="actions" style="justify-content:space-between;align-items:flex-start">
+    <div><h2 style="margin:0">The link your users open</h2>
+      {% if tunnel.mode and tunnel.status == 'up' and tunnel.url %}
+      <p style="margin:6px 0 0;font-size:18px"><a href="{{ tunnel.url }}" id="share-link">{{ tunnel.url }}</a> <button type="button" class="small secondary" onclick="navigator.clipboard.writeText(document.getElementById('share-link').textContent).then(()=>{this.textContent='Copied'})">Copy</button></p>
+      <p class="small muted" style="margin:6px 0 0">{% if tunnel.changes %}Live now. This free tunnel gets a <b>new address every time the site starts</b>, so send the link again after a restart, or use a named tunnel on your own domain for one that never changes (docs/HOSTING.md).{% else %}Your named tunnel; this address stays the same across restarts.{% endif %}</p>
+      {% elif tunnel.mode and tunnel.status == 'starting' %}
+      <p class="small muted" style="margin:6px 0 0">The tunnel is starting; the link appears here in a few seconds. <a href="/admin/users">Refresh</a>.</p>
+      {% elif tunnel.mode and tunnel.status == 'missing' %}
+      <p class="small" style="margin:6px 0 0;color:var(--bad)">{{ tunnel.detail }}</p>
+      {% elif tunnel.mode %}
+      <p class="small" style="margin:6px 0 0;color:var(--warn)">Tunnel {{ tunnel.status }}. {{ tunnel.detail }}</p>
+      {% else %}
+      <p style="margin:6px 0 0"><code>{{ public_url }}</code></p>
+      <p class="small muted" style="margin:6px 0 0">{% if 'localhost' in public_url or '127.0.0.1' in public_url %}This address only works on this computer. To let other people in from anywhere, add <code>BB_TUNNEL=cloudflare</code> to <code>bb.env</code>, install cloudflared (<code>brew install cloudflared</code> on a Mac), restart the site, and the public link appears here.{% else %}Set by BB_BASE_URL.{% endif %}</p>
+      {% endif %}</div>
+    <span class="tag {{ 'good' if tunnel.status == 'up' else ('bad' if tunnel.status in ('missing', 'error', 'down') else '') }}">{{ 'tunnel ' + tunnel.status if tunnel.mode else 'no tunnel' }}</span>
+  </div>
+</div>
 <div class="two">
   <div class="card">
     <h2>Create a login</h2>

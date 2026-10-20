@@ -177,8 +177,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     throttle = LoginThrottle()
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+    from bb.tunnel import Tunnel
+    tunnel = Tunnel(settings.tunnel_mode, settings.port, token=settings.tunnel_token,
+                    public_url=settings.base_url, binary=settings.cloudflared, on_url=settings.set_public_url)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        await tunnel.start()
         # First boot: the admin account from the environment.
         if accounts.count() == 0 and settings.admin_email and settings.admin_password:
             try:
@@ -195,10 +200,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ok, detail = ws.start_mail_worker()
                 logger.info("Autostart mail worker for %s: %s", ws.user["email"], detail)
         yield
+        await tunnel.stop()
 
     app = FastAPI(title="BB", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.state.settings = settings
     app.state.accounts = accounts
+    app.state.tunnel = tunnel
 
     # ── auth plumbing ──
 
@@ -781,7 +788,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ws = Workspace(settings, u)
             rows.append({**u, "running": bool(ws.worker_running()), "configured": ws.is_configured(),
                          "gmail": ws.gmail_connected()})
-        return await render(request, "admin_users.html", admin, users=rows, problems=settings.problems())
+        return await render(request, "admin_users.html", admin, users=rows, problems=settings.problems(),
+                            tunnel=tunnel.describe(), public_url=settings.base_url)
 
     @app.post("/admin/users")
     async def admin_create_user(admin: dict = Depends(current_admin), email: str = Form(""),

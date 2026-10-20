@@ -76,8 +76,12 @@ def startup_report(settings, accounts) -> list[str]:
         lines.append(f"First start: the admin account {settings.admin_email} will be created now.")
     else:
         lines.append("No accounts and no BB_ADMIN_EMAIL / BB_ADMIN_PASSWORD set. Fix: python -m bb create-user EMAIL --admin")
-    if settings.base_url.startswith("http://localhost"):
-        lines.append("Only this computer can reach it. For other people, run a tunnel and set BB_BASE_URL to its address (docs/HOSTING.md).")
+    if settings.tunnel_mode == "quick":
+        lines.append("Tunnel: cloudflared quick tunnel; the public link is printed when it is up and shown on the Users page.")
+    elif settings.tunnel_mode == "named":
+        lines.append(f"Tunnel: named cloudflared tunnel at {settings.base_url}.")
+    elif settings.base_url.startswith("http://localhost"):
+        lines.append("Only this computer can reach it. For other people, add BB_TUNNEL=cloudflare to bb.env and install cloudflared (docs/HOSTING.md).")
     return lines
 
 

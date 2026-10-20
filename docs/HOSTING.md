@@ -59,23 +59,31 @@ Google entirely: users can connect any mailbox with its own SMTP/IMAP
 settings on the **Mailbox** page (Gmail works there with an app password).
 
 **Letting other people use it from your Mac.** The Mac has to stay on and
-awake (`caffeinate -i python -m bb` keeps it awake while running). Give it a
-public https address with a tunnel:
+awake (`caffeinate -i python -m bb` keeps it awake while running). The
+site can open a public https address itself:
 
 ```bash
 brew install cloudflared
-cloudflared tunnel --url http://localhost:8000
+echo 'BB_TUNNEL=cloudflare' >> bb.env
+python -m bb
 ```
 
-It prints a `https://something.trycloudflare.com` address. Put it in
-`bb.env` as `BB_BASE_URL`, restart `python -m bb`, then send people the
-address. **The free quick tunnel gets a new address every time it starts**,
-so after any restart of `cloudflared` yesterday's link is dead: send the
-new one and update `BB_BASE_URL`. For a link that stays the same, create a
-named tunnel on your own domain (`cloudflared tunnel login`, then
-Cloudflare's "named tunnel" steps) or move to a server as below. The
-tunnel and `python -m bb` are two separate programs in two Terminal
-windows; both must be running.
+On start it prints `Share this link with your users: https://....trycloudflare.com`,
+and the same link sits at the top of the admin's **Users** page with a Copy
+button. The site keeps the tunnel running and restarts it if it dies.
+**A free quick tunnel gets a new address every time the site starts**, so
+after a restart send the new link (the Users page always shows the
+current one). For an address that never changes, create a named tunnel on
+your own domain in the Cloudflare dashboard (Zero Trust → Networks →
+Tunnels, route your hostname to `http://localhost:8000`), then put its
+token and address in `bb.env`:
+
+```
+BB_TUNNEL_TOKEN=eyJh...
+BB_BASE_URL=https://outreach.yourdomain.com
+```
+
+Or move to a server as below.
 
 ## Hosting on a server
 

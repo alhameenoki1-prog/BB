@@ -37,6 +37,16 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **The site runs its own public tunnel.** With `BB_TUNNEL=cloudflare` in
+  `bb.env` (and cloudflared installed) the site starts a Cloudflare quick
+  tunnel itself, reads the `trycloudflare.com` address, prints "Share
+  this link with your users: …" and shows it with a Copy button at the
+  top of the admin's Users page, where its status (starting, up, down,
+  missing) is visible. Cookies and links follow the public address. The
+  tunnel is restarted if it dies and stopped with the site. A quick
+  tunnel's address changes on every start, which the page says; a named
+  tunnel (`BB_TUNNEL_TOKEN` plus `BB_BASE_URL`) keeps one address.
+  (`bb/tunnel.py`.)
 - **Site settings in a file, and a startup report.** `python -m bb` reads
   `bb.env` (or `.env`) next to the code, so a restart in a new terminal
   keeps `BB_BASE_URL`, the admin login and the Google client. On start it
