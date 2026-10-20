@@ -76,6 +76,12 @@
         <span><i style="background:var(--good)"></i>{{ summary.replied }} replied</span>
       </div>
       <p class="tiny" style="margin-top:10px">{{ summary.outbox_pending }} awaiting approval · {{ summary.outbox_scheduled }} scheduled · {{ summary.outbox_failed + summary.outbox_rejected }} failed or rejected · <a href="/replies">read replies</a></p>
+      {% if summary.allowance %}
+      <div class="card flat" style="margin-top:10px;{{ 'border-color:var(--warn)' if summary.allowance.reached else '' }}">
+        <b>{{ 'Paused until tomorrow.' if summary.allowance.reached else 'Today\'s limit.' }}</b> {{ summary.allowance.text }}
+        {% if summary.allowance.warming %}<span class="small muted">A slow start keeps a new mailbox out of the spam folder. In a hurry? On <a href="/profile#sending">Profile → Sending</a> switch off "Warm this mailbox up", raise the daily maximum, and set Speed to Fast.</span>{% elif summary.allowance.reached %}<span class="small muted">Raise the daily maximum on <a href="/profile#sending">Profile → Sending</a> to send more.</span>{% endif %}
+      </div>
+      {% endif %}
     </div>
   </div>
 </div>

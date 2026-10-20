@@ -141,7 +141,7 @@
     <div><label>Your time zone</label><select name="timezone">{% for tz in timezones %}<option value="{{ tz }}" {{ 'selected' if tz == profile.timezone else '' }}>{{ tz }}</option>{% endfor %}</select></div>
   </div>
   <label class="check"><input type="checkbox" name="require_approval" {{ 'checked' if profile.require_approval else '' }}> Let me approve each email in the Outbox before it is sent <span class="muted">(off = fully automatic)</span></label>
-  <label style="margin-top:14px">Speed</label>
+  <label style="margin-top:14px" id="sending">Speed</label>
   {% for k, v in speeds.items() %}
   <label class="choice"><input type="radio" name="speed" value="{{ k }}" {{ 'checked' if profile.speed == k else '' }}><span><b>{{ v.label }}</b><span class="small muted">{{ v.note }}</span></span></label>
   {% endfor %}

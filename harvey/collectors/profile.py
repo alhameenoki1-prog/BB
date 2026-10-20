@@ -165,6 +165,9 @@ def _text(html: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"(?s)<[^>]+>", " ", _strip_code(html)))
 
 
+PROFILE_CONCURRENCY = 6   # sites read at once; each is a different host
+
+
 class ProfileCollector:
     """Fetches a business's public pages and emits observations.
 
@@ -480,24 +483,36 @@ class ProfileCollector:
         long run that dies must not take them with it.
         """
         total = 0
-        for company in companies:
+        gate = asyncio.Semaphore(PROFILE_CONCURRENCY)
+
+        async def one(company: dict) -> int:
             domain = (company.get("domain") or "").strip()
             if not domain:
-                continue
-            try:
-                obs = await self.profile_company(company["id"], domain)
-            except Exception as e:
-                logger.warning(f"profile failed for {domain}: {e}")
-                await self._mark_checked(company["id"])
-                continue
+                return 0
+            async with gate:
+                # A short stagger so a batch does not hit one host in lockstep.
+                await asyncio.sleep(random.uniform(0.0, 0.6))
+                try:
+                    obs = await self.profile_company(company["id"], domain)
+                except Exception as e:
+                    logger.warning(f"profile failed for {domain}: {e}")
+                    await self._mark_checked(company["id"])
+                    return 0
             # Marked regardless of outcome — an unreachable site still counts
             # as checked, or the same handful gets retried every cycle
             # forever instead of rotating through the rest of the backlog.
             await self._mark_checked(company["id"])
-            if obs:
-                total += await self.state.add_observations(obs, run_id=run_id)
-                logger.info(f"profile: {domain} → {len(obs)} observation(s)")
-            await asyncio.sleep(random.uniform(0.4, 1.2))
+            if not obs:
+                return 0
+            n = await self.state.add_observations(obs, run_id=run_id)
+            logger.info(f"profile: {domain} → {len(obs)} observation(s)")
+            return n
+
+        # Several sites at once (different hosts), each flushed as it lands:
+        # a run that dies keeps what it had.
+        for n in await asyncio.gather(*(one(c) for c in companies), return_exceptions=True):
+            if isinstance(n, int):
+                total += n
         return total
 
 

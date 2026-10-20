@@ -9,6 +9,7 @@ Steps 2-3 stay campaign-level (proof point + breakup are less personal by
 design). Every draft still passes the deterministic pre-send gate.
 """
 
+import asyncio
 import json
 import re
 import logging
@@ -35,6 +36,8 @@ SEGMENT_ROOM = 500
 # rest wait for the next cycle, so a 1-minute heartbeat stays quick.
 MAX_NAME_LOOKUPS = 15  # contacts considered per cycle in segment mode
 CLASSIFY_BATCH = 25  # contacts per classification call
+MODEL_CONCURRENCY = 4  # model calls in flight at once (classify, sequences, personal drafts)
+LOOKUP_CONCURRENCY = 5  # team pages fetched at once
 
 # The sector vocabulary the classifier sorts contacts into. Closed, so
 # segments line up across uploads; "other" is the catch-all.
@@ -189,17 +192,22 @@ class Writer:
         # Batch prospects into campaign groups (by sector and role tier)
         batches = self._group_prospects(prospects_with_email)
 
-        for batch_name, prospects in batches.items():
-            if not prospects:
-                continue
+        todo = [(name, ps) for name, ps in batches.items() if ps]
+        gate = asyncio.Semaphore(MODEL_CONCURRENCY)
 
-            logger.info(
-                f"Writer: Creating campaign '{batch_name}' for "
-                f"{len(prospects)} prospects."
-            )
+        async def write(ps):
+            async with gate:
+                try:
+                    return await self._write_sequence(ps)
+                except Exception as e:
+                    logger.warning(f"Writer: sequence failed: {e}")
+                    return []
 
-            # Generate the email sequence
-            sequence = await self._write_sequence(prospects)
+        for name, ps in todo:
+            logger.info(f"Writer: Creating campaign '{name}' for {len(ps)} prospects.")
+        sequences = await asyncio.gather(*(write(ps) for _, ps in todo))
+
+        for (batch_name, prospects), sequence in zip(todo, sequences):
             if not sequence:
                 logger.warning(f"Writer: Failed to generate sequence for {batch_name}")
                 continue
@@ -256,12 +264,18 @@ class Writer:
         provider = self.config.channels.email.provider
 
         drafted = 0
-        for prospect in prospects:
-            try:
-                draft = await self._write_personal_email(prospect)
-            except Exception as e:
-                logger.warning(f"Writer: personal draft failed for {prospect.email}: {e}")
-                continue
+        gate = asyncio.Semaphore(MODEL_CONCURRENCY)
+
+        async def write(prospect):
+            async with gate:
+                try:
+                    return await self._write_personal_email(prospect)
+                except Exception as e:
+                    logger.warning(f"Writer: personal draft failed for {prospect.email}: {e}")
+                    return None
+
+        drafts = await asyncio.gather(*(write(p) for p in prospects))
+        for prospect, draft in zip(prospects, drafts):
             if not draft:
                 continue
             held = draft.get("spam_reasons") or []
@@ -345,9 +359,32 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
         matched against the address. Shared inboxes are left alone. Returns
         how many names were found."""
         found = 0
-        lookups = 0
         pages: dict[str, list] = {}
-        scout = None
+        # Team pages first, several at once: one fetch per domain, at most
+        # MAX_NAME_LOOKUPS domains a cycle, in list order.
+        need: list[str] = []
+        for prospect in prospects:
+            if prospect.full_name() or not prospect.email or names.is_role_address(prospect.email):
+                continue
+            if names.resolve_name("", "", prospect.email, prospect.linkedin_url)["source"] in ("linkedin", "email"):
+                continue
+            domain = prospect.email.rsplit("@", 1)[-1].lower()
+            if domain not in names.PUBLIC_DOMAINS and domain not in need and len(need) < MAX_NAME_LOOKUPS:
+                need.append(domain)
+        if need:
+            from harvey.agents.scout import Scout
+            scout = Scout(self.brain, self.state, self.config, self.env)
+            gate = asyncio.Semaphore(LOOKUP_CONCURRENCY)
+
+            async def fetch(domain):
+                async with gate:
+                    try:
+                        return await scout._scrape_team_page(domain)
+                    except Exception as e:
+                        logger.debug(f"Writer: team page for {domain} unreadable: {e}")
+                        return []
+            for domain, page in zip(need, await asyncio.gather(*(fetch(d) for d in need))):
+                pages[domain] = page or []
         for prospect in prospects:
             if prospect.full_name() or not prospect.email or names.is_role_address(prospect.email):
                 continue
@@ -359,20 +396,8 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
                 note = "Name read from the email address (first.last pattern)."
             else:
                 domain = prospect.email.rsplit("@", 1)[-1].lower()
-                if domain in names.PUBLIC_DOMAINS:
-                    continue
                 if domain not in pages:
-                    if lookups >= MAX_NAME_LOOKUPS:
-                        continue
-                    lookups += 1
-                    if scout is None:
-                        from harvey.agents.scout import Scout
-                        scout = Scout(self.brain, self.state, self.config, self.env)
-                    try:
-                        pages[domain] = await scout._scrape_team_page(domain)
-                    except Exception as e:
-                        logger.debug(f"Writer: team page for {domain} unreadable: {e}")
-                        pages[domain] = []
+                    continue
                 member = names.match_team_member(prospect.email, pages[domain])
                 if not member:
                     continue
@@ -842,41 +867,18 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         if not unsorted:
             return
         sorted_count = 0
-        for start in range(0, len(unsorted), CLASSIFY_BATCH):
-            batch = unsorted[start:start + CLASSIFY_BATCH]
-            rows = []
-            for p in batch:
-                company = None
-                if p.company_id:
-                    try:
-                        company = await self.state.get_company(p.company_id)
-                    except Exception:
-                        company = None
-                rows.append({
-                    "id": p.id, "name": p.full_name(), "title": p.title,
-                    "company": p.company or (company.name if company else ""),
-                    "domain": company.domain if company else (p.email.split("@")[-1] if p.email else ""),
-                    "about": ((company.description or "") if company else "")[:300],
-                    "notes": (p.personalization_notes or "")[:300],
-                })
-            prompt = (
-                "Sort these contacts by the SECTOR their company works in and the ROLE TIER of the "
-                "person, from the facts given (title, company, domain, what the company says about "
-                "itself, notes). Use the domain and company name when the title is missing. Never "
-                "invent facts; when unsure, pick the closest sector and the tier the title implies.\n\n"
-                f"SECTORS (pick exactly one): {', '.join(SECTORS)}\n"
-                f"TIERS (pick exactly one): {', '.join(TIERS)} — executive = owners, partners, "
-                "C-level, VPs, directors; manager = runs a team or function; individual = a "
-                "specialist doing the work; admin = ONLY assistants, office managers, reception, or "
-                "a shared inbox like info@ or office@. A personal address (a name before the @) with "
-                "no title is NOT admin: choose manager.\n"
-                f"DEPARTMENTS (pick exactly one): {', '.join(DEPARTMENTS)}\n\n"
-                f"CONTACTS (JSON): {json.dumps(rows, ensure_ascii=False)}\n\n"
-                'Return ONLY a JSON array like [{"id": "...", "sector": "...", "tier": "...", '
-                '"department": "..."}] with one entry per contact id.'
-            )
-            result = await self.brain.think_json(
-                prompt, session_id="harvey-writer-classify", agent="writer", task="classify")
+        batches = [unsorted[i:i + CLASSIFY_BATCH] for i in range(0, len(unsorted), CLASSIFY_BATCH)]
+        gate = asyncio.Semaphore(MODEL_CONCURRENCY)
+
+        async def ask(batch):
+            async with gate:
+                return await self._classify_prompt(batch)
+
+        results = await asyncio.gather(*(ask(b) for b in batches), return_exceptions=True)
+        for batch, result in zip(batches, results):
+            if isinstance(result, Exception):
+                logger.warning(f"Writer: classification failed for a batch: {result}; will retry next cycle.")
+                continue
             if not isinstance(result, list):
                 logger.warning("Writer: classification returned no usable list; will retry next cycle.")
                 continue
@@ -916,6 +918,42 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             logger.info(f"Writer: sorted {sorted_count} contact(s) into sectors and role tiers.")
             await self.state.log_action(action_type="classify", agent="writer",
                                         details={"sorted": sorted_count})
+
+    async def _classify_prompt(self, batch: list):
+        """One classification call for one batch of contacts."""
+        rows = []
+        for p in batch:
+            company = None
+            if p.company_id:
+                try:
+                    company = await self.state.get_company(p.company_id)
+                except Exception:
+                    company = None
+            rows.append({
+                "id": p.id, "name": p.full_name(), "title": p.title,
+                "company": p.company or (company.name if company else ""),
+                "domain": company.domain if company else (p.email.split("@")[-1] if p.email else ""),
+                "about": ((company.description or "") if company else "")[:300],
+                "notes": (p.personalization_notes or "")[:300],
+            })
+        prompt = (
+            "Sort these contacts by the SECTOR their company works in and the ROLE TIER of the "
+            "person, from the facts given (title, company, domain, what the company says about "
+            "itself, notes). Use the domain and company name when the title is missing. Never "
+            "invent facts; when unsure, pick the closest sector and the tier the title implies.\n\n"
+            f"SECTORS (pick exactly one): {', '.join(SECTORS)}\n"
+            f"TIERS (pick exactly one): {', '.join(TIERS)} — executive = owners, partners, "
+            "C-level, VPs, directors; manager = runs a team or function; individual = a "
+            "specialist doing the work; admin = ONLY assistants, office managers, reception, or "
+            "a shared inbox like info@ or office@. A personal address (a name before the @) with "
+            "no title is NOT admin: choose manager.\n"
+            f"DEPARTMENTS (pick exactly one): {', '.join(DEPARTMENTS)}\n\n"
+            f"CONTACTS (JSON): {json.dumps(rows, ensure_ascii=False)}\n\n"
+            'Return ONLY a JSON array like [{"id": "...", "sector": "...", "tier": "...", '
+            '"department": "..."}] with one entry per contact id.'
+        )
+        return await self.brain.think_json(
+            prompt, session_id="harvey-writer-classify", agent="writer", task="classify")
 
     def _group_prospects(self, prospects: list) -> dict[str, list]:
         """Group prospects into campaign batches: one sector, one role tier."""

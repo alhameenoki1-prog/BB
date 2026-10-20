@@ -351,3 +351,36 @@ def test_ask_theme_shapes_the_writer_and_reply_prompts(state):
     ctx = handler._outreach_context([])
     assert "WHAT JANE WANTS NEXT" in ctx.upper() and "coffee" in ctx and "week of the 20th" in ctx
     assert "WANTS NEXT" not in Handler(_Brain(), state, _config(mode="inquiry"), EnvConfig())._outreach_context([])
+
+
+class _CountingBrain(_ClassifyingBrain):
+    """Tracks how many model calls are in flight at once."""
+    def __init__(self):
+        super().__init__()
+        self.in_flight = 0; self.peak = 0
+
+    async def think_json(self, prompt, **kw):
+        import asyncio as _a
+        self.in_flight += 1; self.peak = max(self.peak, self.in_flight)
+        try:
+            await _a.sleep(0.01)
+            return await super().think_json(prompt, **kw)
+        finally:
+            self.in_flight -= 1
+
+
+@pytest.mark.asyncio
+async def test_writer_runs_model_calls_in_parallel(state):
+    """A big upload is sorted and written several calls at a time, not one
+    after another, and the result is the same campaigns."""
+    import harvey.agents.writer as writer_mod
+    cfg = _config(mode="inquiry", intent="hire a builder", personalize_each=False)
+    for i in range(60):
+        await state.add_prospect(Prospect(id=f"q{i}", first_name=f"P{i}", last_name="X", email=f"p{i}@build{i % 4}.co",
+                                          email_status="provided", title="Owner", company=f"Build {i % 4}"))
+    brain = _CountingBrain()
+    writer = Writer(brain, state, cfg, EnvConfig())
+    await writer.run()
+    assert brain.peak >= 2 and brain.peak <= writer_mod.MODEL_CONCURRENCY
+    assert len([p for p in brain.prompts if "Sort these contacts" in p]) == 3   # 60 contacts, 25 a call
+    assert (await state.count_prospects_by_status()).get("queued", 0) == 60

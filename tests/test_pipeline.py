@@ -287,3 +287,23 @@ async def test_exclusions_also_read_the_value(state):
 
     # Only A actually lacks booking, so excluding it leaves B.
     assert await state.cohort(["NO_SCHEMA_MARKUP"], exclude=["NO_ONLINE_BOOKING"]) == [b]
+
+
+@pytest.mark.asyncio
+async def test_profile_stage_has_its_own_time_budget(monkeypatch):
+    """Slow websites stop the research stage, never the whole heartbeat."""
+    import asyncio
+    import harvey.main as main_mod
+
+    async def slow(state, limit=0):
+        await asyncio.sleep(5)
+        return 1, 1, "r"
+
+    monkeypatch.setattr(main_mod, "run_profile_stage", slow)
+    monkeypatch.setattr(main_mod, "PROFILE_BUDGET_SECONDS", 0.05)
+    assert await main_mod._bounded_profile(None) is None
+
+    async def quick(state, limit=0):
+        return 3, 9, "r"
+    monkeypatch.setattr(main_mod, "run_profile_stage", quick)
+    assert await main_mod._bounded_profile(None) == (3, 9, "r")

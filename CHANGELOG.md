@@ -7,6 +7,22 @@ minor versions can still change behaviour.
 
 ## [Unreleased]
 
+### Changed
+
+- **Big uploads move faster.** Website research now reads six sites at
+  once, 40 per heartbeat, on its own two-minute clock: slow sites stop the
+  research stage for that cycle instead of running the whole heartbeat
+  into its timeout and cancelling the writer with it. The writer sorts
+  contacts into sectors, writes segment sequences and drafts personal
+  first emails four model calls at a time instead of one after another,
+  and fetches team pages for missing names five at a time. Research never
+  gates writing or sending: the daily limit, speed and warm-up settings
+  on the Profile page decide how fast a list goes out.
+- **The dashboard says why sending stopped.** The Pipeline card shows
+  today's allowance in words: "Warm-up day 1: 20 of 20 sent today. Starts
+  at 20 a day and rises by 10 each day", or "120 of 500 sent today (your
+  daily limit)", with the switch to flip if you are in a hurry.
+
 ### Added
 
 - **"What you'd like to happen next"** on the Profile page: a video call,

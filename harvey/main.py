@@ -31,6 +31,11 @@ ERROR_BACKOFF_CAP = 900
 # between one stuck agent and Harvey freezing for hours with no agent
 # knowing it's dead — found in production after exactly that happened.
 CYCLE_TIMEOUT_SECONDS = 600
+# Research (website profiling) per heartbeat: how many businesses, and how
+# long before it yields to the next cycle. It runs beside the writer and
+# sender, never ahead of them.
+PROFILE_PER_CYCLE = 40
+PROFILE_BUDGET_SECONDS = 120
 
 # Cap on a single quiet-hours sleep chunk. See the quiet-hours block in
 # heartbeat() for why this exists — a system sleep/wake cycle during one
@@ -107,6 +112,18 @@ async def decide_next_action(
 
     logger.info(f"Decision: {action} ({reason})")
     return action
+
+
+async def _bounded_profile(state, limit: int = PROFILE_PER_CYCLE):
+    """Research with its own clock. Slow websites must never run the whole
+    cycle into the timeout and take the writer down with them: past the
+    budget this stage stops and the rest of the backlog waits for the next
+    heartbeat. What was read before the cut-off is already saved."""
+    try:
+        return await asyncio.wait_for(run_profile_stage(state, limit=limit), timeout=PROFILE_BUDGET_SECONDS)
+    except asyncio.TimeoutError:
+        logger.info(f"profile: stopped after {PROFILE_BUDGET_SECONDS}s this cycle; the rest waits for the next heartbeat.")
+        return None
 
 
 async def _run_agents(tasks: list) -> dict:
@@ -305,7 +322,7 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
             # Claude budget the rest of this loop is rationing — and it is what
             # turns a name and a domain into something worth writing about.
             if summary.get("unprofiled", 0):
-                tasks.append(("profile", run_profile_stage(state, limit=25)))
+                tasks.append(("profile", _bounded_profile(state)))
 
             outcomes = await _run_agents(tasks)
 

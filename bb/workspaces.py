@@ -762,6 +762,7 @@ class Workspace:
             "attachments": len(self.attachments()),
         }
         if not await self._table_exists("prospects"):
+            out["allowance"] = await self._send_allowance(0)
             return out
         for row in await self._query("SELECT status, COUNT(*) AS n FROM prospects "
                                      "WHERE source != 'inbox' OR source IS NULL GROUP BY status"):
@@ -798,6 +799,40 @@ class Workspace:
             rows = await self._query("SELECT value FROM settings WHERE key = 'sending_paused'")
             out["sending_paused"] = (rows[0]["value"] or "") if rows else ""
         out["not_sent"] = out["waiting"] + out["queued"]
+        out["allowance"] = await self._send_allowance(out["sent_today"])
+        return out
+
+    async def _send_allowance(self, sent_today: int) -> dict:
+        """Today's send limit as the sender computes it, with the reason in
+        words, so the dashboard can say why sending stopped at 20."""
+        from datetime import datetime, timezone
+        from harvey.agents.sender import WARMUP_START, WARMUP_STEP, daily_allowance
+        email = ((self.config() or {}).get("channels") or {}).get("email") or {}
+        max_daily = int(email.get("max_daily_sends", 0) or 0)
+        ramp = bool(email.get("warmup_ramp", True))
+        first = None
+        if await self._table_exists("outbox"):
+            rows = await self._query("SELECT MIN(sent_at) AS first FROM outbox WHERE status = 'sent'")
+            first = rows[0]["first"] if rows else None
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        allowed = daily_allowance(first, now, max_daily, ramp)
+        warming = ramp and (max_daily == 0 or allowed < max_daily)
+        day = 0
+        if warming and first:
+            try:
+                day = max(0, (now.date() - datetime.fromisoformat(str(first).replace("Z", "")).date()).days)
+            except ValueError:
+                day = 0
+        out = {"allowed": allowed, "sent": sent_today, "warming": warming, "day": day + 1,
+               "reached": bool(allowed and sent_today >= allowed), "max_daily": max_daily}
+        if warming:
+            out["text"] = (f"Warm-up day {day + 1}: {sent_today} of {allowed} sent today. "
+                           f"Starts at {WARMUP_START} a day and rises by {WARMUP_STEP} each day"
+                           + (f" up to your limit of {max_daily}." if max_daily else "."))
+        elif allowed:
+            out["text"] = f"{sent_today} of {allowed} sent today (your daily limit)."
+        else:
+            out["text"] = f"{sent_today} sent today, no daily limit set."
         return out
 
     async def sector_breakdown(self) -> dict:

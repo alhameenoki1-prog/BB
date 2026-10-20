@@ -1158,3 +1158,19 @@ def test_profile_ask_theme_roundtrip_and_dashboard_activity_feed(client, monkeyp
     page = client.get("/").text
     assert "Reply from ann@x.example" in page and "×2" in page and "Checking pipeline state" not in page.split("Show the raw log")[0]
     assert "Show the raw log" in page and "Checking pipeline state" in page
+
+
+def test_dashboard_explains_the_warm_up_cap(client):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    client.post("/profile", data={**PROFILE, "speed": "fast", "max_daily_sends": "500", "warmup_ramp": "on"})
+    import asyncio as _a
+    s = _a.run(ws.summary())
+    assert s["allowance"]["warming"] and s["allowance"]["allowed"] == 20 and s["allowance"]["day"] == 1
+    page = client.get("/").text
+    assert "Warm-up day 1: 0 of 20 sent today" in page and "Warm this mailbox up" in page
+    client.post("/profile", data={**PROFILE, "speed": "fast", "max_daily_sends": "500"})   # ramp off
+    s = _a.run(ws.summary())
+    assert not s["allowance"]["warming"] and s["allowance"]["allowed"] == 500
+    assert "0 of 500 sent today (your daily limit)" in client.get("/").text
