@@ -21,7 +21,7 @@ from bb import gmail_oauth, recipients as recipients_mod
 from bb.mail_autoconfig import guess_settings
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
-from bb.workspaces import (ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
+from bb.workspaces import (ASKS, ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
                            MAX_INBOX_LINKS, MAX_SECTOR_MESSAGES, OUTREACH_MODES, SECTOR_LABELS, SPEEDS,
                            STYLES, TONES, Workspace, all_workspaces)
 
@@ -289,7 +289,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def dashboard(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
         revived = ws.revive_worker()
-        return await render(request, "dashboard.html", user, logs=ws.log_tail(40),
+        return await render(request, "dashboard.html", user, logs=ws.log_tail(40), activity=ws.recent_activity(30),
                             problems=settings.problems() if user["role"] == "admin" else [],
                             msg=revived or request.query_params.get("msg", ""))
 
@@ -331,7 +331,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def _profile_ctx(ws: Workspace, profile: dict) -> dict:
         return dict(profile=profile, tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES,
                     modes=OUTREACH_MODES, policies=ATTACH_POLICIES, attachments=ws.attachments(),
-                    speeds=SPEEDS, styles=STYLES, greetings=GREETINGS, sector_labels=SECTOR_LABELS,
+                    speeds=SPEEDS, styles=STYLES, greetings=GREETINGS, asks=ASKS, sector_labels=SECTOR_LABELS,
                     max_sector_messages=MAX_SECTOR_MESSAGES, signature_image=ws.signature_image())
 
     @app.get("/profile", response_class=HTMLResponse)

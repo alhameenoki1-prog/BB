@@ -809,6 +809,17 @@ Respond with ONLY the category label, nothing else."""
                 f"CONTEXT: {persona.name} is the prospective client or partner here, not a "
                 f"vendor. What {persona.name} wants from this person: {intent}. Move toward "
                 "getting that (details, a quote, availability, a call); do not sell anything.")
+        from harvey.config import ASK_THEMES
+        theme = (getattr(outreach, "ask", "") or "").strip() if outreach else ""
+        if theme in ASK_THEMES:
+            detail = (getattr(outreach, "ask_detail", "") or "").strip()
+            offer = getattr(self.config.product, "offer", None)
+            link = (getattr(offer, "booking_url", "") or "").strip() if theme in ("zoom", "phone") else ""
+            parts.append(
+                f"WHAT {persona.name.upper()} WANTS NEXT: {ASK_THEMES[theme]}. When they are interested or "
+                "asking how to proceed, propose exactly that (two or three concrete options if times are "
+                "involved) and nothing grander; when they are hesitant, answer them first and offer it lightly."
+                + (f" Specifics: {detail}." if detail else "") + (f" Booking link: {link}" if link else ""))
         if outreach and outreach.reply_instructions.strip():
             parts.append(
                 f"STANDING INSTRUCTIONS FROM {persona.name} FOR EVERY REPLY (follow them "

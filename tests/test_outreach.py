@@ -324,3 +324,30 @@ async def test_smtp_reply_to_header(monkeypatch):
     env.smtp_reply_to = ""
     await smtp_mod.SmtpImapProvider(cfg, env).send_email("to@y.com", "s", "b")
     assert sent["msg"]["Reply-To"] is None
+
+
+# ── the closing ask: a call, a coffee, a visit ──
+
+
+def test_ask_theme_shapes_the_writer_and_reply_prompts(state):
+    from harvey.agents.handler import Handler
+    from harvey.config import ASK_THEMES
+    assert set(ASK_THEMES) == {"zoom", "phone", "coffee", "in_person", "visit", "email"}
+    cfg = _config(mode="inquiry", intent="get a quote for a two-storey extension", ask="coffee",
+                  ask_detail="I'm in Lagos the week of the 20th")
+    writer = Writer(_Brain(), state, cfg, EnvConfig())
+    block = writer._ask_block()
+    assert "THE ASK" in block and "coffee" in block and "week of the 20th" in block and "never invent a place" in block
+    assert writer._base_prompt().endswith(block)            # inquiry prompt carries it
+    assert "Booking link" not in block                       # only calls get the link
+    offer = Writer(_Brain(), state, _config(mode="offer", ask="zoom"), EnvConfig())
+    offer.skills = ""
+    offer.config.product.offer.booking_url = "https://cal.test/jane"
+    block = offer._ask_block()
+    assert "video call" in block and "https://cal.test/jane" in block and offer._base_prompt().endswith(block)
+    assert Writer(_Brain(), state, _config(mode="inquiry"), EnvConfig())._ask_block() == ""
+    assert Writer(_Brain(), state, _config(mode="inquiry", ask="telepathy"), EnvConfig())._ask_block() == ""
+    handler = Handler(_Brain(), state, cfg, EnvConfig())
+    ctx = handler._outreach_context([])
+    assert "WHAT JANE WANTS NEXT" in ctx.upper() and "coffee" in ctx and "week of the 20th" in ctx
+    assert "WANTS NEXT" not in Handler(_Brain(), state, _config(mode="inquiry"), EnvConfig())._outreach_context([])

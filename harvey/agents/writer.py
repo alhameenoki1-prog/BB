@@ -290,6 +290,30 @@ class Writer:
                 f"({'awaiting approval' if require_approval else 'approved'})."
             )
 
+    def _ask_block(self) -> str:
+        """The closing ask the user chose (a call, a coffee, a visit...).
+        Blank means the email ends on an easy question instead."""
+        from harvey.config import ASK_THEMES
+        outreach = getattr(self.config, "outreach", None)
+        theme = (getattr(outreach, "ask", "") or "").strip()
+        if theme not in ASK_THEMES:
+            return ""
+        persona = self.config.persona
+        detail = (getattr(outreach, "ask_detail", "") or "").strip()
+        offer = getattr(self.config.product, "offer", None)
+        link = (getattr(offer, "booking_url", "") or "").strip() if theme in ("zoom", "phone") else ""
+        lines = [f"THE ASK: what {persona.name} would like to happen next is {ASK_THEMES[theme]}."]
+        lines.append("- The first email ends by proposing exactly that, in one plain sentence, as the ONE question of the email. "
+                     "Low pressure: suggest it, give them an easy out, and say a one-line reply is fine if they would rather.")
+        if theme in ("coffee", "in_person", "visit"):
+            lines.append("- Only propose it as something practical for them; never invent a place, date or travel plan that is not in the facts or below.")
+        if detail:
+            lines.append(f"- Specifics from {persona.name} to use when they fit, in your own words: {detail}")
+        if link:
+            lines.append(f"- Booking link to include once, on its own line, after the ask: {link}")
+        lines.append("- Follow-ups repeat the ask once, briefly, and otherwise add something new.")
+        return "\n\n" + "\n".join(lines)
+
     def _outreach_block(self) -> str:
         """Inquiry mode: the sender is the prospective client or partner,
         and each email asks for what THIS recipient's business does."""
@@ -502,10 +526,10 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
                 intent=intent, request_context=context,
             )
             if prompt:
-                return prompt
+                return prompt + self._ask_block()
             return (f"You are writing enquiry emails for {persona.name} ({persona.role} at "
                     f"{persona.company}), a prospective customer or partner of the recipient. "
-                    f"What {persona.name} wants: {intent}. Tone: {persona.tone}. Never pitch.")
+                    f"What {persona.name} wants: {intent}. Tone: {persona.tone}. Never pitch.") + self._ask_block()
         prompt = self.brain.load_prompt(
             "writer",
             product_name=self.config.product.name,
@@ -519,7 +543,7 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
               f"Description: {self.config.product.description}")
         if self.skills:
             prompt += "\n\n" + self.skills
-        return prompt + self._outreach_block()
+        return prompt + self._outreach_block() + self._ask_block()
 
     @property
     def _subject_rule(self) -> str:
@@ -556,7 +580,7 @@ them alone and want to answer it.
   Make a small, concrete connection to what the sender wants.
 - Ask ONE easy question that is quick to answer and invites a conversation
   (an opinion, a yes/no about fit, how they usually start). Not "are you free
-  for a call".
+  for a call" unless THE ASK below says that is what the sender wants.
 - Warm, direct, a touch of personality. Short paragraphs. No bullet points,
   no bold, no exclamation marks, no flattery.
 - Make it easy to reply: tell them a one-line answer is fine."""

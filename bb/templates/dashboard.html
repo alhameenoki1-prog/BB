@@ -82,8 +82,20 @@
 
 {% if logs %}
 <div class="card">
-  <h2>Recent activity</h2>
-  <pre class="log">{{ logs | join('\n') }}</pre>
+  <div class="actions" style="justify-content:space-between"><h2 style="margin:0">Recent activity</h2><span class="tiny">{{ activity|length }} recent event{{ 's' if activity|length != 1 else '' }} · routine checks left out</span></div>
+  {% if activity %}
+  <ul class="feed" style="margin-top:8px">
+    {% for a in activity %}<li class="feed-{{ a.kind }}"><span class="ic">{{ {'sent':'✓','reply':'↩','wrote':'✎','warning':'⚠','control':'●','info':'·'}[a.kind] }}</span>
+      <span>{% if a.agent %}<span class="who">{{ a.agent }}</span> {% endif %}{{ a.text }}{% if a.count > 1 %} <span class="tag" style="margin-left:6px">×{{ a.count }}</span>{% endif %}</span><span class="tiny when">{{ a.when }}</span></li>{% endfor %}
+  </ul>
+  {% else %}<p class="muted small" style="margin-top:8px">Nothing but routine checks so far. The worker is {{ 'running' if summary.worker_running else 'not running' }}.</p>{% endif %}
+  <details style="margin-top:10px"><summary class="tiny muted" style="cursor:pointer">Show the raw log</summary><pre class="log" style="margin-top:8px">{{ logs | join('\n') }}</pre></details>
 </div>
+<style>
+  .feed { list-style:none; margin:0; padding:0; } .feed li { display:flex; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); font-size:14px; align-items:baseline; }
+  .feed li:last-child { border-bottom:0; } .feed .ic { width:16px; text-align:center; color:var(--ink-3); flex:none; } .feed .when { margin-left:auto; white-space:nowrap; }
+  .feed .who { font-weight:600; color:var(--ink-2); margin-right:2px; }
+  .feed-sent .ic, .feed-reply .ic { color:var(--good); } .feed-warning .ic { color:var(--warn); } .feed-control .ic { color:var(--accent); }
+</style>
 {% endif %}
 {% endblock %}

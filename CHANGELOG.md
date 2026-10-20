@@ -9,6 +9,21 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **"What you'd like to happen next"** on the Profile page: a video call,
+  a phone call, coffee, meeting in person, a visit or tour, or details by
+  email (or nothing, for an email that ends on an easy question). The
+  choice becomes the one closing ask of every first email, follow-ups
+  repeat it once, and replies steer toward it once someone is interested.
+  An optional line of specifics ("Tuesdays after 2pm", "I'm in Lagos the
+  week of the 20th") is used where it fits, and for calls the booking
+  link goes under the ask. `outreach.ask` / `outreach.ask_detail` in
+  harvey.yaml.
+- **A readable Recent activity panel.** The dashboard feed is now parsed
+  from the worker log into events with a time, the agent and an icon;
+  routine checks ("Checking pipeline state", "No new replies", decisions)
+  are left out, repeats are folded with a count, and the raw log sits
+  behind a toggle. The mail center's feed drops the worker's own
+  start/stop chatter and shows times as HH:MM.
 - **Mail command center, phase 8 (Microsoft 365, audit log, hardening).**
   A Microsoft 365 mailbox connects through the Graph API with an app
   registration's tenant id, client id and client secret (`Mail.ReadWrite`

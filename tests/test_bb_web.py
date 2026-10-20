@@ -1119,3 +1119,42 @@ def test_inbox_backlog_option(client):
     assert yaml.safe_load(ws.config_file.read_text())["outreach"]["inbox_backlog_days"] == 30
     client.post("/inbox", data={"inbox_form": "1", "inbox_autoreply": "on", "inbox_backlog_days": "abc"})
     assert yaml.safe_load(ws.config_file.read_text())["outreach"]["inbox_backlog_days"] == 0
+
+
+def test_profile_ask_theme_roundtrip_and_dashboard_activity_feed(client, monkeypatch):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    page = client.get("/profile").text
+    assert "What you'd like to happen next" in page and "A video call" in page and "Just a reply" in page
+    r = client.post("/profile", data={**PROFILE, "ask": "coffee", "ask_detail": "Tuesdays after 2pm"})
+    assert r.status_code == 303
+    cfg = yaml.safe_load(ws.config_file.read_text())
+    assert cfg["outreach"]["ask"] == "coffee" and cfg["outreach"]["ask_detail"] == "Tuesdays after 2pm"
+    assert HarveyConfig(**cfg).outreach.ask == "coffee"
+    assert ws.profile()["ask"] == "coffee" and 'value="coffee" checked' in client.get("/profile").text
+    client.post("/profile", data={**PROFILE, "ask": "nonsense"})
+    assert yaml.safe_load(ws.config_file.read_text())["outreach"]["ask"] == ""
+
+    # The dashboard feed: parsed, de-noised, folded; the raw log is still there behind a toggle.
+    ws.ensure()
+    ws.log_file.parent.mkdir(parents=True, exist_ok=True)
+    import time as _t
+    today = _t.strftime("%Y-%m-%d")
+    ws.log_file.write_text("\n".join([
+        f"{today} 09:00:01,100 [harvey.main] INFO: Checking pipeline state...",
+        f"{today} 09:00:01,200 [harvey.main] INFO: Decision: send_campaigns (3 due)",
+        f"{today} 09:00:05,100 [harvey.agents.sender] INFO: Sender: 3 email(s) sent this cycle (12 today).",
+        f"{today} 09:15:01,100 [harvey.agents.handler] INFO: Handler: No new replies.",
+        f"{today} 09:30:01,100 [harvey.agents.handler] INFO: Handler: Reply from ann@x.example",
+        f"{today} 09:30:01,100 [harvey.agents.handler] INFO: Handler: Reply from ann@x.example",
+        f"{today} 09:31:00 - bb - INFO - BB is stopping the worker: paused for edits.",
+    ]) + "\n")
+    feed = ws.recent_activity()
+    assert [a["text"] for a in feed] == ["BB is stopping the worker: paused for edits.", "Reply from ann@x.example",
+                                         "3 email(s) sent this cycle (12 today)."]
+    assert feed[1]["count"] == 2 and feed[1]["agent"] == "Handler" and feed[1]["kind"] == "reply" and feed[1]["when"] == "09:30"
+    assert feed[2]["kind"] == "sent" and feed[0]["kind"] == "control"
+    page = client.get("/").text
+    assert "Reply from ann@x.example" in page and "×2" in page and "Checking pipeline state" not in page.split("Show the raw log")[0]
+    assert "Show the raw log" in page and "Checking pipeline state" in page

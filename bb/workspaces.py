@@ -107,6 +107,17 @@ def _sector_messages_from_form(form) -> list[dict]:
                     "body": body, "followup_1": str(form.get(f"sm_followup_1_{i}", "") or "").strip(),
                     "followup_2": str(form.get(f"sm_followup_2_{i}", "") or "").strip()})
     return out
+# "What you'd like to happen next": the closing ask of every email. Keys
+# match harvey.config.ASK_THEMES; blank = an easy question, no ask.
+ASKS = {
+    "": ("Just a reply", "The email ends on an easy question; you take it from there."),
+    "zoom": ("A video call", "Proposes a short Zoom or Google Meet at a time that suits them. Your booking link goes in if you set one."),
+    "phone": ("A phone call", "Proposes a quick ten-minute call."),
+    "coffee": ("Coffee", "Suggests meeting for a coffee if they are nearby."),
+    "in_person": ("Meet in person", "Suggests meeting at their office or on site."),
+    "visit": ("A visit or tour", "Asks to come by and see their place first-hand."),
+    "email": ("Details by email", "Asks for a short written reply with the details; no call."),
+}
 STYLES = {
     "engaging": "Engaging: 90–130 words with a hook, one useful detail, an easy question and a PS",
     "concise": "Concise: under 75 words, one observation and one question",
@@ -443,6 +454,8 @@ class Workspace:
                 for m in (outreach.get("sector_messages") or []) if isinstance(m, dict)],
             "style": outreach.get("style", "engaging"),
             "greeting": outreach.get("greeting", "Hi"),
+            "ask": outreach.get("ask", "") if outreach.get("ask", "") in ASKS else "",
+            "ask_detail": outreach.get("ask_detail", ""),
             "signature_html": outreach.get("signature_html", ""),
             "speed": next((k for k, v in SPEEDS.items()
                            if v["interval"] == usage.get("heartbeat_interval_minutes")
@@ -624,6 +637,8 @@ class Workspace:
                 "sector_messages": _sector_messages_from_form(form),
                 "style": text("style") if text("style") in STYLES else "engaging",
                 "greeting": text("greeting") if text("greeting") in GREETINGS else "Hi",
+                "ask": text("ask") if text("ask") in ASKS else "",
+                "ask_detail": text("ask_detail")[:300],
                 "signature_html": signature_html,
                 "signature_image": self.signature_image(),
                 **self._inbox_section(form),
@@ -1131,6 +1146,12 @@ class Workspace:
         ok, detail = self.start_worker()
         return f"The worker had stopped on its own and was started again ({detail})." if ok else ""
 
+    def recent_activity(self, limit: int = 30) -> list[dict]:
+        """The worker log as a readable feed: newest first, routine chatter
+        left out, repeats folded together. Each entry: when, agent, kind,
+        text, count."""
+        return parse_activity(self.log_tail(600), limit)
+
     def log_tail(self, lines: int = 60) -> list[str]:
         try:
             with open(self.log_file, "rb") as f:
@@ -1140,6 +1161,63 @@ class Workspace:
         except OSError:
             return []
         return text.strip().splitlines()[-lines:]
+
+
+# ── the worker log as a feed ──
+
+_LOG_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}):\d{2}(?:,\d+)?\s+(?:\[([^\]]+)\]|-\s*(\S+)\s*-)\s*(\w+)[:\s-]+\s*(.*)$")
+_NOISE = (
+    "checking pipeline state", "checking for replies", "checking for campaigns", "no new replies",
+    "no draft campaigns", "no new prospects", "no active campaigns", "decision:", "running ", "crafting email",
+    "harvey is online", "always be closing", "database initialized", "goodbye", "=====", "heartbeat",
+    "idle cycle", "analyst:", "sleeping", "email channel disabled",
+)
+_AGENT_RE = re.compile(r"^(Sender|Writer|Handler|Scout|Analyst|Harvey|BB)\s*:\s*", re.I)
+
+
+def classify_activity(text: str, level: str = "INFO") -> str:
+    low = text.lower()
+    if level in ("WARNING", "ERROR", "CRITICAL") or "bounce" in low or "failed" in low or "could not" in low:
+        return "warning"
+    if "reply from" in low or "replied to" in low or "reply to" in low or "answered" in low or "opted out" in low or "not interested" in low:
+        return "reply"
+    if "sent" in low or "deploying" in low or "activated" in low:
+        return "sent"
+    if "queued" in low or "wrote" in low or "found names" in low or "sorted" in low or "personali" in low:
+        return "wrote"
+    if "stopping" in low or "started over" in low or "paused" in low or "resum" in low or "stopped" in low:
+        return "control"
+    return "info"
+
+
+def parse_activity(lines: list[str], limit: int = 30) -> list[dict]:
+    today = time.strftime("%Y-%m-%d")
+    out: list[dict] = []
+    for raw in lines:
+        m = _LOG_LINE.match(raw.strip())
+        if not m:
+            continue
+        day, hhmm, name_a, name_b, level, text = m.groups()
+        text = text.strip()
+        low = text.lower()
+        if not text or any(n in low for n in _NOISE):
+            continue
+        agent = ""
+        am = _AGENT_RE.match(text)
+        if am:
+            agent, text = am.group(1).capitalize(), text[am.end():]
+        elif (name_a or name_b or "").lower() == "bb":
+            agent = "BB"
+        text = text[:1].upper() + text[1:]
+        when = hhmm if day == today else f"{day[5:]} {hhmm}"
+        kind = classify_activity(text, level.upper())
+        if out and out[-1]["text"] == text and out[-1]["agent"] == agent:
+            out[-1]["count"] += 1
+            out[-1]["when"] = when
+            continue
+        out.append({"when": when, "agent": agent, "kind": kind, "text": text, "count": 1, "level": level.upper()})
+    out.reverse()
+    return out[:limit]
 
 
 def all_workspaces(settings, accounts) -> list[Workspace]:

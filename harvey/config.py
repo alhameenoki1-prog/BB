@@ -222,6 +222,17 @@ class SharedLink(BaseModel):
         return v
 
 
+# The closing ask a user can choose for every email, and how to phrase it.
+ASK_THEMES = {
+    "zoom": "a short video call (Zoom or Google Meet) at a time that suits them",
+    "phone": "a quick phone call, ten minutes at most",
+    "coffee": "meeting for a coffee, if they are nearby",
+    "in_person": "meeting in person at their office or on site",
+    "visit": "a visit or tour at their place, so the sender can see it first-hand",
+    "email": "a short reply by email with the details, no call needed",
+}
+
+
 class OutreachConfig(BaseModel):
     """What kind of email this is, and how replies are answered.
 
@@ -256,6 +267,13 @@ class OutreachConfig(BaseModel):
     signature_text: str = ""
     signature_image: str = ""  # file name under HARVEY_HOME/signature
     greeting: str = "Hi"       # the opening word: "Hi Jane," / "Hello team,"
+    # What the sender would like to happen next, if anything: the closing
+    # ask of every first email and where replies steer. One of ASK_THEMES
+    # ("zoom", "phone", "coffee", "in_person", "visit", "email") or blank
+    # for a plain question that invites a reply. ``ask_detail`` is a line
+    # of specifics ("I'm in Lagos the week of the 20th", "Tuesdays after 2").
+    ask: str = ""
+    ask_detail: str = ""
     # Your own message instead of AI writing: subject + body for the first
     # email ({{first_name}} allowed; the greeting line is added if missing),
     # and optional follow-ups 3 and 7 days later (blank = none).

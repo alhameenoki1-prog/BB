@@ -69,10 +69,10 @@
   <div class="card">
     <h2>Recent activity <span class="tiny" id="live-dot" style="font-weight:400">live</span></h2>
     <ul class="feed" id="feed">
-      {% for a in activity %}<li class="feed-{{ a.kind }}"><span class="ic">{{ {'replied':'✓','synced':'↻','review':'⚠','warning':'⚠','connected':'●','info':'·'}.get(a.kind, '·') }}</span><span>{{ a.text }}</span><span class="tiny when">{{ a.at }}</span></li>{% endfor %}
+      {% for a in activity %}<li class="feed-{{ a.kind }}"><span class="ic">{{ {'replied':'✓','synced':'↻','review':'⚠','warning':'⚠','connected':'●','info':'·'}.get(a.kind, '·') }}</span><span>{{ a.text }}</span><span class="tiny when" data-at="{{ a.at }}" title="{{ a.at }}">{{ a.at[11:16] if a.at[:10] == today else a.at[5:16].replace('T', ' ') }}</span></li>{% endfor %}
       {% if not activity %}<li class="muted small">Nothing yet.</li>{% endif %}
     </ul>
-    <p class="tiny"><a href="/mail/jobs">Jobs</a>: {{ job_counts.queued }} queued · {{ job_counts.running }} running · {{ job_counts.dead }} failed and waiting</p>
+    <p class="tiny"><a href="/mail/jobs">Jobs</a>: {{ job_counts.queued }} queued · {{ job_counts.running }} running · {{ job_counts.dead }} failed and waiting · <a href="/mail/audit">full audit log</a></p>
   </div>
 </div>
 <style>
@@ -93,7 +93,8 @@
       const a = JSON.parse(e.data); if (a.id <= last) return; last = a.id;
       const li = document.createElement('li'); li.className = 'feed-' + a.kind;
       li.innerHTML = '<span class="ic"></span><span></span><span class="tiny when"></span>';
-      li.children[0].textContent = icons[a.kind] || '·'; li.children[1].textContent = a.text; li.children[2].textContent = a.at;
+      li.children[0].textContent = icons[a.kind] || '·'; li.children[1].textContent = a.text;
+      li.children[2].textContent = a.at.slice(11, 16); li.children[2].title = a.at;
       const empty = feed.querySelector('li.muted'); if (empty) empty.remove();
       feed.prepend(li);
     });

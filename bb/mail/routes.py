@@ -48,14 +48,15 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
     @app.get("/mail", response_class=HTMLResponse)
     async def mail_overview(request: Request, user: dict = Depends(current_user)):
         c = await ctx(user)
-        activity = await c["db"].activity(limit=40, mailbox_ids=c["scope_ids"])
+        activity = [a for a in await c["db"].activity(limit=60, mailbox_ids=c["scope_ids"])
+                    if not a["text"].startswith("Background worker ")][:40]
         jobs = Jobs(c["db"])
         active_runs = await c["db"].query("SELECT * FROM reply_runs WHERE status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 5")
         from bb.mail import commands
         brain = _brain(c["ws"])
         return await render(request, "mail_overview.html", user, **page_ctx(c), activity=activity, active_runs=active_runs,
                             job_counts=await jobs.counts(), msg=c["revived"] or request.query_params.get("msg", ""),
-                            command_history=list(reversed(await commands.history(c["db"]))), command_pending=await commands.pending(c["db"]),
+                            today=service.now_iso()[:10], command_history=list(reversed(await commands.history(c["db"]))), command_pending=await commands.pending(c["db"]),
                             brain_ok=brain.configured, brain_tools=brain.supports_tools, brain_label=brain.label)
 
     # ── the command bar ──
@@ -750,6 +751,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                     break
                 ids = await service.scope(db)
                 rows = await db.activity(limit=20, after_id=last, mailbox_ids=ids)
+                rows = [r for r in rows if not r["text"].startswith("Background worker ")]
                 for row in reversed(rows):
                     last = max(last, row["id"])
                     yield f"event: activity\ndata: {json.dumps(row)}\n\n"

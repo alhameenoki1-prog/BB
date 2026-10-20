@@ -105,6 +105,14 @@
   {% for k, v in styles.items() %}
   <label class="choice"><input type="radio" name="style" value="{{ k }}" {{ 'checked' if profile.style == k else '' }}><span><b>{{ k|capitalize }}</b><span class="small muted">{{ v }}</span></span></label>
   {% endfor %}
+  <h3 style="margin:18px 0 4px;font-size:15px">What you'd like to happen next</h3>
+  <p class="muted small" style="margin-top:0">The one thing every first email asks for, and where replies steer once someone is interested. Pick nothing and the email just ends on an easy question.</p>
+  {% for k, v in asks.items() %}
+  <label class="choice"><input type="radio" name="ask" value="{{ k }}" {{ 'checked' if (profile.ask or '') == k else '' }}><span><b>{{ v[0] }}</b><span class="small muted">{{ v[1] }}</span></span></label>
+  {% endfor %}
+  <label style="margin-top:10px">Specifics <span class="muted" style="font-weight:400">(optional)</span></label>
+  <input type="text" name="ask_detail" value="{{ profile.ask_detail }}" maxlength="300" placeholder="e.g. Tuesdays after 2pm work best · I'm in Lagos the week of the 20th · my office is near Victoria Island">
+  <div class="hint">Used only where it fits. For a video or phone call the booking link below is added once, under the ask.</div>
   <div class="row" style="margin-top:12px">
     <div><label>Greeting</label><select name="greeting">{% for g in greetings %}<option value="{{ g }}" {{ 'selected' if g == profile.greeting else '' }}>{{ g }} Jane,</option>{% endfor %}</select><div class="hint">Every email and reply opens with this line. The first name comes from your upload, the LinkedIn URL, a first.last email address, or the company's team page. If none gives one it says “{{ profile.greeting or 'Hi' }} there,”, and a shared inbox like info@ gets “Hello team,”. A name is never guessed.</div></div>
   </div>

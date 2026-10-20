@@ -345,6 +345,16 @@ being built in phases; sync, reply state, the composer and sending are in.
 - **AI provider**: the mail center uses the key and model chosen on the
   site's AI provider page, so it costs the user, never the site.
 
+## What you'd like to happen next
+
+On the Profile page, under Writing style, pick the one thing every first
+email should ask for: a video call, a phone call, coffee, meeting in
+person, a visit or tour, or details by email. Leave it on "Just a reply"
+and the email ends on an easy question. Add a line of specifics (when you
+are free, where you are) and it is used where it fits; for calls, your
+booking link is added once under the ask. Replies steer toward the same
+thing once someone is interested.
+
 ## Inbox auto-reply
 
 The Inbox page answers mail from people who are not on the list. Switch
