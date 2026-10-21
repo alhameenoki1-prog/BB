@@ -63,11 +63,11 @@ def test_the_scope_marker_becomes_the_link_exactly_once():
     body, ok = enquiry.resolve_scope_marker("Happy to. The drawings and schedule are here:\n[SCOPE LINK]\n\nThursday?", url, False)
     assert ok and body.count(url) == 1 and "[SCOPE LINK]" not in body and "here:\n" + url in body
     body, ok = enquiry.resolve_scope_marker("Happy to.\n[SCOPE LINK 1]\n\nThursday?", url, False, label="the brief")
-    assert ok and "The full scope is in the brief" in body and body.endswith("Thursday?")
+    assert ok and "Everything you'd need to judge it is in the brief" in body and body.endswith("Thursday?")
     body, ok = enquiry.resolve_scope_marker("Got it. It's all here:\n[SCOPE LINK]\n\nThursday?", url, True)
     assert not ok and url not in body and "here:" not in body and body == "Got it.\n\nThursday?"
     body, ok = enquiry.resolve_scope_marker("April start works.", url, False, wants=True, label="the Towson brief")
-    assert ok and body.endswith(url) and "so you can see what's involved" in body
+    assert ok and body.endswith(url) and "Everything you'd need to judge it is in the Towson brief" in body
     assert enquiry.resolve_scope_marker("April start works.", "", False, wants=True) == ("April start works.", False)
     assert enquiry.already_shared(url, ["earlier reply with " + url + "/ in it"]) and not enquiry.already_shared(url, ["nothing"])
 
@@ -123,11 +123,12 @@ async def test_a_reply_answers_on_the_need_and_sends_the_scope_once(state):  # n
     await state.add_prospect(other)
     convo2 = Conversation(id="", prospect_id="c2", channel="email", status="open")
     convo2.id = await state.add_conversation(convo2)
-    text3 = await handler._generate_response("question", "Can you send over the specs?", other, convo2)
-    assert text3.endswith("https://docs.example/towson") is False     # the rebar row has no link of its own and there is no general one
+    text3 = await handler._generate_response("question", "Who are you exactly?", other, convo2)
+    assert "docs.example" not in text3     # the rebar row has no link of its own and there is no general one
     cfg.outreach.details_url = "https://docs.example/general"
-    text4 = await handler._generate_response("question", "Can you send over the specs?", other, convo2)
-    assert text4.rstrip().endswith("https://docs.example/general") and "The full scope is in the brief" in text4
+    text4 = await handler._generate_response("question", "Who are you exactly?", other, convo2)
+    assert text4.rstrip().endswith("https://docs.example/general")       # asked for or not, the first reply carries it
+    assert "Have a look and tell me whether it's something you'd take on:" in text4
     # The classifier speaks the customer's language in inquiry mode.
     assert "asks for details, specs, scope" in (await _classifier_prompt(handler, other))
 
@@ -160,3 +161,29 @@ async def test_writer_prompts_carry_the_sender_line_and_the_sector_need(state): 
     assert writer._style_block() == "" and writer._length_rule.startswith("Between 35 and 90")
     assert writer._forbidden_terms([Prospect(email="a@acme-build.example", company="Acme Build")]) >= {"acme-build.example", "Acme Build"}
     assert "Greystone" not in " ".join(writer._forbidden_terms([Prospect(email="a@acme-build.example")]))
+
+
+@pytest.mark.asyncio
+async def test_the_inbox_auto_reply_shares_the_matching_scope_on_its_own(state):  # noqa: F811
+    from tests.test_inbox_autoreply import FakeProvider, _InboxBrain, _handler, _mail
+
+    provider = FakeProvider()
+    provider.inbound = [_mail(1, "dana@steel.example", "your note to my colleague",
+                              "My colleague forwarded your email. We distribute rebar across the Mid-Atlantic. Can you send the specs?",
+                              headers={"from": "Dana Whitfield <dana@steel.example>"})]
+    brain = _InboxBrain([{"action": "reply", "reason": "a supplier offering to quote", "share": [],
+                          "reply": "Hi Dana,\n\nGlad your colleague passed it on. It's about 40 tons of rebar a month for a year, "
+                                   "delivered to our Baltimore site, and I'd like one supplier on a monthly schedule.\n\nJane"}])
+    handler = _handler(state, provider, brain, mode="inquiry", intent="Services and materials for a 24-unit block in Towson.",
+                       sender_line="I run Greystone Development in Baltimore.",
+                       sector_needs=[{**NEEDS[0]}, {**NEEDS[1], "details_url": "https://docs.example/rebar",
+                                                    "details_label": "the rebar spec"}])
+    assert await handler._run_native() is True
+    prompt = brain.prompts[0]
+    assert "WHAT JANE DOE IS LOOKING FOR" in prompt and "[4] the rebar spec: share when they write about this (manufacturing)" in prompt
+    assert "I run Greystone Development" in prompt
+    items = await state.get_outbox()
+    assert len(items) == 1
+    body = items[0]["body"]
+    assert body.count("https://docs.example/rebar") == 1 and "docs.example/towson" not in body
+    assert "Everything you'd need to judge it is in the rebar spec" in body and body.rstrip().endswith("Jane")

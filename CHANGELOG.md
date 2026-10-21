@@ -9,6 +9,23 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **Replies always carry the full scope.** The first reply in every
+  conversation introduces the scope document and includes its link,
+  asked for or not, in a sentence that says what is in it and that it is
+  the quickest way to see whether this is their kind of job, and the
+  reply ends by pointing them to it. Once it has gone out in a thread it
+  is not sent again. The Inbox auto-reply and the command center do the
+  same.
+- **The worker no longer marks your replies as read.** The SMTP/IMAP
+  reader used an UNSEEN search and a fetch that set the read flag, so a
+  reply the worker had seen looked already-read in your own mail client
+  (or was simply missed if you had opened it first). It now reads by UID
+  position, opens the inbox read-only and PEEKs bodies; the position is
+  kept per mailbox in `data/imap_cursor.json`.
+- **Why emails bounce.** The dashboard groups bounces by what the
+  receiving server said (no such address, sending too fast, judged
+  unsolicited, authentication failed…) with what to do about each, and
+  says which ones are the list and which are the mailbox.
 - **Enquiries read as one person writing to another.** The first email
   in inquiry mode was coming out as a campaign letter ("Our team has a
   current need we would like to talk through with you"). The profile now

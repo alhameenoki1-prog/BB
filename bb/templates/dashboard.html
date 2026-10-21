@@ -26,6 +26,15 @@
   <a class="stat bad" href="/outbox?status=bounced" style="text-decoration:none;color:inherit"><div class="l">Bounced</div><div class="n">{{ summary.bounced }}</div><div class="sub">{{ 'see why' if summary.bounced else 'invalid addresses' }}</div></a>
   <div class="stat"><div class="l">Recipients</div><div class="n">{{ summary.recipients }}</div><div class="sub">on your list</div></div>
 </div>
+{% if bounces %}
+<div class="card" style="margin-top:14px;border-color:var(--bad)">
+  <h2>Why emails bounce</h2>
+  <table class="table"><thead><tr><th>What the receiving server said</th><th>How many</th><th>What to do</th></tr></thead><tbody>
+  {% for b in bounces %}<tr><td><b>{{ b.what }}</b>{% if b.example %}<div class="small muted">e.g. “{{ b.example }}”</div>{% endif %}</td><td>{{ b.count }}</td><td class="small">{{ b.hint }}</td></tr>{% endfor %}
+  </tbody></table>
+  <p class="small muted" style="margin-top:10px">“No such address” is the list, not the mailbox: those addresses are marked invalid and never written to again; a list that was never verified bounces 5 to 15 percent. Anything about rate, quota, reputation or authentication is the mailbox: a new Gmail or Workspace address that sends a lot on its first days gets its mail bounced or blocked, so keep the warm-up ramp on, use the Gentle speed for the first weeks, and check SPF, DKIM and DMARC on the <a href="/mailbox">Mailbox</a> page. Past a 15 percent bounce rate the worker stops sending on its own. Every bounce, with the server's exact words, is under <a href="/outbox?status=bounced">Outbox → Bounced</a>.</p>
+</div>
+{% endif %}
 
 <div class="two" style="margin-top:18px">
   <div class="card">

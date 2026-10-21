@@ -346,6 +346,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace_for(user)
         revived = ws.revive_worker()
         return await render(request, "dashboard.html", user, logs=ws.log_tail(40), activity=ws.recent_activity(30),
+                            bounces=await ws.bounce_summary(),
                             problems=settings.problems() if user["role"] == "admin" else [],
                             msg=revived or request.query_params.get("msg", ""))
 

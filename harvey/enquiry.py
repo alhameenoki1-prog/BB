@@ -192,9 +192,29 @@ def already_shared(url: str, texts) -> bool:
 
 def scope_sentence(label: str = "", need: str = "") -> str:
     """The one line that introduces the link when the model wrote none:
-    what it is and why it helps them answer."""
+    what it is, and that it is the quickest way to see whether this is
+    something they would take on."""
     what = label.strip() or "the brief"
-    return f"The full scope is in {what}, so you can see what's involved before you answer:"
+    return (f"Everything you'd need to judge it is in {what}: what we need, how much, where and when. "
+            "Have a look and tell me whether it's something you'd take on:")
+
+
+def pick_scope_link(outreach, text: str = "") -> dict | None:
+    """The scope link that fits a message with no classified sector: the
+    row whose need shares the most words with the text, else the general
+    link (last), else the only one."""
+    links = scope_links(outreach)
+    if not links:
+        return None
+    if len(links) == 1:
+        return links[0]
+    low = (text or "").lower()
+    best, hits = None, 0
+    for link in links:
+        n = sum(1 for w in need_nouns(link["need"]) if w in low)
+        if n > hits:
+            best, hits = link, n
+    return best or links[-1]
 
 
 def resolve_scope_marker(body: str, url: str, shared: bool, wants: bool = False, label: str = "",

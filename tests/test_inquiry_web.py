@@ -65,3 +65,39 @@ def test_profile_round_trips_needs_and_the_scope_links(client):  # noqa: F811
     r = client.post("/profile", data={**NEEDS_FORM, "writing": "template", "template_subject": "Hello",
                                       "template_body": "Hi {{first_name}},\n\nMy own words here, long enough to pass."})
     assert r.status_code == 303, r.text
+
+
+def test_dashboard_explains_why_emails_bounce(client):  # noqa: F811
+    import asyncio
+    from datetime import datetime
+
+    from harvey.models.prospect import Prospect
+
+    _as_user(client)
+    assert client.post("/profile", data=NEEDS_FORM).status_code == 303
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+
+    async def seed():
+        sm = ws.state()
+        await sm.init_db()
+        pid = await sm.add_prospect(Prospect(first_name="Ann", email="ann@gone.example", email_status="provided"))
+        for n, error in enumerate([
+            "Bounced: 550 5.1.1 The email account that you tried to reach does not exist. The address does not exist. "
+            "Nothing to fix on your side; it has been marked invalid.",
+            "Bounced: 550 5.1.1 User unknown. The address does not exist. Nothing to fix on your side; it has been marked invalid.",
+            "Bounced: 421-4.7.0 Our system has detected an unusual rate of unsolicited mail. Your mailbox provider throttled you. "
+            "Switch the profile to the Gentle speed, keep the warm-up ramp on, and lower the daily maximum (30 to 50 a day "
+            "for a mailbox under a month old).",
+        ]):
+            item = await sm.add_outbox_item(prospect_id=pid, conversation_id="", kind="sequence", to_email=f"a{n}@gone.example",
+                                            subject="s", body="b", send_at=datetime(2026, 1, 1).isoformat(),
+                                            status="sent", provider="gmail")
+            await sm.update_outbox_item(item, error=error)
+        return await ws.bounce_summary()
+
+    groups = asyncio.run(seed())
+    assert [(g["what"], g["count"]) for g in groups] == [("no such address", 2), ("sending too fast or too much", 1)]
+    assert groups[0]["example"].startswith("550 5.1.1") and "Gentle speed" in groups[1]["hint"]
+    page = client.get("/").text
+    assert "Why emails bounce" in page and "no such address" in page and "sending too fast or too much" in page

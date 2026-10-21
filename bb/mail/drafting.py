@@ -143,7 +143,7 @@ async def draft_new(brain: MailBrain, settings: MailboxSettings, mailbox: dict, 
             raise BrainError("The model did not return a draft.")
         body = strip_greeting_and_signoff(str(data.get("body") or "").strip(), settings.display_name)
         if scope and scope.get("mode") == "inquiry":
-            body, result["scope_link"] = scope_mod.apply_scope_link(body, scope, [], inbound_text=instruction)
+            body, result["scope_link"] = scope_mod.apply_scope_link(body, scope, [], inbound_text=instruction, always=False)
         subject = re.sub(r"(?i)^\s*(re|fwd?)\s*:\s*", "", str(data.get("subject") or "").strip())[:120]
         qa = qa_check(subject, body, allowed_links=[result["scope_link"]] if result["scope_link"] else None)
         result.update(subject=subject, body=body, confidence=str(data.get("confidence") or "medium").lower(),

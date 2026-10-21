@@ -103,10 +103,11 @@ def context_block(scope: dict | None) -> str:
         lines.append("DOCUMENTS WITH THE FULL SCOPE (refer to one by number; the link is filled in for you, once per thread):")
         for i, l in enumerate(scope["links"], 1):
             lines.append(f"- [{i}] {l['label'] or 'The full scope'} for {', '.join(s.replace('_', ' ') for s in l['sectors']) or 'anyone'}: {l['need'][:140]}")
-        lines.append("When they want details, ask what is wanted, offer to help or quote, or ask for documents: write one plain "
-                     "sentence saying what is in the document and why it helps them answer, then put [SCOPE LINK n] alone on "
-                     "the next line (n = the number above). Never write the address yourself. Not when they only asked who "
-                     "you are, are scheduling, or said no; and never twice in one thread.")
+        lines.append("The first reply in a thread always carries the matching document, whatever they asked: write one plain "
+                     "sentence saying what is in it and why it is the quickest way for them to see whether this is something "
+                     "they would take on, then put [SCOPE LINK n] alone on the next line (n = the number above), and end by "
+                     "pointing them to it. Never write the address yourself. Once it has gone out in a thread it is not sent "
+                     "again (refer to it as the brief they have); nothing is sent when they have said no.")
     else:
         lines.append("There is no document with the full scope; when they want details, give the facts above and offer to send the rest.")
     lines.append("Answer what they asked first, in the first person, with facts from above only. Never invent a number, date, "
@@ -149,14 +150,17 @@ def pick_link(scope: dict | None, body: str, thread_text: str = "") -> dict | No
 
 
 def apply_scope_link(body: str, scope: dict | None, outbound_texts, inbound_text: str = "",
-                     thread_text: str = "") -> tuple[str, str]:
+                     thread_text: str = "", always: bool = True) -> tuple[str, str]:
     """Resolve the draft's marker into the right link, once per thread.
-    Returns (body, url_included_or_empty)."""
+    With ``always`` (replies) the link goes in whether or not the model
+    put a marker, as long as it has not gone out in this thread; a new
+    email (``always=False``) carries it when the model asked or the
+    instruction mentions the scope. Returns (body, url_included_or_empty)."""
     link = pick_link(scope, body, thread_text)
     url = link["url"] if link else ""
     shared = enquiry.already_shared(url, outbound_texts) if url else True
     text = _NUMBERED.sub("[SCOPE LINK]", body or "")
     out, included = enquiry.resolve_scope_marker(
-        text, url, shared, wants=enquiry.wants_details(inbound_text) and bool(url),
+        text, url, shared, wants=bool(url) and (always or enquiry.wants_details(inbound_text)),
         label=(link or {}).get("label", ""), need=(link or {}).get("need", ""))
     return out, (url if included else "")

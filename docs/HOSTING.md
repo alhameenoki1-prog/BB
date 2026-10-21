@@ -434,6 +434,17 @@ for each line below and what to change.
 6. **Warm-up on for a mailbox with no history**, off for one that already
    sends; quiet hours on or off as the audience needs.
 
+## Replies, Reply-To and your own mailbox
+
+The worker reads replies from the IMAP inbox of the connected mailbox
+(or the Gmail account). It reads by position and never marks a message
+read, so your mail client keeps its unread badges and you see every
+reply there as well as on the Replies page. If you set a **Reply-To**
+address on the Mailbox page, people's replies go to that address
+instead; the worker only sees what still arrives in the connected inbox
+(bounces and out-of-office notes, which ignore Reply-To), so leave
+Reply-To blank unless you will answer those replies by hand.
+
 ## Why is nothing sending?
 
 The Worker card on the dashboard says, in one line, what the sender is

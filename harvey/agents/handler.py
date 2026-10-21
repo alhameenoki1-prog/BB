@@ -605,8 +605,21 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
         body = names.strip_greeting(str(result["reply"]).strip())
         body = re.sub(r"(?im)^\s*(best|regards|kind regards|thanks|thank you|cheers)[,.]?\s*\n+\s*" +
                       re.escape(persona.name.split()[0]) + r"\s*$", "", body).strip()
+        scope_urls = {sl["url"].rstrip("/") for sl in (enquiry.scope_links(outreach) if self.inquiry else [])}
+        if self.inquiry and scope_urls and not any(l.url.rstrip("/") in scope_urls for l in chosen):
+            # The customer's reply always carries the full scope, asked for or not.
+            pick = enquiry.pick_scope_link(outreach, f"{msg.subject} {msg.body}")
+            match = next((l for l in links if pick and l.url.rstrip("/") == pick["url"].rstrip("/")), None)
+            if match is not None:
+                chosen.append(match)
         if chosen:
-            body += "\n\n" + "\n".join(f"{l.label + ': ' if l.label else ''}{l.url}" for l in chosen)
+            lines = []
+            for l in chosen:
+                if l.url.rstrip("/") in scope_urls:
+                    lines.append(f"{enquiry.scope_sentence(l.label)}\n{l.url}")
+                else:
+                    lines.append(f"{l.label + ': ' if l.label else ''}{l.url}")
+            body += "\n\n" + "\n".join(lines)
         body += f"\n\n{persona.name.split()[0]}"
         body = names.ensure_greeting(body, first, sender, company,
                                      getattr(outreach, "greeting", "") or "Hi")
@@ -870,11 +883,13 @@ Respond with ONLY the category label, nothing else."""
                     parts.append(f"THE FULL SCOPE ({label}) has ALREADY been sent to them in this conversation. "
                                  "Do not send it again and do not write [SCOPE LINK]; refer to it as the brief they have.")
                 else:
-                    parts.append(f"THE FULL SCOPE of what {persona.name} needs is written up in {label}. When they want "
-                                 "details, ask what is wanted, offer to help or ask for documents, write one plain "
-                                 "sentence saying what is in it and why it helps them answer, then put [SCOPE LINK] "
-                                 "alone on the next line; the link is filled in for you, once. Never write the address "
-                                 "yourself. Do not add it when they only asked who you are, are scheduling, or said no.")
+                    parts.append(f"THE FULL SCOPE of what {persona.name} needs is written up in {label}, and it has not "
+                                 "gone to them yet. This reply introduces it, whatever they asked: one plain sentence "
+                                 "saying what is in it and why it is the quickest way for them to see whether this is "
+                                 "something they would take on, then [SCOPE LINK] alone on the next line (the link is "
+                                 "filled in for you, once; never write the address yourself), and the reply ends by "
+                                 "pointing them to it (have a look and tell me whether it is something you would take on). "
+                                 "Only when they have said no, or the message is angry or legal, is nothing sent.")
             else:
                 parts.append("There is no document with the full scope to send; when they want details, give them "
                              "the two or three facts above and offer to send the rest.")
@@ -1025,9 +1040,9 @@ Write a reply that:"""
         if response and scope is not None:
             # The link goes in by code, once: where the model put the marker,
             # or at the end when they asked for details and the model forgot.
+            # Asked for or not: the first reply in a conversation carries it.
             response, included = enquiry.resolve_scope_marker(
-                response, scope["url"], scope["shared"], wants=enquiry.wants_details(reply_text)
-                and intent in ("interested", "question"), label=scope["label"], need=need["need"])
+                response, scope["url"], scope["shared"], wants=True, label=scope["label"], need=need["need"])
             if included:
                 logger.info(f"Handler: the full scope ({scope['label'] or scope['url']}) goes to {prospect.email}.")
         if not response:

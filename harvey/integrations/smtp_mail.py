@@ -17,6 +17,7 @@ import asyncio
 import email
 import email.policy
 import imaplib
+import json
 import logging
 import ssl
 from email.message import EmailMessage
@@ -24,6 +25,7 @@ from email.utils import make_msgid, parseaddr
 
 import aiosmtplib
 
+from harvey import paths
 from harvey.integrations.mail_provider import (
     add_deliverability_headers,
     attach_files,
@@ -169,23 +171,83 @@ class SmtpImapProvider(MailProvider):
             logger.error(f"IMAP fetch failed: {e}")
             raise MailReadError(f"could not read the inbox at {self.imap_host}: {str(e)[:160]}") from e
 
+    # The read position per mailbox. The worker never changes a message's
+    # flags (the person's own mail client keeps its unread badges), so
+    # "new" is "UID above the last one read", kept in a small file.
+    CURSOR_FILE = "imap_cursor.json"
+
+    def _cursor_key(self) -> str:
+        return f"{self.imap_host}:{self.imap_user}:INBOX"
+
+    def _cursor_path(self):
+        return paths.DATA_DIR / self.CURSOR_FILE
+
+    def _load_cursor(self) -> dict:
+        try:
+            return (json.loads(self._cursor_path().read_text()) or {}).get(self._cursor_key()) or {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_cursor(self, validity: str, uid: int) -> None:
+        path = self._cursor_path()
+        try:
+            data = json.loads(path.read_text()) if path.exists() else {}
+        except (OSError, ValueError):
+            data = {}
+        data[self._cursor_key()] = {"validity": validity, "uid": int(uid)}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data))
+        except OSError as e:
+            logger.debug(f"IMAP cursor not saved: {e}")
+
+    @staticmethod
+    def _uid_validity(conn) -> str:
+        try:
+            _typ, vals = conn.response("UIDVALIDITY")
+            for v in vals or []:
+                if v:
+                    return v.decode() if isinstance(v, bytes) else str(v)
+        except Exception:
+            pass
+        return ""
+
     def _fetch_unseen(self, limit: int) -> list[InboundMessage]:
+        """New inbox mail since the last read, by UID, without touching a
+        single flag: the mailbox is opened read-only and bodies are PEEKed.
+        The first read of a mailbox starts from what is still unread (older
+        mail counts as dealt with); every read after that moves the
+        position forward, so mail the person opened first is still seen."""
         out: list[InboundMessage] = []
         conn = imap_connect(self.imap_host, self.imap_port)
         try:
             conn.login(self.imap_user, self.imap_pass)
-            conn.select("INBOX")
-            status, data = conn.search(None, "UNSEEN")
+            status, _ = conn.select("INBOX", readonly=True)
             if status != "OK":
                 return []
-            ids = data[0].split()[-limit:]
-            for msg_id in ids:
-                status, parts = conn.fetch(msg_id, "(RFC822)")
+            validity = self._uid_validity(conn)
+            cursor = self._load_cursor()
+            last = int(cursor.get("uid") or 0) if cursor.get("validity", "") == validity else 0
+            if last:
+                status, data = conn.uid("SEARCH", None, f"UID {last + 1}:*")
+            else:
+                status, data = conn.uid("SEARCH", None, "UNSEEN")
+            if status != "OK" or not data or not data[0]:
+                return []
+            # "n:*" always returns the newest message, even below n: filter.
+            uids = [u for u in data[0].split() if int(u) > last]
+            uids = uids[-limit:]
+            newest = last
+            for uid in uids:
+                status, parts = conn.uid("FETCH", uid, "(BODY.PEEK[])")
                 if status != "OK" or not parts or not isinstance(parts[0], tuple):
                     continue
+                newest = max(newest, int(uid))
                 parsed = self._parse_rfc822(parts[0][1])
                 if parsed:
                     out.append(parsed)
+            if newest > last:
+                self._save_cursor(validity, newest)
         finally:
             try:
                 conn.logout()

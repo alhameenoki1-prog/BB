@@ -1054,6 +1054,34 @@ class Workspace:
         out["sending"] = await self._sending_status(out)
         return out
 
+    async def bounce_summary(self, limit: int = 500) -> list[dict]:
+        """Why emails bounced, grouped by what the receiving server said:
+        [{what, hint, count, example}], most common first. "No such
+        address" is the list; rate, reputation and authentication are the
+        mailbox."""
+        if not await self._table_exists("outbox"):
+            return []
+        from harvey.integrations.mail_provider import BOUNCE_HINTS
+        rows = await self._query(
+            "SELECT error FROM outbox WHERE status = 'sent' AND error LIKE 'Bounced:%' "
+            "ORDER BY updated_at DESC LIMIT ?", (limit,))
+        groups: dict[str, dict] = {}
+        for r in rows:
+            err = (r["error"] or "")[len("Bounced: "):]
+            what, hint = "the receiving server rejected it (no reason given)", ""
+            for _pattern, label, advice in BOUNCE_HINTS:
+                if advice and advice in err:
+                    what, hint = label, advice
+                    break
+            else:
+                if ". " in err:
+                    hint = err.rsplit(". ", 1)[-1]
+            g = groups.setdefault(what, {"what": what, "hint": hint, "count": 0, "example": ""})
+            g["count"] += 1
+            if not g["example"]:
+                g["example"] = (err[: len(err) - len(hint)] if hint and err.endswith(hint) else err).strip(" .")[:160]
+        return sorted(groups.values(), key=lambda g: -g["count"])
+
     async def _sending_status(self, out: dict) -> dict:
         """What the sender is doing right now, in one sentence, with the
         thing to change when it is stuck: {state, text, link}. state is
