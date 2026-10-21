@@ -112,6 +112,7 @@ class SmtpImapProvider(MailProvider):
         thread_ref: str = "",
         in_reply_to: str = "",
         attachments: list | None = None,
+        plain: bool = False,
     ) -> SendResult:
         persona = self.config.persona
         msg = EmailMessage()
@@ -126,7 +127,7 @@ class SmtpImapProvider(MailProvider):
             msg["In-Reply-To"] = in_reply_to
             msg["References"] = in_reply_to
         add_deliverability_headers(msg, persona.email or self.smtp_user, self.config)
-        set_body(msg, body, getattr(self.config, "outreach", None))
+        set_body(msg, body, getattr(self.config, "outreach", None), plain=plain)
         attach_files(msg, attachments)
 
         try:

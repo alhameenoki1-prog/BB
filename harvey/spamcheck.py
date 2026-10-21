@@ -50,6 +50,9 @@ _RULES = (
     (r"subject:[!?$%]|subject:\b(free|offer|deal|opportunity|proposal|partnership|collaboration|"
      r"urgent|important|attention|invitation|introduction|quick question|"
      r"right person|follow.?up|following up|checking in|touching base)\b", 2, "a marketing-style subject"),
+    (r"subject:\b(looking to|start(ing)? work|work(ing)? with (you|your)|working together|your (team|firm|company)|"
+     r"reaching out|touching base|new (client|project|business)|potential (project|client|partner\w*)|let.s (connect|talk|chat)|"
+     r"exploring|exciting)\b", 2, "a subject about the act, not the thing"),
     (r"subject:^.{60,}$", 1, "a very long subject"),
     (r"subject:^[a-z0-9 ,'.-]{1,25}$", 1, "a terse all-lowercase subject"),
     (r"subject:cs:\b[A-Z][a-z]+(\s+[A-Z][a-z]+){3,}\b", 1, "Title Case Every Word in the subject"),

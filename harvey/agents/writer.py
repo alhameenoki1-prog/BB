@@ -901,7 +901,48 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             if reasons:
                 logger.warning("Writer: the first email still reads like spam to a filter "
                                f"({'; '.join(reasons[:4])}); the sender will hold it for review.")
+            if self.inquiry and not self.personalize_each and not reasons:
+                await self._add_variants(steps[0], single, prospects)
         return steps
+
+    VARIANTS = 2  # other wordings of email 1 per segment, on top of the original
+
+    async def _add_variants(self, step: EmailStep, single_prompt: str, prospects: list) -> None:
+        """Two more wordings of the first email, same facts, so a segment
+        of a hundred people does not receive one identical body (which
+        mail providers read as bulk). Each must pass the same checks."""
+        forbidden = self._forbidden_terms(prospects)
+        need = self._need(prospects[0].industry or "")["need"] if prospects else ""
+        subjects, bodies = [], []
+        for n in range(self.VARIANTS):
+            prior = "\n\n".join(f"Subject: {s}\n{b}" for s, b in zip([step.subject] + subjects, [step.body] + bodies))
+            prompt = (single_prompt.replace("Write ONLY email 1 (step 1) of that sequence.",
+                                            "Write email 1 again in different wording.")
+                      + "\n\nIt must say the same things from the NEED, to the same kind of reader, but in different "
+                        "words: a different opening sentence, a different order, a different subject line of the same "
+                        "kind, the same length. Not a paraphrase line by line; a note the same person might have "
+                        "typed on another day. These are the wordings already written, do not reuse their sentences:\n\n"
+                      + prior)
+            try:
+                result = await self.brain.think_json(prompt, session_id="harvey-writer", agent="writer", task="sequence_variant")
+            except Exception as e:
+                logger.debug(f"Writer: variant {n + 1} failed: {e}")
+                break
+            if not isinstance(result, dict):
+                break
+            subject = _scrub(str(result.get("subject") or "").strip().replace("{{company}}", "your team"), forbidden)
+            body = _plain_signoff(_scrub(str(result.get("body") or "").strip().replace("{{company}}", "your team"), forbidden),
+                                  self._persona_first)
+            if not subject or not body or body == step.body:
+                continue
+            score, _why = self._risk({"subject": subject, "body": body}, need)
+            if score >= 4:
+                continue
+            subjects.append(subject[:120])
+            bodies.append(body[:2000])
+        if bodies:
+            step.subjects, step.bodies = subjects, bodies
+            logger.info(f"Writer: email 1 has {len(bodies) + 1} wordings; the sender rotates through them.")
 
     def _parse_sequence(self, result, forbidden: set | None = None) -> list[EmailStep]:
         """Robustly coerce LLM output into a validated EmailStep list.

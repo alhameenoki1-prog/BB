@@ -43,7 +43,7 @@ class FakeProvider(MailProvider):
     def is_configured(self):
         return True
 
-    async def send_email(self, to_email, subject, body, thread_ref="", in_reply_to=""):
+    async def send_email(self, to_email, subject, body, thread_ref="", in_reply_to="", **kw):
         if self.fail_next:
             self.fail_next = False
             return SendResult(ok=False, error="smtp boom")
@@ -364,7 +364,7 @@ class SlowProvider(FakeProvider):
         super().__init__()
         self.in_flight = 0; self.peak = 0
 
-    async def send_email(self, to_email, subject, body, thread_ref="", in_reply_to=""):
+    async def send_email(self, to_email, subject, body, thread_ref="", in_reply_to="", **kw):
         import asyncio as _a
         self.in_flight += 1; self.peak = max(self.peak, self.in_flight)
         try:
@@ -424,7 +424,7 @@ class FlakyProvider(FakeProvider):
     def __init__(self):
         super().__init__()
         self.throttle = True
-    async def send_email(self, to_email, subject, body, thread_ref="", in_reply_to=""):
+    async def send_email(self, to_email, subject, body, thread_ref="", in_reply_to="", **kw):
         if self.throttle:
             return SendResult(ok=False, error="454 4.7.0 Too many login attempts, please try again later", retryable=True, scope="mailbox")
         return await super().send_email(to_email, subject, body, thread_ref, in_reply_to)

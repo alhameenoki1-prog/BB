@@ -427,13 +427,16 @@ class Workspace:
         return "", ""
 
     def pace_held_reason(self, speed: dict) -> str:
-        """Why a chosen speed is held back on this mailbox, or "". Consumer
-        mailboxes are held to Normal; Workspace and Microsoft 365 to the
-        Business pace (20 a minute, two at a time)."""
+        """Why a chosen speed is held back on this mailbox, or "". Personal
+        mailboxes are held to Gentle (cold mail from a gmail.com or
+        outlook.com address is blocked as spam long before the account's
+        own limit); Workspace and Microsoft 365 to the Business pace (20
+        a minute, two at a time)."""
         tier, label = self.mailbox_tier()
-        if tier == "consumer" and (speed.get("concurrency", 1) > 1 or speed.get("per_cycle", 0) > SPEEDS["normal"]["per_cycle"]
-                                   or speed.get("send_every", 0) < SPEEDS["normal"]["send_every"]):
-            return f"{label} throttles or locks an account that sends in bursts, so it is held to Normal's pace"
+        if tier == "consumer" and (speed.get("concurrency", 1) > 1 or speed.get("per_cycle", 0) > SPEEDS["gentle"]["per_cycle"]
+                                   or speed.get("send_every", 0) < SPEEDS["gentle"]["send_every"]):
+            return (f"{label} throttles or locks an account that sends in bursts, and cold mail from it is blocked as spam "
+                    "well before that, so it is held to Gentle's pace")
         if tier == "business" and (speed.get("concurrency", 1) > BUSINESS_PACE["concurrency"]
                                    or speed.get("per_cycle", 0) > BUSINESS_PACE["per_cycle"]
                                    or speed.get("send_every", 0) < BUSINESS_PACE["send_every"]):
@@ -444,7 +447,7 @@ class Workspace:
         """The speed after the mailbox's own limits are applied."""
         out = dict(speed)
         tier, _ = self.mailbox_tier()
-        cap = SPEEDS["normal"] if tier == "consumer" else (BUSINESS_PACE if tier == "business" else None)
+        cap = SPEEDS["gentle"] if tier == "consumer" else (BUSINESS_PACE if tier == "business" else None)
         if cap and self.pace_held_reason(speed):
             out.update(per_cycle=min(out["per_cycle"], cap["per_cycle"]), send_every=max(out["send_every"], cap["send_every"]),
                        concurrency=min(out["concurrency"], cap["concurrency"]), jitter=max(out["jitter"], cap["jitter"]))
@@ -632,6 +635,7 @@ class Workspace:
             "custom_delay": float(email.get("send_jitter_seconds") if email.get("send_jitter_seconds") is not None else SPEEDS["custom"]["jitter"]),
             "custom_lanes": int(email.get("send_concurrency") or 1),
             "warmup_ramp": bool(email.get("warmup_ramp", True)),
+            "plain_first_email": bool(email.get("plain_first_email", True)),
         }
 
     # ── inbox auto-reply ──
@@ -828,6 +832,9 @@ class Workspace:
                     # Checkbox: absent in the form means off; a brand-new form
                     # (no key at all) defaults to on.
                     "warmup_ramp": flag("warmup_ramp") if "warmup_ramp" in form or "speed" in form else True,
+                    # The first email to each person as plain text with a
+                    # links-free signature; same checkbox rule as above.
+                    "plain_first_email": flag("plain_first_email") if "plain_first_email" in form or "speed" in form else True,
                     # A personal enquiry carries no bulk-mail headers; a sales
                     # sequence does, as Gmail and Yahoo require of bulk senders.
                     "list_unsubscribe": mode != "inquiry",
@@ -892,7 +899,8 @@ class Workspace:
         form = {**prof, "auto_prospect": "on" if prof["auto_prospect"] else "",
                 "require_approval": "on" if prof["require_approval"] else "",
                 "quiet_form": "1", "quiet_enabled": "on" if prof.get("quiet_enabled") else "",
-                "warmup_ramp": "on" if prof.get("warmup_ramp") else "", "rewrite": "1"}
+                "warmup_ramp": "on" if prof.get("warmup_ramp") else "",
+                "plain_first_email": "on" if prof.get("plain_first_email", True) else "", "rewrite": "1"}
         # The row-shaped settings go back into the keys their parsers read.
         _flatten_rows(form, "sm", prof.get("sector_messages"),
                       {"subject": "subject", "body": "body", "followup_1": "followup_1", "followup_2": "followup_2"})

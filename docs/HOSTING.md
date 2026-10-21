@@ -626,6 +626,35 @@ request limits; when one is hit the worker pauses and resumes on its own.
 
 ## Getting delivered (why mail gets blocked)
 
+**A "blocked" bounce is a spam verdict, not a bad address.** "Likely
+unsolicited mail", "message blocked", "policy" or "reputation" in a
+bounce means the receiving side, or Google itself on the way out, judged
+the email as bulk. BB treats it differently from "no such address": the
+address stays valid, the follow-ups to that person are dropped, and the
+sender pauses for six hours (a full day after the third block that day)
+so the next batch does not deepen the hole. The dashboard says so, and
+"Why emails bounce" groups the verdicts.
+
+What BB does on its own to avoid the verdict:
+
+- **Plain first emails.** The first email to each person goes as plain
+  text with a signature stripped of links and the image (name, title and
+  company only). The full signature goes on every reply and follow-up.
+  The switch is on the profile, under the signature.
+- **Three wordings per segment.** In segment mode the writer produces
+  three wordings of the first email and the sender rotates them, so a
+  hundred recipients never get one identical body. Each recipient always
+  gets the same wording, so follow-ups match.
+- **A gentle pace for personal mailboxes.** A gmail.com or outlook.com
+  address is held to the Gentle speed whatever you pick; Normal and Fast
+  are for Workspace or Microsoft 365 on your own domain. To send more,
+  connect more mailboxes rather than pushing one harder.
+- **Subjects about the thing, not the act.** "Looking to start work with
+  your team" and "reaching out" are scored as spam before anything is
+  sent; a subject should be the request as a customer would type it
+  ("Rebar, around 40 tons a month from spring").
+
+
 Start with Outbox → **Bounced**. Every email the receiving server sent
 back is there with the server's own words and what to do about them. A
 few "no such address" bounces are normal list noise. Several that say

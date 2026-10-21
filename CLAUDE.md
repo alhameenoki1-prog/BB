@@ -75,7 +75,7 @@ mail from strangers with the right document links (Handler
 mail via each provider's `get_unanswered`; web Inbox page). The Mailbox
 page's "Log in with your email" derives SMTP/IMAP servers from the
 address (`bb/mail_autoconfig.py`). `harvey/spamcheck.py` scores every draft like a filter would (rewrite once,
-then hold for review); `outreach.use_template` sends the user's own message
+then hold for review; `vague_risk` adds the campaign-phrasing score in inquiry mode); first emails go as plain text with a links-free signature (`channels.email.plain_first_email`), segment mode rotates three wordings (`EmailStep.variant`, `Writer._add_variants`), and a spam-block bounce pauses the sender (`Handler._stand_down_after_block`, `Sender._in_cooloff`) instead of marking the address invalid; `outreach.use_template` sends the user's own message
 instead of AI text. `harvey/names.py` resolves missing recipient
 names (LinkedIn slug, first.last address, team page) and puts the greeting
 line on every email (`outreach.greeting`); a worker that dies is revived

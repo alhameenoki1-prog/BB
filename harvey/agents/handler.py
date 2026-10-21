@@ -16,7 +16,8 @@ from harvey import enquiry, names
 from harvey.brain import Brain, BrainUnavailable
 from harvey.config import HarveyConfig, EnvConfig
 from harvey.integrations.instantly import InstantlyClient
-from harvey.integrations.mail_provider import (NATIVE_PROVIDERS, bounce_reason, get_mail_provider,
+from harvey.integrations.mail_provider import (BLOCK_KINDS, NATIVE_PROVIDERS, bounce_kind, bounce_reason,
+                                               get_mail_provider,
                                                looks_automated)
 from harvey.models.prospect import Prospect
 from harvey.names import looks_like_domain
@@ -26,6 +27,10 @@ from harvey.state import StateManager
 logger = logging.getLogger("harvey.handler")
 
 KILL_SWITCH_KEY = "sending_paused"
+COOLOFF_KEY = "sender_cooloff_until"
+COOLOFF_REASON_KEY = "sender_cooloff_reason"
+BLOCKS_KEY = "spam_blocks"            # "<date>:<count>"
+COOLOFF_HOURS = (6, 6, 24)            # after the 1st, 2nd, 3rd+ block of the day
 INBOX_REPLY_COOLDOWN_DAYS = 3
 INBOX_BACKLOG_PER_CYCLE = 5
 BOUNCE_COUNT_KEY = "bounce_count"
@@ -661,11 +666,20 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
         if outbox_item:
             prospect = await self.state.get_prospect(outbox_item["prospect_id"])
         reason, hint = bounce_reason(msg.body)
+        kind = bounce_kind(msg.body)
         if outbox_item:
             # The sent item keeps its status (it was sent) and carries the
             # verdict, so the Outbox's Bounced view can say why.
             await self.state.update_outbox_item(
                 outbox_item["id"], error=f"Bounced: {reason}. {hint}"[:600])
+
+        if kind in BLOCK_KINDS:
+            # A spam verdict on us, not a bad address: the address stays
+            # valid, the follow-ups to this person are dropped, and the
+            # sender stands down for a while so the next batch does not
+            # dig the hole deeper. Not counted toward the bad-list switch.
+            await self._stand_down_after_block(kind, reason, prospect)
+            return
 
         if prospect:
             await self.state.update_prospect_email(
@@ -705,6 +719,35 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
             )
             await self.state.set_setting(KILL_SWITCH_KEY, reason)
             logger.error(f"Handler: KILL SWITCH ENGAGED — {reason}")
+
+    async def _stand_down_after_block(self, kind: str, reason: str, prospect) -> None:
+        """A receiving server (or our own provider) blocked an email as
+        spam. Pause sending for a few hours, longer after the third block
+        of the day, and say so where the dashboard reads it."""
+        today = datetime.now(timezone.utc).date().isoformat()
+        raw = await self.state.get_setting(BLOCKS_KEY) or ""
+        day, _, count = raw.partition(":")
+        n = (int(count) if day == today and count.isdigit() else 0) + 1
+        await self.state.set_setting(BLOCKS_KEY, f"{today}:{n}")
+        hours = COOLOFF_HOURS[min(n, len(COOLOFF_HOURS)) - 1]
+        until = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=hours)
+        current = await self.state.get_setting(COOLOFF_KEY) or ""
+        if not current or current < until.isoformat():
+            await self.state.set_setting(COOLOFF_KEY, until.isoformat())
+        who = prospect.email if prospect else "a recipient"
+        text = (f"an email to {who} was {kind} ({reason[:120]}); block {n} today, so sending pauses for {hours} hours. "
+                "Keep first emails plain, slow the pace, and check SPF, DKIM and DMARC on the Mailbox page")
+        await self.state.set_setting(COOLOFF_REASON_KEY, text)
+        await self.state.set_setting("sender_skip_reason", text)
+        if prospect:
+            cancelled = await self.state.cancel_pending_outbox_for_prospect(prospect.id, reason="blocked")
+            logger.warning(f"Handler: BLOCKED as spam for {prospect.email} ({reason}); the address stays valid, "
+                           f"{cancelled} queued email(s) to them dropped, sending pauses for {hours}h.")
+        else:
+            logger.warning(f"Handler: an email was blocked as spam ({reason}); sending pauses for {hours}h.")
+        await self.state.log_action(action_type="spam_block", agent="handler",
+                                    details={"prospect": who, "kind": kind, "reason": reason[:200],
+                                             "blocks_today": n, "cooloff_hours": hours})
 
     async def _reply_attachments(self, convo) -> list[str]:
         """Files the operator wants sent with this reply (outreach.reply_

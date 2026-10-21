@@ -111,6 +111,12 @@ class EmailChannelConfig(BaseModel):
     # and may send 10 more each day, up to max_daily_sends. Off = full speed
     # from day one (fine for a mailbox that already sends a lot).
     warmup_ramp: bool = False
+    # The first email to each person goes as plain text, with a signature
+    # stripped of links and the image: a text-only note from a stranger is
+    # what mail providers accept; HTML, links and inline images in a first
+    # contact are what they block as bulk. Replies and follow-ups carry the
+    # full signature.
+    plain_first_email: bool = True
     # Add a List-Unsubscribe header (mailto) so Gmail/Yahoo show "Unsubscribe"
     # and count the mail as compliant bulk rather than suspicious.
     list_unsubscribe: bool = True

@@ -16,6 +16,23 @@ class EmailStep(BaseModel):
     subject: str
     body: str
     delay_days: int = 0  # days after previous step
+    # Other wordings of the same email (segment mode writes a few so that
+    # a hundred recipients do not get a hundred identical bodies, which
+    # mail providers read as bulk). The sender rotates through them.
+    subjects: list[str] = Field(default_factory=list)
+    bodies: list[str] = Field(default_factory=list)
+
+    def variant(self, key: str) -> tuple[str, str]:
+        """(subject, body) for one recipient: a stable pick among the
+        variants, the original included, keyed by the recipient id."""
+        subjects = [self.subject] + [s for s in self.subjects if s and s != self.subject]
+        bodies = [self.body] + [b for b in self.bodies if b and b != self.body]
+        n = max(len(subjects), len(bodies))
+        if n <= 1:
+            return self.subject, self.body
+        import zlib
+        i = zlib.crc32((key or "").encode()) % n
+        return subjects[i % len(subjects)], bodies[i % len(bodies)]
 
 
 class Campaign(BaseModel):

@@ -9,6 +9,19 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **Getting past the spam verdict.** A "blocked" bounce ("likely
+  unsolicited mail", "message blocked", "policy", "reputation") is a
+  verdict on the sender, not a bad address. Four changes: the first email
+  to each person goes as **plain text** with a links-free, image-free
+  signature (`channels.email.plain_first_email`, on by default; the full
+  signature goes on replies and follow-ups); segment mode writes **three
+  wordings** of the first email and the sender rotates them, so a hundred
+  recipients never get one identical body; a block now **pauses sending**
+  for six hours (a day after the third block that day), drops the
+  follow-ups to that person and keeps the address valid instead of
+  marking it invalid; and a personal gmail.com or outlook.com mailbox is
+  held to the **Gentle** pace. Subjects about the act ("Looking to start
+  work with your team", "reaching out") are scored as spam.
 - **Replies always carry the full scope.** The first reply in every
   conversation introduces the scope document and includes its link,
   asked for or not, in a sentence that says what is in it and that it is

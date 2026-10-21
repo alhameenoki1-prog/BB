@@ -229,10 +229,11 @@
     <ol>
       <li><b>Send from a domain you own</b>, with SPF, DKIM and DMARC published (the table above). This is the single biggest factor. A free gmail.com or outlook.com address can't be fixed beyond this.</li>
       <li><b>Warm the mailbox up.</b> A new address that sends 500 emails on day one gets blocked. BB ramps a fresh mailbox from 20 a day, adding 10 a day (switch off on your profile if the mailbox already has a history). Keep an eye on bounces: over a few percent and the worker stops sending on its own.</li>
-      <li><b>Keep the first email plain.</b> No tracking links, no images, one link at most. BB only switches to an HTML email when you add a signature, and the signature image is embedded rather than fetched from the web.</li>
+      <li><b>Keep the first email plain.</b> No links, no images, no HTML. BB sends the first email to each person as plain text with a links-free signature (the switch is on your profile); the full signature goes on replies and follow-ups. In segment mode it also writes three wordings of the first email and rotates them, so a hundred recipients never get one identical body.</li>
+      <li><b>A “blocked” bounce is a spam verdict, not a bad address.</b> “Likely unsolicited mail”, “message blocked”, “policy” or “reputation” in a bounce means the receiving side, or Google itself, judged the email as bulk. BB then pauses sending for six hours (a day after the third block), drops the follow-ups to that person and keeps the address valid. Blocks come from identical bodies sent in volume, HTML and links in first emails, a new mailbox sending too much, and a domain without SPF, DKIM and DMARC.</li>
       <li><b>Make it easy to opt out.</b> Every email carries a List-Unsubscribe header that mailbox providers look for, and a plain “just reply and I'll stop” line costs nothing.</li>
       <li><b>Send to real addresses only.</b> Bounces hurt more than anything. Upload lists you trust, and remove anyone who bounced before re-uploading.</li>
-      <li><b>Volume and pace.</b> Under 50 a day from a fresh mailbox, a few hundred from an aged one. The Gentle and Normal speeds spread sends across the day; Fast is for Microsoft 365 or a Workspace mailbox with a track record.</li>
+      <li><b>Volume and pace.</b> Under 50 a day from a fresh mailbox, a few hundred from an aged one. A personal gmail.com or outlook.com address is held to the Gentle pace whatever you pick; Normal and Fast are for Workspace or Microsoft 365 on your own domain with a track record. To send more, connect more mailboxes rather than pushing one harder.</li>
     </ol>
   </details>
 </div>

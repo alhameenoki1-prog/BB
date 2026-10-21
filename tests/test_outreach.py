@@ -270,7 +270,8 @@ async def test_segment_mode_sorts_then_writes_one_sequence_per_segment(state):
     assert names == ["construction · executive", "financial_advisory · manager", "other · admin"]
     # One sequence call per segment, no per-person drafts, one classify call.
     assert len([p for p in brain.prompts if "Sort these contacts" in p]) == 1
-    sequences = [p for p in brain.prompts if "3-email" in p and "would land in the junk folder" not in p]
+    sequences = [p for p in brain.prompts if "3-email" in p and "would land in the junk folder" not in p
+                 and "different wording" not in p]
     assert len(sequences) == 3
     assert not [p for p in brain.prompts if "Write ONE cold email" in p]
     exec_prompt = next(p for p in sequences if "works in construction" in p)

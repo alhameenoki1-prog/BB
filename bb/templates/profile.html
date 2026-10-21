@@ -220,6 +220,8 @@
   <p class="muted small">Goes at the bottom of every email and reply. Plain text or HTML: links (<code>&lt;a href="…"&gt;</code>), line breaks (<code>&lt;br&gt;</code>), bold. Put <code>{{ '{{logo}}' }}</code> where the image should appear, or leave it out and the image goes last. Keep it short — a long signature with many links reads as marketing.</p>
   <textarea name="signature_html" rows="5" placeholder="Ada Okafor&lt;br&gt;Founder, Okafor &amp; Co&lt;br&gt;&lt;a href=&quot;https://okafor.co&quot;&gt;okafor.co&lt;/a&gt; · &lt;a href=&quot;https://linkedin.com/in/ada&quot;&gt;LinkedIn&lt;/a&gt;&#10;{{ '{{logo}}' }}" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px">{{ profile.signature_html }}</textarea>
   {% if signature_image %}<p class="small" style="margin-top:10px"><span class="tag good">{{ icon('check', 12) }} Image</span> {{ signature_image }} is embedded inline (manage it below).</p>{% endif %}
+  <label class="check" style="margin-top:12px"><input type="checkbox" name="plain_first_email" {{ 'checked' if profile.plain_first_email else '' }}> Send the first email to each person as plain text <span class="muted">(recommended)</span></label>
+  <div class="hint">A text-only note from a stranger is what Gmail and Outlook accept; HTML, links and an inline image in a first contact are what they block as spam. With this on, the first email carries your name, title and company only; the full signature with its links and image goes on every reply and follow-up.</div>
 </div>
 <p class="actions"><button type="submit">{{ icon('check', 15) }} Save profile</button></p>
 </form>

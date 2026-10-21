@@ -1255,12 +1255,16 @@ def test_speed_is_held_on_personal_mailboxes_and_dashboard_says_why_not_sending(
     email = yaml.safe_load(ws.config_file.read_text())["channels"]["email"]
     assert email["send_every_seconds"] == 30 and email["send_concurrency"] == 8 and email["sends_per_cycle"] == 100
     assert ws.profile()["speed"] == "relay"
-    # A Gmail SMTP mailbox: Relay is held to Normal's pace, the radio stays on Relay, the page says so.
+    # A Gmail SMTP mailbox: Relay is held to Gentle's pace, the radio stays on Relay, the page says so.
     ws.save_secrets(smtp_host="smtp.gmail.com", smtp_port=587, smtp_username="me@gmail.com", smtp_password="app-pw")
     ws.set_mail_provider("smtp")
     client.post("/profile", data={**PROFILE, "speed": "relay", "max_daily_sends": "0", "quiet_form": "1"})
     email = yaml.safe_load(ws.config_file.read_text())["channels"]["email"]
-    assert email["send_concurrency"] == 1 and email["sends_per_cycle"] == 10 and email["send_every_seconds"] == 120
+    assert email["send_concurrency"] == 1 and email["sends_per_cycle"] == 8 and email["send_every_seconds"] == 300
+    assert email["plain_first_email"] is False          # the form was posted without the (default-on) checkbox
+    client.post("/profile", data={**PROFILE, "speed": "relay", "max_daily_sends": "0", "quiet_form": "1", "plain_first_email": "on"})
+    assert yaml.safe_load(ws.config_file.read_text())["channels"]["email"]["plain_first_email"] is True
+    assert ws.profile()["plain_first_email"] is True and ws.rewrite_config()["channels"]["email"]["plain_first_email"] is True
     assert ws.profile()["speed"] == "relay"
     page = client.get("/profile").text
     assert "Right now: a personal Gmail address throttles or locks" in page

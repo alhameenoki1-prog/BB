@@ -16,6 +16,7 @@ it isn't a MailProvider because Instantly owns sequencing/sending itself.
 """
 
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -110,6 +111,21 @@ BOUNCE_HINTS = (
 )
 
 
+# Bounce kinds that are a verdict on the SENDER, not the address: the
+# receiving side (or the sender's own provider) treated the email as spam.
+# The address is fine; sending more right away makes it worse.
+BLOCK_KINDS = ("judged as unsolicited mail", "content blocked", "sending too fast or too much")
+
+
+def bounce_kind(body: str) -> str:
+    """The label of the matching BOUNCE_HINTS row, or "" when none."""
+    low = (body or "").lower()
+    for pat, what, _hint in BOUNCE_HINTS:
+        if re.search(pat, low):
+            return what
+    return ""
+
+
 def bounce_reason(body: str) -> tuple[str, str]:
     """(what went wrong, what to do) from a bounce report. The first line of
     diagnostic text found is kept as the reason; the hint comes from the
@@ -195,9 +211,11 @@ class MailProvider(ABC):
         thread_ref: str = "",
         in_reply_to: str = "",
         attachments: list | None = None,
+        plain: bool = False,
     ) -> SendResult:
-        """Send one plain-text email. Reply threading when refs are given.
-        ``attachments`` are filesystem paths to attach (see attach_files)."""
+        """Send one email. Reply threading when refs are given.
+        ``attachments`` are filesystem paths to attach (see attach_files);
+        ``plain`` sends text only, with a links-free signature (first emails)."""
 
     @abstractmethod
     async def get_replies(self, limit: int = 50) -> list[InboundMessage]:
@@ -236,11 +254,32 @@ def html_to_text(html: str) -> str:
     return "\n".join(ln for ln in lines if ln).strip()
 
 
-def render_parts(body: str, outreach) -> tuple[str, str, object]:
+_URL_RE = re.compile(r"https?://\S+|www\.\S+|\S+@\S+", re.I)
+_DOMAIN_RE = re.compile(r"\b[a-z0-9-]{2,}(\.[a-z0-9-]{2,})+\b(/\S*)?", re.I)
+_LINK_WORDS = {"linkedin", "website", "web", "site", "twitter", "x", "instagram", "facebook"}
+
+
+def strip_links(text: str) -> str:
+    """A signature without its web addresses: a line that was only a link
+    (or a label and a link) goes; a line with words keeps the words."""
+    out = []
+    for line in (text or "").splitlines():
+        cleaned = _DOMAIN_RE.sub("", _URL_RE.sub("", line))
+        cleaned = re.sub(r"\(\s*\)|\[\s*\]|<\s*>", "", cleaned)          # the brackets a link sat in
+        cleaned = re.sub(r"(^|\s)[·|•-]+(?=\s|$)", " ", cleaned)           # dangling separators
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ·|•-:,")
+        words = [w for w in re.findall(r"[A-Za-z]+", cleaned)]
+        if cleaned and words and not all(w.lower() in _LINK_WORDS for w in words):
+            out.append(cleaned)
+    return "\n".join(out).strip()
+
+
+def render_parts(body: str, outreach, plain: bool = False) -> tuple[str, str, object]:
     """(plain_text, html_or_empty, signature_image_path_or_None) for one
     outgoing email: the model-written plain body plus the operator's
     signature. HTML is produced only when a signature (or image) exists,
-    so a plain configuration still sends plain text."""
+    so a plain configuration still sends plain text. ``plain`` (a first
+    email) sends text only, with the signature's links and image left out."""
     import html as _html
     from pathlib import Path
 
@@ -248,14 +287,17 @@ def render_parts(body: str, outreach) -> tuple[str, str, object]:
 
     sig_html = (getattr(outreach, "signature_html", "") or "").strip()
     sig_text = (getattr(outreach, "signature_text", "") or "").strip() or html_to_text(sig_html)
+    if plain:
+        sig_text = strip_links(sig_text)
+        return body.rstrip() + (f"\n\n-- \n{sig_text}" if sig_text else ""), "", None
     image_name = Path(getattr(outreach, "signature_image", "") or "").name
     image_path = SIGNATURE_DIR / image_name if image_name else None
     if image_path is not None and not image_path.is_file():
         image_path = None
 
-    plain = body.rstrip() + (f"\n\n-- \n{sig_text}" if sig_text else "")
+    plain_text = body.rstrip() + (f"\n\n-- \n{sig_text}" if sig_text else "")
     if not sig_html and image_path is None:
-        return plain, "", None
+        return plain_text, "", None
 
     paragraphs = [p.strip() for p in body.strip().split("\n\n") if p.strip()]
     html_body = "".join(
@@ -275,15 +317,15 @@ def render_parts(body: str, outreach) -> tuple[str, str, object]:
         '<div style="margin-top:18px;font-size:14px;color:#3a3a3c">'
         f"{sig_html}</div></div>"
     )
-    return plain, html, image_path
+    return plain_text, html, image_path
 
 
-def set_body(msg, body: str, outreach) -> None:
+def set_body(msg, body: str, outreach, plain: bool = False) -> None:
     """Put the body (and signature) on an EmailMessage: text only, or
     text + HTML alternative with the signature image embedded inline."""
     import mimetypes
 
-    plain, html, image_path = render_parts(body, outreach)
+    plain, html, image_path = render_parts(body, outreach, plain=plain)
     msg.set_content(plain)
     if html:
         msg.add_alternative(html, subtype="html")

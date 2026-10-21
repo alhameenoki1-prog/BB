@@ -76,6 +76,12 @@ STOP_STATUSES = {"replied", "opted_out", "lost", "meeting", "closed"}
 
 KILL_SWITCH_KEY = "sending_paused"
 BOUNCE_COUNT_KEY = "bounce_count"
+# Set by the handler when a receiving server (or our own provider) blocks
+# an email as spam: an ISO time until which nothing is sent, so the
+# mailbox's reputation is not burned further by the next batch.
+COOLOFF_KEY = "sender_cooloff_until"
+COOLOFF_REASON_KEY = "sender_cooloff_reason"
+SKIP_REASON_KEY = "sender_skip_reason"
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
@@ -468,8 +474,11 @@ class Sender:
             for step in campaign.sequence:
                 cumulative_days += max(0, step.delay_days)
                 send_at = now + timedelta(days=cumulative_days)
-                subject = self._render(step.subject, prospect)
-                body = self._render(step.body, prospect, body=True)
+                # A stable pick among the wordings the writer produced, so a
+                # segment does not send one identical body a hundred times.
+                raw_subject, raw_body = step.variant(prospect.id)
+                subject = self._render(raw_subject, prospect)
+                body = self._render(raw_body, prospect, body=True)
                 status, note = initial_status, ""
                 if status == "approved" and not campaign.name.startswith("your message"):
                     # Autopilot never sends what a filter would junk; the
@@ -530,6 +539,8 @@ class Sender:
             return
 
         email_cfg = self.config.channels.email
+        if await self._in_cooloff():
+            return
         max_daily = email_cfg.max_daily_sends
         sent_today = await self.state.count_outbox_sent_today()
         per_cycle = int(getattr(email_cfg, "sends_per_cycle", MAX_SENDS_PER_CYCLE) or
@@ -671,6 +682,43 @@ class Sender:
             logger.info(f"Sender: {sent} email(s) sent this cycle "
                         f"({sent_today + sent}/{max_daily or 'no limit'} today).")
 
+    async def _in_cooloff(self) -> bool:
+        """True while a spam block has the sender standing down. The reason
+        is kept where the dashboard reads it; it is cleared when the time
+        has passed."""
+        until = await self.state.get_setting(COOLOFF_KEY)
+        if not until:
+            return False
+        try:
+            end = datetime.fromisoformat(until)
+        except ValueError:
+            await self.state.set_setting(COOLOFF_KEY, "")
+            return False
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        reason = await self.state.get_setting(COOLOFF_REASON_KEY) or "an email was blocked as spam"
+        if end > now:
+            mins = int((end - now).total_seconds() // 60)
+            text = f"{reason}; sending stands down for another {mins // 60}h {mins % 60:02d}m so the mailbox's reputation recovers"
+            logger.warning(f"Sender: {text}.")
+            await self.state.set_setting(SKIP_REASON_KEY, text)
+            return True
+        await self.state.set_setting(COOLOFF_KEY, "")
+        skip = await self.state.get_setting(SKIP_REASON_KEY) or ""
+        if "stands down" in skip:
+            await self.state.set_setting(SKIP_REASON_KEY, "")
+        logger.info("Sender: the cool-off after a spam block is over; sending resumes at the configured pace.")
+        return False
+
+    def _plain(self, item: dict) -> bool:
+        """A first email goes as plain text (no HTML, a links-free signature)
+        unless the operator switched that off."""
+        if not bool(getattr(self.config.channels.email, "plain_first_email", True)):
+            return False
+        try:
+            return (item.get("kind") or "sequence") == "sequence" and int(item.get("step") or 1) == 1
+        except (TypeError, ValueError):
+            return False
+
     async def _send_one(self, item: dict, prospect, receipt_id: str) -> bool:
         """Send one gated outbox item and record the outcome. True when it went."""
         if not await self.state.claim_outbox_item(item["id"]):
@@ -679,6 +727,8 @@ class Sender:
         files = _attachment_paths(item.get("attachments_json"))
         if files:
             send_kwargs["attachments"] = files
+        if self._plain(item):
+            send_kwargs["plain"] = True
         result = await asyncio.shield(self.provider.send_email(
             item["to_email"], item["subject"], item["body"],
             thread_ref=item.get("thread_ref", ""),

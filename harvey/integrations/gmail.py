@@ -155,6 +155,7 @@ class GmailProvider(MailProvider):
         thread_ref: str = "",
         in_reply_to: str = "",
         attachments: list | None = None,
+        plain: bool = False,
     ) -> SendResult:
         msg = EmailMessage()
         persona = self.config.persona
@@ -165,7 +166,7 @@ class GmailProvider(MailProvider):
             msg["In-Reply-To"] = in_reply_to
             msg["References"] = in_reply_to
         add_deliverability_headers(msg, persona.email, self.config)
-        set_body(msg, body, getattr(self.config, "outreach", None))
+        set_body(msg, body, getattr(self.config, "outreach", None), plain=plain)
         attach_files(msg, attachments)
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()

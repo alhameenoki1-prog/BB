@@ -233,12 +233,13 @@ class MicrosoftProvider(MailProvider):
         thread_ref: str = "",
         in_reply_to: str = "",
         attachments: list | None = None,
+        plain: bool = False,
     ) -> SendResult:
         """Draft, then send, so the RFC Message-ID is known (bounces and
         replies are matched on it). A reply is drafted with createReply on
         the prospect's message, which sets In-Reply-To/References."""
         plain, html, image_path = render_parts(
-            body, getattr(self.config, "outreach", None))
+            body, getattr(self.config, "outreach", None), plain=plain)
         content = {
             "subject": subject,
             "body": ({"contentType": "HTML", "content": html} if html
