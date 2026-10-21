@@ -27,8 +27,8 @@ from harvey.state import StateManager
 
 logger = logging.getLogger("bb.workspaces")
 
-TONES = ("professional, consultative, confident", "friendly and direct", "warm and curious",
-         "formal", "casual")
+TONES = ("plain and friendly", "friendly and direct", "warm and curious", "formal", "casual",
+         "professional, consultative, confident")
 GOALS = {"book_call": "Book a call", "get_reply": "Get a reply", "start_trial": "Start a trial"}
 OUTREACH_MODES = {
     "inquiry": "I want something from them (hire them, buy from them, partner with them)",
@@ -139,12 +139,49 @@ def _sector_messages_from_form(form) -> list[dict]:
                     "body": body, "followup_1": str(form.get(f"sm_followup_1_{i}", "") or "").strip(),
                     "followup_2": str(form.get(f"sm_followup_2_{i}", "") or "").strip()})
     return out
+MAX_SECTOR_NEEDS = 12
+
+
+def _sector_needs_from_form(form) -> list[dict]:
+    """Rows sn_sectors_N (several values) + sn_need_N + sn_question_N +
+    sn_url_N + sn_label_N: what the sender needs from each kind of
+    business, with the link to its full scope. Empty rows are dropped."""
+    out = []
+    getlist = getattr(form, "getlist", None)
+    for i in range(MAX_SECTOR_NEEDS):
+        need = str(form.get(f"sn_need_{i}", "") or "").strip()
+        if getlist:
+            sectors = [str(x) for x in getlist(f"sn_sectors_{i}")]
+        else:
+            raw = form.get(f"sn_sectors_{i}", [])
+            sectors = list(raw) if isinstance(raw, (list, tuple)) else str(raw or "").split()
+        sectors = [x.strip().lower() for x in sectors if x and x.strip().lower() in SECTOR_LABELS]
+        if not need or not sectors:
+            continue
+        url = str(form.get(f"sn_url_{i}", "") or "").strip()[:500]
+        if url and not url.lower().startswith(("http://", "https://")):
+            url = "https://" + url
+        out.append({"sectors": sectors, "need": need[:1200],
+                    "question": str(form.get(f"sn_question_{i}", "") or "").strip()[:200],
+                    "details_url": url,
+                    "details_label": str(form.get(f"sn_label_{i}", "") or "").strip()[:80]})
+    return out
+
+
+def _flatten_rows(form: dict, prefix: str, rows: list, fields: dict) -> None:
+    """Put stored rows back into the form keys the parsers read."""
+    for i, row in enumerate(rows or []):
+        form[f"{prefix}_sectors_{i}"] = list(row.get("sectors") or [])
+        for key, field in fields.items():
+            form[f"{prefix}_{key}_{i}"] = row.get(field, "") or ""
+
+
 # "What you'd like to happen next": the closing ask of every email. Keys
 # match harvey.config.ASK_THEMES; blank = an easy question, no ask.
 ASKS = {
     "": ("Just a reply", "The email ends on an easy question; you take it from there."),
-    "zoom": ("A video call", "Proposes a short Zoom or Google Meet at a time that suits them. Your booking link goes in if you set one."),
-    "phone": ("A phone call", "Proposes a quick ten-minute call."),
+    "zoom": ("A video call", "After the request, one plain line says a short call would be easiest if it is something they do. Your booking link goes into replies, not the first email."),
+    "phone": ("A phone call", "One plain line offering a quick call, after the request."),
     "coffee": ("Coffee", "Suggests meeting for a coffee if they are nearby."),
     "in_person": ("Meet in person", "Suggests meeting at their office or on site."),
     "visit": ("A visit or tour", "Asks to come by and see their place first-hand."),
@@ -561,6 +598,13 @@ class Workspace:
                                                   self.settings.default_daily_cost_usd)),
             "mode": outreach.get("mode", "inquiry"),
             "intent": outreach.get("intent", ""),
+            "sender_line": outreach.get("sender_line", ""),
+            "details_url": outreach.get("details_url", ""),
+            "details_label": outreach.get("details_label", ""),
+            "sector_needs": [
+                {"sectors": list(m.get("sectors") or []), "need": m.get("need", ""), "question": m.get("question", ""),
+                 "details_url": m.get("details_url", ""), "details_label": m.get("details_label", "")}
+                for m in (outreach.get("sector_needs") or []) if isinstance(m, dict)],
             "reply_instructions": outreach.get("reply_instructions", ""),
             "attach_on": outreach.get("attach_on", "first_reply"),
             "writing": ("template" if outreach.get("use_template") else
@@ -620,6 +664,24 @@ class Workspace:
         current = ((self.config() or {}).get("outreach") or {})
         defaults = {"inbox_links": [], "inbox_instructions": "", "inbox_backlog_days": 0}
         return {k: current.get(k, defaults.get(k, False)) for k in self.INBOX_KEYS}
+
+    def scope_links(self) -> list[dict]:
+        """The links to the full scope from the profile's needs, with the
+        sectors they cover; the general one last."""
+        outreach = ((self.config() or {}).get("outreach") or {})
+        out, seen = [], set()
+        for r in outreach.get("sector_needs") or []:
+            url = (r.get("details_url") or "").strip() if isinstance(r, dict) else ""
+            if url and url not in seen:
+                seen.add(url)
+                out.append({"url": url, "label": (r.get("details_label") or "").strip(),
+                            "sectors": [SECTOR_LABELS.get(s, s) for s in (r.get("sectors") or [])],
+                            "need": (r.get("need") or "").strip()})
+        general = (outreach.get("details_url") or "").strip()
+        if general and general not in seen:
+            out.append({"url": general, "label": (outreach.get("details_label") or "").strip(), "sectors": [],
+                        "need": (outreach.get("intent") or "").strip()})
+        return out
 
     def inbox_settings(self) -> dict:
         out = self._inbox_section({})
@@ -689,6 +751,25 @@ class Workspace:
                 "Say what you want from the people you write to, in a sentence or two (for example "
                 "\"quotes for a two-storey extension in Lagos, starting in March\"). Every email is "
                 "built around it; without it they come out vague.")
+        needs_rows = _sector_needs_from_form(form)
+        if mode == "inquiry" and text("writing") != "template" and "rewrite" not in form:
+            # A need nobody could repeat back produces the "our team has a
+            # current need" email. Checked when a person saves, not when the
+            # file is rewritten after a mailbox change.
+            from harvey.enquiry import GENERIC_NEED_RE, need_is_concrete
+            checks = [("What you need", text("intent"))] + [
+                (", ".join(SECTOR_LABELS.get(s, s) for s in r["sectors"]), r["need"]) for r in needs_rows]
+            for label, value in checks:
+                if GENERIC_NEED_RE.search(value) and not need_is_concrete(value):
+                    raise ValueError(
+                        f"{label}: that says nothing a builder, adviser or supplier can answer. Say the thing itself: "
+                        "what, roughly how much, where, when (for example \"about 40 tons of rebar a month from "
+                        "spring, delivered in Baltimore\").")
+            if re.search(r"https?://|www\.", text("sender_line"), re.I):
+                raise ValueError("Leave web addresses out of the line about you; your signature carries them.")
+        details_url = text("details_url")[:500]
+        if details_url and not details_url.lower().startswith(("http://", "https://")):
+            details_url = "https://" + details_url
         speed = dict(SPEEDS.get(text("speed") or "normal", SPEEDS["normal"]))
         if text("speed") == "custom":
             speed.update(self._custom_pace(form))
@@ -771,6 +852,10 @@ class Workspace:
             "outreach": {
                 "mode": mode,
                 "intent": text("intent"),
+                "sender_line": text("sender_line")[:300],
+                "sector_needs": needs_rows,
+                "details_url": details_url,
+                "details_label": text("details_label")[:80],
                 "reply_instructions": str(form.get("reply_instructions", "") or "").strip(),
                 "reply_attachments": [a["name"] for a in self.attachments()],
                 "attach_on": text("attach_on") or "first_reply",
@@ -807,7 +892,12 @@ class Workspace:
         form = {**prof, "auto_prospect": "on" if prof["auto_prospect"] else "",
                 "require_approval": "on" if prof["require_approval"] else "",
                 "quiet_form": "1", "quiet_enabled": "on" if prof.get("quiet_enabled") else "",
-                "warmup_ramp": "on" if prof.get("warmup_ramp") else ""}
+                "warmup_ramp": "on" if prof.get("warmup_ramp") else "", "rewrite": "1"}
+        # The row-shaped settings go back into the keys their parsers read.
+        _flatten_rows(form, "sm", prof.get("sector_messages"),
+                      {"subject": "subject", "body": "body", "followup_1": "followup_1", "followup_2": "followup_2"})
+        _flatten_rows(form, "sn", prof.get("sector_needs"),
+                      {"need": "need", "question": "question", "url": "details_url", "label": "details_label"})
         try:
             return self.write_profile(form)
         except Exception as e:  # a stale config must never break a mailbox change
@@ -827,9 +917,20 @@ class Workspace:
             f"**Sender:** {persona['name']}, {persona['role'] or 'contact'} at {persona['company']}.",
             f"**LinkedIn:** {persona['linkedin']}" if persona.get("linkedin") else "",
             "",
-            ("## What the sender wants from each recipient\n"
+            ("## Who is writing, in their words\n"
+             + (outreach.get("sender_line") or f"{persona['name']}, {persona['role'] or 'contact'} at {persona['company']}.")
+             + "\n\n## What the sender needs (anyone not covered below)\n"
              + (outreach.get("intent") or "To work with them as a client or partner.")
-             + "\nEach email asks for what THAT recipient's business does; nothing is being sold.")
+             + (f"\nThe full scope: {outreach.get('details_label') or 'the brief'}: {outreach['details_url']}"
+                if outreach.get("details_url") else "")
+             + "\n\n## What the sender needs, by kind of business\n"
+             + ("\n".join(
+                 f"- {', '.join(SECTOR_LABELS.get(s, s) for s in (r.get('sectors') or []))}: {r.get('need', '')}"
+                 + (f" (full scope: {r.get('details_label') or 'the brief'}: {r['details_url']})" if r.get("details_url") else "")
+                 for r in (outreach.get("sector_needs") or [])) or "- (none listed; the line above applies to everyone)")
+             + "\n\nThe sender is the customer. Each email asks for what THAT recipient's business does; nothing is "
+               "being sold. Replies answer what was asked, send the matching full scope once when details are "
+               "wanted, and never invent a number, date or commitment.")
             if outreach.get("mode") == "inquiry" else "",
             "",
             "## What it is",

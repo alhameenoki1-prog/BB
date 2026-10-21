@@ -7,6 +7,7 @@ failure routes it to review instead of sending."""
 
 import re
 
+from bb.mail import scope as scope_mod
 from bb.mail.brain import BrainError, MailBrain
 from bb.mail.models import MailboxSettings
 from harvey.spamcheck import REVIEW, describe, spam_risk
@@ -45,8 +46,13 @@ def _mail_turns(messages: list[dict], me: str) -> str:
     return "\n\n".join(out)
 
 
-def qa_check(subject: str, body: str) -> dict:
-    """Deterministic pre-send check. {ok, reasons, score, sensitive}."""
+def qa_check(subject: str, body: str, allowed_links: list[str] | None = None) -> dict:
+    """Deterministic pre-send check. {ok, reasons, score, sensitive}.
+    ``allowed_links`` are the scope links the system itself put in; they
+    are not counted as a web link."""
+    for link in allowed_links or []:
+        if link:
+            body = (body or "").replace(link, "")
     low = (body or "").lower()
     reasons = [f"boilerplate: '{re.search(p, low).group(0)}'" for p in BOILERPLATE if re.search(p, low)]
     # A reply inherits their subject, so only the body is scored, and a
@@ -71,14 +77,17 @@ def greeting_for(name: str) -> str:
 
 
 async def draft_reply(brain: MailBrain, settings: MailboxSettings, mailbox: dict, thread: dict,
-                      messages: list[dict], instructions: str = "") -> dict:
-    """{body, confidence, confidence_reason, qa, attempts}. The body has no
-    greeting or signature; ``finalize`` adds them."""
+                      messages: list[dict], instructions: str = "", scope: dict | None = None) -> dict:
+    """{body, confidence, confidence_reason, qa, attempts, scope_link}. The
+    body has no greeting or signature; ``finalize`` adds them. In an
+    inquiry workspace ``scope`` (bb.mail.scope) puts the sender's needs and
+    full-scope documents in front of the model, and the link it asks for
+    is filled in here, once per thread."""
     me = mailbox.get("address", "")
     them = next((m for m in reversed(messages) if m.get("direction") == "inbound"), messages[-1] if messages else {})
     system = (f"You write email replies on behalf of {settings.display_name or me} <{me}>, in the first person, "
               f"as that person.\nPERSONA: {settings.persona_notes.strip() or 'a straightforward professional'}\n\n"
-              + QUALITY_STANDARD
+              + QUALITY_STANDARD + scope_mod.context_block(scope)
               + "\n\nReturn ONLY JSON: {\"body\": \"...\", \"confidence\": \"high\"|\"medium\"|\"low\", "
                 "\"confidence_reason\": \"...\"}. Confidence is low when their ask is unclear, when answering needs "
                 "a fact or decision you do not have (money, dates, legal, commitments), or when a person should look first.")
@@ -87,7 +96,9 @@ async def draft_reply(brain: MailBrain, settings: MailboxSettings, mailbox: dict
             + (f"INSTRUCTIONS FROM {settings.display_name or 'the sender'}: {instructions.strip()}\n\n" if instructions.strip() else "")
             + "Write the reply to the last message from THEM. Match their register and language. Answer what they "
               "actually asked. Under 160 words unless they asked for more.")
-    result = {"body": "", "confidence": "low", "confidence_reason": "", "qa": {}, "attempts": 0}
+    result = {"body": "", "confidence": "low", "confidence_reason": "", "qa": {}, "attempts": 0, "scope_link": ""}
+    outbound = [m.get("body_text") or m.get("body") or m.get("snippet") or "" for m in messages if m.get("direction") == "outbound"]
+    thread_text = " ".join((m.get("body_text") or m.get("body") or m.get("snippet") or "") for m in messages)
     for attempt in (1, 2):
         result["attempts"] = attempt
         data = await brain.complete_json(system, user)
@@ -95,7 +106,11 @@ async def draft_reply(brain: MailBrain, settings: MailboxSettings, mailbox: dict
             raise BrainError("The model did not return a draft.")
         body = str(data.get("body") or "").strip()
         body = strip_greeting_and_signoff(body, settings.display_name)
-        qa = qa_check("Re: " + thread.get("subject", ""), body)
+        if scope and scope.get("mode") == "inquiry":
+            body, result["scope_link"] = scope_mod.apply_scope_link(
+                body, scope, outbound, inbound_text=them.get("body_text") or them.get("body") or them.get("snippet") or "",
+                thread_text=thread_text)
+        qa = qa_check("Re: " + thread.get("subject", ""), body, allowed_links=[result["scope_link"]] if result["scope_link"] else None)
         result.update(body=body, confidence=str(data.get("confidence") or "medium").lower(),
                       confidence_reason=str(data.get("confidence_reason") or "")[:300], qa=qa)
         if qa["ok"]:
@@ -111,23 +126,26 @@ async def draft_reply(brain: MailBrain, settings: MailboxSettings, mailbox: dict
 
 
 async def draft_new(brain: MailBrain, settings: MailboxSettings, mailbox: dict, to_name: str, to_email: str,
-                    instruction: str) -> dict:
+                    instruction: str, scope: dict | None = None) -> dict:
     me = mailbox.get("address", "")
     system = (f"You write emails on behalf of {settings.display_name or me} <{me}>, in the first person, as that person.\n"
               f"PERSONA: {settings.persona_notes.strip() or 'a straightforward professional'}\n\n" + QUALITY_STANDARD
+              + scope_mod.context_block(scope)
               + "\n\nReturn ONLY JSON: {\"subject\": \"...\", \"body\": \"...\", \"confidence\": \"high\"|\"medium\"|\"low\", "
                 "\"confidence_reason\": \"...\"}. The subject is plain and honest, sentence case, 3 to 8 words, no 'Re:'.")
     user = (f"Write a new email to {to_name or to_email} <{to_email}>.\n\nWHAT TO SAY, in the sender's words: {instruction.strip()}\n\n"
             "One-to-one, specific to this person, under 160 words.")
-    result = {"subject": "", "body": "", "confidence": "low", "confidence_reason": "", "qa": {}, "attempts": 0}
+    result = {"subject": "", "body": "", "confidence": "low", "confidence_reason": "", "qa": {}, "attempts": 0, "scope_link": ""}
     for attempt in (1, 2):
         result["attempts"] = attempt
         data = await brain.complete_json(system, user)
         if not isinstance(data, dict):
             raise BrainError("The model did not return a draft.")
         body = strip_greeting_and_signoff(str(data.get("body") or "").strip(), settings.display_name)
+        if scope and scope.get("mode") == "inquiry":
+            body, result["scope_link"] = scope_mod.apply_scope_link(body, scope, [], inbound_text=instruction)
         subject = re.sub(r"(?i)^\s*(re|fwd?)\s*:\s*", "", str(data.get("subject") or "").strip())[:120]
-        qa = qa_check(subject, body)
+        qa = qa_check(subject, body, allowed_links=[result["scope_link"]] if result["scope_link"] else None)
         result.update(subject=subject, body=body, confidence=str(data.get("confidence") or "medium").lower(),
                       confidence_reason=str(data.get("confidence_reason") or "")[:300], qa=qa)
         if qa["ok"]:
@@ -181,6 +199,8 @@ def finalize(body: str, settings: MailboxSettings, greeting_name: str = "") -> t
     core = (body or "").strip()
     sig_html = (settings.signature_html or "").strip()
     link = (settings.project_link or "").strip()
+    if link and link.rstrip("/").lower() in (body or "").lower():
+        link = ""   # the body already carries it (a scope link that is also the project link): never twice
     if link and link.lower() not in sig_html.lower():
         sig_html = (sig_html + "<br>" if sig_html else "") + f'<a href="{_html.escape(link)}">{_html.escape(link)}</a>'
     sig_text = html_to_text(sig_html)

@@ -16,6 +16,15 @@
   <div class="hint">"Unanswered" means nobody has replied from this mailbox, by hand or by BB. The backlog is worked through five emails a cycle so it does not go out in one burst.</div>
   <p class="muted small" style="margin-top:12px">Mail that machines send (notifications, newsletters, receipts, out-of-office notes) is left alone, each sender is answered at most once every three days, and {{ 'every reply waits in the Outbox for your approval because approval is on in your profile' if require_approval else 'replies go out on their own because approval is off in your profile' }}. Each reply is read through the spam check like any other.</p>
 </div>
+{% if scope_links %}
+<div class="card">
+  <h2>Documents it already knows</h2>
+  <p class="muted small">The full-scope links from your <a href="/profile">profile</a>. When a stranger writes in about one of your needs, the reply says what is in the document and why it helps them answer, then shares it. Add other documents below.</p>
+  <table class="table"><thead><tr><th>For</th><th>Document</th></tr></thead><tbody>
+  {% for l in scope_links %}<tr><td>{{ l.sectors|join(', ') if l.sectors else 'Anyone' }}<div class="small muted">{{ l.need[:120] }}</div></td><td>{{ l.label or 'The full scope' }}<div class="small muted">{{ l.url }}</div></td></tr>{% endfor %}
+  </tbody></table>
+</div>
+{% endif %}
 <div class="card">
   <h2>How to answer</h2>
   <p class="muted small">Tell it what to say and what not to say, as you would brief an assistant. Who you are, what you can and cannot promise, how to handle quotes, bookings, complaints, and what needs a human.</p>

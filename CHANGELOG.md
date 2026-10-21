@@ -9,6 +9,29 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **Enquiries read as one person writing to another.** The first email
+  in inquiry mode was coming out as a campaign letter ("Our team has a
+  current need we would like to talk through with you"). The profile now
+  collects the need **per kind of business** (a Construction row, a
+  Financial advisory row, a Manufacturing row, each in your words, each
+  with an optional link to the full scope) and a one-line **about you**;
+  the writer picks the row for the recipient's sector and writes from an
+  examples-first brief (four enquiries done right, the rejected one
+  labelled wrong, a dozen literal rules a small model can follow). The
+  sender may say who they are in half a line; the recipient's company is
+  still never named. A deterministic **vagueness gate** beside the spam
+  check holds any draft with campaign phrasing or nothing concrete from
+  the need. The closing ask is one plain sentence before the request,
+  never the question itself; the no-name greeting is "Hi," not "Hi there,".
+- **Replies stay on the need and send the full scope once.** Inquiry mode
+  has its own reply brief (no sales skills, no "tie back to value"): answer
+  first, invent nothing, confirm the next step. When someone wants details
+  the reply says in one sentence what is in the scope document and why it
+  helps them answer, and the link goes in **by code**, once per
+  conversation, matched to their sector. The Inbox auto-reply knows the
+  same documents (listed on the Inbox page), and the mail command center's
+  reply runs and command bar draft from the same profile, so "send the
+  scope link when they ask" in a run's instructions does what it says.
 - **The first reply no longer stops the writer.** On Gmail, SMTP and
   Microsoft 365 the mailbox is read every cycle anyway, so an open
   conversation now runs the handler *alongside* the writer instead of

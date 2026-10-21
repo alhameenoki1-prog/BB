@@ -132,7 +132,7 @@ async def test_inbox_reply_waits_for_approval_and_attaches_files(state):  # noqa
     await handler._run_native()
     [item] = await state.get_outbox()
     assert item["status"] == "pending_review"
-    assert item["body"].startswith("Hi there,\n\n")          # lee@ alone is not a name
+    assert item["body"].startswith("Hi,\n\n")                # lee@ alone is not a name
     assert "Booking page: https://cal.com/jane" in item["body"] and "brochure" not in item["body"].lower()
     assert json.loads(item["attachments_json"]) == ["brief.pdf"]
     p = await state.get_prospect_by_email("lee@north-west-build.co.uk")

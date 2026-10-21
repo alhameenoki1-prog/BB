@@ -68,8 +68,9 @@ Sending email (auto reply runs, send_reply) only prepares a pending action the p
 
 class CommandCenter:
     def __init__(self, db: MailDB, brain: MailBrain, mailboxes: list[dict], selected: list[dict], secret: str = "",
-                 env: dict | None = None, user_email: str = "", on_worker_needed=None):
+                 env: dict | None = None, user_email: str = "", on_worker_needed=None, scope: dict | None = None):
         self.db, self.brain, self.secret, self.env = db, brain, secret, env or {}
+        self.scope = scope
         self.mailboxes, self.selected, self.user_email = mailboxes, selected, user_email
         self.on_worker_needed = on_worker_needed
         self.steps: list[dict] = []
@@ -149,7 +150,8 @@ class CommandCenter:
         them = next((m for m in reversed(messages) if m["direction"] == "inbound"), None)
         if not them:
             return {"error": "there is no message from them to answer"}
-        result = await draft_reply(self.brain, service.settings_of(box), box, t, messages, instructions=instructions or "")
+        result = await draft_reply(self.brain, service.settings_of(box), box, t, messages, instructions=instructions or "",
+                                   scope=self.scope)
         subject = t["subject"] if t["subject"].lower().startswith("re:") else f"Re: {t['subject']}"
         draft_id, now = new_id(), now_iso()
         await self.db.execute(

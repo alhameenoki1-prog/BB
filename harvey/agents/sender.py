@@ -405,7 +405,7 @@ class Sender:
     def _render(self, text: str, prospect, *, body: bool = False) -> str:
         """Fill merge variables. The pre-send gate rejects any leftovers.
         A body also gets its greeting line fixed to what is known about the
-        recipient ("Hi Jane," / "Hello Acme team," / "Hi there,")."""
+        recipient ("Hi Jane," / "Hello team," / "Hi,")."""
         if body:
             text = names.strip_greeting(text)
         first = (prospect.first_name or "").strip()

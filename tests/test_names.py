@@ -72,8 +72,8 @@ def test_greeting_line_fits_what_is_known():
     assert names.greeting_for("", "info@acme.com", "Acme") == "Hello team,"
     assert names.greeting_for("", "info@acme.com", "Acme", word="Dear") == "Dear team,"
     assert names.greeting_for("", "info@acme.com", "") == "Hello team,"
-    assert names.greeting_for("", "jdoe@acme.com") == "Hi there,"
-    assert names.greeting_for("", "jdoe@acme.com", word="Good day") == "Good day there,"
+    assert names.greeting_for("", "jdoe@acme.com") == "Hi,"
+    assert names.greeting_for("", "jdoe@acme.com", word="Good day") == "Good day,"
     assert names.greeting_for("", "jdoe@acme.com", word="Dear") == "Hello,"
     assert names.greeting_for("Jane", word="Yo") == "Hi Jane,"   # unknown word falls back
 
@@ -81,7 +81,7 @@ def test_greeting_line_fits_what_is_known():
 def test_ensure_greeting_replaces_whatever_the_model_wrote():
     body = "Hi Jane,\n\nSaw your roofing work in Leeds.\n\nWould a quote be possible?"
     assert names.ensure_greeting(body, "Jane") == body
-    assert names.ensure_greeting(body, "", "jdoe@x.com") == body.replace("Hi Jane,", "Hi there,")
+    assert names.ensure_greeting(body, "", "jdoe@x.com") == body.replace("Hi Jane,", "Hi,")
     assert names.ensure_greeting("Hi ,\n\nSaw your work.", "Jane") == "Hi Jane,\n\nSaw your work."
     assert names.ensure_greeting("Hello there — saw your work in Leeds.\nMore.", "Jane") == \
         "Hi Jane,\n\nSaw your work in Leeds.\nMore."
@@ -154,7 +154,7 @@ async def test_writer_finds_missing_names(state, monkeypatch):  # noqa: F811
     assert draft["body"].startswith("Hello team,\n\n")
     assert "shared inbox" in writer.brain.prompts[-1] and "write to the team" in writer.brain.prompts[-1]
     draft = await writer._write_personal_email(await state.get_prospect("b"))
-    assert draft["body"].startswith("Hi there,\n\n") and "do not guess" in writer.brain.prompts[-1]
+    assert draft["body"].startswith("Hi,\n\n") and "do not guess" in writer.brain.prompts[-1]
 
 
 @pytest.mark.asyncio
@@ -168,7 +168,7 @@ async def test_sender_renders_greeting_for_sequences(state):  # noqa: F811
     assert sender._render(body, named, body=True) == \
         "Hello Jane,\n\nSaw Acme's work. Does CEO cover roofing?"
     nameless = Prospect(id="2", email="x@acme.com", company="Acme", title="CEO")
-    assert sender._render(body, nameless, body=True).startswith("Hello there,\n\nSaw Acme's work.")
+    assert sender._render(body, nameless, body=True).startswith("Hello,\n\nSaw Acme's work.")
     shared = Prospect(id="3", email="info@acme.com", company="Acme", title="")
     assert sender._render(body, shared, body=True).startswith("Hello team,\n\nSaw Acme's work.")
     # Model forgot the greeting line: it is added. Subjects are untouched.
@@ -211,10 +211,12 @@ async def test_real_inquiry_prompt_renders_the_request(state):  # noqa: F811
     writer.skills = "SALES SKILL TEXT THAT MUST NOT APPEAR"
     prompt = writer._base_prompt()
     assert "prospective CUSTOMER or PARTNER" in prompt and "quotes for a two-storey extension in Lagos" in prompt
-    assert "Never name or describe" in prompt and "SUBJECT LINE" in prompt and "shared inboxes like this one" in prompt
-    assert "this could be a client for us" in prompt and "{{persona_company}}" not in prompt
+    assert "FOUR ENQUIRIES WRITTEN THE RIGHT WAY" in prompt and "SUBJECT LINE" in prompt and "swap test" in prompt
+    assert "Our team has a current need" in prompt           # the rejected email, labelled wrong
+    from harvey import enquiry
+    assert enquiry.sender_line(cfg) in prompt               # who is writing, built from the persona
     assert "SALES SKILL TEXT" not in prompt and "STRICT EMAIL RULES" not in prompt and "{{" not in prompt
-    assert writer._length_rule == "Between 45 and 80 words"
+    assert writer._length_rule == "Between 35 and 90 words, as short as the need allows"
     assert "sentence case" in writer._subject_rule
 
     offer = Writer(Brain(state, HarveyConfig(**BASE).brain), state, HarveyConfig(**BASE), EnvConfig())
@@ -250,10 +252,10 @@ def test_scrub_removes_company_names_without_wrecking_the_sentence():
 
 
 @pytest.mark.asyncio
-async def test_inquiry_drafts_never_name_a_company_on_either_side(state):  # noqa: F811
+async def test_inquiry_drafts_never_name_the_recipients_company(state):  # noqa: F811
     drafts = iter([
         {"subject": "Working with 5b4me.com", "body": "Hi there,\n\nAvrum here from Wandlp. Could 5b4me take on a small build?"},
-        {"subject": "Small build, looking for a quote", "body": "Hi,\n\nCould your team take on a small build next spring? Avrum here from Wandlp."},
+        {"subject": "Small build, looking for a quote", "body": "Hi,\n\nI run Wandlp and I'm after a builder for a small extension next spring. Could you take it on?\n\nThanks,\nJane"},
     ])
 
     class _LeakyBrain(_Brain):
@@ -270,8 +272,8 @@ async def test_inquiry_drafts_never_name_a_company_on_either_side(state):  # noq
     draft = await writer._write_personal_email(p)
     assert len(brain.prompts) == 2 and "named a company or web address" in brain.prompts[1]
     assert "5b4me" not in draft["subject"].lower() and "5b4me" not in draft["body"].lower()
-    assert "wandlp" not in draft["body"].lower()
-    assert draft["body"].startswith("Hello team,\n\n") and "Avrum here." in draft["body"]
+    assert "wandlp" in draft["body"].lower()                 # the sender may say who they are
+    assert draft["body"].startswith("Hello team,\n\n") and draft["body"].endswith("Could you take it on?\n\nJane")
     assert "(not to be named in the email" in brain.prompts[0] and "5b4me" not in brain.prompts[0].split("FACTS")[1].split("Requirements")[0].replace("hello@5b4me.com", "")
 
 

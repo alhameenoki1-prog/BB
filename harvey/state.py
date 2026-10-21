@@ -1075,6 +1075,32 @@ class StateManager:
                 row = await cursor.fetchone()
                 return int(row[0] or 0) if row else 0
 
+    async def sent_first_email(self, prospect_id: str) -> dict | None:
+        """The enquiry we sent this person (step 1), so a reply can be
+        answered in the same voice and with the same facts."""
+        if not prospect_id:
+            return None
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT subject, body FROM outbox WHERE prospect_id = ? AND kind = 'sequence' AND step = 1 "
+                "AND status = 'sent' ORDER BY sent_at DESC LIMIT 1", (prospect_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def outbox_bodies_for_conversation(self, conversation_id: str) -> list[str]:
+        """Every body we queued, sent or hold in this conversation (not the
+        rejected or cancelled ones), so a link is sent once."""
+        if not conversation_id:
+            return []
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT body FROM outbox WHERE conversation_id = ? AND status NOT IN ('rejected', 'cancelled')",
+                (conversation_id,)
+            ) as cursor:
+                return [r[0] or "" for r in await cursor.fetchall()]
+
     async def outbox_answers(self, message_id: str) -> bool:
         """Whether an outbox item (queued, sent, or held) already replies to
         this incoming Message-ID."""

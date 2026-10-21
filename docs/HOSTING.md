@@ -329,6 +329,14 @@ than a personal one where you can. The brief the writer follows is
 
 ## The mail command center (`/mail`)
 
+In an inquiry workspace every draft here, in a reply run, from the
+command bar or on a thread, is written from the same profile as the
+worker's: who you are, what you need from each kind of business, your
+full-scope links, the next step you want and your standing instructions.
+A run's "Instructions for every reply" can therefore say "send the scope
+link when they ask for details": the model marks where it belongs, and
+the right link goes in once per thread, never written by the model.
+
 A second, newer side of the app: connect several mailboxes, mirror them,
 see what needs a reply, and reply in batches or from a command bar. It is
 being built in phases; sync, reply state, the composer and sending are in.
@@ -457,6 +465,35 @@ and switch the ramp off only on a mailbox that already sends a lot. In harvey.ya
 `usage.heartbeat_interval_minutes` plus `channels.email.sends_per_cycle`,
 `send_concurrency` and `send_jitter_seconds`.
 
+## What you need, by kind of business (and the full scope)
+
+In inquiry mode the emails are only as concrete as what you type. The
+profile asks for the need in your words, **per kind of business** when
+your list mixes trades: a Construction row ("a builder for a 24-unit
+block in Towson, drawings done, start in April"), a Financial advisory
+row ("an advisor for about three million of family savings after a
+property sale"), a Manufacturing row ("about 40 tons of rebar a month
+for a year, delivered in Baltimore"). Contacts are sorted by sector
+automatically; the email to a builder is written from the construction
+row, the email to an advisor from the advisory row, and anyone else gets
+the general line. Add a one-line **about you** ("I run Greystone
+Development, a residential developer in Baltimore") so the reader can
+place you; the recipient's company is still never named.
+
+Each row can carry a **link to the full scope** (a brief, a spec, a
+folder) and what to call it. Nothing in the first email links anywhere.
+When someone replies wanting details, the reply says in one sentence
+what is in the document and why it helps them answer, then includes the
+link, once per conversation, matched to their sector. The Inbox
+auto-reply and the mail command center read the same rows, so a reply
+run told "send the scope link when they ask" sends the right one.
+
+A need nobody could repeat back ("start working with your team") is
+refused when you save, with the reason. Every draft is also checked for
+campaign phrasing ("our team has a current need", "how you usually
+start", "a good fit") and for carrying at least one concrete token from
+your need; a draft that fails is rewritten once, then held for review.
+
 ## What you'd like to happen next
 
 On the Profile page, under Writing style, pick the one thing every first
@@ -468,6 +505,12 @@ booking link is added once under the ask. Replies steer toward the same
 thing once someone is interested.
 
 ## Inbox auto-reply
+
+In inquiry mode the auto-reply already knows the full-scope documents from
+your profile (the Inbox page lists them under "Documents it already
+knows"): a stranger who writes in about rebar gets the rebar spec, with a
+line on what is in it, and the reply is written as the customer, not as a
+seller. Add any other documents below them.
 
 The Inbox page answers mail from people who are not on the list. Switch
 it on, write instructions as you would brief an assistant (what to say,

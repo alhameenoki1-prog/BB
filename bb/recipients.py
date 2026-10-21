@@ -41,6 +41,8 @@ COLUMN_ALIASES = {
     "website": "website", "url": "website", "domain": "website", "site": "website", "web": "website",
     "notes": "notes", "note": "notes", "context": "notes", "comment": "notes", "comments": "notes",
     "why": "notes", "reason": "notes",
+    "industry": "industry", "sector": "industry", "category": "industry", "business_type": "industry",
+    "type": "industry", "trade": "industry", "city": "city", "location": "city", "town": "city",
 }
 
 
@@ -162,6 +164,10 @@ async def import_rows(state, rows: list[dict]) -> dict:
         notes = []
         if row.get("notes"):
             notes.append(row["notes"])
+        if row.get("industry"):
+            notes.append(f"Sector given in the upload: {row['industry']}")
+        if row.get("city"):
+            notes.append(f"Location: {row['city']}")
         if row.get("linkedin"):
             notes.append(f"LinkedIn: {row['linkedin']}")
         resolved = names.resolve_name(row.get("first_name", ""), row.get("last_name", ""),

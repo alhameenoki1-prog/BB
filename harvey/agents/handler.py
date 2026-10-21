@@ -12,7 +12,7 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
-from harvey import names
+from harvey import enquiry, names
 from harvey.brain import Brain, BrainUnavailable
 from harvey.config import HarveyConfig, EnvConfig
 from harvey.integrations.instantly import InstantlyClient
@@ -521,16 +521,42 @@ class Handler:
         company = "" if domain in names.PUBLIC_DOMAINS else names.company_display_name("", domain)
 
         links = [l for l in (outreach.inbox_links or []) if l.url]
+        needs_block = ""
+        if self.inquiry:
+            # The scope documents from the profile's needs join the list, so a
+            # stranger writing in about rebar gets the rebar spec.
+            from harvey.config import SharedLink
+            known = {l.url.rstrip("/") for l in links}
+            for sl in enquiry.scope_links(outreach):
+                if sl["url"].rstrip("/") in known:
+                    continue
+                sectors = ", ".join(s.replace("_", " ") for s in sl["sectors"]) or "anyone"
+                links.append(SharedLink(
+                    label=sl["label"] or f"The full scope for {sectors}",
+                    url=sl["url"],
+                    when=f"they write about this ({sectors}): {sl['need'][:140]}"))
+            needs = [f"- For {', '.join(s.replace('_', ' ') for s in row.sectors) or 'anyone'}: {row.need.strip()}"
+                     for row in (outreach.sector_needs or []) if (row.need or "").strip()]
+            general = (outreach.intent or "").strip()
+            needs_block = (f"\n\nWHO IS WRITING: {enquiry.sender_line(self.config)}\n"
+                           f"WHAT {persona.name.upper()} IS LOOKING FOR (the customer here; nothing is sold):\n"
+                           + "\n".join(needs + ([f"- In general: {general}"] if general else [])) + "\n"
+                           "When someone writes about one of these, answer as the customer: say what you need in "
+                           "plain words, share the matching document with one sentence on what is in it and why "
+                           "it helps them answer, and take the next step they offer. Never invent a number, date "
+                           "or commitment that is not written here.")
         link_lines = "\n".join(
             f"- [{i + 1}] {l.label or l.url}: share when {l.when.strip() or 'it fits the request'}"
             for i, l in enumerate(links)) or "- (none)"
         instructions = (outreach.inbox_instructions or "").strip() or (
+            ("Answer as " + persona.name + " would, as the customer: briefly, in the first person, with the "
+             "matching document when they want details.") if self.inquiry else
             "Answer helpfully and briefly, as " + persona.name + " would.")
         prompt = f"""You answer email on behalf of {persona.name}{(', ' + persona.role) if persona.role else ''}.
 Tone: {persona.tone}. Write as {persona.name}, in the first person.
 
 {persona.name.upper()}'S INSTRUCTIONS FOR ANSWERING INCOMING MAIL:
-{instructions}
+{instructions}{needs_block}
 
 DOCUMENTS {persona.name.upper()} CAN SHARE (refer to them by number; the links are added for you):
 {link_lines}
@@ -546,8 +572,9 @@ Decide:
 - "ignore" when this is not something {persona.name} would answer by hand: spam, a sales pitch to
   {persona.name}, a newsletter, a receipt, an automatic reply, or anything the instructions say to leave.
 - Otherwise "reply": a short plain-text answer (under 130 words) that addresses what they asked,
-  follows the instructions, and mentions any document you share in one natural sentence (do not
-  write the link itself). Never invent facts, prices, dates or commitments the instructions do not give.
+  follows the instructions, and introduces any document you share in one natural sentence that says
+  what is in it and why it helps them answer (do not write the link itself). Never invent facts,
+  prices, dates or commitments the instructions do not give.
   No greeting line and no sign-off; both are added for you. No bullet points, no bold, no exclamation marks.
 
 Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...", "share": [1, 2]}}"""
@@ -716,15 +743,26 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
 
     async def _classify_intent(self, reply_text: str, prospect) -> str:
         """Ask the brain to classify the reply's intent."""
-        prompt = f"""Classify this email reply into exactly ONE category:
-- "interested" — wants to learn more, open to a meeting, positive response
+        if self.inquiry:
+            labels = """- "interested" — yes, happy to help, can do it, wants to talk, asks to proceed
+- "objection" — cannot do it as asked or has a condition (size, distance, timing, wants the budget first)
+- "not_interested" — a clear no, not taking this on, not now
+- "unsubscribe" — asks to stop being contacted, remove from list, opt out
+- "escalate" — angry, hostile, threatens legal action, or mentions spam/compliance
+- "ooo" — out of office / auto-reply
+- "wrong_person" — not the right contact, suggests someone else
+- "question" — asks for details, specs, scope, dates, documents or who we are before deciding"""
+        else:
+            labels = """- "interested" — wants to learn more, open to a meeting, positive response
 - "objection" — has concerns but hasn't said no (price, timing, competition)
 - "not_interested" — a clear no, not now, or "we're all set"
 - "unsubscribe" — asks to stop being contacted, remove from list, opt out
 - "escalate" — angry, hostile, threatens legal action, or mentions spam/compliance
 - "ooo" — out of office / auto-reply
 - "wrong_person" — not the right contact, suggests someone else
-- "question" — asking for more information before deciding
+- "question" — asking for more information before deciding"""
+        prompt = f"""Classify this email reply into exactly ONE category:
+{labels}
 
 When in doubt between "not_interested" and "unsubscribe", choose "unsubscribe".
 When in doubt between anything and "escalate", choose "escalate".
@@ -802,18 +840,44 @@ Respond with ONLY the category label, nothing else."""
 
         return current_stage
 
-    def _outreach_context(self, attachments: list[str]) -> str:
-        """The operator's own framing for replies: inquiry mode, standing
-        instructions, and the files that ride along."""
+    @property
+    def inquiry(self) -> bool:
+        outreach = getattr(self.config, "outreach", None)
+        return getattr(outreach, "mode", "offer") == "inquiry"
+
+    def _outreach_context(self, attachments: list[str], prospect=None, scope: dict | None = None) -> str:
+        """The operator's own framing for replies: inquiry mode (the need
+        for this person's kind of business, who is writing, the full-scope
+        link and whether it already went out), standing instructions, and
+        the files that ride along."""
         outreach = getattr(self.config, "outreach", None)
         persona = self.config.persona
         parts = []
         if outreach and outreach.mode == "inquiry":
-            intent = outreach.intent or "to work with them as a client or partner"
+            need = enquiry.need_for(outreach, getattr(prospect, "industry", "") if prospect else "")
+            intent = need["need"] or outreach.intent or "to work with them as a client or partner"
             parts.append(
                 f"CONTEXT: {persona.name} is the prospective client or partner here, not a "
-                f"vendor. What {persona.name} wants from this person: {intent}. Move toward "
-                "getting that (details, a quote, availability, a call); do not sell anything.")
+                f"vendor. Who is writing, in their words: {enquiry.sender_line(self.config)}\n"
+                f"WHAT {persona.name.upper()} NEEDS from this person's business: {intent}. Move toward "
+                "getting that (an answer, a quote, dates, a place on their books); do not sell anything, "
+                "and never invent a number, date, grade, place or commitment that is not written here.")
+            scope = scope or {}
+            url = scope.get("url") or need["url"]
+            if url:
+                label = scope.get("label") or need["label"] or "the brief"
+                if scope.get("shared"):
+                    parts.append(f"THE FULL SCOPE ({label}) has ALREADY been sent to them in this conversation. "
+                                 "Do not send it again and do not write [SCOPE LINK]; refer to it as the brief they have.")
+                else:
+                    parts.append(f"THE FULL SCOPE of what {persona.name} needs is written up in {label}. When they want "
+                                 "details, ask what is wanted, offer to help or ask for documents, write one plain "
+                                 "sentence saying what is in it and why it helps them answer, then put [SCOPE LINK] "
+                                 "alone on the next line; the link is filled in for you, once. Never write the address "
+                                 "yourself. Do not add it when they only asked who you are, are scheduling, or said no.")
+            else:
+                parts.append("There is no document with the full scope to send; when they want details, give them "
+                             "the two or three facts above and offer to send the rest.")
         from harvey.config import ASK_THEMES
         theme = (getattr(outreach, "ask", "") or "").strip() if outreach else ""
         if theme in ASK_THEMES:
@@ -853,17 +917,37 @@ Respond with ONLY the category label, nothing else."""
                     objection_context = f"\nSuggested approach for this objection: {response}"
                     break
 
-        prompt = self.brain.load_prompt("handler", stage=convo.stage)
-        if not prompt:
-            prompt = f"""You are {self.config.persona.name}, {self.config.persona.role} at {self.config.persona.company}.
+        persona = self.config.persona
+        first = (persona.name or "").split()[0] if (persona.name or "").strip() else "me"
+        sent_block = ""
+        if self.inquiry:
+            prompt = self.brain.load_prompt("inquiry_handler", persona_name=persona.name,
+                                            persona_first=first, stage=convo.stage)
+            if not prompt:
+                prompt = (f"You are answering a reply on behalf of {persona.name}, who wrote to this business as a "
+                          f"prospective customer or partner. Write as {first}, first person, plain words, under 90 "
+                          "words; answer what they asked with the facts you have, never invent any, put [SCOPE LINK] "
+                          "alone on a line where the full scope should go.")
+            # The sales skills stay out of a customer's reply.
+            try:
+                sent = await self.state.sent_first_email(prospect.id)
+            except Exception:
+                sent = None
+            if sent:
+                sent_block = (f"\n\nWHAT {persona.name.upper()} SENT THEM FIRST:\nSubject: {sent['subject']}\n\n"
+                              f"{(sent['body'] or '')[:1500]}\n")
+        else:
+            prompt = self.brain.load_prompt("handler", stage=convo.stage)
+            if not prompt:
+                prompt = f"""You are {self.config.persona.name}, {self.config.persona.role} at {self.config.persona.company}.
 Your tone is: {self.config.persona.tone}
 Product: {self.config.product.name} — {self.config.product.description}"""
 
-        # Inject objection handling + sales methodology skills
-        if self.skills:
-            prompt += "\n\n" + self.skills
+            # Inject objection handling + sales methodology skills
+            if self.skills:
+                prompt += "\n\n" + self.skills
 
-        prompt += f"""
+        prompt += sent_block + f"""
 
 Conversation so far:
 {history}
@@ -873,7 +957,27 @@ The prospect's intent is: {intent}
 
 Write a reply that:"""
 
-        if intent == "interested":
+        if self.inquiry:
+            prompt += {
+                "interested": f"""
+- Thanks them in one line, then gives the details they need next (from WHAT {persona.name.upper()} NEEDS and the standing instructions)
+- Shares the full scope as the rules say, if there is one and it has not gone out yet
+- Confirms the next step in {first}'s words, under 90 words""",
+                "question": f"""
+- Answers it plainly in the first sentence with the facts you have; says {first} will send what you do not have, never guesses
+- Shares the full scope if they asked for details or documents and it has not gone out yet
+- One question back at most, under 90 words""",
+                "objection": """
+- Accepts what they said in one line, without arguing or re-selling
+- Asks once whether a smaller or later version would work, or who they would suggest
+- Under 60 words""",
+                "wrong_person": """
+- Thanks them politely
+- Asks who the right person would be
+- Makes it easy for them to refer (one-line ask)
+- Under 50 words""",
+            }.get(intent, "\n- Answers what they asked, under 90 words")
+        elif intent == "interested":
             prompt += """
 - Acknowledges their interest warmly
 - Suggests a specific next step (brief call or meeting)
@@ -898,7 +1002,17 @@ Write a reply that:"""
 - Makes it easy for them to refer (one-line ask)
 - Under 50 words"""
 
-        prompt += self._outreach_context(await self._reply_attachments(convo))
+        scope = None
+        if self.inquiry:
+            need = enquiry.need_for(self.config.outreach, prospect.industry or "")
+            sent_bodies = [m.content for m in convo.thread if m.sender == "harvey"]
+            try:
+                sent_bodies += await self.state.outbox_bodies_for_conversation(convo.id)
+            except Exception:
+                pass
+            scope = {"url": need["url"], "label": need["label"],
+                     "shared": enquiry.already_shared(need["url"], sent_bodies) if need["url"] else True}
+        prompt += self._outreach_context(await self._reply_attachments(convo), prospect, scope)
         greeting_word = getattr(getattr(self.config, "outreach", None), "greeting", "") or "Hi"
         greeting = names.greeting_for(prospect.first_name, prospect.email, prospect.company, greeting_word)
         prompt += (f"\n\nWrite ONLY the email body. Open with the greeting line \"{greeting}\" on its own line, "
@@ -908,6 +1022,14 @@ Write a reply that:"""
             prompt, session_id="harvey-handler",
             agent="handler", task="generate_response",
         )
+        if response and scope is not None:
+            # The link goes in by code, once: where the model put the marker,
+            # or at the end when they asked for details and the model forgot.
+            response, included = enquiry.resolve_scope_marker(
+                response, scope["url"], scope["shared"], wants=enquiry.wants_details(reply_text)
+                and intent in ("interested", "question"), label=scope["label"], need=need["need"])
+            if included:
+                logger.info(f"Handler: the full scope ({scope['label'] or scope['url']}) goes to {prospect.email}.")
         if not response:
             paused = getattr(self.brain, "paused_reason", "")
             if paused:

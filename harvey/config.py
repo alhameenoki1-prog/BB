@@ -235,6 +235,34 @@ class SectorMessage(BaseModel):
         return out
 
 
+class SectorNeed(BaseModel):
+    """What the sender needs from one kind of business, in their own
+    words, with the link to the full scope of it. The writer picks the
+    row whose sectors contain the recipient's classified industry; the
+    handler and the inbox auto-reply share the same row's link."""
+
+    sectors: list[str] = Field(default_factory=list)
+    need: str = ""
+    question: str = ""        # optional: the one question to end on
+    details_url: str = ""     # the full scope (a doc, a folder, a page)
+    details_label: str = ""   # what to call it: "the project brief"
+
+    @field_validator("sectors", mode="before")
+    @classmethod
+    def _clean_sectors(cls, v) -> list[str]:
+        if isinstance(v, str):
+            v = [x for x in re.split(r"[,\s]+", v) if x]
+        return [str(x).strip().lower().replace(" ", "_") for x in (v or []) if str(x).strip()]
+
+    @field_validator("details_url", mode="before")
+    @classmethod
+    def _http_url(cls, v) -> str:
+        v = str(v or "").strip()
+        if v and not v.lower().startswith(("http://", "https://")):
+            v = "https://" + v
+        return v
+
+
 class SharedLink(BaseModel):
     """A document or folder the inbox auto-reply may send: its name, the
     link, and when it is the right thing to share."""
@@ -254,11 +282,11 @@ class SharedLink(BaseModel):
 
 # The closing ask a user can choose for every email, and how to phrase it.
 ASK_THEMES = {
-    "zoom": "a short video call (Zoom or Google Meet) at a time that suits them",
-    "phone": "a quick phone call, ten minutes at most",
-    "coffee": "meeting for a coffee, if they are nearby",
+    "zoom": "a short video call",
+    "phone": "a quick phone call",
+    "coffee": "a coffee, if they are nearby",
     "in_person": "meeting in person at their office or on site",
-    "visit": "a visit or tour at their place, so the sender can see it first-hand",
+    "visit": "a visit to their place, to see it first-hand",
     "email": "a short reply by email with the details, no call needed",
 }
 
@@ -276,6 +304,17 @@ class OutreachConfig(BaseModel):
 
     mode: str = "offer"
     intent: str = ""
+    # Inquiry mode: who is writing, in one line, as they would say it to a
+    # stranger ("I run Greystone Development, a residential developer in
+    # Baltimore"). Half a line of it goes into every email.
+    sender_line: str = ""
+    # The need per kind of business (the writer matches the recipient's
+    # sector); ``intent`` is the need for everyone not covered. Each row
+    # may carry the link to the full scope; ``details_url`` is the general
+    # one, sent once per conversation when someone asks for details.
+    sector_needs: list[SectorNeed] = Field(default_factory=list)
+    details_url: str = ""
+    details_label: str = ""
     # Standing instructions for every auto-reply ("offer a 20-minute call
     # on Tuesdays", "never discuss budget by email", ...).
     reply_instructions: str = ""

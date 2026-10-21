@@ -67,7 +67,7 @@ async def test_writer_rewrites_a_spammy_draft_once_then_holds(state):  # noqa: F
 
     draft = await writer._write_personal_email(p1)
     assert draft["subject"] == GOOD[0] and draft["spam_reasons"] == []
-    assert "would land in the junk folder" in brain.prompts[1] and "classic spam words" in brain.prompts[1]
+    assert "would land in the junk folder or read as a campaign" in brain.prompts[1] and "classic spam words" in brain.prompts[1]
 
     draft2 = await writer._write_personal_email(p2)
     assert draft2["spam_reasons"], "still spammy after the rewrite: reasons are kept"

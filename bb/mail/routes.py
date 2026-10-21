@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from bb import gmail_oauth
 from bb.mail import service
 from bb.mail.jobs import Jobs
+from bb.mail import scope as scope_mod
 from bb.mail.models import COLORS, MailboxSettings
 from bb.mail.providers import AuthError, TransientError
 from bb.mail_autoconfig import guess_settings
@@ -65,7 +66,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         from bb.mail.commands import CommandCenter
         ws = c["ws"]
         return CommandCenter(c["db"], _brain(ws), c["mailboxes"], c["selected"], settings.secret_key(), {},
-                             user.get("email", ""), on_worker_needed=lambda: (ws.mail_worker_running() or ws.start_mail_worker()))
+                             user.get("email", ""), on_worker_needed=lambda: (ws.mail_worker_running() or ws.start_mail_worker()),
+                             scope=scope_mod.from_config(ws.config()))
 
     @app.post("/mail/command")
     async def mail_command(request: Request, user: dict = Depends(current_user)):
@@ -445,7 +447,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             return _redirect(f"/mail/threads/{thread_id}", error="There is no message from them to answer in this thread.")
         try:
             result = await draft_reply(_brain(c["ws"]), service.settings_of(box), box, t, messages,
-                                       instructions=str(form.get("instructions", "") or ""))
+                                       instructions=str(form.get("instructions", "") or ""),
+                                       scope=scope_mod.from_config(c["ws"].config()))
         except BrainError as e:
             return _redirect(f"/mail/threads/{thread_id}", error=str(e))
         subject = t["subject"] if t["subject"].lower().startswith("re:") else f"Re: {t['subject']}"
@@ -556,7 +559,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         if not box or "@" not in to_email or len(instruction) < 5:
             return _redirect("/mail/compose", error="Pick a mailbox, enter the recipient, and say what the email should do.")
         try:
-            result = await draft_new(_brain(c["ws"]), service.settings_of(box), box, to_name, to_email, instruction)
+            result = await draft_new(_brain(c["ws"]), service.settings_of(box), box, to_name, to_email, instruction,
+                                     scope=scope_mod.from_config(c["ws"].config()))
         except BrainError as e:
             return _redirect("/mail/compose", error=str(e))
         draft_id = service.new_id(); now = service.now_iso()

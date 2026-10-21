@@ -39,7 +39,7 @@
     <label><input type="radio" name="mode" value="dry_run"> <b>Dry run</b> <span class="small muted">— draft everything and show exactly what would have been sent; nothing leaves.</span></label>
   </div>
   <div class="two" style="margin-top:12px">
-    <label>Instructions for every reply <span class="small muted">(optional)</span><input name="instructions" placeholder="e.g. Offer a call next week; never quote prices"></label>
+    <label>Instructions for every reply <span class="small muted">(optional)</span><input name="instructions" placeholder="e.g. Send the scope link when they ask for details; offer a call next week; never quote prices"><div class="hint">The replies already know who you are, what you need from each kind of business and your full-scope links from your <a href="/profile">profile</a>: say “send the scope link when they ask” and the right one goes in, once per thread, with a line on what is in it.</div></label>
     <label>Reply-To for this run <span class="small muted">(optional, overrides the accounts' default)</span><input name="reply_to" type="email" placeholder="you@yourdomain.com"></label>
   </div>
   <div class="actions" style="margin-top:12px"><button type="submit" {{ '' if (total and brain_ok) else 'disabled' }}>{{ icon('play', 15) }} Start the run</button>

@@ -130,7 +130,7 @@ async def _finish_if_done(db: MailDB, run_id: str):
 
 
 async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs | None, job_id: str,
-                          run_id: str, mailbox_id: str) -> dict:
+                          run_id: str, mailbox_id: str, scope: dict | None = None) -> dict:
     """The worker's job: every queued item of this run for this mailbox,
     in order. Drafts, routes by mode and confidence, sends with pacing."""
     from bb.mail.brain import BrainError
@@ -189,7 +189,8 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
             await mark(item, "skipped", "no message from them to answer")
             continue
         try:
-            result = await draft_reply(brain, settings, mailbox, thread, messages, instructions=run.get("instructions") or "")
+            result = await draft_reply(brain, settings, mailbox, thread, messages, instructions=run.get("instructions") or "",
+                                       scope=scope)
         except BrainError as e:
             await mark(item, "failed", f"drafting failed: {e}")
             continue

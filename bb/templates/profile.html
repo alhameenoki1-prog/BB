@@ -10,9 +10,49 @@
   {% for k, v in modes.items() %}
   <label class="choice"><input type="radio" name="mode" value="{{ k }}" {{ 'checked' if profile.mode == k else '' }}><span><b>{{ k|capitalize }}</b><span class="small muted">{{ v }}</span></span></label>
   {% endfor %}
-  <label>In your words, what do you want from them? *</label>
-  <div class="hint">Be concrete: what, roughly when, where if it matters, and what you would need from them. This sentence becomes the point of every email. "I want to work with you" produces vague emails; "quotes for a 40 sqm kitchen extension in Lekki, work to start in March" produces good ones.</div>
-  <textarea name="intent" placeholder="e.g. I'm looking for a financial advisor to manage a family portfolio, or I want quotes for a two-storey extension in Lagos, or I'd like to partner on distribution in West Africa.">{{ profile.intent }}</textarea>
+  <label>What you need, for anyone not covered by a row below *</label>
+  <div class="hint">One or two sentences with the real thing in them: what, roughly how much, where, when, and why now if there is a reason. The email is built from this and nothing else, so "I'd like to work with you" produces a blank email. Good: "A builder for a 24-unit residential block in Towson, drawings finished, start on site in spring."</div>
+  <textarea name="intent" placeholder="e.g. A builder for a 24-unit residential block in Towson, drawings finished, start on site in spring. Or: an advisor for about three million of family savings after a property sale, in Baltimore.">{{ profile.intent }}</textarea>
+  <div class="row" style="margin-top:12px">
+    <div><label>Link to the full scope <span class="muted" style="font-weight:400">(optional)</span></label><input type="url" name="details_url" value="{{ profile.details_url }}" placeholder="https://drive.google.com/… (a brief, a spec, a folder)"></div>
+    <div><label>What to call it</label><input type="text" name="details_label" value="{{ profile.details_label }}" maxlength="80" placeholder="the project brief"></div>
+  </div>
+  <div class="hint">When someone replies wanting details, the reply says in one sentence what is in it and why it helps them answer, then includes it, once per conversation. The <a href="/inbox">Inbox auto-reply</a> and the <a href="/mail">mail command center</a> use the same links.</div>
+  <div id="needs-wrap" style="margin-top:14px;{{ 'display:none' if profile.writing == 'template' else '' }}">
+    <h3 style="margin:10px 0 4px;font-size:15px">What you need from each kind of business <span class="muted" style="font-weight:400">(recommended when your list mixes trades)</span></h3>
+    <p class="muted small">Contacts are sorted by what their company does (one AI call per 25, no writing). The email to a builder is built from your Construction row, the email to an advisor from your Financial advisory row; anyone else gets the line above. Each row can carry its own full-scope link. Hold ⌘ or Ctrl to pick several sectors.</p>
+    <div id="sector-needs">
+      {% for n in (profile.sector_needs or []) %}
+      <div class="card flat sn-row" style="margin:10px 0">
+        <div class="row">
+          <div><label>Sectors</label><select name="sn_sectors_{{ loop.index0 }}" multiple size="6">{% for k, v in sector_labels.items() %}<option value="{{ k }}" {{ 'selected' if k in n.sectors else '' }}>{{ v }}</option>{% endfor %}</select></div>
+          <div style="grid-column:span 2"><label>What you need from them</label><textarea name="sn_need_{{ loop.index0 }}" rows="3">{{ n.need }}</textarea>
+            <label>The question to end on <span class="muted" style="font-weight:400">(optional)</span></label><input type="text" name="sn_question_{{ loop.index0 }}" value="{{ n.question }}" maxlength="200" placeholder="Blank = a question built from the need"></div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <div style="grid-column:span 2"><label>Link to the full scope for these sectors</label><input type="url" name="sn_url_{{ loop.index0 }}" value="{{ n.details_url }}" placeholder="Blank = the link above"></div>
+          <div><label>What to call it</label><input type="text" name="sn_label_{{ loop.index0 }}" value="{{ n.details_label }}" maxlength="80" placeholder="the rebar spec"></div>
+        </div>
+        <p style="margin:8px 0 0"><button type="button" class="small danger sn-remove">Remove this row</button></p>
+      </div>
+      {% endfor %}
+    </div>
+    <template id="sn-template">
+      <div class="card flat sn-row" style="margin:10px 0">
+        <div class="row">
+          <div><label>Sectors</label><select name="sn_sectors_IDX" multiple size="6">{% for k, v in sector_labels.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select></div>
+          <div style="grid-column:span 2"><label>What you need from them</label><textarea name="sn_need_IDX" rows="3" placeholder="e.g. About 40 tons of rebar a month for roughly a year starting in spring, delivered to our sites in Baltimore. We have been buying job by job and want one supplier on a monthly schedule."></textarea>
+            <label>The question to end on <span class="muted" style="font-weight:400">(optional)</span></label><input type="text" name="sn_question_IDX" maxlength="200" placeholder="e.g. Can you supply that volume month to month, and who should I send the bar list to?"></div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <div style="grid-column:span 2"><label>Link to the full scope for these sectors</label><input type="url" name="sn_url_IDX" placeholder="Blank = the link above"></div>
+          <div><label>What to call it</label><input type="text" name="sn_label_IDX" maxlength="80" placeholder="the rebar spec"></div>
+        </div>
+        <p style="margin:8px 0 0"><button type="button" class="small danger sn-remove">Remove this row</button></p>
+      </div>
+    </template>
+    <p><button type="button" class="secondary small" id="sn-add">+ Add a row for other sectors</button></p>
+  </div>
 </div>
 <div class="card">
   <h2>How the emails are written</h2>
@@ -69,24 +109,27 @@
 </div>
 <script>
   document.querySelectorAll('input[name=writing]').forEach(r => r.addEventListener('change', () => {
-    document.getElementById('template-wrap').style.display = r.value === 'template' && r.checked ? '' : 'none';
+    const template = r.value === 'template' && r.checked;
+    document.getElementById('template-wrap').style.display = template ? '' : 'none';
+    document.getElementById('needs-wrap').style.display = template ? 'none' : '';
   }));
-  (function () {
-    const list = document.getElementById('sector-messages'), tpl = document.getElementById('sm-template');
-    const max = {{ max_sector_messages }};
+  function rowList(listId, tplId, addId, rowClass, removeClass, max) {
+    const list = document.getElementById(listId), tpl = document.getElementById(tplId);
     function renumber() {
-      list.querySelectorAll('.sm-row').forEach((row, i) => {
+      list.querySelectorAll('.' + rowClass).forEach((row, i) => {
         row.querySelectorAll('[name]').forEach(el => { el.name = el.name.replace(/_(IDX|\d+)$/, '_' + i); });
       });
     }
     list.addEventListener('click', e => {
-      if (e.target.classList.contains('sm-remove')) { e.target.closest('.sm-row').remove(); renumber(); }
+      if (e.target.classList.contains(removeClass)) { e.target.closest('.' + rowClass).remove(); renumber(); }
     });
-    document.getElementById('sm-add').addEventListener('click', () => {
-      if (list.querySelectorAll('.sm-row').length >= max) return;
+    document.getElementById(addId).addEventListener('click', () => {
+      if (list.querySelectorAll('.' + rowClass).length >= max) return;
       list.appendChild(tpl.content.cloneNode(true)); renumber();
     });
-  })();
+  }
+  rowList('sector-messages', 'sm-template', 'sm-add', 'sm-row', 'sm-remove', {{ max_sector_messages }});
+  rowList('sector-needs', 'sn-template', 'sn-add', 'sn-row', 'sn-remove', {{ max_sector_needs }});
 </script>
 <div class="card">
   <h2>Who you are</h2>
@@ -98,6 +141,9 @@
     <div><label>Email you send from</label><input type="email" name="email" value="{{ profile.email }}" placeholder="Filled in when you connect your mailbox" readonly><div class="hint">Set by the <a href="/mailbox">mailbox</a> you connect.</div></div>
     <div><label>Tone</label><select name="tone">{% for t in tones %}<option value="{{ t }}" {{ 'selected' if t == profile.tone else '' }}>{{ t }}</option>{% endfor %}</select></div>
   </div>
+  <label style="margin-top:12px">About you, in one line <span class="muted" style="font-weight:400">(as you would say it to a stranger)</span></label>
+  <textarea name="sender_line" rows="2" maxlength="300" placeholder="I run Greystone Development, a small residential developer in Baltimore.">{{ profile.sender_line }}</textarea>
+  <div class="hint">Half a line of this goes into every enquiry so the reader can place you. Your company name is fine; no web address, no pitch. Blank = your role and company.</div>
 </div>
 <div class="card">
   <h2>Writing style</h2>
@@ -114,7 +160,7 @@
   <input type="text" name="ask_detail" value="{{ profile.ask_detail }}" maxlength="300" placeholder="e.g. Tuesdays after 2pm work best · I'm in Lagos the week of the 20th · my office is near Victoria Island">
   <div class="hint">Used only where it fits. For a video or phone call the booking link below is added once, under the ask.</div>
   <div class="row" style="margin-top:12px">
-    <div><label>Greeting</label><select name="greeting">{% for g in greetings %}<option value="{{ g }}" {{ 'selected' if g == profile.greeting else '' }}>{{ g }} Jane,</option>{% endfor %}</select><div class="hint">Every email and reply opens with this line. The first name comes from your upload, the LinkedIn URL, a first.last email address, or the company's team page. If none gives one it says “{{ profile.greeting or 'Hi' }} there,”, and a shared inbox like info@ gets “Hello team,”. A name is never guessed.</div></div>
+    <div><label>Greeting</label><select name="greeting">{% for g in greetings %}<option value="{{ g }}" {{ 'selected' if g == profile.greeting else '' }}>{{ g }} Jane,</option>{% endfor %}</select><div class="hint">Every email and reply opens with this line. The first name comes from your upload, the LinkedIn URL, a first.last email address, or the company's team page. If none gives one the line is just “{{ profile.greeting or 'Hi' }},”, and a shared inbox like info@ gets “Hello team,”. A name is never guessed.</div></div>
   </div>
 </div>
 <div class="card">

@@ -161,9 +161,8 @@ async def test_writer_inquiry_mode_and_throttle(state):
     brain = _Brain()
     writer = Writer(brain, state, cfg, EnvConfig())
     assert writer.is_native
-    block = writer._outreach_block()
-    assert "NOT selling" in block and "two-storey extension" in block and "construction" in block
-    assert Writer(brain, state, _config(), EnvConfig())._outreach_block() == ""
+    assert not hasattr(writer, "_outreach_block")   # folded into prompts/inquiry_writer.md
+    assert "two-storey extension" in writer._need("construction")["need"]
 
     for i in range(3):
         await state.add_prospect(Prospect(id=f"p{i}", first_name=f"P{i}", last_name="X",
@@ -181,7 +180,7 @@ async def test_writer_inquiry_mode_and_throttle(state):
         # as "[name prompt]"): no cold-email prompt, no sales skills, no old block.
         assert p.startswith("[inquiry_writer prompt]") and "[writer prompt]" not in p
         assert "OUTREACH MODE" not in p and "Jane needs from this business" in p
-        assert "sentence case, 3 to 8 words" in p
+        assert "sentence case, 3 to 10 words" in p
     sequence = [p for p in brain.prompts if "3-email" in p]
     assert sequence and all(p.startswith("[inquiry_writer prompt]") and "the enquiry itself" in p
                             for p in sequence)
@@ -271,11 +270,11 @@ async def test_segment_mode_sorts_then_writes_one_sequence_per_segment(state):
     assert names == ["construction · executive", "financial_advisory · manager", "other · admin"]
     # One sequence call per segment, no per-person drafts, one classify call.
     assert len([p for p in brain.prompts if "Sort these contacts" in p]) == 1
-    sequences = [p for p in brain.prompts if "3-email" in p]
+    sequences = [p for p in brain.prompts if "3-email" in p and "would land in the junk folder" not in p]
     assert len(sequences) == 3
     assert not [p for p in brain.prompts if "Write ONE cold email" in p]
     exec_prompt = next(p for p in sequences if "works in construction" in p)
-    assert "executives" in exec_prompt and "one decision or a short call" in exec_prompt
+    assert "executives" in exec_prompt and "whether they will take it on" in exec_prompt
     admin_prompt = next(p for p in sequences if "readers are admins" in p)
     assert "pass it to the person who does" in admin_prompt and "Never remark on the inbox" in admin_prompt
     assert all(p.startswith("[inquiry_writer prompt]") and "Shape the request for what a" in p

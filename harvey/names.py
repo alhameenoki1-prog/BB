@@ -171,7 +171,7 @@ def resolve_name(first_name: str, last_name: str, email: str, linkedin_url: str 
 
 def greeting_for(first_name: str, email: str = "", company: str = "", word: str = "Hi") -> str:
     """The opening line. "Hi Jane," when we know her; "Hello team," for a
-    shared inbox; "Hi there," when we don't know who reads it."""
+    shared inbox; "Hi," when we don't know who reads it."""
     word = word if word in GREETING_WORDS else "Hi"
     first = (first_name or "").strip().split(" ")[0]
     if first:
@@ -181,9 +181,11 @@ def greeting_for(first_name: str, email: str = "", company: str = "", word: str 
         # the emails never name the recipient's business.
         team_word = "Hello" if word in ("Hi", "Hey") else word
         return f"{team_word} team,"
+    # No name: the bare word. "Hi there," is the mail merge that lost its
+    # name field; a person who does not know the name just writes "Hi,".
     if word == "Dear":
         return "Hello,"
-    return f"{word} there,"
+    return f"{word},"
 
 
 _INLINE_GREETING_RE = re.compile(

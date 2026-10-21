@@ -24,7 +24,7 @@ from bb.mail_autoconfig import guess_settings
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
 from bb.workspaces import (ASKS, ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
-                           MAX_INBOX_LINKS, MAX_SECTOR_MESSAGES, OUTREACH_MODES, SECTOR_LABELS, SPEEDS,
+                           MAX_INBOX_LINKS, MAX_SECTOR_MESSAGES, OUTREACH_MODES, MAX_SECTOR_NEEDS, SECTOR_LABELS, SPEEDS,
                            STYLES, TONES, Workspace, all_workspaces)
 
 logger = logging.getLogger("bb.app")
@@ -397,7 +397,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def _profile_ctx(ws: Workspace, profile: dict) -> dict:
         return dict(profile=profile, tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES,
                     modes=OUTREACH_MODES, policies=ATTACH_POLICIES, attachments=ws.attachments(),
-                    speeds=SPEEDS, styles=STYLES, greetings=GREETINGS, asks=ASKS, sector_labels=SECTOR_LABELS,
+                    speeds=SPEEDS, styles=STYLES, greetings=GREETINGS, asks=ASKS, sector_labels=SECTOR_LABELS, max_sector_needs=MAX_SECTOR_NEEDS,
                     max_sector_messages=MAX_SECTOR_MESSAGES, signature_image=ws.signature_image(),
                     pace_held=ws.pace_held_reason(SPEEDS.get(profile.get("speed") or "normal", SPEEDS["normal"])))
 
@@ -412,7 +412,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         raw = await request.form()
         form = dict(raw)
         # Multi-select fields (sector pickers) keep every chosen value.
-        for key in {k for k in raw.keys() if k.startswith("sm_sectors_")}:
+        for key in {k for k in raw.keys() if k.startswith(("sm_sectors_", "sn_sectors_"))}:
             form[key] = raw.getlist(key)
         try:
             ws.write_profile(form)
@@ -825,7 +825,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/inbox", response_class=HTMLResponse)
     async def inbox_page(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
-        return await render(request, "inbox.html", user, inbox=ws.inbox_settings(),
+        return await render(request, "inbox.html", user, inbox=ws.inbox_settings(), scope_links=ws.scope_links(),
                             replies=await ws.inbox_replies(), max_links=MAX_INBOX_LINKS,
                             attachments=ws.attachments(), configured=ws.is_configured(),
                             backlog_choices=Workspace.BACKLOG_CHOICES,

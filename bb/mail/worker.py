@@ -28,8 +28,8 @@ SCHEDULE_EVERY = 60.0
 class Handlers:
     """Job kinds → coroutines. Phases add sync, draft and send jobs here."""
 
-    def __init__(self, db: MailDB, jobs: Jobs, secret: str, env: dict):
-        self.db, self.jobs, self.secret, self.env = db, jobs, secret, env
+    def __init__(self, db: MailDB, jobs: Jobs, secret: str, env: dict, root: Path | None = None):
+        self.db, self.jobs, self.secret, self.env, self.root = db, jobs, secret, env, root
 
     async def check_mailbox(self, job: dict):
         mailbox = await self.db.mailbox(job["mailbox_id"])
@@ -71,8 +71,11 @@ class Handlers:
         brain = MailBrain(os.environ)
         if not brain.configured:
             raise RuntimeError("no AI provider is configured for this account (AI provider page)")
+        from bb.mail import scope as scope_mod
+        # Read fresh each run: the profile may have changed since the worker started.
+        scope = scope_mod.load(self.root) if self.root else None
         return await runs.process_mailbox(self.db, self.secret, self.env, brain, self.jobs, job["id"],
-                                          job["payload"].get("run_id", ""), job["mailbox_id"])
+                                          job["payload"].get("run_id", ""), job["mailbox_id"], scope=scope)
 
     async def run(self, job: dict) -> dict:
         handler = getattr(self, job["kind"], None)
@@ -86,7 +89,7 @@ class Worker:
         self.root = root
         self.db = MailDB(root / "data" / "mail.db")
         self.jobs = Jobs(self.db)
-        self.handlers = Handlers(self.db, self.jobs, secret, env)
+        self.handlers = Handlers(self.db, self.jobs, secret, env, root)
         self.heartbeat = root / "data" / "mailworker.heartbeat"
         self.stop = asyncio.Event()
         self.busy: set[str] = set()

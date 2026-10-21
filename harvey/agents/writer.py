@@ -15,7 +15,7 @@ import re
 import logging
 from datetime import datetime, timezone
 
-from harvey import names
+from harvey import enquiry, names
 from harvey.brain import Brain
 from harvey.config import HarveyConfig
 from harvey.integrations.mail_provider import NATIVE_PROVIDERS
@@ -64,6 +64,37 @@ TIER_GUIDANCE = {
               "lines: say what you need and ask whether they can take it on or pass it to the "
               "person who does. Never remark on the inbox or on their role; just ask."),
 }
+_CLOSER_RE = re.compile(r"^(thanks|thank you|many thanks|best|best regards|kind regards|regards|warm regards|"
+                        r"cheers|sincerely|all the best|yours|looking forward.*)[,.!]?$", re.I)
+
+
+def _plain_signoff(body: str, first: str) -> str:
+    """A customer signs with a first name alone: drop a "Thanks," line
+    above it and make sure the last line is that name."""
+    first = (first or "").strip()
+    lines = (body or "").rstrip().split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines or not first:
+        return "\n".join(lines)
+    last = lines[-1].strip()
+    if last.lower() in (first.lower(), first.lower() + ","):
+        lines[-1] = first
+        j = len(lines) - 2
+        while j >= 0 and not lines[j].strip():
+            j -= 1
+        if j >= 0 and _CLOSER_RE.match(lines[j].strip()):
+            del lines[j:len(lines) - 1]
+        return "\n".join(lines).rstrip()
+    if _CLOSER_RE.match(last):
+        lines.pop()
+        return "\n".join(lines).rstrip() + f"\n\n{first}"
+    if re.match(rf"^(?:[A-Za-z ,]*?\b)?{re.escape(first)}(?:\s+\w+)?[.,]?$", last) and len(last.split()) <= 4:
+        lines[-1] = first
+        return "\n".join(lines).rstrip()
+    return "\n".join(lines).rstrip() + f"\n\n{first}"
+
+
 def _mentions(text: str, terms: set[str]) -> bool:
     low = (text or "").lower()
     return any(t.lower() in low for t in terms if t)
@@ -365,8 +396,17 @@ class Writer:
         offer = getattr(self.config.product, "offer", None)
         link = (getattr(offer, "booking_url", "") or "").strip() if theme in ("zoom", "phone") else ""
         lines = [f"THE ASK: what {persona.name} would like to happen next is {ASK_THEMES[theme]}."]
-        lines.append("- The first email ends by proposing exactly that, in one plain sentence, as the ONE question of the email. "
-                     "Low pressure: suggest it, give them an easy out, and say a one-line reply is fine if they would rather.")
+        if self.inquiry:
+            first = self._persona_first
+            lines.append("- The ONE question of the first email stays the request itself (can you take this on, can you "
+                         f"supply this). THE ASK is one plain extra sentence before that question, in {first}'s own words, "
+                         "never this line quoted: for a call, something like \"If it's something you do, a short call would "
+                         "be the easiest way for me to walk you through it.\" Never \"at a time that suits you\", never "
+                         "\"Zoom or Google Meet\", never an alternative way to reply, never an easy out.")
+            link = ""  # the booking link belongs in replies, not in a first enquiry
+        else:
+            lines.append("- The first email ends by proposing exactly that, in one plain sentence, as the ONE question of the email. "
+                         "Low pressure: suggest it, give them an easy out, and say a one-line reply is fine if they would rather.")
         if theme in ("coffee", "in_person", "visit"):
             lines.append("- Only propose it as something practical for them; never invent a place, date or travel plan that is not in the facts or below.")
         if detail:
@@ -375,30 +415,6 @@ class Writer:
             lines.append(f"- Booking link to include once, on its own line, after the ask: {link}")
         lines.append("- Follow-ups repeat the ask once, briefly, and otherwise add something new.")
         return "\n\n" + "\n".join(lines)
-
-    def _outreach_block(self) -> str:
-        """Inquiry mode: the sender is the prospective client or partner,
-        and each email asks for what THIS recipient's business does."""
-        outreach = getattr(self.config, "outreach", None)
-        if not outreach or outreach.mode != "inquiry":
-            return ""
-        persona = self.config.persona
-        intent = outreach.intent.strip() or "to work with them as a client or partner"
-        return f"""
-
-OUTREACH MODE: INQUIRY. You are NOT selling anything. {persona.name} is writing as a
-prospective client or partner. What {persona.name} wants from the recipient: {intent}.
-- Work out from the facts what this person's business actually does, and ask for THAT.
-  A financial advisor is asked about taking {persona.name} on as a client. A construction
-  company is asked about a job {persona.name} wants done. A supplier, agency or studio is
-  asked about working together. If the facts don't say what they do, ask what they handle
-  before asking for anything.
-- Say the specific thing you want in one plain sentence, then ask ONE practical question
-  (availability, how they usually start, what they'd need from you).
-- Do not describe or pitch "{self.config.product.name}" as a product. Who you are takes
-  half a sentence at most.
-- Never invent a project detail, budget, timeline or location that isn't in the facts or
-  in what {persona.name} wants."""
 
     async def _find_missing_names(self, prospects) -> int:
         """Fill in names the upload left blank: from the LinkedIn URL or a
@@ -529,22 +545,36 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
             logger.info(f"Writer: queued '{name}' for {len(group)} recipient(s).")
         return ids
 
-    async def _spam_safe(self, prompt: str, result: dict, task: str) -> tuple[dict, list[str]]:
-        """Score a draft; if it reads like spam, ask once for a rewrite with
-        the findings spelled out. Returns (best draft, reasons left)."""
-        from harvey.spamcheck import REVIEW, describe, spam_risk
+    def _risk(self, draft: dict, need: str = "") -> tuple[int, list[str]]:
+        """Spam risk plus, for an enquiry, the vagueness that makes it read
+        as a campaign: both on the same scale, held at REVIEW."""
+        from harvey.spamcheck import spam_risk, vague_risk
 
-        score, reasons = spam_risk(str(result.get("subject", "")), str(result.get("body", "")))
+        subject, body = str(draft.get("subject", "")), str(draft.get("body", ""))
+        score, reasons = spam_risk(subject, body)
+        if self.inquiry:
+            v, vr = vague_risk(subject, names.strip_greeting(body), need)
+            score, reasons = score + v, reasons + vr
+        return score, reasons
+
+    async def _spam_safe(self, prompt: str, result: dict, task: str, need: str = "") -> tuple[dict, list[str]]:
+        """Score a draft; if it reads like spam (or, for an enquiry, like a
+        campaign), ask once for a rewrite with the findings spelled out.
+        Returns (best draft, reasons left)."""
+        from harvey.spamcheck import REVIEW, describe
+
+        score, reasons = self._risk(result, need)
         if score < REVIEW:
             return result, []
         retry = await self.brain.think_json(
-            prompt + "\n\nYour previous draft would land in the junk folder. A filter flagged: "
-            + describe(reasons) + ". Rewrite it in plain, specific words a real customer would use, "
-            "with none of those, same facts, same JSON.",
+            prompt + "\n\nYour previous draft would land in the junk folder or read as a campaign. A filter flagged: "
+            + describe(reasons) + ". Rewrite it in the first person, in plain, specific words a real customer "
+            "would use, with the thing itself (what, how much, where, when) from the NEED in the first two "
+            "sentences, one request question, none of those phrases, same facts, same JSON.",
             session_id="harvey-writer", agent="writer", task=task,
         )
         if isinstance(retry, dict) and retry.get("body"):
-            score2, reasons2 = spam_risk(str(retry.get("subject", "")), str(retry.get("body", "")))
+            score2, reasons2 = self._risk(retry, need)
             if score2 < score:
                 result, score, reasons = retry, score2, reasons2
         return result, (reasons if score >= REVIEW else [])
@@ -554,10 +584,9 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
         companies and domains, and the sender's own company."""
         if not self.inquiry:
             return set()
+        # The sender may say who they are (half a line, no pitch); only the
+        # recipient's names and domains are kept out.
         terms = set()
-        own = (self.config.persona.company or "").strip()
-        if len(own) >= 3:
-            terms.add(own)
         for p in prospects:
             domain = (p.email or "").rsplit("@", 1)[-1].lower()
             if domain and domain not in names.PUBLIC_DOMAINS:
@@ -576,31 +605,43 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
         outreach = getattr(self.config, "outreach", None)
         return getattr(outreach, "mode", "offer") == "inquiry"
 
-    def _base_prompt(self) -> str:
-        """The system brief. Inquiry mode gets its own prompt and none of
-        the sales skill files; offer mode keeps the cold-email prompt plus
-        skills."""
+    @property
+    def _persona_first(self) -> str:
+        name = (self.config.persona.name or "").strip()
+        return name.split()[0] if name else "me"
+
+    def _need(self, sector: str = "") -> dict:
+        """The sender's need for this kind of business (see enquiry.need_for)."""
+        return enquiry.need_for(getattr(self.config, "outreach", None), sector)
+
+    def _base_prompt(self, sector: str = "") -> str:
+        """The system brief. Inquiry mode gets its own prompt (who is
+        writing, the need for this kind of business, worked examples) and
+        none of the sales skill files; offer mode keeps the cold-email
+        prompt plus skills."""
         persona = self.config.persona
         if self.inquiry:
-            outreach = self.config.outreach
-            intent = (outreach.intent or "").strip() or "to work with them as a client or partner"
+            need = self._need(sector)
+            intent = need["need"] or (self.config.outreach.intent or "").strip() or "to work with them as a client or partner"
+            if need["question"]:
+                intent += f"\nThe question to end on, in {persona.name}'s words: {need['question']}"
             product = self.config.product
-            context = ""
-            if product.description and product.description.strip() and product.name != persona.company:
-                context = f"More about the request, in {persona.name}'s words: {product.description.strip()}"
-            elif product.description and product.description.strip():
-                context = f"Background: {product.description.strip()}"
+            description = (product.description or "").strip()
+            context = (f"MORE BACKGROUND (use only what helps them answer; never paste it all): {description}"
+                       if description and product.name != persona.company else
+                       (f"Background: {description}" if description else ""))
             prompt = self.brain.load_prompt(
                 "inquiry_writer",
-                persona_name=persona.name, persona_company=persona.company,
-                persona_role=persona.role or "", persona_tone=persona.tone,
-                intent=intent, request_context=context,
+                persona_name=persona.name, persona_first=self._persona_first, persona_tone=persona.tone,
+                sender_line=enquiry.sender_line(self.config), intent=intent, request_context=context,
+                sector_ask=enquiry.sector_ask(sector) if sector else
+                "Decide from the FACTS what this business does and ask for that; how much, where and when come from the NEED.",
             )
             if prompt:
                 return prompt + self._ask_block()
-            return (f"You are writing enquiry emails for {persona.name} ({persona.role} at "
-                    f"{persona.company}), a prospective customer or partner of the recipient. "
-                    f"What {persona.name} wants: {intent}. Tone: {persona.tone}. Never pitch.") + self._ask_block()
+            return (f"You are writing enquiry emails for {persona.name} ({enquiry.sender_line(self.config)}), a "
+                    f"prospective customer or partner of the recipient. What {persona.name} needs: {intent}. "
+                    f"Tone: {persona.tone}. Never pitch; first person; one request question.") + self._ask_block()
         prompt = self.brain.load_prompt(
             "writer",
             product_name=self.config.product.name,
@@ -614,12 +655,12 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
               f"Description: {self.config.product.description}")
         if self.skills:
             prompt += "\n\n" + self.skills
-        return prompt + self._outreach_block() + self._ask_block()
+        return prompt + self._ask_block()
 
     @property
     def _subject_rule(self) -> str:
         if self.inquiry:
-            return ("- Subject: sentence case, 3 to 8 words, the request itself as a customer would "
+            return ("- Subject: sentence case, 3 to 10 words, the thing itself as a customer would "
                     "type it (see SUBJECT LINE above). No company name, domain or person's name.")
         return "- Subject lines: lowercase, 2-5 words, no prospect name, no \"quick question\"."
 
@@ -637,7 +678,7 @@ prospective client or partner. What {persona.name} wants from the recipient: {in
         """How much room and warmth the writer gets. 'concise' is the
         classic sub-75-word cold email; 'engaging' is a longer, more human
         note built to earn a reply."""
-        if self.style != "engaging":
+        if self.inquiry or self.style != "engaging":
             return ""
         return """
 
@@ -659,7 +700,7 @@ them alone and want to answer it.
     @property
     def _length_rule(self) -> str:
         if self.inquiry:
-            return "Between 70 and 120 words" if self.style == "engaging" else "Between 45 and 80 words"
+            return "Between 35 and 90 words, as short as the need allows"
         if self.style == "engaging":
             return "Between 90 and 130 words"
         return "Under 75 words"
@@ -679,9 +720,9 @@ them alone and want to answer it.
             name_fact,
             f"- Title: {prospect.title or 'unknown'}",
             (f"- Company: {company_name or 'unknown'}" if not self.inquiry else
-             "- Company: (not to be named in the email; the facts below say what it does)"),
+             "- Their company: (not to be named in the email; write to what it does)"),
         ]
-        if prospect.industry:
+        if prospect.industry and not self.inquiry:
             facts.append(f"- Industry: {prospect.industry}")
 
         company = None
@@ -690,21 +731,33 @@ them alone and want to answer it.
                 company = await self.state.get_company(prospect.company_id)
             except Exception:
                 company = None
-        if company:
-            if company.description:
-                facts.append(f"- What the company says about itself: {company.description}")
-            if company.tech_stack:
-                facts.append(f"- Tools detected on their website: {', '.join(company.tech_stack[:6])}")
-            for signal in company.signals[:3]:
-                facts.append(
-                    f"- Signal ({signal.get('type', 'signal')}): {signal.get('detail', '')}"
-                )
-        if prospect.personalization_notes:
-            facts.append(f"- Research notes: {prospect.personalization_notes}")
-        if prospect.linkedin_url:
-            facts.append(f"- LinkedIn: {prospect.linkedin_url}")
+        if self.inquiry:
+            # A customer writes to what the business does, nothing else.
+            if company and company.description:
+                facts.append(f"- What this business does: {company.description}")
+            else:
+                facts.append(f"- What this business does: {enquiry.sector_noun(prospect.industry)}; nothing more "
+                             "is known, so do not describe it")
+            facts.append(f"- Who reads it: {enquiry.INQUIRY_TIER_NOTES[self.tier_of(prospect)]}")
+            notes = enquiry.clean_notes(prospect.personalization_notes)
+            if notes:
+                facts.append(f"- Your notes on them: {notes}")
+        else:
+            if company:
+                if company.description:
+                    facts.append(f"- What the company says about itself: {company.description}")
+                if company.tech_stack:
+                    facts.append(f"- Tools detected on their website: {', '.join(company.tech_stack[:6])}")
+                for signal in company.signals[:3]:
+                    facts.append(
+                        f"- Signal ({signal.get('type', 'signal')}): {signal.get('detail', '')}"
+                    )
+            if prospect.personalization_notes:
+                facts.append(f"- Research notes: {prospect.personalization_notes}")
+            if prospect.linkedin_url:
+                facts.append(f"- LinkedIn: {prospect.linkedin_url}")
 
-        prompt = self._base_prompt()
+        prompt = self._base_prompt(sector=prospect.industry or "")
         prompt += self._style_block()
 
         prompt += f"""
@@ -718,11 +771,11 @@ or anything else:
 {chr(10).join(facts)}
 
 Requirements:
-- {self._length_rule}. {("Say what " + self.config.persona.name + " needs from this business, shaped to what the FACTS say it does, and ask ONE easy question.") if self.inquiry else "One specific observation from the FACTS above, one question. No pitch, no product name."}
+- {self._length_rule}. {("Say what " + self.config.persona.name + " needs from this business in the first two sentences, with the concrete details from the NEED, then half a line on who is writing, then ONE question that is a request. Follow the four examples, not the two wrong ones.") if self.inquiry else "One specific observation from the FACTS above, one question. No pitch, no product name."}
 - Open with the greeting line "{names.greeting_for(prospect.first_name, prospect.email, prospect.company, self.greeting_word)}"
   on its own line, then a blank line. Use the person's first name only if it is
   in the FACTS; never invent or guess one.
-- Write the actual text (no merge variables — you know their name/company).
+{('- Sign off with "' + self._persona_first + '" alone on the last line.' + chr(10)) if self.inquiry else ''}- Write the actual text (no merge variables — you know their name/company).
 - Follow every rule above.
 
 {self._subject_rule}
@@ -735,22 +788,36 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
         )
         if not isinstance(result, dict):
             return None
+        need = self._need(prospect.industry or "") if self.inquiry else {"need": ""}
+        if self.inquiry:
+            leaked = enquiry.example_leaks(f"{result.get('subject', '')} {result.get('body', '')}",
+                                           need["need"] + " " + enquiry.sender_line(self.config))
+            if leaked:
+                # The model copied a fact from the worked examples. Once more, pointed out.
+                retry = await self.brain.think_json(
+                    prompt + "\n\nYour previous draft copied a detail from the examples (" + ", ".join(leaked[:4])
+                    + "). Those are other people's facts. Use only the NEED, WHO IS WRITING and the FACTS. Same JSON.",
+                    session_id="harvey-writer", agent="writer", task="personal_email",
+                )
+                if isinstance(retry, dict) and retry.get("body"):
+                    result = retry
         forbidden = self._forbidden_terms([prospect])
         if forbidden and _mentions(f"{result.get('subject', '')} {result.get('body', '')}", forbidden):
             # Once more, with the slip pointed out; then whatever is left is scrubbed.
             retry = await self.brain.think_json(
-                prompt + "\n\nYour previous draft named a company or web address (" +
-                ", ".join(sorted(forbidden)[:4]) + "). Rewrite it without naming any company on "
-                "either side and without any web address. Same JSON.",
+                prompt + "\n\nYour previous draft named a company or web address on their side (" +
+                ", ".join(sorted(forbidden)[:4]) + "). Rewrite it without naming the recipient's company "
+                "and without any web address. Same JSON.",
                 session_id="harvey-writer", agent="writer", task="personal_email",
             )
             if isinstance(retry, dict) and retry.get("body"):
                 result = retry
-        result, spam_reasons = await self._spam_safe(prompt, result, "personal_email")
+        result, spam_reasons = await self._spam_safe(prompt, result, "personal_email", need=need["need"])
         subject = _scrub(str(result.get("subject") or "").strip(), forbidden)
-        body = names.ensure_greeting(
-            _scrub(str(result.get("body") or "").strip(), forbidden), prospect.first_name,
-            prospect.email, prospect.company, self.greeting_word)
+        body = _scrub(str(result.get("body") or "").strip(), forbidden)
+        if self.inquiry:
+            body = _plain_signoff(body, self._persona_first)
+        body = names.ensure_greeting(body, prospect.first_name, prospect.email, prospect.company, self.greeting_word)
         if not subject or not body:
             return None
         return {"subject": subject[:120], "body": body[:2000], "spam_reasons": spam_reasons}
@@ -758,24 +825,32 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
     async def _write_sequence(self, prospects: list) -> list[EmailStep]:
         """Ask the brain to write a 3-email sequence."""
         # Build context about the prospects
-        prospect_summary = "\n".join(
-            f"- {p.full_name() or 'name unknown'}, {p.title or 'title unknown'} at "
-            f"{names.company_display_name(p.company, (p.email or '').rsplit('@', 1)[-1]) or 'a company'}"
-            + (f" | Notes: {p.personalization_notes}" if p.personalization_notes else "")
-            for p in prospects[:5]  # Show sample for context
-        )
+        if self.inquiry:
+            # Company names are never written, so they are not shown either.
+            prospect_summary = "\n".join(
+                f"- {p.full_name() or 'name unknown'}, {p.title or 'title unknown'}"
+                + (f" | Notes: {enquiry.clean_notes(p.personalization_notes)}" if enquiry.clean_notes(p.personalization_notes) else "")
+                for p in prospects[:5])
+        else:
+            prospect_summary = "\n".join(
+                f"- {p.full_name() or 'name unknown'}, {p.title or 'title unknown'} at "
+                f"{names.company_display_name(p.company, (p.email or '').rsplit('@', 1)[-1]) or 'a company'}"
+                + (f" | Notes: {p.personalization_notes}" if p.personalization_notes else "")
+                for p in prospects[:5]  # Show sample for context
+            )
 
-        prompt = self._base_prompt()
+        prompt = self._base_prompt(sector=(prospects[0].industry or "") if prospects else "")
         prompt += self._style_block()
         prompt += self._segment_block(prospects)
 
         if self.inquiry:
-            steps_brief = f"""- Email 1: the enquiry itself. {self._length_rule}. What {self.config.persona.name} needs,
-  shaped to what this kind of business does, one or two details that let them answer, ONE easy question.
-- Email 2: 3 days later, under 60 words. A short nudge: one line restating the need, then ask
-  whether they can take it on or who could. New subject, same request.
-- Email 3: 4 days after that, under 40 words. A courteous close: if it is not something they
-  handle, no reply needed; if it is, a line back is plenty."""
+            steps_brief = f"""- Email 1: the enquiry itself, exactly like the four examples. {self._length_rule}. The need in the
+  first two sentences with its concrete details, half a line on who is writing, ONE question that is a request.
+- Email 2: 3 days later, under 50 words, same voice. One line naming the thing again (the block, the rebar,
+  the savings), one line that it is still open, one question: can you take it on, or who could. New subject
+  in the same style.
+- Email 3: 4 days after that, under 35 words. A plain close in the first person: if it is not something you
+  do, no reply needed; if it is, a line back is enough. No new ask."""
         else:
             steps_brief = f"""- Email 1: Personalized cold observation + one question. {self._length_rule}. No pitch.
 - Email 2: Follow-up 3 days later. Different angle, one concrete proof point. {self._length_rule}.
@@ -797,7 +872,7 @@ Requirements:
   "- Use {{company}} and {{title}} as merge variables where natural — every email\n"
   "  must use at least one, and email 1 must reference something specific to\n"
   "  these prospects' industry or role (use the notes above)."}
-- Never be pushy or salesy.
+- {"Write as the customer, never as a seller. Sign each email off with " + self._persona_first + " alone on its last line." if self.inquiry else "Never be pushy or salesy."}
 {self._subject_rule}
 - Follow every rule above. No exceptions.
 
@@ -818,7 +893,8 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             single = (prompt.split("Return ONLY a JSON array")[0]
                       + "Write ONLY email 1 (step 1) of that sequence. Return ONLY a JSON object: "
                         '{"subject": "...", "body": "..."}')
-            fixed, reasons = await self._spam_safe(single, first, "sequence")
+            fixed, reasons = await self._spam_safe(single, first, "sequence",
+                                                   need=self._need(prospects[0].industry or "")["need"] if self.inquiry else "")
             if fixed is not first:
                 steps[0].subject = _scrub(str(fixed.get("subject") or steps[0].subject), self._forbidden_terms(prospects))
                 steps[0].body = _scrub(str(fixed.get("body") or steps[0].body), self._forbidden_terms(prospects))
@@ -858,8 +934,8 @@ Return ONLY a JSON array (no markdown fences, no commentary):
                 # No company on either side, ever: merge fields and names alike.
                 subject = _scrub(subject.replace("{{company}}", "your team").replace("{{title}}", ""),
                                  forbidden or set())
-                body = _scrub(body.replace("{{company}}", "your team").replace("{{title}}", ""),
-                              forbidden or set())
+                body = _plain_signoff(_scrub(body.replace("{{company}}", "your team").replace("{{title}}", ""),
+                                             forbidden or set()), self._persona_first)
             try:
                 delay = max(0, int(raw.get("delay_days", 3 if steps else 0)))
             except (TypeError, ValueError):
@@ -1028,14 +1104,20 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         the position changes the message."""
         if not prospects:
             return ""
-        sector = (prospects[0].industry or "other").replace("_", " ")
+        raw = prospects[0].industry or "other"
+        sector = raw.replace("_", " ")
         tier = self.tier_of(prospects[0])
-        shaping = (
-            f"Shape the request for what a {sector} business does (a builder is asked about the job, "
-            f"an advisor about taking {self.config.persona.name} on), without describing their business "
-            "to them." if self.inquiry else
-            f"Write for what a {sector} business does.")
+        if self.inquiry:
+            return (
+                f"\n\nSEGMENT: everyone this goes to works in {sector}, and the readers are {tier}s. "
+                f"Write it to a single reader, {enquiry.sector_noun(raw)}, as if {self._persona_first} had picked that one today; "
+                "it must read as a letter to one person, and it will be sent to others like them one at a time. "
+                f"{enquiry.INQUIRY_TIER_NOTES[tier]} Shape the request for what a {sector} business does, using "
+                "WHAT A CUSTOMER ASKS THIS KIND OF BUSINESS FOR above, without describing their business to them. "
+                "The only merge field is {{first_name}} in the greeting line."
+            )
         return (
             f"\n\nSEGMENT: everyone in this campaign works in {sector}, and the readers are "
-            f"{tier}s. {TIER_GUIDANCE[tier]} {shaping} The merge fields fill in the person and company."
+            f"{tier}s. {TIER_GUIDANCE[tier]} Write for what a {sector} business does. "
+            "The merge fields fill in the person and company."
         )
