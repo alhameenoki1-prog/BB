@@ -76,7 +76,7 @@ SPEEDS = {
                "interval": 5, "per_cycle": 8, "send_every": 300, "concurrency": 1, "jitter": 15.0},
     "normal": {"label": "Normal", "note": "10 emails every 2 minutes, a few seconds apart (about 300 an hour)",
                "interval": 2, "per_cycle": 10, "send_every": 120, "concurrency": 1, "jitter": 6.0},
-    "fast": {"label": "Fast", "note": "25 emails every 30 seconds, two at a time (about 3,000 an hour; a personal Gmail or Outlook mailbox is held to Normal's pace automatically)",
+    "fast": {"label": "Fast", "note": "25 emails every 30 seconds, two at a time (about 3,000 an hour; a personal Gmail or Outlook mailbox is held to Gentle's pace automatically)",
              "interval": 1, "per_cycle": 25, "send_every": 30, "concurrency": 2, "jitter": 2.0},
     "relay": {"label": "Relay", "note": "100 emails every 30 seconds, eight at a time (about 12,000 an hour). For an SMTP sending service such as Amazon SES, Brevo, Postmark, Mailgun or SendGrid, never a personal mailbox",
               "interval": 1, "per_cycle": 100, "send_every": 30, "concurrency": 8, "jitter": 0.8},
@@ -91,7 +91,7 @@ BUSINESS_PACE = {"per_cycle": 20, "send_every": 60, "concurrency": 2, "jitter": 
 CUSTOM_LIMITS = {"per_cycle": (1, 100), "send_every": (10, 3600), "jitter": (0.0, 120.0), "concurrency": (1, 16)}
 # Mail hosts that belong to a personal or office mailbox, not a sending
 # service: they throttle or lock an account that opens several connections
-# or sends a burst, so Fast and Relay are held to Normal's pace on them.
+# or sends a burst, so every speed is held to Gentle's pace on them.
 PERSONAL_SMTP_HOSTS = ("smtp.gmail.com", "smtp.googlemail.com", "smtp-mail.outlook.com", "smtp.office365.com",
                        "smtp.live.com", "smtp.mail.yahoo.com", "smtp.mail.me.com", "smtp.aol.com", "smtp.zoho.com",
                        "smtp.zoho.eu", "smtp.fastmail.com", "smtp.mail.com", "smtp.gmx.com", "smtp.gmx.net")

@@ -13,7 +13,7 @@ Harvey works the person's name out from what it has, in order of trust:
 Shared inboxes (``info@``, ``sales@``, ``office@``) are recognised and
 addressed to the team, never to an invented person. Every outgoing email
 then gets a greeting line that fits what is known: "Hi Jane," / "Hello
-team," / "Hi there,".
+team," / "Hi,".
 """
 
 import re

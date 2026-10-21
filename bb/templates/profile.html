@@ -204,7 +204,7 @@
     </div>
     <div class="hint">Set these to what your SMTP provider allows (its rate limit per minute, connections allowed). That is about {{ ((profile.custom_per_batch | int(25)) * 3600 / ((profile.custom_every | int(60)) or 60)) | round | int }} an hour at the numbers above.</div>
   </div>
-  <div class="hint">Sending runs on its own clock at the pace above, whatever research and writing are doing. A personal mailbox (a gmail.com, outlook.com, yahoo or icloud address) is held to Normal's pace; Google Workspace and Microsoft 365 on a company domain are held to 20 a minute, two at a time; a sending service (SES, Brevo, Postmark, Mailgun, SendGrid) gets the pace you choose.{% if pace_held %} <b>Right now: {{ pace_held }}.</b>{% endif %}</div>
+  <div class="hint">Sending runs on its own clock at the pace above, whatever research and writing are doing. A personal mailbox (a gmail.com, outlook.com, yahoo or icloud address) is held to Gentle's pace, because cold mail from it is blocked as spam long before the account's own limit; Google Workspace and Microsoft 365 on a company domain are held to 20 a minute, two at a time; a sending service (SES, Brevo, Postmark, Mailgun, SendGrid) gets the pace you choose.{% if pace_held %} <b>Right now: {{ pace_held }}.</b>{% endif %}</div>
   <label class="check"><input type="checkbox" name="warmup_ramp" {{ 'checked' if profile.warmup_ramp else '' }}> Warm this mailbox up: start at 20 a day and add 10 a day <span class="muted">(switch off only for a mailbox that already sends plenty of mail)</span></label>
 </div>
 <div class="card">

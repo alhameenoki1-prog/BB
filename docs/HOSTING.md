@@ -427,7 +427,7 @@ for each line below and what to change.
    window: `BB_BASE_URL`, the admin login, the tunnel, the Google client.
 4. **An admin that is you**, and a login for each person (Users page).
 5. **Each user's mailbox pace**: a personal Gmail or Outlook address is
-   held to Normal; Workspace and Microsoft 365 to the Business pace; a
+   held to Gentle; Workspace and Microsoft 365 to the Business pace; a
    sending service (SES, Brevo, Postmark, Mailgun, SendGrid) takes Relay
    or Custom. The Mailbox page's checks (SPF, DKIM, DMARC) should be green
    on the sending domain before a big list goes out.
@@ -467,7 +467,7 @@ will be throttled or blocked at that rate. Custom takes your own
 numbers for an external SMTP: emails per batch, seconds between batches,
 the longest pause between two emails, and how many go at once. The
 mailbox decides what is actually allowed: a personal gmail.com or
-outlook.com address is held to Normal's pace and 450 / 250 a day; Google
+outlook.com address is held to Gentle's pace and 450 / 250 a day; Google
 Workspace or Microsoft 365 on a company domain to the Business pace (20 a
 minute, two at a time) and 1,800 / 9,000 a day; a sending service gets
 exactly the pace chosen. Whatever the speed, "Max emails per day" and the
@@ -550,7 +550,7 @@ Every email opens with a greeting line. The first name comes from the
 upload, else the LinkedIn URL (`/in/jane-doe-…`), else a `first.last@`
 address, else the company's team page matched against the address
 (`jdoe@acme.com` next to a card for Jane Doe). When none of those gives a
-name the line is "Hi there,"; a shared inbox such as `info@` or `office@`
+name the line is just "Hi,"; a shared inbox such as `info@` or `office@`
 gets "Hello Acme team,". The word (Hi, Hello, Hey, Dear, Good day) is on
 the profile. Nothing is ever guessed from a single word like `jane@` or
 `jdoe@`, because a wrong name is worse than none.
