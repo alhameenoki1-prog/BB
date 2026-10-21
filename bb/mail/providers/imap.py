@@ -30,7 +30,8 @@ class ImapAccount(MailAccount):
     def _imap(self):
         c = self.creds
         try:
-            conn = imaplib.IMAP4_SSL(c["imap_host"], int(c.get("imap_port") or 993), timeout=30)
+            conn = imaplib.IMAP4_SSL(c["imap_host"], int(c.get("imap_port") or 993), timeout=30,
+                                     ssl_context=ssl.create_default_context())
         except (socket.gaierror, socket.timeout, OSError, ssl.SSLError) as e:
             raise TransientError(f"could not reach {c['imap_host']}: {e}") from e
         try:
@@ -43,11 +44,12 @@ class ImapAccount(MailAccount):
         c = self.creds
         host, port = c["smtp_host"], int(c.get("smtp_port") or 587)
         try:
+            ctx = ssl.create_default_context()  # the stdlib default verifies nothing
             if port == 465:
-                s = smtplib.SMTP_SSL(host, port, timeout=20)
+                s = smtplib.SMTP_SSL(host, port, timeout=20, context=ctx)
             else:
                 s = smtplib.SMTP(host, port, timeout=20)
-                s.starttls()
+                s.starttls(context=ctx)
         except (socket.gaierror, socket.timeout, OSError, ssl.SSLError, smtplib.SMTPException) as e:
             raise TransientError(f"could not reach {host}: {e}") from e
         try:

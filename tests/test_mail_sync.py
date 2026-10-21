@@ -108,7 +108,7 @@ class FakeIMAP:
     }
     logins = []
 
-    def __init__(self, host, port, timeout=None):
+    def __init__(self, host, port, timeout=None, **kw):
         self.folder = None
     def login(self, u, p):
         FakeIMAP.logins.append(u)

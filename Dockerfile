@@ -41,7 +41,8 @@ ENV PATH="/home/harvey/.local/bin:${PATH}"
 # under BB_HOME (/app/data/bb) and starts one Harvey worker per user inside
 # this container. To run a single-user Harvey instead:
 #   docker compose run harvey python -m harvey.main
-ENV BB_HOME=/app/data/bb BB_HOST=0.0.0.0 BB_PORT=8000
+ENV BB_HOME=/app/data/bb BB_HOST=0.0.0.0 BB_PORT=8000 \
+    BB_TRUSTED_PROXIES=127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 EXPOSE 8000
 HEALTHCHECK --interval=1m --timeout=10s --start-period=30s --retries=3 \
     CMD python -c "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status == 200 else 1)"

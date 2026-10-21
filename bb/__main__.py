@@ -71,7 +71,7 @@ def startup_report(settings, accounts) -> list[str]:
     where its data lives, who can create logins."""
     users = accounts.list_users()
     admins = [u["email"] for u in users if u["role"] == "admin" and not u["disabled"]]
-    lines = [f"BB Outreach at {settings.base_url}  (listening on port {os.environ.get('BB_PORT', '8000')})",
+    lines = [f"BB Outreach at {settings.base_url}  (listening on {settings.host}:{settings.port})",
              f"Accounts and workspaces: {settings.home}"]
     if admins:
         lines.append(f"Admins (they see Users at {settings.base_url}/admin/users): {', '.join(admins)}")
@@ -129,9 +129,8 @@ def cmd_serve(args):
         raise SystemExit(1)
     for line in startup_report(settings, accounts):
         print(line)
-    host = os.environ.get("BB_HOST", "0.0.0.0")
-    uvicorn.run(create_app(), host=host, port=port, proxy_headers=True,
-                forwarded_allow_ips="*")
+    uvicorn.run(create_app(), host=settings.host, port=port, proxy_headers=True,
+                forwarded_allow_ips=settings.trusted_proxies)
 
 
 def cmd_restart(args):

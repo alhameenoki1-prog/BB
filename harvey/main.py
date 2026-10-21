@@ -164,8 +164,12 @@ async def decide_next_action(
     draft_campaigns = summary.get("draft_campaigns", 0) or 0
     open_conversations = summary.get("open_conversations", 0) or 0
 
+    # Native mail providers read the mailbox every cycle regardless of the
+    # action chosen here (the heartbeat adds the handler alongside whatever
+    # runs), so an open conversation must not stop the writer for everyone
+    # else: the first warm reply would otherwise end new outreach for good.
     native = config.channels.email.provider in NATIVE_PROVIDERS
-    if open_conversations > 0:
+    if open_conversations > 0 and not native:
         action, reason = "handle_replies", f"{open_conversations} open conversation(s) waiting"
     elif draft_campaigns > 0 and not native:
         action, reason = "send_campaign", f"{draft_campaigns} draft campaign(s) ready to deploy"

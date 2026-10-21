@@ -265,7 +265,7 @@ def test_imap_unanswered_uses_the_sent_folder(monkeypatch):
                  b"3": raw("m1", "me@mine.example", "my own")}
         sent = {b"9": b"In-Reply-To: <b1@m>\r\nReferences: <b0@m> <b1@m>\r\n\r\n"}
 
-        def __init__(self, host, port, timeout=None):
+        def __init__(self, host, port, timeout=None, **kw):
             FakeIMAP.host = (host, port)
         def login(self, u, p):
             FakeIMAP.login_as = u

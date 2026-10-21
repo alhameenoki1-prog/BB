@@ -9,6 +9,23 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **The first reply no longer stops the writer.** On Gmail, SMTP and
+  Microsoft 365 the mailbox is read every cycle anyway, so an open
+  conversation now runs the handler *alongside* the writer instead of
+  replacing it. Before, the first warm reply ended new outreach for everyone
+  else until that conversation closed.
+- **Mail connections verify the server's certificate.** IMAP (and the
+  mailbox check's SMTP) used the standard library's default context, which
+  verifies nothing; anyone on the path could have read the mailbox
+  password. A host with a self-signed certificate is now refused.
+- **Go-live hardening.** The site trusts `X-Forwarded-For` only from
+  `BB_TRUSTED_PROXIES` (default the local cloudflared or Caddy), so a
+  visitor cannot forge an address to dodge the login brake or trip it for
+  everyone; with a tunnel the plain-http port listens on this computer
+  only (`BB_HOST` overrides); every response carries `X-Frame-Options`,
+  `nosniff`, a referrer policy, and HSTS on https.
+- **`docs/IMPROVEMENTS.md`** lists what a review of the whole system found
+  worth building next, in order, so the roadmap is not only in chat.
 - **Paces that fit the mailbox.** A personal address (gmail.com,
   outlook.com, yahoo, icloud) is held to Normal's pace; Google Workspace
   and Microsoft 365 on a company domain get a Business pace (20 a minute,

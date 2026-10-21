@@ -47,6 +47,12 @@ class Settings:
         self.tunnel_mode = "named" if self.tunnel_token else ("quick" if raw in ("cloudflare", "cloudflared", "quick", "on", "1", "true", "yes") else "")
         self.cloudflared = get("BB_CLOUDFLARED").strip() or "cloudflared"
         self.port = int(get("BB_PORT", "8000") or 8000)
+        # With a tunnel the only client is cloudflared on this computer, so
+        # the plain-http port stays off the network unless BB_HOST says so.
+        self.host = get("BB_HOST").strip() or ("127.0.0.1" if self.tunnel_mode else "0.0.0.0")
+        # Who may set X-Forwarded-For (the proxy in front): the login brake
+        # keys on the client address, so a forged header must not move it.
+        self.trusted_proxies = get("BB_TRUSTED_PROXIES", "127.0.0.1").strip()
 
     @property
     def accounts_db(self) -> Path:

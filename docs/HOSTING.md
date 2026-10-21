@@ -616,3 +616,16 @@ things that matter, in order:
 - Attachments users upload are kept under their workspace's `attachments/`
   folder; the worker only ever attaches files by name from that folder.
 - Run behind https. Without it, session cookies cross the network in clear text.
+- IMAP and SMTP connections verify the server's certificate, so a mailbox
+  password never goes to an impostor. A host with a self-signed certificate
+  is refused; use its real name, not an IP.
+- The site trusts `X-Forwarded-For` only from `BB_TRUSTED_PROXIES`
+  (default `127.0.0.1`: cloudflared or Caddy on the same computer; the
+  Docker image also trusts the private ranges its Caddy container uses).
+  Set it to your proxy's address if the proxy is elsewhere; otherwise a
+  visitor could forge the header and dodge the login brake, or trip it for
+  everyone behind the proxy.
+- With a tunnel the plain-http port listens on `127.0.0.1` only. Set
+  `BB_HOST=0.0.0.0` to open it to the local network as well.
+- Every response carries `X-Frame-Options: DENY`, `nosniff`, a referrer
+  policy, and HSTS once `BB_BASE_URL` is https.

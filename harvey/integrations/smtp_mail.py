@@ -18,6 +18,7 @@ import email
 import email.policy
 import imaplib
 import logging
+import ssl
 from email.message import EmailMessage
 from email.utils import make_msgid, parseaddr
 
@@ -41,6 +42,13 @@ logger = logging.getLogger("harvey.smtp")
 DAILY_LIMIT_WORDS = ("sending limit", "limit for sending", "5.4.5", "quota exceeded", "daily user sending")
 AUTH_WORDS = ("username and password not accepted", "authentication", "invalid credentials", "5.7.8", "5.7.9",
               "application-specific password", "sign-in", "login failed")
+
+
+def imap_connect(host: str, port: int, timeout: int = 30) -> imaplib.IMAP4_SSL:
+    """An IMAP connection that checks the server's certificate. The stdlib
+    default context verifies nothing, which would let anyone on the path
+    read the mailbox password."""
+    return imaplib.IMAP4_SSL(host, port, timeout=timeout, ssl_context=ssl.create_default_context())
 
 
 def classify_smtp_error(e: Exception) -> dict:
@@ -163,7 +171,7 @@ class SmtpImapProvider(MailProvider):
 
     def _fetch_unseen(self, limit: int) -> list[InboundMessage]:
         out: list[InboundMessage] = []
-        conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port, timeout=30)
+        conn = imap_connect(self.imap_host, self.imap_port)
         try:
             conn.login(self.imap_user, self.imap_pass)
             conn.select("INBOX")
@@ -203,7 +211,7 @@ class SmtpImapProvider(MailProvider):
         from datetime import datetime, timedelta
 
         since = (datetime.utcnow() - timedelta(days=max(1, int(days)))).strftime("%d-%b-%Y")
-        conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port, timeout=30)
+        conn = imap_connect(self.imap_host, self.imap_port)
         try:
             conn.login(self.imap_user, self.imap_pass)
             conn.select("INBOX", readonly=True)
@@ -310,7 +318,7 @@ class SmtpImapProvider(MailProvider):
         loop = asyncio.get_event_loop()
 
         def _imap_check():
-            conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port, timeout=30)
+            conn = imap_connect(self.imap_host, self.imap_port)
             try:
                 conn.login(self.imap_user, self.imap_pass)
             finally:

@@ -259,6 +259,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Workspace(settings, user).ensure()
 
     @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        """Browser-side locks that cost nothing: no framing by other sites,
+        no content sniffing, no referrer leaking the session's pages, and
+        HSTS once the site is on https."""
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        if settings.secure_cookies:
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        return response
+
+    @app.middleware("http")
     async def same_origin_posts(request: Request, call_next):
         """A form post from another site is refused (the cookie is SameSite
         too; this is the second lock)."""
