@@ -109,6 +109,14 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **`python -m bb update` and `restart`.** `update` pulls the code,
+  installs anything new and restarts the site when it runs as a service;
+  `restart` restarts the service on the code now on disk. `python -m bb`
+  refuses to start a second copy and says whether the running one is on
+  older code than the files on disk (`/health` reports the version;
+  `status` and `doctor` compare it). Templates render a missing variable
+  as empty instead of an Internal Server Error, so a half-applied update
+  (new pages on disk, old program running) degrades instead of breaking.
 - **The site checks its own public link.** The Users page opens the
   public address from the internet and says whether it works, telling a
   dead quick-tunnel hostname, a tunnel that is not connected (Cloudflare

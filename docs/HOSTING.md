@@ -32,8 +32,13 @@ python -m bb
 
 On start it prints the address, where the data lives, and who the admins
 are. `python -m bb status` prints the same without starting the server.
-After `git pull`, restarting the site is enough: workers that are still
-running the previous code are restarted on the new one.
+To update later, run `python -m bb update` in the same folder: it pulls
+the code, installs anything new, and restarts the site when it runs as a
+service (otherwise it tells you to press Ctrl+C and start it again).
+Never just `git pull` under a running site: the pages on disk would be
+newer than the program showing them. `python -m bb status` says when
+that has happened, and `python -m bb restart` fixes it. Workers that are
+still running the previous code are restarted on the new one.
 
 Open <http://localhost:8000>, sign in with the admin email and password,
 go to **Users** and create a login for each person.

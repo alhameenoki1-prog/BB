@@ -110,6 +110,28 @@ def install(project_root: Path, data_home: Path, *, python: str = "", system: st
     return path, notes
 
 
+def installed(*, system: str = "", home: Path | None = None) -> bool:
+    system = system or platform.system()
+    return system in ("Darwin", "Linux") and service_paths(system, home or Path.home()).exists()
+
+
+def restart(*, system: str = "", home: Path | None = None) -> tuple[bool, str]:
+    """Restart the login/boot service so it runs the code now on disk."""
+    system = system or platform.system()
+    home = home or Path.home()
+    path = service_paths(system, home)
+    if not path.exists():
+        return False, "no service is installed"
+    if system == "Darwin":
+        r = subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LABEL}"], capture_output=True, text=True)
+        if r.returncode != 0:
+            subprocess.run(["launchctl", "unload", str(path)], capture_output=True)
+            r = subprocess.run(["launchctl", "load", "-w", str(path)], capture_output=True, text=True)
+        return (r.returncode == 0), ("restarted" if r.returncode == 0 else (r.stderr or r.stdout).strip()[:200])
+    r = subprocess.run(["systemctl", "--user", "restart", "bb.service"], capture_output=True, text=True)
+    return (r.returncode == 0), ("restarted" if r.returncode == 0 else (r.stderr or r.stdout).strip()[:200])
+
+
 def uninstall(*, system: str = "", home: Path | None = None, unload: bool = True) -> list[str]:
     system = system or platform.system()
     home = home or Path.home()

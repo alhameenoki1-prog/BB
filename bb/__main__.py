@@ -9,6 +9,8 @@
     python -m bb install-service                  # keep it running: starts at login/boot, restarts if it stops
     python -m bb uninstall-service
     python -m bb doctor                           # ready to publish? address, tunnel, admins, settings, service
+    python -m bb update                           # git pull + install + restart, in one go
+    python -m bb restart                          # restart the running service on the code now on disk
 
 Settings (BB_BASE_URL, BB_ADMIN_EMAIL, BB_ADMIN_PASSWORD, ...) are read from
 the environment, and from bb.env or .env next to the code when present.
@@ -88,18 +90,103 @@ def startup_report(settings, accounts) -> list[str]:
     return lines
 
 
+def running_site(port: int) -> dict | None:
+    """The site already answering on this port, if any: {version} from
+    /health, or {} when something else holds the port."""
+    import json as _json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as r:
+            data = _json.loads(r.read().decode() or "{}")
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return {}
+    except OSError:
+        return None
+
+
 def cmd_serve(args):
     import uvicorn
 
     from bb.app import create_app
+    from bb.workspaces import code_version
 
     settings, accounts = _accounts()
+    port = int(os.environ.get("BB_PORT", "8000"))
+    already = running_site(port)
+    if already is not None:
+        from bb import service
+        old = already.get("version") and already["version"] != code_version()
+        print(f"The site is already running on port {port}" + (" on OLDER code than the files on disk." if old else "."))
+        if service.installed():
+            print("It is the login/boot service. To restart it on the current code: python -m bb restart")
+        else:
+            print("Stop that one first (Ctrl+C in its window), or run `python -m bb restart` if it was started by the service.")
+        raise SystemExit(1)
     for line in startup_report(settings, accounts):
         print(line)
     host = os.environ.get("BB_HOST", "0.0.0.0")
-    port = int(os.environ.get("BB_PORT", "8000"))
     uvicorn.run(create_app(), host=host, port=port, proxy_headers=True,
                 forwarded_allow_ips="*")
+
+
+def cmd_restart(args):
+    from bb import service
+    from bb.workspaces import code_version
+
+    port = int(os.environ.get("BB_PORT", "8000"))
+    ok, note = service.restart()
+    if ok:
+        print(f"Service {note}. Waiting for it to answer...")
+        import time as _time
+        for _ in range(40):
+            _time.sleep(0.5)
+            site = running_site(port)
+            if site and site.get("version"):
+                print("Up on the current code." if site["version"] == code_version() else
+                      "Up, but still on older code: wait a few seconds and run python -m bb status.")
+                return
+        print("Started; it is not answering yet. Check the log (python -m bb status shows where).")
+        return
+    site = running_site(port)
+    if site is None:
+        print("Nothing is running on the port and no service is installed. Start it with: python -m bb")
+    else:
+        print(f"No service is installed ({note}); the site was started by hand. Press Ctrl+C in its window, then run python -m bb.")
+    raise SystemExit(1)
+
+
+def cmd_update(args):
+    """git pull, install, restart: the whole update in one command."""
+    import subprocess as _sp
+
+    from bb import service
+
+    print(f"Updating {PROJECT_ROOT} ...")
+    pull = _sp.run(["git", "-C", str(PROJECT_ROOT), "pull", "--ff-only"], capture_output=True, text=True)
+    print((pull.stdout or pull.stderr).strip()[-400:])
+    if pull.returncode != 0:
+        print("git pull failed. If you edited files here, run `git stash` first, then update again.")
+        raise SystemExit(1)
+    pip = _sp.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(PROJECT_ROOT)], capture_output=True, text=True)
+    if pip.returncode != 0:
+        print(pip.stderr.strip()[-600:])
+        print("pip install failed; the code is updated but a dependency is not.")
+        raise SystemExit(1)
+    print("Dependencies are current.")
+    if service.installed():
+        cmd_restart(args)
+    else:
+        port = int(os.environ.get("BB_PORT", "8000"))
+        if running_site(port) is not None:
+            print("The site is running from a terminal window: press Ctrl+C there and run python -m bb again, "
+                  "or install the service once (python -m bb install-service) so updates restart it for you.")
+        else:
+            print("Start it with: python -m bb")
 
 
 SERVICE_ENV_KEYS = ("BB_BASE_URL", "BB_ADMIN_EMAIL", "BB_ADMIN_PASSWORD", "BB_HOME", "BB_PORT", "BB_HOST", "BB_SECRET_KEY",
@@ -210,6 +297,10 @@ def doctor_report(settings, accounts, env_files_read: list[str]) -> list[tuple[s
         out.append(("ok", f"Data folder writable: {settings.home}"))
     except OSError as e:
         out.append(("fail", f"Data folder not writable: {settings.home} ({e})"))
+    from bb.workspaces import code_version
+    site = running_site(settings.port)
+    if site is not None and site.get("version") and site["version"] != code_version():
+        out.append(("fail", "The running site is on older code than the files on disk: python -m bb restart"))
     from bb import service
     import platform as _platform
     sys_name = _platform.system()
@@ -235,6 +326,15 @@ def cmd_status(args):
     settings, accounts = _accounts()
     for line in startup_report(settings, accounts):
         print(line)
+    from bb.workspaces import code_version
+    port = int(os.environ.get("BB_PORT", "8000"))
+    site = running_site(port)
+    if site is None:
+        print(f"Running: no (nothing answers on port {port}).")
+    elif site.get("version") == code_version():
+        print("Running: yes, on the current code.")
+    else:
+        print("Running: yes, but on OLDER code than the files on disk. Run: python -m bb restart")
     read = getattr(args, "_env_files_read", None) or []
     print("Settings file: " + (", ".join(read) if read else "none (put BB_BASE_URL, BB_ADMIN_EMAIL, BB_ADMIN_PASSWORD in bb.env next to the code)"))
 
@@ -314,6 +414,8 @@ def main(argv=None):
     p.set_defaults(func=cmd_install_service)
     sub.add_parser("uninstall-service", help="remove the login/boot service").set_defaults(func=cmd_uninstall_service)
     sub.add_parser("doctor", help="is the site ready for other people? address, tunnel, admins, settings, service").set_defaults(func=cmd_doctor)
+    sub.add_parser("restart", help="restart the site (the login/boot service) on the code now on disk").set_defaults(func=cmd_restart)
+    sub.add_parser("update", help="git pull, install, restart: the whole update in one command").set_defaults(func=cmd_update)
     args = parser.parse_args(argv)
     args._env_files_read = load_env_files()
     (getattr(args, "func", None) or cmd_serve)(args)

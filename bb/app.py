@@ -178,6 +178,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     accounts = Accounts(settings.accounts_db)
     throttle = LoginThrottle()
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+    # Templates are read from disk on every request. After `git pull` the
+    # files on disk can be newer than the program serving them until it is
+    # restarted; a missing variable then renders empty instead of a 500.
+    from jinja2 import ChainableUndefined
+    templates.env.undefined = ChainableUndefined
 
     from bb.tunnel import Tunnel
     tunnel = Tunnel(settings.tunnel_mode, settings.port, token=settings.tunnel_token,
@@ -287,7 +292,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health():
-        return {"ok": True}
+        from bb.workspaces import code_version
+        return {"ok": True, "version": code_version()}
 
     # ── login / logout ──
 

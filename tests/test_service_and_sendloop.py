@@ -107,3 +107,45 @@ async def test_send_loop_reads_replies_then_sends_on_its_own_clock(monkeypatch):
         await asyncio.sleep(0.05)
         assert sender.runs == 0
     assert await waiter == "" and sender.runs == 1
+
+
+def test_cli_sees_a_running_site_and_its_version(tmp_path, monkeypatch, capsys):
+    from bb import __main__ as cli
+    from bb.workspaces import code_version
+    monkeypatch.setenv("BB_HOME", str(tmp_path / "home")); monkeypatch.setenv("BB_PORT", "8123")
+    monkeypatch.setattr(cli, "ENV_FILES", ())
+    assert cli.running_site(8123) is None
+    with pytest.raises(SystemExit):
+        cli.main(["restart"])
+    assert "Nothing is running" in capsys.readouterr().out
+    # A site answering /health with an older version: serve refuses and says what to do.
+    monkeypatch.setattr(cli, "running_site", lambda port: {"ok": True, "version": "older"})
+    with pytest.raises(SystemExit):
+        cli.main(["serve"])
+    out = capsys.readouterr().out
+    assert "already running" in out and "OLDER code" in out
+    cli.main(["status"])
+    assert "OLDER code than the files on disk" in capsys.readouterr().out
+    monkeypatch.setattr(cli, "running_site", lambda port: {"ok": True, "version": code_version()})
+    cli.main(["status"])
+    assert "on the current code" in capsys.readouterr().out
+
+
+def test_templates_tolerate_a_half_applied_update(tmp_path, monkeypatch):
+    """Templates are read from disk; after git pull they may name variables
+    the running program does not pass yet. That renders empty, not a 500."""
+    from starlette.testclient import TestClient
+    from bb.app import create_app
+    from tests.test_bb_web import _settings, _admin
+    monkeypatch.setattr("bb.app.check_domain", lambda d: asyncio.sleep(0, result=None))
+    settings = _settings(tmp_path)
+    with TestClient(create_app(settings), follow_redirects=False) as client:
+        _admin(client)
+        tpl = client.app.state.settings and __import__("bb.app", fromlist=["TEMPLATES_DIR"]).TEMPLATES_DIR / "admin_users.html"
+        original = tpl.read_text()
+        tpl.write_text(original.replace("<h2>Create a login</h2>", "<h2>Create a login {{ brand_new.thing.nobody_passes }}</h2>"))
+        try:
+            r = client.get("/admin/users")
+            assert r.status_code == 200 and "Create a login" in r.text
+        finally:
+            tpl.write_text(original)
