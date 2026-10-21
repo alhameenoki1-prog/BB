@@ -9,7 +9,7 @@
     <div><h2 style="margin:0">The link your users open</h2>
       {% if tunnel.mode and tunnel.status == 'up' and tunnel.url %}
       <p style="margin:6px 0 0;font-size:18px"><a href="{{ tunnel.url }}" id="share-link">{{ tunnel.url }}</a> <button type="button" class="small secondary" onclick="navigator.clipboard.writeText(document.getElementById('share-link').textContent).then(()=>{this.textContent='Copied'})">Copy</button></p>
-      <p class="small muted" style="margin:6px 0 0">{% if tunnel.changes %}Live now. This free tunnel gets a <b>new address every time the site starts</b>, so send the link again after a restart, or use a named tunnel on your own domain for one that never changes (docs/HOSTING.md).{% else %}Your named tunnel; this address stays the same across restarts.{% endif %}</p>
+      <p class="small muted" style="margin:6px 0 0">{% if tunnel.changes %}Live now{% if tunnel.adopted %}, kept from before the last restart{% endif %}. This free address lives as long as its tunnel process, which BB keeps running on its own: an update or a restart of the site <b>keeps this link</b>. It changes only if this computer reboots, cloudflared crashes, or you run <code>python -m bb tunnel restart</code>; then send the new one. For a link that never changes, use a named tunnel on your own domain (docs/HOSTING.md).{% else %}Your named tunnel; this address stays the same across restarts.{% endif %}</p>
       {% elif tunnel.mode and tunnel.status == 'starting' %}
       <p class="small muted" style="margin:6px 0 0">The tunnel is starting; the link appears here in a few seconds. <a href="/admin/users">Refresh</a>.</p>
       {% elif tunnel.mode and tunnel.status == 'missing' %}
@@ -24,7 +24,7 @@
   </div>
   <div class="card flat" id="link-check" style="margin-top:10px;{{ 'border-color:var(--good)' if link.ok else 'border-color:var(--bad)' }}">
     <b>{{ 'Link works.' if link.ok else 'Link does not work right now.' }}</b> The site just opened <code>{{ link.url }}</code> from the internet: {{ link.detail }}.
-    {% if not link.ok %}{% if tunnel.mode == 'quick' %}<span class="small">A quick tunnel gets a new address on every start; the current one is above. If the tunnel shows "up" and the link still fails, restart the site once.</span>{% elif not tunnel.mode %}<span class="small">Add <code>BB_TUNNEL=cloudflare</code> to <code>bb.env</code> (or a named tunnel token) and restart the site.</span>{% endif %}{% endif %}
+    {% if not link.ok %}{% if tunnel.mode == 'quick' %}<span class="small">The current link is the one above. An old link your users still have shows Cloudflare's error 1016 once its tunnel has gone; send them this one. If the tunnel shows "up" and this link still fails, run <code>python -m bb tunnel restart</code>.</span>{% elif not tunnel.mode %}<span class="small">Add <code>BB_TUNNEL=cloudflare</code> to <code>bb.env</code> (or a named tunnel token) and restart the site.</span>{% endif %}{% endif %}
     <a class="small" href="/admin/users?recheck=1">Check again</a>
   </div>
 </div>

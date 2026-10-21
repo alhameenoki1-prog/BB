@@ -101,6 +101,17 @@ idling to sleep while it runs:
 python -m bb install-service      # python -m bb uninstall-service to undo
 ```
 
+**The link survives restarts and updates.** The site runs cloudflared as
+its own detached process and records it in `data/bb/tunnel.json`; a site
+that restarts (an update, `python -m bb restart`, Ctrl+C and start again)
+adopts the running tunnel instead of starting a new one, so the address
+your users have keeps working. It changes only when the computer reboots,
+cloudflared crashes, or you ask for a new one with `python -m bb tunnel
+restart`; `python -m bb tunnel status` shows the current link. A link that
+has died shows Cloudflare's error 1016 ("Origin DNS error"): send the
+current one. For an address that never changes, use a named tunnel on
+your own domain (below).
+
 The site then reads `bb.env` on every start (including `BB_TUNNEL`), and
 the log is at `data/bb/site.log`. Keep the lid open or set "prevent
 automatic sleeping" in System Settings → Energy; a closed laptop still

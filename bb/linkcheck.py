@@ -28,6 +28,9 @@ async def check_public_url(url: str, use_cache: bool = True) -> dict:
                 r = await client.get(url + "/health")
             if r.status_code == 200 and r.headers.get("content-type", "").startswith("application/json") and r.json().get("ok"):
                 out.update(ok=True, detail="reachable from the internet and answering")
+            elif "1016" in r.text or "Origin DNS error" in r.text:
+                out["detail"] = ("Cloudflare no longer knows this address (error 1016): the quick tunnel that created it has stopped, "
+                                 "so this link is dead; the current link is the one on the Users page")
             elif r.status_code in (530, 1033) or "1033" in r.text or "Cloudflare Tunnel error" in r.text:
                 out["detail"] = "the address exists but the tunnel behind it is not connected (Cloudflare error 1033); the tunnel process is down or pointing at another port"
             elif r.status_code == 404 and "cloudflare" in r.text.lower():

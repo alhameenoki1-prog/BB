@@ -187,7 +187,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     from bb.tunnel import Tunnel
     tunnel = Tunnel(settings.tunnel_mode, settings.port, token=settings.tunnel_token,
-                    public_url=settings.base_url, binary=settings.cloudflared, on_url=settings.set_public_url)
+                    public_url=settings.base_url, binary=settings.cloudflared, on_url=settings.set_public_url,
+                    state_dir=settings.home)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

@@ -9,6 +9,15 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **The quick-tunnel link survives restarts and updates.** A
+  `trycloudflare.com` address lives as long as its cloudflared process,
+  and the site used to start a new one on every start, so every update
+  broke the link people had (Cloudflare error 1016). cloudflared now runs
+  detached, recorded in `BB_HOME/tunnel.json`, and a restarting site adopts
+  it; the service units leave it alone (`AbandonProcessGroup`,
+  `KillMode=process`). `python -m bb tunnel status|stop|restart` manages it;
+  `doctor` and the link check recognise the site's own tunnel and a dead
+  address.
 - **A guessed list, not a spam verdict.** Microsoft 365 answers a name
   that is not in a company's directory with `550 5.4.1 Recipient address
   rejected: Access denied`, which Gmail shows as "Message blocked". It is

@@ -32,27 +32,56 @@ def _fake(tmp_path, body=FAKE):
     return str(path)
 
 
+async def _until(t, status, tries=60):
+    for _ in range(tries):
+        await asyncio.sleep(0.1)
+        if t.status == status:
+            return True
+    return False
+
+
 @pytest.mark.asyncio
 async def test_quick_tunnel_reports_its_address_and_restarts(tmp_path):
     seen = []
-    t = Tunnel("quick", 8000, binary=_fake(tmp_path), on_url=seen.append)
+    state = tmp_path / "home"
+    t = Tunnel("quick", 8000, binary=_fake(tmp_path), on_url=seen.append, state_dir=state)
     assert t.command()[-2:] == ["--url", "http://localhost:8000"]
     await t.start()
-    for _ in range(50):
-        await asyncio.sleep(0.1)
-        if t.status == "up":
-            break
+    assert await _until(t, "up")
     assert t.url == "https://sunny-ridge-example.trycloudflare.com" and seen == [t.url]
-    assert t.describe()["changes"] is True
+    assert t.describe()["changes"] is True and t.pid and not t.adopted
+    rec = t.recorded_process()
+    assert rec["alive"] and rec["pid"] == t.pid and rec["url"] == t.url and (state / "tunnel.log").exists()
     # The process dies: the tunnel notes it and comes back with the backoff.
     t._proc.kill()
-    for _ in range(30):
-        await asyncio.sleep(0.1)
-        if t.status == "down":
-            break
-    assert t.status == "down" and "starting it again" in t.detail
-    await t.stop()
-    assert t.status == "off" and t._proc.returncode is not None
+    assert await _until(t, "down", 30)
+    assert "starting it again" in t.detail and not (state / "tunnel.json").exists()
+    await t.stop(kill=True)
+    assert t.status == "off" and not t.recorded_process()["alive"]
+
+
+@pytest.mark.asyncio
+async def test_the_tunnel_outlives_the_site_and_is_adopted_on_the_next_start(tmp_path):
+    state = tmp_path / "home"
+    first = Tunnel("quick", 8000, binary=_fake(tmp_path), state_dir=state)
+    await first.start()
+    assert await _until(first, "up")
+    pid, url = first.pid, first.url
+    # The site stops (an update, a restart): the tunnel is left running on purpose.
+    await first.stop()
+    assert first.status == "off" and first.recorded_process()["alive"]
+    seen = []
+    second = Tunnel("quick", 8000, binary=_fake(tmp_path), on_url=seen.append, state_dir=state)
+    await second.start()
+    assert await _until(second, "up")
+    assert second.adopted and second.pid == pid and second.url == url and seen == [url]
+    assert "kept running" in second.detail and second.describe()["adopted"]
+    # A different port is not the same tunnel: that one would be started fresh (here: not adopted).
+    other = Tunnel("quick", 9000, binary=_fake(tmp_path), state_dir=tmp_path / "elsewhere")
+    assert other._adopt() is False
+    # Stopped by hand: the next start brings a new one.
+    assert second.kill_recorded() is True and not second.recorded_process()["alive"]
+    await second.stop()
 
     missing = Tunnel("quick", 8000, binary=str(tmp_path / "nope"))
     await missing.start()
@@ -91,7 +120,7 @@ def test_users_page_shows_the_link_and_the_site_follows_it(tmp_path, monkeypatch
         page = client.get("/admin/users").text
         assert "The link your users open" in page and "https://sunny-ridge-example.trycloudflare.com" in page
         assert "Link works." in page and "sunny-ridge-example" in page
-        assert "new address every time the site starts" in page and "tunnel up" in page
+        assert "keeps this link" in page and "tunnel up" in page
         assert settings.base_url == "https://sunny-ridge-example.trycloudflare.com" and settings.secure_cookies
         assert not any("Only this computer" in p for p in settings.problems())
     assert client.app.state.tunnel.status == "off"

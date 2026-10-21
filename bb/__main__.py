@@ -236,6 +236,33 @@ def cmd_install_service(args):
               "BB_ADMIN_PASSWORD (and BB_TUNNEL=cloudflare or BB_TUNNEL_TOKEN) there.")
 
 
+def _tunnel_handle():
+    from bb.tunnel import Tunnel
+    settings, _ = _accounts()
+    return settings, Tunnel(settings.tunnel_mode, settings.port, token=settings.tunnel_token,
+                            public_url=settings.base_url, binary=settings.cloudflared, state_dir=settings.home)
+
+
+def cmd_tunnel(args):
+    settings, tunnel = _tunnel_handle()
+    rec = tunnel.recorded_process()
+    if args.action == "status":
+        if not settings.tunnel_mode:
+            print("No tunnel is configured (BB_TUNNEL=cloudflare or BB_TUNNEL_TOKEN in bb.env).")
+        elif rec["alive"]:
+            print(f"The tunnel is running (cloudflared pid {rec['pid']}). Link: {rec['url'] or settings.base_url}")
+            print("It keeps running when the site restarts or updates, so this link stays.")
+        else:
+            print("No tunnel process is running. The site starts one when it starts; the link appears on the Users page.")
+        return
+    if args.action in ("stop", "restart"):
+        stopped = tunnel.kill_recorded()
+        print("Stopped the tunnel." if stopped else "No tunnel process was running.")
+        if args.action == "restart":
+            print("A running site starts a new one within a few seconds and prints the new link; it is also on the Users "
+                  "page and `python -m bb tunnel status`. Send the new link to your users.")
+
+
 def cmd_uninstall_service(args):
     from bb import service
 
@@ -245,6 +272,12 @@ def cmd_uninstall_service(args):
     except RuntimeError as e:
         print(e)
         raise SystemExit(2)
+    try:
+        _settings, tunnel = _tunnel_handle()
+        if tunnel.kill_recorded():
+            print("Stopped the tunnel the site was running.")
+    except Exception:
+        pass
 
 
 def doctor_report(settings, accounts, env_files_read: list[str]) -> list[tuple[str, str]]:
@@ -271,10 +304,17 @@ def doctor_report(settings, accounts, env_files_read: list[str]) -> list[tuple[s
         out.append(("ok", f"Link check: {link['detail']}") if link["ok"] else ("fail", f"Link check: {link['detail']}"))
     try:
         import subprocess as _sp
+        from bb.tunnel import Tunnel
+        own = Tunnel(settings.tunnel_mode, settings.port, token=settings.tunnel_token, public_url=settings.base_url,
+                     binary=settings.cloudflared, state_dir=settings.home).recorded_process()
         procs = _sp.run(["pgrep", "-fl", "cloudflared"], capture_output=True, text=True, timeout=5).stdout.strip().splitlines()
-        if len(procs) > 1:
-            out.append(("warn", f"{len(procs)} cloudflared processes are running; each has its own address. Stop the one you "
-                                "started by hand and let the site run the tunnel (BB_TUNNEL=cloudflare)."))
+        others = [p for p in procs if not (own["alive"] and p.split()[0] == str(own["pid"]))]
+        if own["alive"]:
+            out.append(("ok", f"The site's tunnel is running (pid {own['pid']}); it survives restarts and updates, so the link "
+                              f"{own['url'] or settings.base_url} stays."))
+        if others and (len(others) > 1 or own["alive"]):
+            out.append(("warn", f"{len(others)} other cloudflared process(es) are running; each has its own address. Stop the "
+                                "ones you started by hand and let the site run the tunnel (python -m bb tunnel status)."))
     except Exception:
         pass
     users = accounts.list_users()
@@ -413,6 +453,9 @@ def main(argv=None):
     p.set_defaults(func=cmd_install_service)
     sub.add_parser("uninstall-service", help="remove the login/boot service").set_defaults(func=cmd_uninstall_service)
     sub.add_parser("doctor", help="is the site ready for other people? address, tunnel, admins, settings, service").set_defaults(func=cmd_doctor)
+    tun = sub.add_parser("tunnel", help="the public link's tunnel: status, stop, restart (a restart gives a new quick-tunnel link)")
+    tun.add_argument("action", choices=["status", "stop", "restart"])
+    tun.set_defaults(func=cmd_tunnel)
     sub.add_parser("restart", help="restart the site (the login/boot service) on the code now on disk").set_defaults(func=cmd_restart)
     sub.add_parser("update", help="git pull, install, restart: the whole update in one command").set_defaults(func=cmd_update)
     args = parser.parse_args(argv)

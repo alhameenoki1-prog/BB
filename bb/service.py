@@ -43,6 +43,9 @@ def launchd_plist(python: str, project_root: Path, log_file: Path, env: dict) ->
         "WorkingDirectory": str(project_root),
         "RunAtLoad": True,
         "KeepAlive": True,
+        # The tunnel runs in its own session so the public link survives a
+        # restart; launchd must not sweep it up with the site.
+        "AbandonProcessGroup": True,
         "ThrottleInterval": 10,
         "StandardOutPath": str(log_file),
         "StandardErrorPath": str(log_file),
@@ -54,7 +57,9 @@ def launchd_plist(python: str, project_root: Path, log_file: Path, env: dict) ->
 def systemd_unit(python: str, project_root: Path, env: dict) -> str:
     lines = ["[Unit]", "Description=BB Outreach web app", "Wants=network-online.target", "After=network-online.target", "",
              "[Service]", f"WorkingDirectory={project_root}", f"ExecStart={shlex.quote(python)} -m bb",
-             "Restart=always", "RestartSec=5", "TimeoutStopSec=30", f"Environment=PATH={_path_env()}", "Environment=PYTHONUNBUFFERED=1"]
+             "Restart=always", "RestartSec=5", "TimeoutStopSec=30",
+             # Only the site itself is stopped on restart; the detached cloudflared keeps the public link.
+             "KillMode=process", f"Environment=PATH={_path_env()}", "Environment=PYTHONUNBUFFERED=1"]
     for k, v in env.items():
         lines.append(f"Environment={k}={shlex.quote(v)}")
     lines += ["", "[Install]", "WantedBy=default.target", ""]
