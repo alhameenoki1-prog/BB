@@ -12,6 +12,10 @@ ADMIN_PASSWORD="${3:?usage: install.sh DOMAIN ADMIN_EMAIL ADMIN_PASSWORD}"
 REPO="${BB_REPO:-https://github.com/alhameenoki1-prog/BB.git}"
 DIR="${BB_DIR:-/opt/bb}"
 
+if ! command -v git >/dev/null 2>&1; then
+  echo "Installing git..."
+  apt-get update && apt-get install -y git ca-certificates curl
+fi
 if ! command -v docker >/dev/null 2>&1; then
   echo "Installing Docker..."
   curl -fsSL https://get.docker.com | sh
@@ -22,17 +26,22 @@ else
   git clone "$REPO" "$DIR"
 fi
 cd "$DIR"
+# Values are single-quoted so a password with $ or spaces survives
+# docker compose's .env parsing; a single quote inside is escaped.
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 if [ ! -f .env ]; then
-  cat > .env <<ENV
-BB_BASE_URL=https://$DOMAIN
-BB_DOMAIN=$DOMAIN
-BB_ADMIN_EMAIL=$ADMIN_EMAIL
-BB_ADMIN_PASSWORD=$ADMIN_PASSWORD
-ENV
+  {
+    echo "BB_BASE_URL=$(q "https://$DOMAIN")"
+    echo "BB_DOMAIN=$(q "$DOMAIN")"
+    echo "BB_ADMIN_EMAIL=$(q "$ADMIN_EMAIL")"
+    echo "BB_ADMIN_PASSWORD=$(q "$ADMIN_PASSWORD")"
+  } > .env
   chmod 600 .env
   echo "Wrote $DIR/.env"
 else
-  echo "$DIR/.env exists; leaving it alone."
+  echo "$DIR/.env exists; keeping it."
+  grep -q '^BB_DOMAIN=' .env || { echo "BB_DOMAIN=$(q "$DOMAIN")" >> .env; echo "Added BB_DOMAIN to .env"; }
+  grep -q '^BB_BASE_URL=' .env || { echo "BB_BASE_URL=$(q "https://$DOMAIN")" >> .env; echo "Added BB_BASE_URL to .env"; }
 fi
 # The container runs as uid 1000; a data folder created by Docker would be
 # root's and the site could not write its database.

@@ -147,9 +147,18 @@
   <label class="check"><input type="checkbox" name="require_approval" {{ 'checked' if profile.require_approval else '' }}> Let me approve each email in the Outbox before it is sent <span class="muted">(off = fully automatic)</span></label>
   <label style="margin-top:14px" id="sending">Speed</label>
   {% for k, v in speeds.items() %}
-  <label class="choice"><input type="radio" name="speed" value="{{ k }}" {{ 'checked' if profile.speed == k else '' }}><span><b>{{ v.label }}</b><span class="small muted">{{ v.note }}</span></span></label>
+  <label class="choice"><input type="radio" name="speed" value="{{ k }}" {{ 'checked' if profile.speed == k else '' }} onchange="document.getElementById('custom-pace').style.display = document.querySelector('input[name=speed][value=custom]').checked ? '' : 'none'"><span><b>{{ v.label }}</b><span class="small muted">{{ v.note }}</span></span></label>
   {% endfor %}
-  <div class="hint">Sending runs on its own clock at the pace above, whatever research and writing are doing. On a personal or office mailbox (Gmail, Outlook, Yahoo, iCloud and the like, whether connected through Google or by SMTP) Fast and Relay are held to Normal's pace automatically, because those mailboxes throttle or lock an account that sends in bursts.{% if pace_held %} <b>Right now: {{ pace_held }}.</b>{% endif %}</div>
+  <div id="custom-pace" class="card flat" style="margin:8px 0;{{ '' if profile.speed == 'custom' else 'display:none' }}">
+    <div class="row">
+      <div><label>Emails per batch</label><input type="number" name="custom_per_batch" min="1" max="100" value="{{ profile.custom_per_batch }}"></div>
+      <div><label>Seconds between batches</label><input type="number" name="custom_every" min="10" max="3600" value="{{ profile.custom_every }}"></div>
+      <div><label>Longest pause between two emails (seconds)</label><input type="number" name="custom_delay" min="0" max="120" step="0.5" value="{{ profile.custom_delay }}"><div class="hint">The pause is random, between a quarter of this and this.</div></div>
+      <div><label>Emails in flight at once</label><input type="number" name="custom_lanes" min="1" max="16" value="{{ profile.custom_lanes }}"><div class="hint">Separate SMTP connections. 1 for a mailbox, 4 to 8 for a sending service.</div></div>
+    </div>
+    <div class="hint">Set these to what your SMTP provider allows (its rate limit per minute, connections allowed). That is about {{ ((profile.custom_per_batch | int(25)) * 3600 / ((profile.custom_every | int(60)) or 60)) | round | int }} an hour at the numbers above.</div>
+  </div>
+  <div class="hint">Sending runs on its own clock at the pace above, whatever research and writing are doing. A personal mailbox (a gmail.com, outlook.com, yahoo or icloud address) is held to Normal's pace; Google Workspace and Microsoft 365 on a company domain are held to 20 a minute, two at a time; a sending service (SES, Brevo, Postmark, Mailgun, SendGrid) gets the pace you choose.{% if pace_held %} <b>Right now: {{ pace_held }}.</b>{% endif %}</div>
   <label class="check"><input type="checkbox" name="warmup_ramp" {{ 'checked' if profile.warmup_ramp else '' }}> Warm this mailbox up: start at 20 a day and add 10 a day <span class="muted">(switch off only for a mailbox that already sends plenty of mail)</span></label>
 </div>
 <div class="card">

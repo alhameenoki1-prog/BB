@@ -112,9 +112,15 @@ class GmailProvider(MailProvider):
         return self._access_token or None
 
     async def _request(self, method: str, path: str, **kwargs):
+        data, _status, _reason = await self._request_full(method, path, **kwargs)
+        return data
+
+    async def _request_full(self, method: str, path: str, **kwargs):
+        """(data, http status, Google's error reason). status 401 = the sign-in
+        is dead, 0 = network."""
         token = await self._token()
         if not token:
-            return None
+            return None, getattr(self, "_last_status", 0) or 401, "auth"
         headers = {"Authorization": f"Bearer {token}"}
         try:
             async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -123,15 +129,22 @@ class GmailProvider(MailProvider):
                 )
         except httpx.HTTPError as e:
             logger.error(f"Gmail request failed ({path}): {e}")
-            return None
+            return None, 0, "network"
         self._last_status = resp.status_code
         if resp.status_code >= 400:
             logger.error(f"Gmail API {resp.status_code} on {path}: {resp.text[:200]}")
-            return None
+            reason = ""
+            try:
+                err = resp.json().get("error") or {}
+                errors = err.get("errors") or []
+                reason = str((errors[0].get("reason") if errors else "") or err.get("status") or "")
+            except (ValueError, AttributeError, IndexError):
+                pass
+            return None, resp.status_code, reason
         try:
-            return resp.json()
+            return resp.json(), resp.status_code, ""
         except ValueError:
-            return {}
+            return {}, resp.status_code, ""
 
     async def send_email(
         self,
@@ -159,17 +172,22 @@ class GmailProvider(MailProvider):
         if thread_ref:
             payload["threadId"] = thread_ref
 
-        self._last_status = 0
-        data = await self._request("POST", "/messages/send", json=payload)
+        data, status, reason = await self._request_full("POST", "/messages/send", json=payload)
         if data is None:
-            status = getattr(self, "_last_status", 0)
             if status == 401:
-                return SendResult(ok=False, error="Gmail sign-in expired or revoked: reconnect Gmail on the Mailbox page")
-            # 429 and 5xx are Google asking for a pause; 403 is its daily
-            # quota or a rate limit on this account. All come back later.
-            return SendResult(ok=False, error=f"gmail send failed ({status or 'network'})"
-                              + (" daily sending limit" if status == 403 else ""),
-                              retryable=status in (0, 403, 429) or status >= 500)
+                return SendResult(ok=False, error="Gmail sign-in expired or revoked: reconnect Gmail on the Mailbox page",
+                                  retryable=True, scope="mailbox", auth_failed=True)
+            limit_reasons = ("dailylimitexceeded", "ratelimitexceeded", "userratelimitexceeded", "quotaexceeded")
+            if status == 403 and reason.lower() in limit_reasons:
+                daily = "daily" in reason.lower()
+                return SendResult(ok=False, error=f"Gmail {reason}: the account's sending limit is reached",
+                                  retryable=True, scope="mailbox", daily_limit=daily)
+            if status == 403:
+                return SendResult(ok=False, error=f"Gmail refused the send ({reason or 403}): the Gmail API may be disabled "
+                                                  "for this Google project or the sign-in lacks the send permission")
+            if status == 0 or status == 429 or status >= 500:
+                return SendResult(ok=False, error=f"gmail send failed ({status or 'network'})", retryable=True, scope="mailbox")
+            return SendResult(ok=False, error=f"gmail send failed ({status} {reason})".strip())
 
         # Fetch the assigned RFC Message-ID for bounce/thread matching later.
         message_id = ""

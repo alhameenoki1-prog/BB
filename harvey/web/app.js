@@ -75,6 +75,7 @@ const STATUS = {
   // outbox
   pending_review: ['Waiting on you', 'waiting'],
   approved:       ['Approved', 'good'],
+  sending:        ['Sending now', 'good'],
   scheduled:      ['Scheduled', 'active'],
   sent:           ['Sent', 'good'],
   failed:         ['Failed', 'bad'],

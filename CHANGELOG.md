@@ -9,6 +9,34 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **Paces that fit the mailbox.** A personal address (gmail.com,
+  outlook.com, yahoo, icloud) is held to Normal's pace; Google Workspace
+  and Microsoft 365 on a company domain get a Business pace (20 a minute,
+  two at a time, 1,800 or 9,000 a day); a sending service (SES, Brevo,
+  Postmark, Mailgun, SendGrid) gets the pace you choose. A new **Custom**
+  speed takes your own numbers for an external SMTP: emails per batch,
+  seconds between batches, the pause between two emails, and how many go
+  at once. The mailbox's own daily ceiling is written as its own setting
+  (`channels.email.mailbox_daily_ceiling`) and applied on top of your
+  daily maximum, so your number survives a move to another mailbox.
+- **Send failures sorted by what they mean.** A refused login (Gmail
+  sign-in expired, wrong SMTP password) pauses the pass and leaves every
+  row approved and untouched, with the reason on the dashboard; the
+  mailbox's daily ceiling pushes the row to tomorrow without counting as
+  a retry; a recipient-level 4xx (greylisting, a full mailbox) retries
+  only that row; throttling and network errors end the pass. Gmail's 403
+  is read for its reason, so a disabled Gmail API or a missing permission
+  is a clear final error, not a day of retries. Submission ports 587 and
+  2587 always upgrade to TLS.
+- **The writer and the sender no longer race.** While first emails are
+  being personalised the campaign is `writing`, invisible to the sender,
+  so the segment template can never be sent over a personal draft; an
+  interrupted run hands its campaigns to the sender on the next cycle.
+  Creating a campaign and marking its people is one transaction. A reply
+  pass that runs every 30 s skips the older-mail sweep, which the
+  heartbeat still does; a stopping worker finishes the email in flight
+  before the send loop is cancelled; the dashboard's skip reason is
+  rewritten by the first pass of a new worker.
 - **Sending has its own clock.** With a native mailbox the worker now
   runs a sender loop beside the heartbeat: every `send_every_seconds`
   (30 s at Fast and Relay, 2 min at Normal, 5 min at Gentle) it reads
@@ -77,6 +105,17 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **`python -m bb doctor`**: is the site ready for other people? It checks
+  the public address (https, quick tunnel vs named tunnel), cloudflared,
+  admins, the settings file, the session secret, the Google client, the
+  data folder and the login/boot service, and says what to fix.
+  `install-service` folds the shell's exported settings into `bb.env` so
+  the service starts the same way the terminal did, and says plainly
+  when a computer has neither launchd nor systemd. The server installer
+  installs git when missing, quotes the admin password for compose,
+  completes an older `.env`, and the app port is bound to loopback behind
+  Caddy. Workers are reaped before they are waited on, so a stop takes a
+  second, not thirty.
 - **Keep it running.** `python -m bb install-service` writes a launchd
   agent (macOS, with caffeinate so the Mac does not idle to sleep) or a
   systemd user unit (Linux) that starts the site at login or boot and

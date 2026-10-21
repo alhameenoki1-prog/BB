@@ -5,6 +5,7 @@ it stops. Written and loaded by `python -m bb install-service`."""
 import os
 import platform
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -67,6 +68,13 @@ def install(project_root: Path, data_home: Path, *, python: str = "", system: st
     system = system or platform.system()
     home = home or Path.home()
     python = python or sys.executable
+    if system not in ("Darwin", "Linux"):
+        raise RuntimeError("This computer has neither launchd nor systemd. Run `python -m bb` from a Task Scheduler job "
+                           "(Windows) or keep a terminal open; a Linux server with deploy/install.sh is the hands-off way.")
+    tool = "launchctl" if system == "Darwin" else "systemctl"
+    if load and not shutil.which(tool):
+        raise RuntimeError(f"{tool} is not available here, so the service cannot be started. Write the file only with --no-start, "
+                           "or run the site from deploy/install.sh on a server.")
     path = service_paths(system, home)
     path.parent.mkdir(parents=True, exist_ok=True)
     log_file = data_home / "site.log"

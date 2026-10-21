@@ -8,6 +8,7 @@
     python -m bb status                           # address, data folder, admins, settings file
     python -m bb install-service                  # keep it running: starts at login/boot, restarts if it stops
     python -m bb uninstall-service
+    python -m bb doctor                           # ready to publish? address, tunnel, admins, settings, service
 
 Settings (BB_BASE_URL, BB_ADMIN_EMAIL, BB_ADMIN_PASSWORD, ...) are read from
 the environment, and from bb.env or .env next to the code when present.
@@ -101,15 +102,50 @@ def cmd_serve(args):
                 forwarded_allow_ips="*")
 
 
+SERVICE_ENV_KEYS = ("BB_BASE_URL", "BB_ADMIN_EMAIL", "BB_ADMIN_PASSWORD", "BB_HOME", "BB_PORT", "BB_HOST", "BB_SECRET_KEY",
+                    "BB_TUNNEL", "BB_TUNNEL_TOKEN", "BB_CLOUDFLARED", "BB_DEFAULT_MODEL", "BB_DEFAULT_DAILY_COST_USD",
+                    "GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "REOON_API_KEY", "ZEROBOUNCE_API_KEY", "HUNTER_API_KEY",
+                    "SERPER_API_KEY", "PRECLEARED_API_KEY", "ANTHROPIC_BASE_URL")
+
+
+def fold_exports_into_env_file(path: Path, keys=SERVICE_ENV_KEYS) -> list[str]:
+    """A service does not see the shell's exports. Anything exported now that
+    bb.env lacks is appended to bb.env so the service starts the same way."""
+    existing = ""
+    if path.is_file():
+        existing = path.read_text()
+    present = {line.split("=", 1)[0].strip() for line in existing.splitlines() if "=" in line and not line.lstrip().startswith("#")}
+    added = []
+    for key in keys:
+        value = os.environ.get(key)
+        if value and key not in present:
+            added.append(key)
+            existing += ("" if not existing or existing.endswith("\n") else "\n") + f"{key}={value}\n"
+    if added:
+        path.write_text(existing)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    return added
+
+
 def cmd_install_service(args):
     from bb import service
 
     settings, accounts = _accounts()
-    env = {}
-    path, notes = service.install(PROJECT_ROOT, settings.home, load=not args.no_start, env=env)
+    env_file = Path(ENV_FILES[0])
+    folded = fold_exports_into_env_file(env_file)
+    if folded:
+        print(f"Added to {env_file} so the service sees them: {', '.join(folded)}")
+    try:
+        path, notes = service.install(PROJECT_ROOT, settings.home, load=not args.no_start, env={})
+    except RuntimeError as e:
+        print(e)
+        raise SystemExit(2)
     for line in notes:
         print(line)
-    if not (PROJECT_ROOT / "bb.env").is_file():
+    if not env_file.is_file():
         print("Note: no bb.env next to the code. The service reads it on every start; put BB_BASE_URL, BB_ADMIN_EMAIL, "
               "BB_ADMIN_PASSWORD (and BB_TUNNEL=cloudflare or BB_TUNNEL_TOKEN) there.")
 
@@ -117,8 +153,69 @@ def cmd_install_service(args):
 def cmd_uninstall_service(args):
     from bb import service
 
-    for line in service.uninstall():
-        print(line)
+    try:
+        for line in service.uninstall():
+            print(line)
+    except RuntimeError as e:
+        print(e)
+        raise SystemExit(2)
+
+
+def doctor_report(settings, accounts, env_files_read: list[str]) -> list[tuple[str, str]]:
+    """Is this site ready for other people? [(ok|warn|fail, line)]."""
+    import shutil as _shutil
+    out = []
+    url = settings.base_url
+    if url.startswith("https://"):
+        out.append(("ok", f"Public address: {url}"))
+    elif settings.tunnel_mode == "quick":
+        out.append(("warn", "Quick tunnel: the address changes on every restart. For a link that lasts, use BB_TUNNEL_TOKEN with "
+                            "a named Cloudflare tunnel on your domain, or a server (deploy/install.sh)."))
+    else:
+        out.append(("fail", f"Address {url} is not https and reachable only from this computer. Set BB_TUNNEL=cloudflare, a named "
+                            "tunnel (BB_TUNNEL_TOKEN + BB_BASE_URL), or move to a server."))
+    if settings.tunnel_mode and not _shutil.which(settings.cloudflared):
+        out.append(("fail", f"{settings.cloudflared} is not installed, so the tunnel cannot start (brew install cloudflared)."))
+    if settings.tunnel_mode == "named":
+        out.append(("ok", "Named tunnel: the address stays the same across restarts."))
+    users = accounts.list_users()
+    admins = [u["email"] for u in users if u["role"] == "admin" and not u["disabled"]]
+    out.append(("ok", f"Admins: {', '.join(admins)}") if admins else ("fail", "No admin account: python -m bb make-admin EMAIL"))
+    out.append(("ok", f"Settings file: {', '.join(env_files_read)}") if env_files_read
+               else ("warn", "No bb.env next to the code: settings live only in this shell and are lost on restart."))
+    secret_file = settings.home / "secret.key"
+    out.append(("ok", "Session secret persisted (sessions survive restarts).") if settings._secret or secret_file.exists()
+               else ("warn", "No session secret yet; one is written on first start."))
+    if settings.gmail_client_id and settings.gmail_client_secret:
+        out.append(("ok", "Google OAuth client set: users can connect Gmail in one click."))
+    else:
+        out.append(("warn", "No Google OAuth client: users connect mailboxes with SMTP settings or an app password instead."))
+    try:
+        settings.home.mkdir(parents=True, exist_ok=True)
+        probe = settings.home / ".write-test"
+        probe.write_text("ok"); probe.unlink()
+        out.append(("ok", f"Data folder writable: {settings.home}"))
+    except OSError as e:
+        out.append(("fail", f"Data folder not writable: {settings.home} ({e})"))
+    from bb import service
+    import platform as _platform
+    sys_name = _platform.system()
+    if sys_name in ("Darwin", "Linux"):
+        installed = service.service_paths(sys_name, Path.home()).exists()
+        out.append(("ok", "Login/boot service installed: the site restarts on its own.") if installed
+                   else ("warn", "Not installed as a service: python -m bb install-service keeps it running after a reboot."))
+    return out
+
+
+def cmd_doctor(args):
+    settings, accounts = _accounts()
+    rows = doctor_report(settings, accounts, getattr(args, "_env_files_read", None) or [])
+    marks = {"ok": "OK  ", "warn": "WARN", "fail": "FAIL"}
+    for level, line in rows:
+        print(f"[{marks[level]}] {line}")
+    fails = sum(1 for level, _ in rows if level == "fail")
+    print("Ready for other people." if not fails else f"{fails} thing(s) to fix before other people can use it.")
+    raise SystemExit(1 if fails else 0)
 
 
 def cmd_status(args):
@@ -203,6 +300,7 @@ def main(argv=None):
     p.add_argument("--no-start", action="store_true", help="write the service file but do not start it")
     p.set_defaults(func=cmd_install_service)
     sub.add_parser("uninstall-service", help="remove the login/boot service").set_defaults(func=cmd_uninstall_service)
+    sub.add_parser("doctor", help="is the site ready for other people? address, tunnel, admins, settings, service").set_defaults(func=cmd_doctor)
     args = parser.parse_args(argv)
     args._env_files_read = load_env_files()
     (getattr(args, "func", None) or cmd_serve)(args)

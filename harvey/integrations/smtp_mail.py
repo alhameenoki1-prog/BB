@@ -37,23 +37,42 @@ from harvey.integrations.mail_provider import (
 logger = logging.getLogger("harvey.smtp")
 
 
-def _retryable_smtp_error(e: Exception) -> bool:
-    """4xx replies, throttling and network trouble are temporary; 5xx and
-    bad credentials are not."""
+DAILY_LIMIT_WORDS = ("sending limit", "limit for sending", "5.4.5", "quota exceeded", "daily user sending")
+AUTH_WORDS = ("username and password not accepted", "authentication", "invalid credentials", "5.7.8", "5.7.9",
+              "application-specific password", "sign-in", "login failed")
+
+
+def classify_smtp_error(e: Exception) -> dict:
+    """What an SMTP failure means for the queue: {retryable, scope, auth_failed, daily_limit}.
+    4xx and network trouble are temporary; a recipient-level 4xx (greylisting,
+    a full mailbox) touches only that row; throttling, connect errors and the
+    daily ceiling stop the pass; a refused login stops the pass and is never a
+    retry count against the email."""
     text = str(e).lower()
-    if any(w in text for w in ("sending limit", "limit for sending", "5.4.5", "quota exceeded")):
-        return True   # the mailbox's daily ceiling: it sends again tomorrow
-    code = getattr(e, "code", None)
-    if isinstance(code, int):
-        return 400 <= code < 500
+    out = {"retryable": False, "scope": "row", "auth_failed": False, "daily_limit": False}
+    if isinstance(e, aiosmtplib.SMTPAuthenticationError) or any(w in text for w in AUTH_WORDS):
+        return {**out, "retryable": True, "scope": "mailbox", "auth_failed": True}
+    if any(w in text for w in DAILY_LIMIT_WORDS):
+        return {**out, "retryable": True, "scope": "mailbox", "daily_limit": True}
     if isinstance(e, aiosmtplib.SMTPRecipientsRefused):
         codes = [getattr(r, "code", 0) for r in (getattr(e, "recipients", None) or [])]
-        return any(400 <= c < 500 for c in codes)
+        return {**out, "retryable": any(400 <= c < 500 for c in codes), "scope": "row"}
+    code = getattr(e, "code", None)
+    if isinstance(code, int):
+        if 400 <= code < 500:
+            # 421/454: the server is throttling the session; 450/451: usually this recipient
+            return {**out, "retryable": True, "scope": "mailbox" if code in (421, 454) or "too many" in text or "try again" in text else "row"}
+        return out
     if isinstance(e, (aiosmtplib.SMTPConnectError, aiosmtplib.SMTPTimeoutError, aiosmtplib.SMTPServerDisconnected,
                       OSError, asyncio.TimeoutError)):
-        return True
-    text = str(e).lower()
-    return any(w in text for w in ("try again", "throttl", "rate limit", "too many", "temporar", "4.7.0", "421", "450", "451", "454"))
+        return {**out, "retryable": True, "scope": "mailbox"}
+    if any(w in text for w in ("try again", "throttl", "rate limit", "too many", "temporar", "4.7.0", "421", "454")):
+        return {**out, "retryable": True, "scope": "mailbox"}
+    return out
+
+
+def _retryable_smtp_error(e: Exception) -> bool:
+    return classify_smtp_error(e)["retryable"]
 
 
 class SmtpImapProvider(MailProvider):
@@ -111,17 +130,20 @@ class SmtpImapProvider(MailProvider):
                 timeout=30,
             )
         except Exception as e:
-            retryable = _retryable_smtp_error(e)
-            logger.error(f"SMTP send failed to {to_email}: {e}" + (" (temporary; will retry)" if retryable else ""))
-            return SendResult(ok=False, error=str(e)[:300], retryable=retryable)
+            kind = classify_smtp_error(e)
+            logger.error(f"SMTP send failed to {to_email}: {e}" + (" (temporary; will retry)" if kind["retryable"] else ""))
+            return SendResult(ok=False, error=str(e)[:300], **kind)
         return SendResult(ok=True, message_id=message_id, thread_ref=message_id)
 
     def _use_tls(self) -> bool:
         return self.smtp_port in (465, 2465)
 
     def _start_tls(self):
-        # None = upgrade whenever the server offers STARTTLS (587, 25, 2525, 2587...)
-        return False if self._use_tls() else None
+        # Submission ports must upgrade (a server that drops STARTTLS gets no
+        # password); elsewhere upgrade whenever the server offers it.
+        if self._use_tls():
+            return False
+        return True if self.smtp_port in (587, 2587) else None
 
     def _no_inbox(self) -> bool:
         """A sending-only relay (SES, Brevo, Postmark...) has no inbox to read."""
@@ -281,6 +303,8 @@ class SmtpImapProvider(MailProvider):
             await smtp.quit()
         except Exception as e:
             return False, f"SMTP login failed: {str(e)[:200]}"
+        if self._no_inbox():
+            return True, f"SMTP connected as {self.smtp_user}; {self.imap_host} is a sending relay, so replies are not read from it"
         # IMAP handshake
         loop = asyncio.get_event_loop()
 

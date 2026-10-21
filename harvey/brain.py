@@ -933,7 +933,7 @@ class Brain:
             # quota must not be mistaken for room to spend.
             logger.info(f"{self.paused_reason}; waiting for it to reset.")
             return False
-        if max_daily_cost_usd and self.provider == "claude":
+        if max_daily_cost_usd and self.provider in ("claude", "openai"):
             try:
                 totals = await self.state.usage_totals()
                 spent = float((totals.get("today") or {}).get("cost_usd") or 0.0)

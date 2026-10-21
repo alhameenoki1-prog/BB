@@ -1675,6 +1675,34 @@ class StateManager:
             await db.commit()
         return campaign.id
 
+    async def commit_campaign(self, campaign: Campaign, prospect_ids: list[str], prospect_status: str = "queued") -> str:
+        """Insert the campaign and mark its people in ONE transaction: a stop
+        between the two would write the same people again next cycle."""
+        if not campaign.id:
+            campaign.id = _new_id()
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO campaigns
+                   (id, name, channel, instantly_campaign_id, sequence_json,
+                    prospect_ids_json, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (campaign.id, campaign.name, campaign.channel, campaign.instantly_campaign_id,
+                 campaign.sequence_json(), json.dumps(campaign.prospect_ids), campaign.status,
+                 campaign.created_at.isoformat()))
+            await db.executemany("UPDATE prospects SET status = ?, updated_at = ? WHERE id = ?",
+                                 [(prospect_status, _utcnow().isoformat(), pid) for pid in prospect_ids])
+            await db.commit()
+        return campaign.id
+
+    async def release_writing_campaigns(self) -> int:
+        """Campaigns a writer left in 'writing' (it died mid-personalisation)
+        become drafts: the sender stages the segment template for anyone
+        without a personal first email."""
+        async with self._connect() as db:
+            cur = await db.execute("UPDATE campaigns SET status = 'draft' WHERE status = 'writing'")
+            await db.commit()
+            return cur.rowcount
+
     async def latest_campaign_named(self, name: str, hours: int = 24) -> Campaign | None:
         """The newest campaign with this name created within ``hours``, so a
         segment's sequence can be reused instead of written again."""

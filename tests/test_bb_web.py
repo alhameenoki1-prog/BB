@@ -614,6 +614,7 @@ def test_worker_start_stop(client, monkeypatch):
     seen = {}
 
     def fake_popen(cmd, **kwargs):
+        alive.add(4242)   # a spawned process is alive at once
         seen["cmd"], seen["kwargs"] = cmd, kwargs
         return _FakeProc()
 
@@ -632,6 +633,7 @@ def test_worker_start_stop(client, monkeypatch):
 
     monkeypatch.setattr(ws_mod.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(ws_mod.os, "kill", fake_kill)
+    monkeypatch.setattr(ws_mod, "_is_harvey_process", lambda pid: True)   # 4242 is not a real process here
 
     r = client.post("/worker/start")
     assert "Started%20%28pid%204242%29" in r.headers["location"]
@@ -1261,7 +1263,7 @@ def test_speed_is_held_on_personal_mailboxes_and_dashboard_says_why_not_sending(
     assert email["send_concurrency"] == 1 and email["sends_per_cycle"] == 10 and email["send_every_seconds"] == 120
     assert ws.profile()["speed"] == "relay"
     page = client.get("/profile").text
-    assert "Right now: smtp.gmail.com is a personal or office mailbox" in page
+    assert "Right now: a personal Gmail address throttles or locks" in page
     # The dashboard explains the current state in one line.
     s = asyncio.run(ws.summary())
     assert s["sending"]["state"] == "stuck" and "not running" in s["sending"]["text"]
@@ -1278,17 +1280,40 @@ def test_gmail_mailboxes_get_their_own_daily_ceiling(client):
     assert not is_personal_smtp_host("smtp-relay.gmail.com") and not is_personal_smtp_host("email-smtp.eu-west-1.amazonaws.com")
     ws.save_secrets(smtp_host="smtp.gmail.com", smtp_port=587, smtp_username="someone@gmail.com", smtp_password="app-pw")
     ws.set_mail_provider("smtp")
-    assert ws.mailbox_daily_ceiling() == 450
+    assert ws.mailbox_daily_ceiling() == 450 and ws.mailbox_tier() == ("consumer", "a personal Gmail address")
     client.post("/profile", data={**PROFILE, "speed": "relay", "max_daily_sends": "0", "quiet_form": "1"})
-    assert yaml.safe_load(ws.config_file.read_text())["channels"]["email"]["max_daily_sends"] == 450
+    email = yaml.safe_load(ws.config_file.read_text())["channels"]["email"]
+    assert email["max_daily_sends"] == 0 and email["mailbox_daily_ceiling"] == 450     # the user's number stays theirs
+    assert asyncio.run(ws.summary())["allowance"]["allowed"] == 450
     client.post("/profile", data={**PROFILE, "max_daily_sends": "100", "quiet_form": "1"})
-    assert yaml.safe_load(ws.config_file.read_text())["channels"]["email"]["max_daily_sends"] == 100
+    email = yaml.safe_load(ws.config_file.read_text())["channels"]["email"]
+    assert email["max_daily_sends"] == 100 and email["mailbox_daily_ceiling"] == 450
+    # Google Workspace on a company domain: the business tier, 20 a minute two at a time, 1,800 a day.
     ws.save_secrets(smtp_username="ops@acme-workspace.com")
-    assert ws.mailbox_daily_ceiling() == 1800
+    assert ws.mailbox_tier() == ("business", "Google Workspace") and ws.mailbox_daily_ceiling() == 1800
+    client.post("/profile", data={**PROFILE, "speed": "relay", "max_daily_sends": "0", "quiet_form": "1"})
+    email = yaml.safe_load(ws.config_file.read_text())["channels"]["email"]
+    assert (email["sends_per_cycle"], email["send_every_seconds"], email["send_concurrency"]) == (20, 60, 2)
+    assert "Google Workspace allows about 20 emails a minute" in client.get("/profile").text
+    # Microsoft 365 on a company domain is business too; a sending service is unheld.
+    ws.save_secrets(smtp_host="smtp.office365.com", smtp_username="ops@acme-workspace.com")
+    assert ws.mailbox_tier() == ("business", "Microsoft 365") and ws.mailbox_daily_ceiling() == 9000
     ws.save_secrets(smtp_host="email-smtp.eu-west-1.amazonaws.com")
-    assert ws.mailbox_daily_ceiling() == 0
-    client.post("/profile", data={**PROFILE, "max_daily_sends": "0", "quiet_form": "1"})
-    assert yaml.safe_load(ws.config_file.read_text())["channels"]["email"]["max_daily_sends"] == 0
+    assert ws.mailbox_tier() == ("", "") and ws.mailbox_daily_ceiling() == 0
+    client.post("/profile", data={**PROFILE, "speed": "relay", "max_daily_sends": "0", "quiet_form": "1"})
+    email = yaml.safe_load(ws.config_file.read_text())["channels"]["email"]
+    assert email["max_daily_sends"] == 0 and email["mailbox_daily_ceiling"] == 0 and email["send_concurrency"] == 8
+    # Custom: the user's own numbers, within bounds.
+    client.post("/profile", data={**PROFILE, "speed": "custom", "custom_per_batch": "40", "custom_every": "45",
+                                   "custom_delay": "1.5", "custom_lanes": "4", "max_daily_sends": "0", "quiet_form": "1"})
+    email = yaml.safe_load(ws.config_file.read_text())["channels"]["email"]
+    assert (email["sends_per_cycle"], email["send_every_seconds"], email["send_jitter_seconds"], email["send_concurrency"]) == (40, 45, 1.5, 4)
+    prof = ws.profile()
+    assert prof["speed"] == "custom" and prof["custom_per_batch"] == 40 and prof["custom_lanes"] == 4
+    assert 'value="custom" checked' in client.get("/profile").text and "Emails per batch" in client.get("/profile").text
+    client.post("/profile", data={**PROFILE, "speed": "custom", "custom_per_batch": "9999", "custom_every": "1", "custom_lanes": "99", "quiet_form": "1"})
+    email = yaml.safe_load(ws.config_file.read_text())["channels"]["email"]
+    assert (email["sends_per_cycle"], email["send_every_seconds"], email["send_concurrency"]) == (100, 10, 16)
 
 
 def test_workers_on_old_code_are_restarted_when_the_site_starts(client, monkeypatch):

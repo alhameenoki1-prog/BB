@@ -34,10 +34,15 @@ def test_cli_install_service_writes_the_file(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("BB_HOME", str(tmp_path / "home")); monkeypatch.setenv("BB_BASE_URL", "http://x.test")
     monkeypatch.setattr(service, "platform", type("P", (), {"system": staticmethod(lambda: "Linux")}))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "userhome"))
+    monkeypatch.setattr(cli, "ENV_FILES", (tmp_path / "bb.env",))
     cli.main(["install-service", "--no-start"])
     out = capsys.readouterr().out
     assert "Wrote" in out and (tmp_path / "userhome" / ".config" / "systemd" / "user" / "bb.service").exists()
-    assert "no bb.env" in out
+    # The shell's exports were folded into bb.env so the service starts the same way.
+    assert "Added to" in out and "BB_BASE_URL" in out
+    assert "BB_BASE_URL=http://x.test" in (tmp_path / "bb.env").read_text() and "BB_HOME=" in (tmp_path / "bb.env").read_text()
+    cli.main(["install-service", "--no-start"])
+    assert "Added to" not in capsys.readouterr().out            # nothing new the second time
 
 
 class _Brain:

@@ -534,6 +534,9 @@ class Sender:
         sent_today = await self.state.count_outbox_sent_today()
         per_cycle = int(getattr(email_cfg, "sends_per_cycle", MAX_SENDS_PER_CYCLE) or
                         MAX_SENDS_PER_CYCLE)
+        ceiling = int(getattr(email_cfg, "mailbox_daily_ceiling", 0) or 0)
+        if ceiling:
+            max_daily = min(max_daily, ceiling) if max_daily else ceiling
         allowance = daily_allowance(
             await self.state.first_outbox_sent_at(),
             datetime.now(timezone.utc).replace(tzinfo=None),
@@ -649,6 +652,7 @@ class Sender:
         sent = 0
 
         self._throttled = False
+        self._auth_logged = False
 
         async def lane():
             nonlocal sent
@@ -675,25 +679,40 @@ class Sender:
         files = _attachment_paths(item.get("attachments_json"))
         if files:
             send_kwargs["attachments"] = files
-        result = await self.provider.send_email(
+        result = await asyncio.shield(self.provider.send_email(
             item["to_email"], item["subject"], item["body"],
             thread_ref=item.get("thread_ref", ""),
             in_reply_to=item.get("in_reply_to", ""),
             **send_kwargs,
-        )
+        ))
         if not result.ok:
+            if getattr(result, "auth_failed", False):
+                # The mailbox refused the login: nothing can leave until it is
+                # reconnected. The row goes back untouched; the pass ends.
+                await self.state.update_outbox_item(item["id"], status="approved",
+                                                    error=f"waiting: {result.error[:200]}")
+                self._throttled = True
+                if not self._auth_logged:
+                    self._auth_logged = True
+                    logger.error(f"Sender: the mailbox refused the login; nothing is sent until it is reconnected ({result.error[:160]}).")
+                    try:
+                        await self.state.set_setting("sender_skip_reason", f"the mailbox refused the login: {result.error[:160]}")
+                    except Exception:
+                        pass
+                return False
             if getattr(result, "retryable", False):
-                tries = _retry_count(item.get("error") or "") + 1
-                daily = any(w in (result.error or "").lower() for w in ("sending limit", "limit for sending", "5.4.5", "quota"))
-                if tries <= MAX_SEND_RETRIES:
+                daily = bool(getattr(result, "daily_limit", False))
+                previous = _retry_count(item.get("error") or "")
+                tries = previous if daily else previous + 1   # a full mailbox is not the email's fault
+                if daily or tries <= MAX_SEND_RETRIES:
                     delay = 24 * 3600 if daily else RETRY_DELAY_SECONDS * tries
                     later = (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=delay)).isoformat()
-                    await self.state.update_outbox_item(
-                        item["id"], status="approved", send_at=later,
-                        error=f"retry {tries}/{MAX_SEND_RETRIES}: {result.error[:200]}")
-                    self._throttled = True   # the provider is asking for a pause: this pass ends
+                    note = (f"retry {tries}/{MAX_SEND_RETRIES}: " if tries else "") + result.error[:200]
+                    await self.state.update_outbox_item(item["id"], status="approved", send_at=later, error=note)
+                    if getattr(result, "scope", "mailbox") == "mailbox":
+                        self._throttled = True   # the provider is asking for a pause: this pass ends
                     logger.warning(f"Sender: temporary refusal for {item['to_email']}; trying again in "
-                                   f"{delay // 60} min ({tries}/{MAX_SEND_RETRIES})."
+                                   f"{delay // 60} min" + (f" ({tries}/{MAX_SEND_RETRIES})" if tries else "") + "."
                                    + (" The mailbox's daily sending limit is reached." if daily else ""))
                     return False
             await self.state.update_outbox_item(
@@ -701,10 +720,10 @@ class Sender:
             )
             return False
         now_iso = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-        await self.state.update_outbox_item(
+        await asyncio.shield(self.state.update_outbox_item(
             item["id"], status="sent", sent_at=now_iso,
             message_id=result.message_id, thread_ref=result.thread_ref,
-        )
+        ))
         if prospect.status in ("new", "queued"):
             await self.state.update_prospect_status(prospect.id, "contacted")
 

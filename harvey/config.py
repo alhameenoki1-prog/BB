@@ -103,6 +103,10 @@ class EmailChannelConfig(BaseModel):
     # on its own clock, instead of once per heartbeat. 0 = once per heartbeat,
     # after research and writing, as before.
     send_every_seconds: int = 0
+    # What the mailbox itself allows per day when the operator knows it (a
+    # gmail.com address: 500; Google Workspace: 2,000; Microsoft 365: 10,000
+    # recipients). 0 = unknown. Applied on top of max_daily_sends.
+    mailbox_daily_ceiling: int = 0
     # Warm-up: a mailbox that has never sent cold email starts at 20 a day
     # and may send 10 more each day, up to max_daily_sends. Off = full speed
     # from day one (fine for a mailbox that already sends a lot).

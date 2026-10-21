@@ -80,7 +80,15 @@ SPEEDS = {
              "interval": 1, "per_cycle": 25, "send_every": 30, "concurrency": 2, "jitter": 2.0},
     "relay": {"label": "Relay", "note": "100 emails every 30 seconds, eight at a time (about 12,000 an hour). For an SMTP sending service such as Amazon SES, Brevo, Postmark, Mailgun or SendGrid, never a personal mailbox",
               "interval": 1, "per_cycle": 100, "send_every": 30, "concurrency": 8, "jitter": 0.8},
+    "custom": {"label": "Custom", "note": "Your own numbers: emails per batch, seconds between batches, the pause between two emails, and how many go at once. For an external SMTP whose limits you know",
+               "interval": 1, "per_cycle": 25, "send_every": 60, "concurrency": 1, "jitter": 3.0},
 }
+# Google Workspace and Microsoft 365 on a company domain take more than a
+# personal mailbox but still lock an account that bursts: Microsoft allows
+# 30 messages a minute over SMTP, Google about 2,000 a day. This is the
+# ceiling Fast, Relay and Custom are held to on them.
+BUSINESS_PACE = {"per_cycle": 20, "send_every": 60, "concurrency": 2, "jitter": 2.0}
+CUSTOM_LIMITS = {"per_cycle": (1, 100), "send_every": (10, 3600), "jitter": (0.0, 120.0), "concurrency": (1, 16)}
 # Mail hosts that belong to a personal or office mailbox, not a sending
 # service: they throttle or lock an account that opens several connections
 # or sends a burst, so Fast and Relay are held to Normal's pace on them.
@@ -345,37 +353,81 @@ class Workspace:
         except OSError:
             return ""
 
-    def pace_held_reason(self, speed: dict) -> str:
-        """Why a chosen speed is held to Normal's pace on this mailbox, or ""."""
-        if speed.get("concurrency", 1) <= 1 and speed.get("per_cycle", 0) <= SPEEDS["normal"]["per_cycle"]:
-            return ""
-        provider = self.mail_provider()
-        if provider == "gmail" and self.gmail_connected():
-            return "a Gmail mailbox connected through Google allows about one email every few seconds"
-        if provider == "smtp":
-            host = str(self.smtp_settings().get("smtp_host") or "").strip().lower()
-            if is_personal_smtp_host(host):
-                return f"{host} is a personal or office mailbox, which throttles or locks an account that sends in bursts"
-        return ""
+    @staticmethod
+    def _custom_pace(form: dict) -> dict:
+        """The Custom speed's numbers from the form, within sane bounds."""
+        def num(key, default, lo, hi, cast=int):
+            try:
+                v = cast(str(form.get(key, "") or default).strip() or default)
+            except (TypeError, ValueError):
+                v = default
+            return max(lo, min(v, hi))
+        return {"per_cycle": num("custom_per_batch", 25, *CUSTOM_LIMITS["per_cycle"]),
+                "send_every": num("custom_every", 60, *CUSTOM_LIMITS["send_every"]),
+                "jitter": num("custom_delay", 3.0, *CUSTOM_LIMITS["jitter"], cast=float),
+                "concurrency": num("custom_lanes", 1, *CUSTOM_LIMITS["concurrency"])}
 
-    def _capped_daily(self, wanted: int) -> int:
-        ceiling = self.mailbox_daily_ceiling()
-        if not ceiling:
-            return wanted
-        return ceiling if wanted == 0 else min(wanted, ceiling)
-
-    def mailbox_daily_ceiling(self) -> int:
-        """What the mailbox itself allows per day, when known: 500 for a
-        gmail.com address, 2,000 for Google Workspace, 0 = unknown. Past
-        it Google refuses with "daily user sending limit exceeded", so the
-        daily maximum is capped a little under it."""
+    def mailbox_tier(self) -> tuple[str, str]:
+        """(tier, label): "consumer" (a gmail.com / outlook.com / yahoo address),
+        "business" (Google Workspace or Microsoft 365 on a company domain), or
+        "" (an SMTP sending service or unknown)."""
         provider = self.mail_provider()
         address = (self.sending_address() or "").lower()
+        domain = address.rsplit("@", 1)[-1] if "@" in address else ""
+        consumer_domains = ("gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+                            "yahoo.com", "icloud.com", "me.com", "aol.com")
         host = str(self.smtp_settings().get("smtp_host") or "").strip().lower() if provider == "smtp" else ""
         google = (provider == "gmail" and self.gmail_connected()) or host.endswith(("gmail.com", "googlemail.com"))
-        if not google or host.startswith("smtp-relay."):
+        microsoft = provider == "microsoft_app" or host.endswith(("office365.com", "outlook.com", "live.com"))
+        if host.startswith("smtp-relay."):
+            return "", ""
+        if google:
+            return ("consumer", "a personal Gmail address") if domain in consumer_domains else ("business", "Google Workspace")
+        if microsoft:
+            return ("consumer", "a personal Outlook address") if domain in consumer_domains else ("business", "Microsoft 365")
+        if provider == "smtp" and is_personal_smtp_host(host):
+            return "consumer", f"{host}, a personal mailbox"
+        return "", ""
+
+    def pace_held_reason(self, speed: dict) -> str:
+        """Why a chosen speed is held back on this mailbox, or "". Consumer
+        mailboxes are held to Normal; Workspace and Microsoft 365 to the
+        Business pace (20 a minute, two at a time)."""
+        tier, label = self.mailbox_tier()
+        if tier == "consumer" and (speed.get("concurrency", 1) > 1 or speed.get("per_cycle", 0) > SPEEDS["normal"]["per_cycle"]
+                                   or speed.get("send_every", 0) < SPEEDS["normal"]["send_every"]):
+            return f"{label} throttles or locks an account that sends in bursts, so it is held to Normal's pace"
+        if tier == "business" and (speed.get("concurrency", 1) > BUSINESS_PACE["concurrency"]
+                                   or speed.get("per_cycle", 0) > BUSINESS_PACE["per_cycle"]
+                                   or speed.get("send_every", 0) < BUSINESS_PACE["send_every"]):
+            return f"{label} allows about 20 emails a minute, so it is held to that (two at a time)"
+        return ""
+
+    def held_pace(self, speed: dict) -> dict:
+        """The speed after the mailbox's own limits are applied."""
+        out = dict(speed)
+        tier, _ = self.mailbox_tier()
+        cap = SPEEDS["normal"] if tier == "consumer" else (BUSINESS_PACE if tier == "business" else None)
+        if cap and self.pace_held_reason(speed):
+            out.update(per_cycle=min(out["per_cycle"], cap["per_cycle"]), send_every=max(out["send_every"], cap["send_every"]),
+                       concurrency=min(out["concurrency"], cap["concurrency"]), jitter=max(out["jitter"], cap["jitter"]))
+        return out
+
+    def mailbox_daily_ceiling(self) -> int:
+        """What the mailbox itself allows per day, a little under the
+        published limit so the last emails of the day are not refused:
+        gmail.com 500 → 450, Google Workspace 2,000 → 1,800, outlook.com
+        300 → 250, Microsoft 365 10,000 recipients → 9,000. 0 = unknown
+        (a sending service). Written to harvey.yaml as its own setting and
+        applied on top of the user's daily maximum."""
+        tier, label = self.mailbox_tier()
+        if not tier:
             return 0
-        return 450 if address.endswith(("@gmail.com", "@googlemail.com")) else 1800
+        if "Gmail" in label or label == "Google Workspace":
+            return 450 if tier == "consumer" else 1800
+        if "Outlook" in label or label == "Microsoft 365":
+            return 250 if tier == "consumer" else 9000
+        return 450 if tier == "consumer" else 0
 
     def smtp_configured(self) -> bool:
         s = self.smtp_settings()
@@ -527,12 +579,14 @@ class Workspace:
             "ask": outreach.get("ask", "") if outreach.get("ask", "") in ASKS else "",
             "ask_detail": outreach.get("ask_detail", ""),
             "signature_html": outreach.get("signature_html", ""),
-            "speed": next((k for k, v in SPEEDS.items()
-                           if v["interval"] == usage.get("heartbeat_interval_minutes")
-                           and (v["per_cycle"] == email.get("sends_per_cycle")
-                                or (k != "normal" and email.get("send_every_seconds") and v["interval"] == 1
-                                    and email.get("send_concurrency", 1) == 1 and k == self._held_speed_marker()))),
-                          "normal"),
+            "speed": (self._held_speed_marker() if self._held_speed_marker() in SPEEDS else
+                      next((k for k, v in SPEEDS.items()
+                            if v["interval"] == usage.get("heartbeat_interval_minutes")
+                            and v["per_cycle"] == email.get("sends_per_cycle")), "normal")),
+            "custom_per_batch": int(email.get("sends_per_cycle") or SPEEDS["custom"]["per_cycle"]),
+            "custom_every": int(email.get("send_every_seconds") or SPEEDS["custom"]["send_every"]),
+            "custom_delay": float(email.get("send_jitter_seconds") if email.get("send_jitter_seconds") is not None else SPEEDS["custom"]["jitter"]),
+            "custom_lanes": int(email.get("send_concurrency") or 1),
             "warmup_ramp": bool(email.get("warmup_ramp", True)),
         }
 
@@ -636,16 +690,15 @@ class Workspace:
                 "\"quotes for a two-storey extension in Lagos, starting in March\"). Every email is "
                 "built around it; without it they come out vague.")
         speed = dict(SPEEDS.get(text("speed") or "normal", SPEEDS["normal"]))
+        if text("speed") == "custom":
+            speed.update(self._custom_pace(form))
         try:
             self.ensure()
             self.speed_file.write_text(text("speed") if text("speed") in SPEEDS else "normal")
         except OSError:
             pass
         speed["held"] = self.pace_held_reason(speed)
-        if speed["held"]:
-            speed.update(per_cycle=min(speed["per_cycle"], SPEEDS["normal"]["per_cycle"]),
-                         send_every=max(speed["send_every"], SPEEDS["normal"]["send_every"]),
-                         concurrency=1, jitter=max(speed["jitter"], SPEEDS["normal"]["jitter"]))
+        speed = self.held_pace(speed)
         signature_html = str(form.get("signature_html", "") or "").strip()
         cfg = {
             "persona": {
@@ -680,7 +733,8 @@ class Workspace:
                 "email": {
                     "enabled": True,
                     "provider": self.mail_provider(),
-                    "max_daily_sends": self._capped_daily(max(0, int(text("max_daily_sends", "0") or 0))),  # 0 = no limit
+                    "max_daily_sends": max(0, int(text("max_daily_sends", "0") or 0)),  # 0 = no limit
+                    "mailbox_daily_ceiling": self.mailbox_daily_ceiling(),
                     "require_approval": flag("require_approval"),
                     "send_to_risky": False,
                     # An uploaded list that was never verified bounces 5-15%;
@@ -973,6 +1027,9 @@ class Workspace:
         from harvey.agents.sender import WARMUP_START, WARMUP_STEP, daily_allowance
         email = ((self.config() or {}).get("channels") or {}).get("email") or {}
         max_daily = int(email.get("max_daily_sends", 0) or 0)
+        ceiling = int(email.get("mailbox_daily_ceiling", 0) or 0)
+        if ceiling:
+            max_daily = min(max_daily, ceiling) if max_daily else ceiling
         ramp = bool(email.get("warmup_ramp", True))
         first = None
         if await self._table_exists("outbox"):
@@ -994,7 +1051,8 @@ class Workspace:
                            f"Starts at {WARMUP_START} a day and rises by {WARMUP_STEP} each day"
                            + (f" up to your limit of {max_daily}." if max_daily else "."))
         elif allowed:
-            out["text"] = f"{sent_today} of {allowed} sent today (your daily limit)."
+            out["text"] = (f"{sent_today} of {allowed} sent today "
+                           + ("(what this mailbox allows per day)." if ceiling and allowed == ceiling else "(your daily limit)."))
         else:
             out["text"] = f"{sent_today} sent today, no daily limit set."
         return out
@@ -1072,8 +1130,10 @@ class Workspace:
     def worker_running(self) -> int | None:
         try:
             pid = int(self.pid_file.read_text().strip())
-            os.kill(pid, 0)
         except (OSError, ValueError):
+            return None
+        if _process_gone(pid):
+            self.pid_file.unlink(missing_ok=True)
             return None
         if not _is_harvey_process(pid):
             # After a reboot the number can belong to anything: forget it.
@@ -1157,12 +1217,12 @@ class Workspace:
             os.kill(pid, signal.SIGTERM)
             for _ in range(int(STOP_GRACE_SECONDS / 0.25)):   # a worker mid-send finishes the email first
                 await asyncio.sleep(0.25)
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
+                if _process_gone(pid):
                     break
             else:
                 os.kill(pid, signal.SIGKILL)
+                await asyncio.sleep(0.2)
+                _process_gone(pid)
         except (ProcessLookupError, PermissionError):
             pass
         self.pid_file.unlink(missing_ok=True)
@@ -1482,6 +1542,26 @@ def _compute_code_version() -> str:
 
 
 code_version()
+
+
+def _process_gone(pid: int) -> bool:
+    """True when the process has exited. A child that exited is a zombie
+    until reaped, and os.kill(pid, 0) still sees it: reap it first."""
+    try:
+        done, _ = os.waitpid(pid, os.WNOHANG)
+        if done == pid:
+            return True
+    except ChildProcessError:
+        pass   # not our child: fall through to the signal probe
+    except OSError:
+        pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
 
 
 def _is_harvey_process(pid: int) -> bool:

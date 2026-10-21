@@ -58,9 +58,16 @@ async def _mail_pass(handler, sender, brain, config, max_calls: int) -> str:
     reason when sending was skipped."""
     if in_quiet_hours(config):
         return "quiet hours"
-    # No brain gate here on purpose: an SMTP or Gmail send needs no model
-    # call, and the handler only asks the model when a human reply arrived
-    # (and returns False, holding the drain, if that fails).
+    # Sending needs no model, but reading replies may: a human reply is
+    # classified and answered by the brain. Over the daily spend cap that
+    # must not happen, and sending waits for replies to be handled first.
+    try:
+        within = await brain.is_within_budget(max_calls, max_percent=config.usage.max_daily_claude_percent,
+                                              max_daily_cost_usd=config.usage.max_daily_cost_usd)
+    except Exception:
+        within = True
+    if not within:
+        return "the daily AI spend cap is reached; replies wait for tomorrow, so sending waits too"
     async with _mail_lock:
         read = await asyncio.wait_for(handler.run(backlog=False), timeout=CYCLE_TIMEOUT_SECONDS)
         if read is not True:
@@ -70,6 +77,7 @@ async def _mail_pass(handler, sender, brain, config, max_calls: int) -> str:
 
 
 SKIP_REASON_KEY = "sender_skip_reason"   # settings row the dashboard reads
+SEND_LOOP_STOP_GRACE = 25   # seconds a stopping worker gives the send loop to finish its pass
 
 
 async def _send_loop(handler, sender, brain, config, stop_event: asyncio.Event, every: int, max_calls: int, state=None):
@@ -78,7 +86,7 @@ async def _send_loop(handler, sender, brain, config, stop_event: asyncio.Event, 
     for research or writing. Stop-on-reply order is kept: every pass reads
     replies first and sends nothing if that failed."""
     logger.info(f"Sender: draining the outbox every {every}s, independently of the heartbeat.")
-    last_skip = ""
+    last_skip = None   # the first pass always records its state: a stale reason from an earlier worker must not linger
     while not stop_event.is_set():
         try:
             skipped = await _mail_pass(handler, sender, brain, config, max_calls)
@@ -302,11 +310,16 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
                                 interval, max_calls, consecutive_errors, send_task is not None)
     finally:
         if send_task is not None:
-            send_task.cancel()
+            # The loop ends on its own after the current pass (stop_event is
+            # set); give it time to finish an email in flight before cancelling.
             try:
-                await send_task
-            except (asyncio.CancelledError, Exception):
-                pass
+                await asyncio.wait_for(asyncio.shield(send_task), timeout=SEND_LOOP_STOP_GRACE)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                send_task.cancel()
+                try:
+                    await send_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
 
 async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sender, handler, analyst,
@@ -404,7 +417,9 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
                 send_tasks.append(("send_campaign", sender.run))
             elif sender.is_native and not has_send_loop:
                 send_tasks.append(("send_outbox", sender.run))
-            if sender.is_native and not has_send_loop and not any(n == "handle_replies" for n, _ in tasks):
+            if sender.is_native and not any(n == "handle_replies" for n, _ in tasks):
+                # Also with the send loop: this is the pass that sweeps older
+                # unanswered inbox mail (backlog); the loop's passes skip it.
                 tasks.append(("read_replies", handler.run()))
             # The send loop owns the mailbox: anything here that reads replies
             # or sends takes the same lock so the two never overlap.

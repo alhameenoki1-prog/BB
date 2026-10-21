@@ -6,7 +6,9 @@ services:
     build: .
     env_file: .env
     ports:
-      - "8000:8000"
+      # Loopback only: the public side is Caddy (or your own reverse proxy),
+      # never the plain-http port.
+      - "127.0.0.1:8000:8000"
     volumes:
       # All users' workspaces, the accounts database and the session secret.
       - ./data:/app/data

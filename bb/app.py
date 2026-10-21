@@ -192,23 +192,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.info("Created the admin account %s", settings.admin_email)
             except ValueError as e:
                 logger.error("Could not create the admin account: %s", e)
-        # Workers that were running before a restart come back; workers that
-        # kept running on older code are restarted on the new one.
+        # Workers that were running before a restart come back.
         for ws in all_workspaces(settings, accounts):
-            try:
-                for what in await ws.restart_workers_on_old_code():
-                    logger.info("Restarted the %s for %s on the updated code", what, ws.user["email"])
-            except Exception as e:
-                logger.warning("version check failed for %s: %s", ws.user["email"], e)
             if ws.wants_autostart() and not ws.worker_running() and not ws.user["disabled"]:
                 ok, detail = ws.start_worker()
                 logger.info("Autostart worker for %s: %s", ws.user["email"], detail)
             if ws.mail_autostart_file.exists() and not ws.mail_worker_running() and not ws.user["disabled"]:
                 ok, detail = ws.start_mail_worker()
                 logger.info("Autostart mail worker for %s: %s", ws.user["email"], detail)
+        async def restart_old_code():
+            # Workers that kept running on older code are restarted on the new
+            # one, all at once, after the site is already answering requests.
+            async def one(ws):
+                try:
+                    for what in await ws.restart_workers_on_old_code():
+                        logger.info("Restarted the %s for %s on the updated code", what, ws.user["email"])
+                except Exception as e:
+                    logger.warning("version check failed for %s: %s", ws.user["email"], e)
+            await asyncio.gather(*(one(ws) for ws in all_workspaces(settings, accounts)))
+
         async def keep_workers_alive():
             # Every two minutes: any worker that should be running and is not
             # comes back, whether or not anyone is looking at the dashboard.
+            await restart_old_code()
             while True:
                 await asyncio.sleep(120)
                 try:
@@ -358,6 +364,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ── profile ──
 
+    def _form_view(ws: Workspace, form: dict) -> dict:
+        """The posted form over the stored profile, with checkboxes read from
+        the form (an unticked box is simply absent from a post)."""
+        merged = {**ws.profile(), **form}
+        for box in ("require_approval", "auto_prospect", "warmup_ramp"):
+            merged[box] = bool(form.get(box))
+        if "quiet_form" in form:
+            merged["quiet_enabled"] = bool(form.get("quiet_enabled"))
+        return merged
+
     def _profile_ctx(ws: Workspace, profile: dict) -> dict:
         return dict(profile=profile, tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES,
                     modes=OUTREACH_MODES, policies=ATTACH_POLICIES, attachments=ws.attachments(),
@@ -384,11 +400,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             first = e.errors()[0]
             detail = f"{'.'.join(str(p) for p in first['loc'])}: {first['msg']}"
             return await render(request, "profile.html", user,
-                                **_profile_ctx(ws, {**ws.profile(), **form}),
+                                **_profile_ctx(ws, _form_view(ws, form)),
                                 error=f"Could not save: {detail}")
         except ValueError as e:
             return await render(request, "profile.html", user,
-                                **_profile_ctx(ws, {**ws.profile(), **form}), error=str(e))
+                                **_profile_ctx(ws, _form_view(ws, form)), error=str(e))
         restarted = await ws.restart_worker_if_running("the new profile")
         warning = ws.template_warning()
         msg = "Profile saved. The worker was restarted with the new settings." if restarted else "Profile saved."

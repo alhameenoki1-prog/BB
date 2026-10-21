@@ -130,6 +130,15 @@ class Writer:
         # Load foundational skills for this agent
         self.skills = self.brain.load_skills_for_agent("writer")
 
+        # A writer that died mid-personalisation left campaigns in 'writing':
+        # one writer runs at a time, so they are the previous run's.
+        try:
+            freed = await self.state.release_writing_campaigns()
+            if freed:
+                logger.info(f"Writer: {freed} campaign(s) from an interrupted run handed to the sender.")
+        except Exception as e:
+            logger.debug(f"Writer: release_writing_campaigns failed: {e}")
+
         # Get prospects that haven't been contacted yet (a bounded page: a
         # 10,000-row upload is not loaded whole every cycle)
         new_prospects = await self.state.get_prospects_by_status(
@@ -228,14 +237,17 @@ class Writer:
                 logger.warning(f"Writer: Failed to generate sequence for {batch_name}")
                 continue
 
-            # Create the campaign
+            # Create the campaign. While first emails are being personalised
+            # it is 'writing', invisible to the sender, so the sender cannot
+            # stage the segment template over the personal drafts.
+            personalising = self.is_native and self.personalize_each
             campaign = Campaign(
                 id="",
                 name=batch_name,
                 channel="email",
                 sequence=sequence,
                 prospect_ids=[p.id for p in prospects],
-                status="draft",
+                status="writing" if personalising else "draft",
             )
             # Creating the campaign and marking its people as queued is one
             # step: cut between the two, the same people would be written
@@ -245,8 +257,11 @@ class Writer:
             # Native providers: replace the shared template for email 1 with
             # a per-prospect draft grounded in that company's actual facts —
             # unless the operator chose one email per segment.
-            if self.is_native and self.personalize_each:
-                await self._personalize_first_emails(campaign_id, prospects)
+            if personalising:
+                try:
+                    await self._personalize_first_emails(campaign_id, prospects)
+                finally:
+                    await asyncio.shield(self.state.update_campaign(campaign_id, status="draft"))
 
             await self.state.log_action(
                 action_type="write_campaign",
@@ -268,20 +283,18 @@ class Writer:
         harvey.yaml: a changed request, style or ask must not ride on yesterday's words."""
         try:
             from datetime import datetime, timezone
+            from pathlib import Path
             from harvey.config import _find_config_file
-            mtime = datetime.fromtimestamp(_find_config_file().stat().st_mtime, tz=timezone.utc).replace(tzinfo=None)
+            mtime = datetime.fromtimestamp(Path(_find_config_file()).stat().st_mtime, tz=timezone.utc).replace(tzinfo=None)
             created = campaign.created_at
             if created.tzinfo is not None:
                 created = created.astimezone(timezone.utc).replace(tzinfo=None)
             return created >= mtime
         except Exception:
-            return True
+            return False   # cannot tell: write fresh rather than reuse stale words
 
     async def _commit_campaign(self, campaign, prospects: list) -> str:
-        campaign_id = await self.state.add_campaign(campaign)
-        for p in prospects:
-            await self.state.update_prospect_status(p.id, "queued")
-        return campaign_id
+        return await self.state.commit_campaign(campaign, [p.id for p in prospects])
 
     async def _personalize_first_emails(self, campaign_id: str, prospects: list):
         """Draft a grounded, per-prospect email 1 and stage it in the outbox.

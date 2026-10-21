@@ -699,7 +699,7 @@ async def get_outbox_api():
         return {
             "paused": await state.get_setting("sending_paused"),
             "pending": await state.get_outbox(status="pending_review", limit=100),
-            "approved": await state.get_outbox(status="approved", limit=50),
+            "approved": (await state.get_outbox(status="sending", limit=50)) + (await state.get_outbox(status="approved", limit=50)),
             "sent": (await query_db(
                 "SELECT * FROM outbox WHERE status = 'sent' "
                 "ORDER BY sent_at DESC LIMIT 25")),
@@ -1025,7 +1025,7 @@ async def get_today():
         proposed = [c for c in codes if c.get("status") == "proposed"]
         confirmed = [c for c in codes if c.get("status") == "confirmed"]
         pending = await state.get_outbox(status="pending_review", limit=200)
-        approved = await state.get_outbox(status="approved", limit=200)
+        approved = (await state.get_outbox(status="sending", limit=200)) + (await state.get_outbox(status="approved", limit=200))
         paused = await state.get_setting("sending_paused")
         counts = await state.count_prospects_by_status()
 

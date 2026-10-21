@@ -31,6 +31,9 @@ class SendResult:
     thread_ref: str = ""     # provider thread handle (Gmail threadId, etc.)
     error: str = ""
     retryable: bool = False  # a temporary refusal (throttling, 4xx, network): try again later
+    scope: str = "row"       # "row": only this recipient is affected; "mailbox": the whole pass should stop
+    auth_failed: bool = False  # the mailbox refused the login: nothing sends until it is reconnected
+    daily_limit: bool = False  # the mailbox's own daily ceiling: it sends again tomorrow
 
 
 # Mail hosts that only send: there is no inbox to read there, so reply
@@ -41,8 +44,8 @@ RELAY_HOST_HINTS = ("amazonaws.com", "sendgrid.net", "mailgun.org", "postmarkapp
 
 
 def is_relay_host(host: str) -> bool:
-    host = (host or "").lower()
-    return any(h in host for h in RELAY_HOST_HINTS)
+    host = (host or "").lower().strip()
+    return any(host == h or host.endswith("." + h) for h in RELAY_HOST_HINTS)
 
 
 @dataclass

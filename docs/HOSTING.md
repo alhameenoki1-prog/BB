@@ -399,6 +399,28 @@ being built in phases; sync, reply state, the composer and sending are in.
 - **AI provider**: the mail center uses the key and model chosen on the
   site's AI provider page, so it costs the user, never the site.
 
+## Going live: the checklist
+
+Run `python -m bb doctor` where the site runs. It prints OK / WARN / FAIL
+for each line below and what to change.
+
+1. **One address that lasts.** Either a server with a domain
+   (`deploy/install.sh`, the hands-off way) or a named Cloudflare tunnel
+   on your own domain (`BB_TUNNEL_TOKEN` + `BB_BASE_URL` in `bb.env`). A
+   quick tunnel is fine for a day; its address changes on every restart.
+2. **The site restarts by itself.** On a server Docker does it; on a Mac
+   `python -m bb install-service`.
+3. **Settings in `bb.env`** (or `.env` on a server), not in a terminal
+   window: `BB_BASE_URL`, the admin login, the tunnel, the Google client.
+4. **An admin that is you**, and a login for each person (Users page).
+5. **Each user's mailbox pace**: a personal Gmail or Outlook address is
+   held to Normal; Workspace and Microsoft 365 to the Business pace; a
+   sending service (SES, Brevo, Postmark, Mailgun, SendGrid) takes Relay
+   or Custom. The Mailbox page's checks (SPF, DKIM, DMARC) should be green
+   on the sending domain before a big list goes out.
+6. **Warm-up on for a mailbox with no history**, off for one that already
+   sends; quiet hours on or off as the audience needs.
+
 ## Why is nothing sending?
 
 The Worker card on the dashboard says, in one line, what the sender is
@@ -411,16 +433,22 @@ only writing new emails and answering replies do.
 
 ## Speed
 
-Profile → Sending has four speeds. Gentle and Normal send one email at a
+Profile → Sending has five speeds. Gentle and Normal send one email at a
 time with a pause between them, the way a person would. Fast sends two
 at a time, two seconds apart, about 1,500 an hour. Relay sends eight at
 a time, 100 a minute, and is meant for an SMTP sending service (Amazon
 SES, Brevo, Postmark, Mailgun, SendGrid) connected on the Mailbox page
 with its SMTP details; a personal Gmail, Outlook or Workspace mailbox
-will be throttled or blocked at that rate. Whatever the speed, "Max
-emails per day" and the warm-up ramp still cap the day, so for a big
-list set the maximum high and switch the ramp off only on a mailbox
-that already sends a lot. In harvey.yaml the speed is
+will be throttled or blocked at that rate. Custom takes your own
+numbers for an external SMTP: emails per batch, seconds between batches,
+the longest pause between two emails, and how many go at once. The
+mailbox decides what is actually allowed: a personal gmail.com or
+outlook.com address is held to Normal's pace and 450 / 250 a day; Google
+Workspace or Microsoft 365 on a company domain to the Business pace (20 a
+minute, two at a time) and 1,800 / 9,000 a day; a sending service gets
+exactly the pace chosen. Whatever the speed, "Max emails per day" and the
+warm-up ramp still cap the day, so for a big list set the maximum high
+and switch the ramp off only on a mailbox that already sends a lot. In harvey.yaml the speed is
 `usage.heartbeat_interval_minutes` plus `channels.email.sends_per_cycle`,
 `send_concurrency` and `send_jitter_seconds`.
 

@@ -426,7 +426,7 @@ class FlakyProvider(FakeProvider):
         self.throttle = True
     async def send_email(self, to_email, subject, body, thread_ref="", in_reply_to=""):
         if self.throttle:
-            return SendResult(ok=False, error="454 4.7.0 Too many login attempts, please try again later", retryable=True)
+            return SendResult(ok=False, error="454 4.7.0 Too many login attempts, please try again later", retryable=True, scope="mailbox")
         return await super().send_email(to_email, subject, body, thread_ref, in_reply_to)
 
 
@@ -462,19 +462,30 @@ async def test_temporary_refusals_are_retried_later_not_buried(state):
 
 def test_smtp_errors_are_classified_and_relays_have_no_inbox():
     import aiosmtplib
-    from harvey.integrations.smtp_mail import SmtpImapProvider, _retryable_smtp_error
+    from harvey.integrations.smtp_mail import SmtpImapProvider, classify_smtp_error
     from harvey.integrations.mail_provider import is_relay_host
-    assert _retryable_smtp_error(aiosmtplib.SMTPResponseException(421, "4.7.0 Try again later"))
-    assert not _retryable_smtp_error(aiosmtplib.SMTPResponseException(550, "5.1.1 User unknown"))
-    assert not _retryable_smtp_error(aiosmtplib.SMTPAuthenticationError(535, "bad credentials"))
-    assert _retryable_smtp_error(aiosmtplib.SMTPConnectError("refused")) and _retryable_smtp_error(OSError("reset"))
-    assert is_relay_host("email-smtp.eu-west-1.amazonaws.com") and is_relay_host("smtp-relay.brevo.com") and not is_relay_host("imap.gmail.com")
+    throttle = classify_smtp_error(aiosmtplib.SMTPResponseException(421, "4.7.0 Try again later"))
+    assert throttle["retryable"] and throttle["scope"] == "mailbox"
+    assert not classify_smtp_error(aiosmtplib.SMTPResponseException(550, "5.1.1 User unknown"))["retryable"]
+    auth = classify_smtp_error(aiosmtplib.SMTPAuthenticationError(535, "Username and Password not accepted"))
+    assert auth["auth_failed"] and auth["scope"] == "mailbox"
+    grey = classify_smtp_error(aiosmtplib.SMTPResponseException(450, "4.7.1 Greylisted, try again later"))
+    assert grey["retryable"] and grey["scope"] == "mailbox"   # "try again" wording: the server is pacing the session
+    grey2 = classify_smtp_error(aiosmtplib.SMTPResponseException(450, "4.2.2 Mailbox full"))
+    assert grey2["retryable"] and grey2["scope"] == "row"
+    limit = classify_smtp_error(aiosmtplib.SMTPResponseException(550, "5.4.5 Daily user sending limit exceeded"))
+    assert limit["daily_limit"] and limit["retryable"] and limit["scope"] == "mailbox"
+    assert classify_smtp_error(aiosmtplib.SMTPConnectError("refused"))["scope"] == "mailbox" and classify_smtp_error(OSError("reset"))["retryable"]
+    assert is_relay_host("email-smtp.eu-west-1.amazonaws.com") and is_relay_host("smtp-relay.brevo.com")
+    assert not is_relay_host("imap.gmail.com") and not is_relay_host("imap.resend.community") and not is_relay_host("mail.mailjet.company")
 
     class Env:
         smtp_host = "email-smtp.eu-west-1.amazonaws.com"; smtp_port = 2587; smtp_username = "AKIA"; smtp_password = "x"
         imap_host = ""; imap_port = 993; imap_username = ""; imap_password = ""; smtp_reply_to = ""
     p = SmtpImapProvider(Cfg(), Env())
-    assert p._no_inbox() and p._start_tls() is None and not p._use_tls()
+    assert p._no_inbox() and p._start_tls() is True and not p._use_tls()     # 2587 is a submission port: must upgrade
+    Env.smtp_port = 25
+    assert SmtpImapProvider(Cfg(), Env())._start_tls() is None
     Env.smtp_port = 465
     assert SmtpImapProvider(Cfg(), Env())._use_tls()
 
@@ -487,10 +498,26 @@ async def test_daily_limit_refusals_wait_for_tomorrow(state):
 
     class LimitProvider(FakeProvider):
         async def send_email(self, *a, **k):
-            return SendResult(ok=False, error="550 5.4.5 Daily user sending limit exceeded", retryable=True)
+            return SendResult(ok=False, error="550 5.4.5 Daily user sending limit exceeded", retryable=True,
+                              scope="mailbox", daily_limit=True)
     sender = make_sender(state, LimitProvider(), require_approval=False)
     sender.config.channels.email.send_jitter_seconds = 0
     await sender._run_native()
     row = [r for r in await state.get_outbox(status="approved") if r["step"] == 1][0]
     tomorrow = (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=23)).isoformat()
-    assert row["error"].startswith("retry 1/") and row["send_at"] > tomorrow
+    assert not row["error"].startswith("retry") and "limit" in row["error"] and row["send_at"] > tomorrow   # not a strike against the email
+
+    # A refused login: rows stay approved and untouched, the pass ends, the reason is recorded for the dashboard.
+    class AuthProvider(FakeProvider):
+        async def send_email(self, *a, **k):
+            return SendResult(ok=False, error="535 5.7.8 Username and Password not accepted", retryable=True,
+                              scope="mailbox", auth_failed=True)
+    pid2 = await seed_prospect(state, email="e@acme.com")
+    await seed_campaign(state, [pid2])
+    sender = make_sender(state, AuthProvider(), require_approval=False)
+    sender.config.channels.email.send_jitter_seconds = 0
+    await sender._run_native()
+    rows = [r for r in await state.get_outbox(status="approved") if r["prospect_id"] == pid2]
+    assert len(rows) == 2 and not await state.get_outbox(status="failed")
+    assert any((r["error"] or "").startswith("waiting:") for r in rows)
+    assert "refused the login" in (await state.get_setting("sender_skip_reason") or "")
