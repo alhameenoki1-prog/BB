@@ -24,6 +24,11 @@ logger = logging.getLogger("harvey.mail")
 NATIVE_PROVIDERS = ("gmail", "smtp", "microsoft")
 
 
+class MailReadError(Exception):
+    """The mailbox could not be read (network, a dead sign-in, a 5xx). Not
+    the same as "no new mail": sending waits until it can be read again."""
+
+
 @dataclass
 class SendResult:
     ok: bool

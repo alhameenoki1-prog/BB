@@ -29,6 +29,7 @@ from harvey.integrations.mail_provider import (
     set_body,
     InboundMessage,
     MailProvider,
+    MailReadError,
     SendResult,
     is_relay_host,
     looks_like_bounce,
@@ -158,7 +159,7 @@ class SmtpImapProvider(MailProvider):
             return await loop.run_in_executor(None, self._fetch_unseen, limit)
         except Exception as e:
             logger.error(f"IMAP fetch failed: {e}")
-            return []
+            raise MailReadError(f"could not read the inbox at {self.imap_host}: {str(e)[:160]}") from e
 
     def _fetch_unseen(self, limit: int) -> list[InboundMessage]:
         out: list[InboundMessage] = []

@@ -521,3 +521,23 @@ async def test_daily_limit_refusals_wait_for_tomorrow(state):
     assert len(rows) == 2 and not await state.get_outbox(status="failed")
     assert any((r["error"] or "").startswith("waiting:") for r in rows)
     assert "refused the login" in (await state.get_setting("sender_skip_reason") or "")
+
+
+@pytest.mark.asyncio
+async def test_a_mailbox_that_cannot_be_read_holds_sending(state):
+    """An IMAP failure is not "no new replies": the handler reports it and the sender waits."""
+    from harvey.integrations.mail_provider import MailReadError
+    from harvey.integrations.smtp_mail import SmtpImapProvider
+
+    class Env:
+        smtp_host = "smtp.example.com"; smtp_port = 587; smtp_username = "me@example.com"; smtp_password = "x"
+        imap_host = "imap.example.com"; imap_port = 993; imap_username = ""; imap_password = ""; smtp_reply_to = ""
+    provider = SmtpImapProvider(Cfg(), Env())
+
+    def boom(limit):
+        raise OSError("connection refused")
+    provider._fetch_unseen = boom
+    with pytest.raises(MailReadError):
+        await provider.get_replies()
+    handler = make_handler(state, provider)
+    assert await handler._run_native() is False

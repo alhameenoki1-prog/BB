@@ -28,6 +28,10 @@ minor versions can still change behaviour.
   is read for its reason, so a disabled Gmail API or a missing permission
   is a clear final error, not a day of retries. Submission ports 587 and
   2587 always upgrade to TLS.
+- **A mailbox that cannot be read holds sending.** An IMAP or Gmail read
+  failure used to look like "no new replies" and sending carried on;
+  now it is reported (`MailReadError`), the sender waits, and the
+  dashboard says why.
 - **The writer and the sender no longer race.** While first emails are
   being personalised the campaign is `writing`, invisible to the sender,
   so the segment template can never be sent over a personal draft; an

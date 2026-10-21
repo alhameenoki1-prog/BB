@@ -26,6 +26,7 @@ import httpx
 
 from harvey.paths import DATA_DIR
 from harvey.integrations.mail_provider import (
+    MailReadError,
     InboundMessage,
     MailProvider,
     SendResult,
@@ -207,19 +208,20 @@ class GmailProvider(MailProvider):
         )
 
     async def get_replies(self, limit: int = 50) -> list[InboundMessage]:
-        listing = await self._request(
+        listing, status, reason = await self._request_full(
             "GET", "/messages",
             params={"q": "in:inbox -from:me newer_than:7d", "maxResults": limit},
         )
-        if not listing:
-            return []
+        if listing is None:
+            # Not "no mail": the inbox could not be read, so sending waits.
+            raise MailReadError(f"could not read the Gmail inbox ({status or 'network'} {reason})".strip())
         out = []
         for stub in listing.get("messages", [])[:limit]:
-            data = await self._request(
+            data, status, reason = await self._request_full(
                 "GET", f"/messages/{stub['id']}", params={"format": "full"}
             )
-            if not data:
-                continue
+            if data is None:
+                raise MailReadError(f"could not read a Gmail message ({status or 'network'} {reason})".strip())
             msg = self._parse_message(data)
             if msg:
                 out.append(msg)
