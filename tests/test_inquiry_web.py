@@ -101,3 +101,59 @@ def test_dashboard_explains_why_emails_bounce(client):  # noqa: F811
     assert groups[0]["example"].startswith("550 5.1.1") and "Gentle speed" in groups[1]["hint"]
     page = client.get("/").text
     assert "Why emails bounce" in page and "no such address" in page and "sending too fast or too much" in page
+
+
+def test_queued_emails_written_with_the_old_brief_can_be_rewritten(client):  # noqa: F811
+    import asyncio
+    from datetime import datetime
+
+    from harvey.models.campaign import Campaign, EmailStep
+    from harvey.models.prospect import Prospect
+
+    _as_user(client)
+    assert client.post("/profile", data=NEEDS_FORM).status_code == 303
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    OLD = ("Manufacturing supply for our current needs",
+           "Good day there,\n\nFinding a manufacturer for our current needs is the next step for us, and we would like to "
+           "start the conversation with your team. Before going into detail, it would help to understand how you usually "
+           "take on new clients.\n\nThanks,\nThomas")
+    NEW = ("Rebar, around 40 tons a month from spring",
+           "Hi Ann,\n\nI run Greystone Development in Baltimore and we have about a year of work starting in spring that "
+           "will need roughly 40 tons of rebar a month.\n\nCan you supply that volume month to month?\n\nThomas")
+
+    async def seed():
+        sm = ws.state()
+        await sm.init_db()
+        for i in range(3):
+            await sm.add_prospect(Prospect(id=f"q{i}", first_name="Ann", email=f"ann{i}@steel{i}.example", email_status="provided", status="queued"))
+        await sm.add_prospect(Prospect(id="s0", first_name="Sam", email="sam@sent.example", email_status="provided", status="contacted"))
+        c = Campaign(id="", name="manufacturing · executive", sequence=[EmailStep(step=1, subject=OLD[0], body=OLD[1])],
+                     prospect_ids=["q0", "q1", "q2"], status="active")
+        c.id = await sm.add_campaign(c)
+        for i, (subject, body) in enumerate([OLD, OLD, NEW]):
+            await sm.add_outbox_item(prospect_id=f"q{i}", campaign_id=c.id, step=1, kind="sequence", to_email=f"ann{i}@steel{i}.example",
+                                     subject=subject, body=body, send_at=datetime(2026, 1, 1).isoformat(),
+                                     status="approved" if i else "pending_review", provider="gmail")
+        item = await sm.add_outbox_item(prospect_id="s0", campaign_id=c.id, step=1, kind="sequence", to_email="sam@sent.example",
+                                        subject=OLD[0], body=OLD[1], send_at=datetime(2026, 1, 1).isoformat(), status="sent", provider="gmail")
+        return c.id, item
+
+    campaign_id, sent_item = asyncio.run(seed())
+    assert asyncio.run(ws.stale_queued()) == 2
+    page = client.get("/").text
+    assert "2 queued first emails still read like a campaign" in page and "Rewrite the unsent emails" in page
+
+    r = client.post("/outbox/rewrite-unsent")
+    assert r.status_code == 303 and "Cancelled%203%20unsent" in r.headers["location"]
+
+    async def after():
+        sm = ws.state()
+        return ({p.id: p.status for p in await sm.get_prospects_by_status("new")},
+                [i["status"] for i in await sm.get_outbox(status="approved")] + [i["status"] for i in await sm.get_outbox(status="pending_review")],
+                (await sm.get_outbox_item(sent_item))["status"],
+                campaign_id in {c.id for c in await sm.get_campaigns_by_status("failed")},
+                (await sm.get_prospect("s0")).status)
+    new, unsent, sent_status, retired, sam = asyncio.run(after())
+    assert set(new) == {"q0", "q1", "q2"} and unsent == [] and sent_status == "sent" and retired and sam == "contacted"
+    assert asyncio.run(ws.stale_queued()) == 0 and "still read like a campaign" not in client.get("/").text

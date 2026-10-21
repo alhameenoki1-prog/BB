@@ -635,6 +635,16 @@ sender pauses for six hours (a full day after the third block that day)
 so the next batch does not deepen the hole. The dashboard says so, and
 "Why emails bounce" groups the verdicts.
 
+**Read the remote server's line, not Gmail's label.** Gmail calls every
+rejection "Message blocked". `550 5.4.1 Recipient address rejected:
+Access denied` from an `outlook.com` server is Microsoft 365 saying the
+address is not in that company's directory: the list guessed the name.
+Those addresses are marked invalid, the other queued emails to the same
+company wait for your approval, and the dashboard groups them under "no
+such address (Microsoft 365...)". With a `REOON_API_KEY` or
+`ZEROBOUNCE_API_KEY` in the server's `.env`, every uploaded address is
+checked before anything is written to it.
+
 What BB does on its own to avoid the verdict:
 
 - **Plain first emails.** The first email to each person goes as plain

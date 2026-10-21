@@ -1046,6 +1046,27 @@ class StateManager:
             await db.commit()
             return cursor.rowcount
 
+    async def hold_domain_sends(self, domain: str, exclude_prospect_id: str, note: str) -> int:
+        """Approved first emails to other people at ``domain`` go back to
+        review with ``note``: one nonexistent address at a company usually
+        means the whole guessed pattern is wrong."""
+        if not domain:
+            return 0
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "UPDATE outbox SET status = 'pending_review', error = ?, updated_at = ? "
+                "WHERE status = 'approved' AND kind = 'sequence' AND lower(to_email) LIKE ? AND prospect_id != ?",
+                (note[:600], _utcnow().isoformat(), f"%@{domain.lower()}", exclude_prospect_id or ""),
+            )
+            await db.commit()
+            return cursor.rowcount
+
+    async def update_prospect_notes(self, prospect_id: str, notes: str) -> None:
+        async with self._connect() as db:
+            await db.execute("UPDATE prospects SET personalization_notes = ?, updated_at = ? WHERE id = ?",
+                             (notes, _utcnow().isoformat(), prospect_id))
+            await db.commit()
+
     async def count_outbox_queued(self, kind: str = "sequence", statuses: tuple = ("pending_review", "approved"),
                                   first_step_only: bool = True) -> int:
         """Emails written but not yet sent. The writer keeps this to a

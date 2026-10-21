@@ -6,6 +6,7 @@ install serves many people without any of Harvey's code knowing.
 """
 
 import asyncio
+import os
 import logging
 import secrets
 from contextlib import asynccontextmanager
@@ -346,7 +347,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace_for(user)
         revived = ws.revive_worker()
         return await render(request, "dashboard.html", user, logs=ws.log_tail(40), activity=ws.recent_activity(30),
-                            bounces=await ws.bounce_summary(),
+                            bounces=await ws.bounce_summary(), stale=await ws.stale_queued(),
                             problems=settings.problems() if user["role"] == "admin" else [],
                             msg=revived or request.query_params.get("msg", ""))
 
@@ -751,7 +752,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/recipients", response_class=HTMLResponse)
     async def recipients_page(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
-        return await render(request, "recipients.html", user, recent=await ws.recent_recipients(),
+        return await render(request, "recipients.html", user, verifier=bool(os.environ.get("REOON_API_KEY") or os.environ.get("ZEROBOUNCE_API_KEY") or os.environ.get("HUNTER_API_KEY")), recent=await ws.recent_recipients(),
                             sectors=await ws.sector_breakdown(), max_rows=recipients_mod.MAX_ROWS)
 
     @app.post("/recipients")
@@ -787,6 +788,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status = "pending_review"
         ws = workspace_for(user)
         return await render(request, "outbox.html", user, items=await ws.outbox(status), status=status)
+
+    @app.post("/outbox/rewrite-unsent")
+    async def outbox_rewrite_unsent(user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        done = await ws.rewrite_unsent()
+        restarted = await ws.restart_worker_if_running("the rewritten emails")
+        return _redirect("/", msg=f"Cancelled {done['cancelled']} unsent email(s); {done['prospects']} recipient(s) will be "
+                                  f"written to again with the current brief." + (f" {restarted}" if restarted else ""))
 
     @app.post("/outbox/approve-all")
     async def outbox_approve_all(user: dict = Depends(current_user)):

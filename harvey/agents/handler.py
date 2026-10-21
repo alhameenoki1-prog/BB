@@ -692,6 +692,7 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
                 f"Handler: BOUNCE for {prospect.email} ({reason}) — marked invalid, "
                 f"cancelled {cancelled} queued email(s). {hint}"
             )
+            await self._guard_domain(prospect)
         else:
             logger.warning(
                 f"Handler: bounce received ({msg.subject[:60]}) but couldn't "
@@ -719,6 +720,28 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
             )
             await self.state.set_setting(KILL_SWITCH_KEY, reason)
             logger.error(f"Handler: KILL SWITCH ENGAGED — {reason}")
+
+    async def _guard_domain(self, prospect) -> int:
+        """One nonexistent address at a company usually means the address
+        pattern for that company is wrong (a guessed list): the other
+        approved first emails to the same domain wait for a person instead
+        of bouncing one after another."""
+        domain = (prospect.email or "").rsplit("@", 1)[-1].lower()
+        if not domain or domain in names.PUBLIC_DOMAINS:
+            return 0
+        note = (f"Held: {prospect.email} bounced as a nonexistent address, so the address pattern for this "
+                "company may be wrong. Approve to send anyway, or reject.")
+        try:
+            held = await self.state.hold_domain_sends(domain, prospect.id, note)
+        except Exception as e:
+            logger.debug(f"Handler: domain guard failed for {domain}: {e}")
+            return 0
+        if held:
+            logger.warning(f"Handler: {held} queued email(s) to other people at {domain} now wait for your review "
+                           f"({prospect.email} does not exist there).")
+            await self.state.log_action(action_type="domain_guard", agent="handler",
+                                        details={"domain": domain, "held": held, "bounced": prospect.email})
+        return held
 
     async def _stand_down_after_block(self, kind: str, reason: str, prospect) -> None:
         """A receiving server (or our own provider) blocked an email as

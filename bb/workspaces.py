@@ -1062,6 +1062,43 @@ class Workspace:
         out["sending"] = await self._sending_status(out)
         return out
 
+    async def stale_queued(self) -> int:
+        """Unsent first emails whose wording reads like a campaign: written
+        with an older brief, before an update, and still waiting to go out."""
+        if not await self._table_exists("outbox"):
+            return 0
+        from harvey.names import strip_greeting
+        from harvey.spamcheck import REVIEW, vague_risk
+        rows = await self._query(
+            "SELECT subject, body FROM outbox WHERE kind = 'sequence' AND step = 1 "
+            "AND status IN ('pending_review', 'approved') LIMIT 400")
+        return sum(1 for r in rows if vague_risk(r["subject"] or "", strip_greeting(r["body"] or ""))[0] >= REVIEW)
+
+    async def rewrite_unsent(self) -> dict:
+        """Cancel every unsent first email and follow-up, put their people
+        back in line to be written to, and retire the campaigns they came
+        from, so the worker writes them again with the current brief.
+        Nothing already sent is touched."""
+        out = {"cancelled": 0, "prospects": 0, "campaigns": 0}
+        if not await self._table_exists("outbox"):
+            return out
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+        async with aiosqlite.connect(str(self.db_path), timeout=10) as db:
+            cur = await db.execute(
+                "UPDATE outbox SET status = 'cancelled', error = 'rewritten with the new brief', updated_at = ? "
+                "WHERE kind = 'sequence' AND status IN ('pending_review', 'approved')", (now,))
+            out["cancelled"] = cur.rowcount
+            cur = await db.execute(
+                "UPDATE prospects SET status = 'new', updated_at = ? WHERE status = 'queued' "
+                "AND id NOT IN (SELECT prospect_id FROM outbox WHERE status = 'sent')", (now,))
+            out["prospects"] = cur.rowcount
+            cur = await db.execute(
+                "UPDATE campaigns SET status = 'failed' WHERE status IN ('draft', 'active', 'writing')")
+            out["campaigns"] = cur.rowcount
+            await db.commit()
+        return out
+
     async def bounce_summary(self, limit: int = 500) -> list[dict]:
         """Why emails bounced, grouped by what the receiving server said:
         [{what, hint, count, example}], most common first. "No such

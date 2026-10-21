@@ -26,13 +26,20 @@
   <a class="stat bad" href="/outbox?status=bounced" style="text-decoration:none;color:inherit"><div class="l">Bounced</div><div class="n">{{ summary.bounced }}</div><div class="sub">{{ 'see why' if summary.bounced else 'invalid addresses' }}</div></a>
   <div class="stat"><div class="l">Recipients</div><div class="n">{{ summary.recipients }}</div><div class="sub">on your list</div></div>
 </div>
+{% if stale %}
+<div class="card" style="margin-top:14px;border-color:var(--warn)">
+  <h2>{{ stale }} queued first email{{ 's' if stale != 1 else '' }} still read like a campaign</h2>
+  <p class="small">They say things like “our current needs” and “start the conversation with your team”: they were written with the old brief, before the update, and will go out as they are. Rewriting cancels every unsent first email and follow-up and the worker writes them again from your profile; nothing already sent is touched.</p>
+  <form method="post" action="/outbox/rewrite-unsent" class="inline"><button type="submit">Rewrite the unsent emails</button></form>
+</div>
+{% endif %}
 {% if bounces %}
 <div class="card" style="margin-top:14px;border-color:var(--bad)">
   <h2>Why emails bounce</h2>
   <table class="table"><thead><tr><th>What the receiving server said</th><th>How many</th><th>What to do</th></tr></thead><tbody>
   {% for b in bounces %}<tr><td><b>{{ b.what }}</b>{% if b.example %}<div class="small muted">e.g. “{{ b.example }}”</div>{% endif %}</td><td>{{ b.count }}</td><td class="small">{{ b.hint }}</td></tr>{% endfor %}
   </tbody></table>
-  <p class="small muted" style="margin-top:10px">“No such address” is the list, not the mailbox: those addresses are marked invalid and never written to again; a list that was never verified bounces 5 to 15 percent. Anything about rate, quota, reputation or authentication is the mailbox: a new Gmail or Workspace address that sends a lot on its first days gets its mail bounced or blocked, so keep the warm-up ramp on, use the Gentle speed for the first weeks, and check SPF, DKIM and DMARC on the <a href="/mailbox">Mailbox</a> page. Past a 15 percent bounce rate the worker stops sending on its own. Every bounce, with the server's exact words, is under <a href="/outbox?status=bounced">Outbox → Bounced</a>.</p>
+  <p class="small muted" style="margin-top:10px">Gmail labels every rejection “Message blocked”; the line that matters is the remote server's. “No such address” is the list, not the mailbox: those addresses are marked invalid and never written to again; a list that was never verified bounces 5 to 15 percent. Anything about rate, quota, reputation or authentication is the mailbox: a new Gmail or Workspace address that sends a lot on its first days gets its mail bounced or blocked, so keep the warm-up ramp on, use the Gentle speed for the first weeks, and check SPF, DKIM and DMARC on the <a href="/mailbox">Mailbox</a> page. Past a 15 percent bounce rate the worker stops sending on its own. Every bounce, with the server's exact words, is under <a href="/outbox?status=bounced">Outbox → Bounced</a>.</p>
 </div>
 {% endif %}
 

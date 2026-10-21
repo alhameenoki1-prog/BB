@@ -9,6 +9,22 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **A guessed list, not a spam verdict.** Microsoft 365 answers a name
+  that is not in a company's directory with `550 5.4.1 Recipient address
+  rejected: Access denied`, which Gmail shows as "Message blocked". It is
+  now named for what it is on the dashboard. When one address at a
+  company bounces that way, the other queued emails to that company wait
+  for your approval (the pattern is probably wrong for the whole company).
+  When the server has a verifier key (Reoon, ZeroBounce or Hunter), every
+  uploaded address is checked before it is written to: nonexistent ones are
+  never sent, catch-alls are marked risky, domains with no mail server are
+  invalid without spending a credit.
+- **Rewrite the unsent emails after an update.** First emails written with
+  the old brief ("our current needs") that are still queued are counted on
+  the dashboard with a button that cancels them and has the worker write
+  them again from the profile; nothing sent is touched. A segment's
+  sequence is also no longer reused once the writing brief itself has
+  changed, so an update takes effect on the next batch by itself.
 - **Getting past the spam verdict.** A "blocked" bounce ("likely
   unsolicited mail", "message blocked", "policy", "reputation") is a
   verdict on the sender, not a bad address. Four changes: the first email

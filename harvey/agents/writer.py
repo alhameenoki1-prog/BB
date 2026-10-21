@@ -170,6 +170,16 @@ class Writer:
         except Exception as e:
             logger.debug(f"Writer: release_writing_campaigns failed: {e}")
 
+        # An uploaded list is checked before anything is written to it, when
+        # a verifier key is available: a guessed address bounces, and a few
+        # bounces at one company get the rest of that company held.
+        try:
+            from harvey import listcheck
+            if listcheck.verifier_configured(self.env):
+                await listcheck.verify_uploaded(self.state, self.env)
+        except Exception as e:
+            logger.debug(f"Writer: list check skipped: {e}")
+
         # Get prospects that haven't been contacted yet (a bounded page: a
         # 10,000-row upload is not loaded whole every cycle)
         new_prospects = await self.state.get_prospects_by_status(
@@ -311,12 +321,20 @@ class Writer:
 
     def _written_after_config_change(self, campaign) -> bool:
         """A sequence is reused only if it was written after the last edit of
-        harvey.yaml: a changed request, style or ask must not ride on yesterday's words."""
+        harvey.yaml AND of the writing brief itself: a changed request, style,
+        ask or prompt must not ride on yesterday's words (an update that
+        rewrites the brief makes every older sequence stale)."""
         try:
             from datetime import datetime, timezone
             from pathlib import Path
+            from harvey import paths
             from harvey.config import _find_config_file
-            mtime = datetime.fromtimestamp(Path(_find_config_file()).stat().st_mtime, tz=timezone.utc).replace(tzinfo=None)
+            stamps = [Path(_find_config_file()).stat().st_mtime]
+            for name in ("inquiry_writer.md", "writer.md"):
+                prompt_file = paths.PROMPTS_DIR / name
+                if prompt_file.exists():
+                    stamps.append(prompt_file.stat().st_mtime)
+            mtime = datetime.fromtimestamp(max(stamps), tz=timezone.utc).replace(tzinfo=None)
             created = campaign.created_at
             if created.tzinfo is not None:
                 created = created.astimezone(timezone.utc).replace(tzinfo=None)

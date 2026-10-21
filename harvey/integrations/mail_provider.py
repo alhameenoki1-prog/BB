@@ -79,6 +79,12 @@ BOUNCE_SUBJECTS = (
 # What a bounce means and what to do about it, from the SMTP code or the
 # wording in the report. Order matters: the first match wins.
 BOUNCE_HINTS = (
+    (r"5\.4\.1.{0,80}(recipient address rejected|access denied)|recipient address rejected: access denied",
+     "no such address (Microsoft 365 says it is not in their directory)",
+     "The company uses Microsoft 365 and that address is not in its directory: the name or the address pattern "
+     "is wrong. Gmail shows this as \"Message blocked\", but it is not a spam verdict and nothing is wrong with "
+     "your mailbox. The address is marked invalid. Several of these from one upload mean the list was guessed "
+     "(firstlast@) rather than verified; check the list before sending."),
     (r"5\.1\.1|5\.1\.[0-9]|user unknown|no such user|does not exist|address not found|"
      r"recipient address rejected|unknown recipient|no mailbox|invalid recipient",
      "no such address",
@@ -135,7 +141,8 @@ def bounce_reason(body: str) -> tuple[str, str]:
     text = body or ""
     diag = ""
     for pat in (r"(?im)^\s*diagnostic-code:\s*(?:smtp;)?\s*(.+)$",
-                r"(?im)^\s*(?:the response was|the error that the other server returned was|"
+                r"(?im)^\s*(?:the response was|the response from the remote server was|"
+                r"the error that the other server returned was|"
                 r"remote server returned|server said|technical details[^\n]*)[:\s]*\n?\s*(.+)$",
                 r"(?im)^\s*(5\d\d[ -][^\n]{10,})$", r"(?im)^\s*(4\d\d[ -][^\n]{10,})$",
                 r"(?i)(your message (?:to [^\n]{1,80} )?(?:has been|was) blocked[^\n]*)",
