@@ -22,6 +22,11 @@
       {% endif %}</div>
     <span class="tag {{ 'good' if tunnel.status == 'up' else ('bad' if tunnel.status in ('missing', 'error', 'down') else '') }}">{{ 'tunnel ' + tunnel.status if tunnel.mode else 'no tunnel' }}</span>
   </div>
+  <div class="card flat" id="link-check" style="margin-top:10px;{{ 'border-color:var(--good)' if link.ok else 'border-color:var(--bad)' }}">
+    <b>{{ 'Link works.' if link.ok else 'Link does not work right now.' }}</b> The site just opened <code>{{ link.url }}</code> from the internet: {{ link.detail }}.
+    {% if not link.ok %}{% if tunnel.mode == 'quick' %}<span class="small">A quick tunnel gets a new address on every start; the current one is above. If the tunnel shows "up" and the link still fails, restart the site once.</span>{% elif not tunnel.mode %}<span class="small">Add <code>BB_TUNNEL=cloudflare</code> to <code>bb.env</code> (or a named tunnel token) and restart the site.</span>{% endif %}{% endif %}
+    <a class="small" href="/admin/users?recheck=1">Check again</a>
+  </div>
 </div>
 <div class="two">
   <div class="card">

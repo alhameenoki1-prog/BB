@@ -82,8 +82,15 @@ def test_users_page_shows_the_link_and_the_site_follows_it(tmp_path, monkeypatch
             if client.app.state.tunnel.status == "up":
                 break
             time.sleep(0.1)
+        import bb.linkcheck as linkcheck
+        async def fake_check(url, use_cache=True):
+            if "localhost" in url:
+                return {"ok": False, "detail": "the address is this computer only; other people cannot open it", "checked_at": 0, "url": url}
+            return {"ok": True, "detail": "reachable from the internet and answering", "checked_at": 0, "url": url}
+        monkeypatch.setattr("bb.app.check_public_url", fake_check)
         page = client.get("/admin/users").text
         assert "The link your users open" in page and "https://sunny-ridge-example.trycloudflare.com" in page
+        assert "Link works." in page and "sunny-ridge-example" in page
         assert "new address every time the site starts" in page and "tunnel up" in page
         assert settings.base_url == "https://sunny-ridge-example.trycloudflare.com" and settings.secure_cookies
         assert not any("Only this computer" in p for p in settings.problems())
@@ -96,3 +103,33 @@ def test_users_page_shows_the_link_and_the_site_follows_it(tmp_path, monkeypatch
         _admin(client)
         page = client.get("/admin/users").text
         assert "only works on this computer" in page and "no tunnel" in page
+        assert "Link does not work right now." in page and "this computer only" in page
+
+
+@pytest.mark.asyncio
+async def test_link_check_tells_the_cases_apart(monkeypatch):
+    import httpx
+    from bb import linkcheck
+
+    real = httpx.AsyncClient   # captured once: later patches replace the module attribute
+
+    def fake_client(handler):
+        return lambda **kw: real(transport=httpx.MockTransport(handler), **kw)
+
+    monkeypatch.setattr(linkcheck.httpx, "AsyncClient", fake_client(lambda r: httpx.Response(200, json={"ok": True})))
+    ok = await linkcheck.check_public_url("https://good.example", use_cache=False)
+    assert ok["ok"] and "reachable" in ok["detail"]
+    monkeypatch.setattr(linkcheck.httpx, "AsyncClient", fake_client(lambda r: httpx.Response(530, text="Cloudflare Tunnel error 1033")))
+    down = await linkcheck.check_public_url("https://down.example", use_cache=False)
+    assert not down["ok"] and "not connected" in down["detail"]
+
+    def gone(r):
+        raise httpx.ConnectError("[Errno 8] nodename nor servname provided, or not known")
+    monkeypatch.setattr(linkcheck.httpx, "AsyncClient", fake_client(gone))
+    dead = await linkcheck.check_public_url("https://old-quick.trycloudflare.com", use_cache=False)
+    assert not dead["ok"] and "does not exist any more" in dead["detail"]
+    local = await linkcheck.check_public_url("http://localhost:8000", use_cache=False)
+    assert not local["ok"] and "this computer only" in local["detail"]
+    # The page shows the result.
+    cached = await linkcheck.check_public_url("https://good.example")   # 30 s cache from the first call
+    assert cached["ok"]

@@ -109,6 +109,12 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **The site checks its own public link.** The Users page opens the
+  public address from the internet and says whether it works, telling a
+  dead quick-tunnel hostname, a tunnel that is not connected (Cloudflare
+  1033) and a localhost-only address apart, with "Check again";
+  `python -m bb doctor` does the same and warns when two cloudflared
+  processes are running (two addresses). (`bb/linkcheck.py`.)
 - **`python -m bb doctor`**: is the site ready for other people? It checks
   the public address (https, quick tunnel vs named tunnel), cloudflared,
   admins, the settings file, the session secret, the Google client, the

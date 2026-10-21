@@ -178,6 +178,19 @@ def doctor_report(settings, accounts, env_files_read: list[str]) -> list[tuple[s
         out.append(("fail", f"{settings.cloudflared} is not installed, so the tunnel cannot start (brew install cloudflared)."))
     if settings.tunnel_mode == "named":
         out.append(("ok", "Named tunnel: the address stays the same across restarts."))
+    if not url.startswith("http://localhost") and "127.0.0.1" not in url:
+        import asyncio as _asyncio
+        from bb.linkcheck import check_public_url
+        link = _asyncio.run(check_public_url(url, use_cache=False))
+        out.append(("ok", f"Link check: {link['detail']}") if link["ok"] else ("fail", f"Link check: {link['detail']}"))
+    try:
+        import subprocess as _sp
+        procs = _sp.run(["pgrep", "-fl", "cloudflared"], capture_output=True, text=True, timeout=5).stdout.strip().splitlines()
+        if len(procs) > 1:
+            out.append(("warn", f"{len(procs)} cloudflared processes are running; each has its own address. Stop the one you "
+                                "started by hand and let the site run the tunnel (BB_TUNNEL=cloudflare)."))
+    except Exception:
+        pass
     users = accounts.list_users()
     admins = [u["email"] for u in users if u["role"] == "admin" and not u["disabled"]]
     out.append(("ok", f"Admins: {', '.join(admins)}") if admins else ("fail", "No admin account: python -m bb make-admin EMAIL"))

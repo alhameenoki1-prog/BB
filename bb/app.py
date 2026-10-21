@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from bb import deliverability
 from bb import gmail_oauth, recipients as recipients_mod
+from bb.linkcheck import check_public_url
 from bb.mail_autoconfig import guess_settings
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
@@ -837,7 +838,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             rows.append({**u, "running": bool(ws.worker_running()), "configured": ws.is_configured(),
                          "gmail": ws.gmail_connected()})
         return await render(request, "admin_users.html", admin, users=rows, problems=settings.problems(),
-                            tunnel=tunnel.describe(), public_url=settings.base_url)
+                            tunnel=tunnel.describe(), public_url=settings.base_url,
+                            link=await check_public_url(settings.base_url, use_cache="recheck" not in request.query_params))
 
     @app.post("/admin/users")
     async def admin_create_user(admin: dict = Depends(current_admin), email: str = Form(""),
