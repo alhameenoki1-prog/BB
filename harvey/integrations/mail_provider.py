@@ -66,6 +66,7 @@ class InboundMessage:
     date: str = ""
     is_bounce: bool = False
     headers: dict = field(default_factory=dict)
+    uid: int = 0             # IMAP UID when read by position (0 elsewhere)
 
 
 BOUNCE_SENDERS = ("mailer-daemon", "postmaster", "mail delivery subsystem")
@@ -79,6 +80,10 @@ BOUNCE_SUBJECTS = (
 # What a bounce means and what to do about it, from the SMTP code or the
 # wording in the report. Order matters: the first match wins.
 BOUNCE_HINTS = (
+    # Order matters: the first match wins. The verdicts on the SENDER (a
+    # block) come before "authentication", because a real DSN quotes the
+    # original message's headers (DKIM-Signature, ARC-Authentication-Results)
+    # further down, and those words must not turn a block into something else.
     (r"5\.4\.1.{0,80}(recipient address rejected|access denied)|recipient address rejected: access denied",
      "no such address (Microsoft 365 says it is not in their directory)",
      "The company uses Microsoft 365 and that address is not in its directory: the name or the address pattern "
@@ -89,29 +94,30 @@ BOUNCE_HINTS = (
      r"recipient address rejected|unknown recipient|no mailbox|invalid recipient",
      "no such address",
      "The address does not exist. Nothing to fix on your side; it has been marked invalid."),
-    (r"5\.7\.26|5\.7\.25|dmarc|spf|dkim|not authenticated|unauthenticated|authentication",
-     "sender authentication failed",
-     "The receiving server could not verify your domain. Publish SPF, DKIM and DMARC for the "
-     "sending domain (the Mailbox page's deliverability table shows which is missing)."),
     (r"unusual rate|rate.?limit|too many|sending quota|quota exceeded|4\.7\.0|5\.4\.5|"
      r"daily sending quota|exceeded the maximum",
      "sending too fast or too much",
      "Your mailbox provider throttled you. Switch the profile to the Gentle speed, keep the warm-up "
      "ramp on, and lower the daily maximum (30 to 50 a day for a mailbox under a month old)."),
-    (r"likely unsolicited|unsolicited mail|5\.7\.1|spam|blocked using|blacklist|block list|"
-     r"poor reputation|low reputation|sending reputation",
+    (r"likely unsolicited|unsolicited mail|rejected as spam|message rejected.{0,40}spam|identified as spam|"
+     r"looks like spam|blocked using|blacklist|block list|poor reputation|low reputation|sending reputation|"
+     r"5\.7\.1 (service unavailable|message rejected|client host|unfortunately)",
      "judged as unsolicited mail",
      "The receiving side treated the email as bulk or spam. Slow down (Gentle speed), send from a "
      "domain with SPF, DKIM and DMARC, keep links and attachments out of first emails, and keep "
      "the list to addresses you are sure exist."),
-    (r"5\.7\.0|security issue|suspicious attachment|attachment|content presents",
+    (r"5\.7\.0|security issue|suspicious attachment|content presents",
      "content blocked",
      "The provider blocked the content itself. Remove attachments from first emails and check that "
      "the signature's links point at a plain, working site."),
-    (r"5\.2\.2|mailbox full|over quota|quota",
+    (r"5\.2\.2|4\.2\.2|mailbox full|over quota|mailbox is full",
      "mailbox full",
      "Their mailbox is full. The address is real; try again in a few weeks."),
-    (r"4\.4\.1|4\.4\.7|timed out|timeout|connection refused|could not connect|dns|no mx|not reachable",
+    (r"5\.7\.26|5\.7\.25|not authenticated|unauthenticated|(spf|dkim|dmarc)[^\n]{0,40}(fail|none|missing|not pass|did not pass)",
+     "sender authentication failed",
+     "The receiving server could not verify your domain. Publish SPF, DKIM and DMARC for the "
+     "sending domain (the Mailbox page's deliverability table shows which is missing)."),
+    (r"4\.4\.1|4\.4\.7|timed out|timeout|connection refused|could not connect|no mx|not reachable",
      "their mail server could not be reached",
      "Their domain's mail server is down or missing. Nothing to fix on your side."),
 )

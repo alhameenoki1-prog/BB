@@ -142,6 +142,23 @@ def _sector_messages_from_form(form) -> list[dict]:
 MAX_SECTOR_NEEDS = 12
 
 
+def _profile_form(prof: dict) -> dict:
+    """A stored profile as the form that would produce it again: checkbox
+    flags as "on"/"", the row-shaped settings flattened back into the
+    keys their parsers read, and the "rewrite" flag so stored values are
+    not re-validated against rules added since they were saved."""
+    form = {**prof, "auto_prospect": "on" if prof.get("auto_prospect") else "",
+            "require_approval": "on" if prof.get("require_approval") else "",
+            "quiet_form": "1", "quiet_enabled": "on" if prof.get("quiet_enabled") else "",
+            "warmup_ramp": "on" if prof.get("warmup_ramp") else "",
+            "plain_first_email": "on" if prof.get("plain_first_email", True) else "", "rewrite": "1"}
+    _flatten_rows(form, "sm", prof.get("sector_messages"),
+                  {"subject": "subject", "body": "body", "followup_1": "followup_1", "followup_2": "followup_2"})
+    _flatten_rows(form, "sn", prof.get("sector_needs"),
+                  {"need": "need", "question": "question", "url": "details_url", "label": "details_label"})
+    return form
+
+
 def _sector_needs_from_form(form) -> list[dict]:
     """Rows sn_sectors_N (several values) + sn_need_N + sn_question_N +
     sn_url_N + sn_label_N: what the sender needs from each kind of
@@ -697,11 +714,7 @@ class Workspace:
         stored profile, with these fields replaced."""
         if not self.is_configured():
             raise ValueError("Fill in your profile first.")
-        prof = self.profile()
-        merged = {**prof, "auto_prospect": "on" if prof["auto_prospect"] else "",
-                  "require_approval": "on" if prof["require_approval"] else "",
-                  "quiet_form": "1", "quiet_enabled": "on" if prof.get("quiet_enabled") else "",
-                  "warmup_ramp": "on" if prof.get("warmup_ramp") else "", **form, "inbox_form": "1"}
+        merged = {**_profile_form(self.profile()), **form, "inbox_form": "1"}
         return self.write_profile(merged)
 
     async def inbox_replies(self, limit: int = 100) -> list[dict]:
@@ -895,19 +908,8 @@ class Workspace:
         profile has been filled in once."""
         if not self.is_configured():
             return None
-        prof = self.profile()
-        form = {**prof, "auto_prospect": "on" if prof["auto_prospect"] else "",
-                "require_approval": "on" if prof["require_approval"] else "",
-                "quiet_form": "1", "quiet_enabled": "on" if prof.get("quiet_enabled") else "",
-                "warmup_ramp": "on" if prof.get("warmup_ramp") else "",
-                "plain_first_email": "on" if prof.get("plain_first_email", True) else "", "rewrite": "1"}
-        # The row-shaped settings go back into the keys their parsers read.
-        _flatten_rows(form, "sm", prof.get("sector_messages"),
-                      {"subject": "subject", "body": "body", "followup_1": "followup_1", "followup_2": "followup_2"})
-        _flatten_rows(form, "sn", prof.get("sector_needs"),
-                      {"need": "need", "question": "question", "url": "details_url", "label": "details_label"})
         try:
-            return self.write_profile(form)
+            return self.write_profile(_profile_form(self.profile()))
         except Exception as e:  # a stale config must never break a mailbox change
             logger.warning("Could not rewrite harvey.yaml for %s: %s", self.user["email"], e)
             return None

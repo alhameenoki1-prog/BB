@@ -53,9 +53,23 @@ def test_profile_round_trips_needs_and_the_scope_links(client):  # noqa: F811
     assert [n.need for n in again.sector_needs] == [n.need for n in o.sector_needs]
     assert again.sector_needs[0].details_url == "https://docs.example/towson" and again.sender_line == o.sender_line
 
+    # Saving the Inbox page rewrites harvey.yaml too, and keeps the rows and links.
+    r = client.post("/inbox", data={"inbox_form": "1", "inbox_autoreply": "on",
+                                    "inbox_instructions": "Send the brief when they ask what we need."})
+    assert r.status_code == 303, r.text
+    after_inbox = HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach
+    assert after_inbox.inbox_autoreply and [n.need for n in after_inbox.sector_needs] == [n.need for n in o.sector_needs]
+    assert after_inbox.sector_needs[0].details_url == "https://docs.example/towson" and after_inbox.details_url == o.details_url
+
     # A need nobody could repeat back is refused with the reason, and nothing is written.
     r = client.post("/profile", data={**NEEDS_FORM, "intent": "I would like to start working with your team"})
     assert r.status_code == 200 and "says nothing a builder, adviser or supplier can answer" in r.text
+    # The page shows the rows as typed, not the stored ones, so nothing is lost on the retry.
+    r = client.post("/profile", data={**NEEDS_FORM, "sn_need_1": "working together on steel",
+                                      "sn_need_0": "A builder for a 36-unit block in Dundalk, start in June."})
+    assert r.status_code == 200 and "Manufacturing: that says nothing" in r.text
+    assert "36-unit block in Dundalk" in r.text and "working together on steel" in r.text
+    assert "block in Towson, drawings done" not in r.text      # the stored row, not shown over the typed one
     assert HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach.intent.startswith("Services and")
     r = client.post("/profile", data={**NEEDS_FORM, "sn_need_1": "working together on steel"})
     assert r.status_code == 200 and "Manufacturing: that says nothing" in r.text

@@ -346,7 +346,10 @@ worker's: who you are, what you need from each kind of business, your
 full-scope links, the next step you want and your standing instructions.
 A run's "Instructions for every reply" can therefore say "send the scope
 link when they ask for details": the model marks where it belongs, and
-the right link goes in once per thread, never written by the model.
+the right link goes in once per thread, never written by the model. The
+first reply in a thread carries it whether or not they asked, except to
+someone who said no, opted out or complained: that reply gets an answer
+and no link, whatever the model drafted.
 
 A second, newer side of the app: connect several mailboxes, mirror them,
 see what needs a reply, and reply in batches or from a command bar. It is

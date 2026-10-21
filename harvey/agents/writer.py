@@ -64,35 +64,7 @@ TIER_GUIDANCE = {
               "lines: say what you need and ask whether they can take it on or pass it to the "
               "person who does. Never remark on the inbox or on their role; just ask."),
 }
-_CLOSER_RE = re.compile(r"^(thanks|thank you|many thanks|best|best regards|kind regards|regards|warm regards|"
-                        r"cheers|sincerely|all the best|yours|looking forward.*)[,.!]?$", re.I)
-
-
-def _plain_signoff(body: str, first: str) -> str:
-    """A customer signs with a first name alone: drop a "Thanks," line
-    above it and make sure the last line is that name."""
-    first = (first or "").strip()
-    lines = (body or "").rstrip().split("\n")
-    while lines and not lines[-1].strip():
-        lines.pop()
-    if not lines or not first:
-        return "\n".join(lines)
-    last = lines[-1].strip()
-    if last.lower() in (first.lower(), first.lower() + ","):
-        lines[-1] = first
-        j = len(lines) - 2
-        while j >= 0 and not lines[j].strip():
-            j -= 1
-        if j >= 0 and _CLOSER_RE.match(lines[j].strip()):
-            del lines[j:len(lines) - 1]
-        return "\n".join(lines).rstrip()
-    if _CLOSER_RE.match(last):
-        lines.pop()
-        return "\n".join(lines).rstrip() + f"\n\n{first}"
-    if re.match(rf"^(?:[A-Za-z ,]*?\b)?{re.escape(first)}(?:\s+\w+)?[.,]?$", last) and len(last.split()) <= 4:
-        lines[-1] = first
-        return "\n".join(lines).rstrip()
-    return "\n".join(lines).rstrip() + f"\n\n{first}"
+_plain_signoff = enquiry.plain_signoff   # a customer signs with a first name alone
 
 
 def _mentions(text: str, terms: set[str]) -> bool:
@@ -809,7 +781,7 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
         need = self._need(prospect.industry or "") if self.inquiry else {"need": ""}
         if self.inquiry:
             leaked = enquiry.example_leaks(f"{result.get('subject', '')} {result.get('body', '')}",
-                                           need["need"] + " " + enquiry.sender_line(self.config))
+                                           self._leak_allowed([prospect]))
             if leaked:
                 # The model copied a fact from the worked examples. Once more, pointed out.
                 retry = await self.brain.think_json(
@@ -865,10 +837,10 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
             steps_brief = f"""- Email 1: the enquiry itself, exactly like the four examples. {self._length_rule}. The need in the
   first two sentences with its concrete details, half a line on who is writing, ONE question that is a request.
 - Email 2: 3 days later, under 50 words, same voice. One line naming the thing again (the block, the rebar,
-  the savings), one line that it is still open, one question: can you take it on, or who could. New subject
-  in the same style.
-- Email 3: 4 days after that, under 35 words. A plain close in the first person: if it is not something you
-  do, no reply needed; if it is, a line back is enough. No new ask."""
+  the savings), one line that it is still open, one question: can you take it on. New subject in the same style.
+- Email 3: 4 days after that, under 35 words. A plain close in the first person: it is still open, and a
+  line back is welcome if it is something you do. No new ask, no question needed.
+  (Rules 5 and 6 of the brief are about email 1; emails 2 and 3 follow the lines above.)"""
         else:
             steps_brief = f"""- Email 1: Personalized cold observation + one question. {self._length_rule}. No pitch.
 - Email 2: Follow-up 3 days later. Different angle, one concrete proof point. {self._length_rule}.
@@ -915,7 +887,24 @@ Return ONLY a JSON array (no markdown fences, no commentary):
                                                    need=self._need(prospects[0].industry or "")["need"] if self.inquiry else "")
             if fixed is not first:
                 steps[0].subject = _scrub(str(fixed.get("subject") or steps[0].subject), self._forbidden_terms(prospects))
-                steps[0].body = _scrub(str(fixed.get("body") or steps[0].body), self._forbidden_terms(prospects))
+                body = _scrub(str(fixed.get("body") or steps[0].body), self._forbidden_terms(prospects))
+                steps[0].body = _plain_signoff(body, self._persona_first) if self.inquiry else body
+            if self.inquiry:
+                leaked = enquiry.example_leaks(f"{steps[0].subject} {steps[0].body}", self._leak_allowed(prospects))
+                if leaked:
+                    # The segment's email copied a fact from the worked examples: once more, pointed out.
+                    retry = await self.brain.think_json(
+                        single + "\n\nYour previous draft copied a detail from the examples (" + ", ".join(leaked[:4])
+                        + "). Those are other people's facts. Use only the NEED, WHO IS WRITING and the SEGMENT. Same JSON.",
+                        session_id="harvey-writer", agent="writer", task="sequence")
+                    if isinstance(retry, dict) and retry.get("body") and not enquiry.example_leaks(
+                            f"{retry.get('subject', '')} {retry.get('body', '')}", self._leak_allowed(prospects)):
+                        steps[0].subject = _scrub(str(retry.get("subject") or steps[0].subject), self._forbidden_terms(prospects))[:120]
+                        steps[0].body = _plain_signoff(_scrub(str(retry.get("body")), self._forbidden_terms(prospects)), self._persona_first)
+                    else:
+                        reasons = reasons + [f"copied from the examples: {', '.join(leaked[:3])}"]
+                        logger.warning(f"Writer: the first email still carries a fact from the examples ({', '.join(leaked[:3])}); "
+                                       "the sender will hold it for review.")
             if reasons:
                 logger.warning("Writer: the first email still reads like spam to a filter "
                                f"({'; '.join(reasons[:4])}); the sender will hold it for review.")
@@ -924,6 +913,13 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         return steps
 
     VARIANTS = 2  # other wordings of email 1 per segment, on top of the original
+
+    def _leak_allowed(self, prospects: list) -> str:
+        """Facts that are the sender's own (the need, who they are, their
+        background) and therefore never count as copied from the examples."""
+        need = self._need(prospects[0].industry or "") if prospects else {"need": "", "question": ""}
+        description = (getattr(self.config.product, "description", "") or "")
+        return " ".join([need["need"], need.get("question", ""), enquiry.sender_line(self.config), description])
 
     async def _add_variants(self, step: EmailStep, single_prompt: str, prospects: list) -> None:
         """Two more wordings of the first email, same facts, so a segment
@@ -952,6 +948,8 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             body = _plain_signoff(_scrub(str(result.get("body") or "").strip().replace("{{company}}", "your team"), forbidden),
                                   self._persona_first)
             if not subject or not body or body == step.body:
+                continue
+            if enquiry.example_leaks(f"{subject} {body}", self._leak_allowed(prospects)):
                 continue
             score, _why = self._risk({"subject": subject, "body": body}, need)
             if score >= 4:

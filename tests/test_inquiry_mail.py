@@ -78,3 +78,20 @@ async def test_a_reply_run_draft_carries_the_scope_link_once():
     # finalize never doubles a link the body already carries.
     text, html = finalize("Everything is at https://greystone.example already, have a look.", settings, greeting_name="Dana")
     assert text.count("https://greystone.example") == 1
+
+
+def test_a_no_in_the_command_center_gets_an_answer_and_no_link():
+    from bb.mail import scope as scope_mod
+    from harvey import enquiry
+
+    assert enquiry.is_decline("Thanks, but we're not taking new work this year.")
+    assert enquiry.is_decline("Please remove me from your list") and not enquiry.is_decline("Sure, send the drawings over")
+    scope = {"mode": "inquiry", "name": "Jane", "sender_line": "", "needs": [], "intent": "", "ask": "", "ask_detail": "",
+             "instructions": "", "links": [{"url": "https://docs.example/brief", "label": "the brief", "need": "a builder", "sectors": []}]}
+    body, url = scope_mod.apply_scope_link("Understood, thanks for letting me know. It's all in the brief:\n[SCOPE LINK 1]",
+                                           scope, [], inbound_text="We're not taking new work this year.")
+    assert url == "" and "docs.example" not in body and "[SCOPE LINK" not in body
+    body, url = scope_mod.apply_scope_link("Gladly, the brief has the drawings and the schedule:\n[SCOPE LINK 1]",
+                                           scope, [], inbound_text="Can you send the drawings?")
+    assert url == "https://docs.example/brief" and body.rstrip().endswith("https://docs.example/brief")
+

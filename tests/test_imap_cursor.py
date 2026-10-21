@@ -94,3 +94,40 @@ def test_replies_are_read_by_position_and_left_unread(tmp_path, monkeypatch):
     FakeIMAP.msgs[15] = (_raw("e", "eve@x.example", "After the rebuild"), False)
     out = p._fetch_unseen(limit=50)
     assert [m.from_email for m in out] == ["eve@x.example"]
+
+
+def test_a_full_page_is_read_oldest_first_and_a_failed_reply_is_read_again(tmp_path, monkeypatch):
+    class Big(FakeIMAP):
+        msgs = {u: (_raw(f"m{u}", f"p{u}@x.example", f"Reply {u}"), False) for u in range(20, 26)}
+        calls = []
+
+        def response(self, code):
+            return code, {"UIDVALIDITY": [b"900"], "UIDNEXT": [b"26"]}.get(code, [None])
+
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", Big)
+    monkeypatch.setattr(paths, "DATA_DIR", tmp_path)
+    p = smtp_mail.SmtpImapProvider(config=None, env=Env())
+    key = "imap.mine.example:me@mine.example:INBOX"
+
+    # More unread than fit in one pass: the oldest go first and the position
+    # stops at the last one actually read, so the newer ones come next time.
+    out = p._fetch_unseen(limit=4)
+    assert [m.uid for m in out] == [20, 21, 22, 23]
+    assert json.loads((tmp_path / "imap_cursor.json").read_text())[key]["uid"] == 23
+    out = p._fetch_unseen(limit=4)
+    assert [m.uid for m in out] == [24, 25]
+    assert json.loads((tmp_path / "imap_cursor.json").read_text())[key]["uid"] == 25
+
+    # The handler could not deal with one (model down): the position goes
+    # back to just before it, and it is read again, with everything after it.
+    p.rewind_to(out[0])
+    assert json.loads((tmp_path / "imap_cursor.json").read_text())[key]["uid"] == 23
+    assert [m.uid for m in p._fetch_unseen(limit=4)] == [24, 25]
+
+    # A first read of a mailbox with nothing unread still takes its position
+    # from the server (UIDNEXT), so a message read elsewhere later is not lost.
+    for u in Big.msgs:
+        Big.msgs[u] = (Big.msgs[u][0], True)
+    (tmp_path / "imap_cursor.json").unlink()
+    assert p._fetch_unseen(limit=4) == []
+    assert json.loads((tmp_path / "imap_cursor.json").read_text())[key]["uid"] == 25

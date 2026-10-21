@@ -135,3 +135,29 @@ async def test_a_block_pauses_the_sender_and_keeps_the_address_valid(state):  # 
     await handler._handle_bounce(InboundMessage(provider_id="b2", from_email="mailer-daemon@googlemail.com", subject="Undeliverable",
                                                 body=UNKNOWN, message_id="<b2@g>", in_reply_to=sent2["message_id"], is_bounce=True))
     assert (await state.get_prospect("w0")).email_status == "invalid"
+
+
+def test_a_block_is_told_from_the_quoted_headers_and_a_stray_notice_changes_nothing():
+    from harvey.integrations.mail_provider import BLOCK_KINDS, bounce_kind
+
+    # Gmail quotes the original message, DKIM header and all, under the verdict:
+    # the verdict wins, not the "DKIM" word in the quote.
+    quoted = BLOCKED + "\n\n----- Original message -----\nDKIM-Signature: v=1; a=rsa-sha256; d=mine.example\nFrom: me\n"
+    assert bounce_kind(quoted) in BLOCK_KINDS
+    assert bounce_kind("550 5.7.26 This mail is unauthenticated, which poses a security risk to the sender") == "sender authentication failed"
+    assert bounce_kind("552 5.2.2 The recipient's inbox is out of storage space") == "mailbox full"
+    assert bounce_kind(UNKNOWN).startswith("no such address")
+
+
+@pytest.mark.asyncio
+async def test_a_block_notice_for_no_email_of_ours_does_not_pause_the_sender(state):  # noqa: F811
+    from harvey.agents.handler import Handler
+    from harvey.agents.sender import COOLOFF_KEY
+
+    handler = Handler(StubBrain(), state, Cfg(), Env())
+    handler.provider = FakeProvider()
+    await handler._handle_bounce(InboundMessage(provider_id="b9", from_email="mailer-daemon@googlemail.com",
+                                                subject="Delivery Status Notification (Failure)", body=BLOCKED,
+                                                message_id="<b9@g>", in_reply_to="<never-sent@x>", is_bounce=True))
+    assert not await state.get_setting(COOLOFF_KEY)
+    assert (await state.get_setting("bounce_count") or "0") in ("", "0", None)

@@ -83,6 +83,23 @@ async def test_the_tunnel_outlives_the_site_and_is_adopted_on_the_next_start(tmp
     assert second.kill_recorded() is True and not second.recorded_process()["alive"]
     await second.stop()
 
+    # After a reboot the recorded pid may be any process: one that is not
+    # cloudflared is not adopted (and not killed).
+    import json
+    import os
+    (state / "tunnel.json").write_text(json.dumps({"mode": "quick", "port": 8000, "pid": os.getpid(),
+                                                   "url": "https://old.trycloudflare.com", "started_at": 1}))
+    stale = Tunnel("quick", 8000, binary=_fake(tmp_path), state_dir=state)
+    assert stale.recorded_process()["alive"] is False and stale._adopt() is False
+    (state / "tunnel.json").unlink()
+
+    # A named tunnel started with another token is another tunnel: it is ended, not adopted.
+    first_named = Tunnel("named", 8000, token="tok-a", public_url="https://out.example", binary=_fake(tmp_path), state_dir=state)
+    first_named._spawn()
+    assert first_named.recorded_process()["alive"] and first_named.read_state()["token"] and "tok-a" not in (state / "tunnel.json").read_text()
+    other_token = Tunnel("named", 8000, token="tok-b", public_url="https://out.example", binary=_fake(tmp_path), state_dir=state)
+    assert other_token._adopt() is False and not first_named.recorded_process()["alive"]
+
     missing = Tunnel("quick", 8000, binary=str(tmp_path / "nope"))
     await missing.start()
     assert missing.status == "missing" and "not installed" in missing.detail

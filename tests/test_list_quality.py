@@ -63,33 +63,116 @@ async def test_one_bounce_at_a_company_holds_the_rest_of_that_company(state):  #
 
 
 @pytest.mark.asyncio
+async def test_only_a_nonexistent_address_holds_a_company_and_only_its_first_emails(state):  # noqa: F811
+    from harvey.agents.handler import Handler
+
+    provider = FakeProvider()
+    sender = make_sender(state, provider, require_approval=False)
+    handler = Handler(StubBrain(), state, Cfg(), Env())
+    handler.provider = provider
+    people = [Prospect(id=f"g{i}", first_name=f"P{i}", email=e, email_status="provided")
+              for i, e in enumerate(["full@acme.example", "jo@acme.example", "al@acme.example"])]
+    for p in people:
+        await state.add_prospect(p)
+    c = Campaign(id="", name="seg", channel="email", prospect_ids=[p.id for p in people], status="draft",
+                 sequence=[EmailStep(step=1, subject="Rebar, around 40 tons a month", body="{{first_name}} plain words about rebar " * 6),
+                           EmailStep(step=2, subject="Rebar again", body="{{first_name}} following up " * 6, delay_days=4)])
+    c.id = await state.add_campaign(c)
+    sender.send_pacing = False
+    Cfg.channels.email.sends_per_cycle = 1
+    try:
+        await sender._run_native()
+    finally:
+        del Cfg.channels.email.sends_per_cycle
+    assert len(provider.sent) == 1 and provider.sent[0]["to"] == "full@acme.example"
+    sent = (await state.get_outbox(status="sent"))[0]
+
+    # A full mailbox is not a wrong address pattern: nothing else at the company is held.
+    await handler._handle_bounce(InboundMessage(provider_id="b", from_email="mailer-daemon@googlemail.com",
+                                                subject="Delivery Status Notification (Failure)",
+                                                body="552 5.2.2 The recipient's inbox is out of storage space.",
+                                                message_id="<b@g>", in_reply_to=sent["message_id"], is_bounce=True))
+    assert (await state.get_prospect("g0")).email_status == "invalid"
+    assert await state.get_outbox(status="pending_review") == []
+
+    # A nonexistent address holds the others' first emails; their follow-ups
+    # (days away, and only sent after a first email went) are left as they are.
+    await handler._handle_bounce(InboundMessage(provider_id="b2", from_email="mailer-daemon@googlemail.com",
+                                                subject="Delivery Status Notification (Failure)", body=DBEB,
+                                                message_id="<b2@g>", in_reply_to=sent["message_id"], is_bounce=True))
+    held = await state.get_outbox(status="pending_review")
+    assert sorted((i["to_email"], i["step"]) for i in held) == [("al@acme.example", 1), ("jo@acme.example", 1)]
+    assert all(i["step"] == 2 for i in await state.get_outbox(status="approved") if i["to_email"].endswith("acme.example"))
+
+
+@pytest.mark.asyncio
 async def test_uploaded_addresses_are_checked_when_a_verifier_exists(state, monkeypatch):  # noqa: F811
     for i, e in enumerate(["ok@google-shop.example", "gone@m365.example", "any@catchall.example",
-                           "who@unknown.example", "dead@no-mx.example"]):
+                           "who@unknown.example", "dead@no-mx.example", "later@dns-down.example",
+                           "web@a-only.example"]):
         await state.add_prospect(Prospect(id=f"u{i}", first_name="X", email=e, email_status="provided"))
 
-    async def mx(domain):
-        return None if domain == "no-mx.example" else ("aspmx.l.google.com" if "google" in domain else "mail.protection.outlook.com")
+    async def lookup(domain):
+        return {"no-mx.example": ("none", None), "dns-down.example": ("error", None),
+                "a-only.example": ("a", None)}.get(
+            domain, ("mx", "aspmx.l.google.com" if "google" in domain else "mail.protection.outlook.com"))
 
     async def verdict(email, mx_type, env):
         assert mx_type in ("google", "microsoft", "gateway")
+        if email == "web@a-only.example":
+            assert mx_type == "gateway"
         return {"ok@google-shop.example": ("verified", False), "gone@m365.example": ("invalid", False),
-                "any@catchall.example": ("risky", True)}.get(email, (None, False))
+                "any@catchall.example": ("risky", True), "web@a-only.example": ("verified", False)}.get(email, (None, False))
 
-    monkeypatch.setattr(email_finder, "get_mx_host", mx)
+    monkeypatch.setattr(listcheck, "lookup_domain", lookup)
     monkeypatch.setattr(email_finder, "_verify_candidate", verdict)
 
     class Env2:
         reoon_api_key = "k"; zerobounce_api_key = ""
     assert listcheck.verifier_configured(Env2()) and not listcheck.verifier_configured(Env())
     counts = await listcheck.verify_uploaded(state, Env2())
-    assert counts == {"verified": 1, "invalid": 2, "risky": 1, "unknown": 1, "checked": 5}
+    assert counts == {"verified": 2, "invalid": 2, "risky": 1, "unknown": 1, "deferred": 1, "checked": 7}
     statuses = {p.email: p.email_status for p in await state.get_prospects_by_status("new")}
-    assert statuses == {"ok@google-shop.example": "verified", "gone@m365.example": "invalid", "any@catchall.example": "risky",
-                        "who@unknown.example": "provided", "dead@no-mx.example": "invalid"}
-    # The inconclusive one is noted and not checked again next cycle.
+    # A catch-all stays as given (it sends); a DNS failure changes nothing.
+    assert statuses == {"ok@google-shop.example": "verified", "gone@m365.example": "invalid",
+                        "any@catchall.example": "provided", "who@unknown.example": "provided",
+                        "dead@no-mx.example": "invalid", "later@dns-down.example": "provided",
+                        "web@a-only.example": "verified"}
+    # The inconclusive and catch-all ones are noted and not checked again;
+    # the one behind the DNS failure is tried again next cycle.
     assert listcheck.INCONCLUSIVE_NOTE in (await state.get_prospect("u3")).personalization_notes
-    assert (await listcheck.verify_uploaded(state, Env2()))["checked"] == 0
+    assert listcheck.CATCH_ALL_NOTE in (await state.get_prospect("u2")).personalization_notes
+    assert "Verification" not in ((await state.get_prospect("u5")).personalization_notes or "")
+    again = await listcheck.verify_uploaded(state, Env2())
+    assert again["checked"] == 1 and again["deferred"] == 1
+
+
+def test_domain_lookup_tells_a_missing_domain_from_a_failed_lookup(monkeypatch):
+    import dns.resolver
+
+    class _Rec:
+        def __init__(self, exchange, preference=10):
+            self.exchange, self.preference = exchange, preference
+
+    def resolve(domain, rtype):
+        if domain == "gone.example":
+            raise dns.resolver.NXDOMAIN()
+        if domain == "slow.example":
+            raise dns.resolver.LifetimeTimeout()
+        if domain == "null-mx.example":
+            return [_Rec(".", 0)]
+        if domain == "web-only.example":
+            if rtype == "MX":
+                raise dns.resolver.NoAnswer()
+            return [object()]
+        return [_Rec("mx2.example.", 20), _Rec("mx1.example.", 10)]
+
+    monkeypatch.setattr(dns.resolver, "resolve", resolve)
+    assert listcheck._lookup_domain_sync("gone.example") == ("none", None)
+    assert listcheck._lookup_domain_sync("slow.example") == ("error", None)
+    assert listcheck._lookup_domain_sync("null-mx.example") == ("none", None)
+    assert listcheck._lookup_domain_sync("web-only.example") == ("a", None)
+    assert listcheck._lookup_domain_sync("fine.example") == ("mx", "mx1.example")
 
 
 @pytest.mark.asyncio

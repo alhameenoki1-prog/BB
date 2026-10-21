@@ -26,7 +26,8 @@ from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
 from bb.workspaces import (ASKS, ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
                            MAX_INBOX_LINKS, MAX_SECTOR_MESSAGES, OUTREACH_MODES, MAX_SECTOR_NEEDS, SECTOR_LABELS, SPEEDS,
-                           STYLES, TONES, Workspace, all_workspaces)
+                           STYLES, TONES, Workspace, _sector_messages_from_form, _sector_needs_from_form,
+                           all_workspaces)
 
 logger = logging.getLogger("bb.app")
 
@@ -238,6 +239,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         yield
         keeper.cancel()
         await tunnel.stop()
+        if tunnel.pid and tunnel.mode == "quick" and tunnel.url:
+            # The link stays up on purpose so a restart keeps it. Someone
+            # stopping the site by hand should know it is still running.
+            print(f"The public link {tunnel.url} is still up (cloudflared pid {tunnel.pid}) so it survives a "
+                  "restart; `python -m bb tunnel stop` ends it.", flush=True)
 
     app = FastAPI(title="BB", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.state.settings = settings
@@ -395,6 +401,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             merged[box] = bool(form.get(box))
         if "quiet_form" in form:
             merged["quiet_enabled"] = bool(form.get("quiet_enabled"))
+        # The row-shaped settings come back as the rows the person typed,
+        # not the stored ones (a rejected save must not lose their edits).
+        if any(k.startswith("sn_") for k in form):
+            merged["sector_needs"] = _sector_needs_from_form(form)
+        if any(k.startswith("sm_") for k in form):
+            merged["sector_messages"] = _sector_messages_from_form(form)
         return merged
 
     def _profile_ctx(ws: Workspace, profile: dict) -> dict:

@@ -127,8 +127,13 @@ async def test_a_reply_answers_on_the_need_and_sends_the_scope_once(state):  # n
     assert "docs.example" not in text3     # the rebar row has no link of its own and there is no general one
     cfg.outreach.details_url = "https://docs.example/general"
     text4 = await handler._generate_response("question", "Who are you exactly?", other, convo2)
-    assert text4.rstrip().endswith("https://docs.example/general")       # asked for or not, the first reply carries it
+    # Asked for or not, the first reply carries it, above the sign-off, which stays last.
+    assert text4.rstrip().endswith("https://docs.example/general\n\nJane")
     assert "Have a look and tell me whether it's something you'd take on:" in text4
+    # Someone who declined gets an answer and no link, whatever the model wrote.
+    brain.texts = ["Hi Sam,\n\nUnderstood, thanks for letting me know. Everything is in the brief:\n[SCOPE LINK]\n\nJane"]
+    text5 = await handler._generate_response("objection", "We're not taking new work this year.", other, convo2)
+    assert "docs.example" not in text5 and "[SCOPE LINK]" not in text5 and text5.rstrip().endswith("Jane")
     # The classifier speaks the customer's language in inquiry mode.
     assert "asks for details, specs, scope" in (await _classifier_prompt(handler, other))
 
@@ -187,3 +192,24 @@ async def test_the_inbox_auto_reply_shares_the_matching_scope_on_its_own(state):
     body = items[0]["body"]
     assert body.count("https://docs.example/rebar") == 1 and "docs.example/towson" not in body
     assert "Everything you'd need to judge it is in the rebar spec" in body and body.rstrip().endswith("Jane")
+
+    # A stranger who asked something else gets an answer, not the brief.
+    provider.inbound = [_mail(2, "ray@steel.example", "your email", "Who is this and how did you get my address?",
+                              headers={"from": "Ray <ray@steel.example>"})]
+    brain.decisions = [{"action": "reply", "reason": "asks who we are", "share": [],
+                        "reply": "Hi Ray,\n\nI run Greystone Development in Baltimore; your address came from the team page "
+                                 "on your site. I wrote because we're buying rebar for a block in Towson this year.\n\nJane"}]
+    assert await handler._run_native() is True
+    body2 = sorted((await state.get_outbox()), key=lambda i: i["created_at"])[-1]["body"]
+    assert "docs.example" not in body2 and body2.rstrip().endswith("Jane")
+
+    # When the model chose the document itself, its own sentence introduces it: no second one is added.
+    provider.inbound = [_mail(3, "kim@steel.example", "specs", "Happy to quote. Can you send the spec over?",
+                              headers={"from": "Kim <kim@steel.example>"})]
+    brain.decisions = [{"action": "reply", "reason": "wants the spec", "share": [4],
+                        "reply": "Hi Kim,\n\nGladly. The spec below has the grades, the monthly tonnage and the delivery "
+                                 "schedule, which is the quickest way to see whether it's your kind of order.\n\nJane"}]
+    assert await handler._run_native() is True
+    body3 = sorted((await state.get_outbox()), key=lambda i: i["created_at"])[-1]["body"]
+    assert body3.count("https://docs.example/rebar") == 1 and "Everything you'd need to judge it" not in body3
+    assert "the rebar spec: https://docs.example/rebar" in body3 and body3.rstrip().endswith("Jane")

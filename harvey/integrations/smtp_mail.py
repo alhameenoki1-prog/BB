@@ -202,6 +202,31 @@ class SmtpImapProvider(MailProvider):
         except OSError as e:
             logger.debug(f"IMAP cursor not saved: {e}")
 
+    _last_validity: str = ""
+
+    @staticmethod
+    def _uid_next(conn) -> int:
+        try:
+            _typ, vals = conn.response("UIDNEXT")
+            for v in vals or []:
+                if v:
+                    return int(v.decode() if isinstance(v, bytes) else v)
+        except Exception:
+            pass
+        return 0
+
+    def rewind_to(self, message: InboundMessage) -> None:
+        """A message the handler could not process (the model was down, the
+        worker was stopped) is read again next time: the position goes back
+        to just before it. Messages come oldest first, so later ones in the
+        same batch are re-read too."""
+        uid = int(getattr(message, "uid", 0) or 0)
+        if not uid or not self._last_validity:
+            return
+        cursor = self._load_cursor()
+        if cursor.get("validity", "") == self._last_validity and int(cursor.get("uid") or 0) >= uid:
+            self._save_cursor(self._last_validity, uid - 1)
+
     @staticmethod
     def _uid_validity(conn) -> str:
         try:
@@ -227,17 +252,22 @@ class SmtpImapProvider(MailProvider):
             if status != "OK":
                 return []
             validity = self._uid_validity(conn)
+            self._last_validity = validity
+            uidnext = self._uid_next(conn)
             cursor = self._load_cursor()
-            last = int(cursor.get("uid") or 0) if cursor.get("validity", "") == validity else 0
+            first_read = not (cursor.get("validity", "") == validity and cursor.get("uid"))
+            last = 0 if first_read else int(cursor.get("uid") or 0)
             if last:
                 status, data = conn.uid("SEARCH", None, f"UID {last + 1}:*")
             else:
                 status, data = conn.uid("SEARCH", None, "UNSEEN")
-            if status != "OK" or not data or not data[0]:
-                return []
+            found = [] if status != "OK" or not data or not data[0] else data[0].split()
             # "n:*" always returns the newest message, even below n: filter.
-            uids = [u for u in data[0].split() if int(u) > last]
-            uids = uids[-limit:]
+            # Oldest first, one page: the rest is read on the next pass, so
+            # nothing is skipped when more than ``limit`` arrived.
+            uids = sorted((u for u in found if int(u) > last), key=int)
+            truncated = len(uids) > limit
+            uids = uids[:limit]
             newest = last
             for uid in uids:
                 status, parts = conn.uid("FETCH", uid, "(BODY.PEEK[])")
@@ -246,7 +276,12 @@ class SmtpImapProvider(MailProvider):
                 newest = max(newest, int(uid))
                 parsed = self._parse_rfc822(parts[0][1])
                 if parsed:
+                    parsed.uid = int(uid)
                     out.append(parsed)
+            if first_read and not truncated and uidnext:
+                # A position even when nothing was unread, so that from now on
+                # a reply the person opens first is still seen.
+                newest = max(newest, uidnext - 1)
             if newest > last:
                 self._save_cursor(validity, newest)
         finally:

@@ -422,10 +422,12 @@ class Handler:
                 handled += 1
             except asyncio.CancelledError:
                 consumed = False   # cut off mid-way: the reply is read again next time
+                self._rewind(msg)
                 raise
             except BrainUnavailable as e:
                 consumed = False
                 complete = False
+                self._rewind(msg)
                 logger.error(f"Handler: stopping; replies are left for later ({e}).")
                 break
             except Exception as e:
@@ -487,6 +489,18 @@ class Handler:
     def inbox_autoreply(self) -> bool:
         outreach = getattr(self.config, "outreach", None)
         return bool(getattr(outreach, "inbox_autoreply", False))
+
+    def _rewind(self, msg) -> None:
+        """A reply that was read but not handled is read again next time:
+        the IMAP cursor goes back to just before it (other providers keep
+        their own unread state)."""
+        rewind = getattr(self.provider, "rewind_to", None)
+        if rewind is None:
+            return
+        try:
+            rewind(msg)
+        except Exception as e:
+            logger.debug(f"Handler: could not rewind the mailbox cursor: {e}")
 
     async def _auto_reply_inbox(self, msg) -> bool:
         """Answer a new email from someone who is not on the list: follow the
@@ -611,19 +625,23 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
         body = re.sub(r"(?im)^\s*(best|regards|kind regards|thanks|thank you|cheers)[,.]?\s*\n+\s*" +
                       re.escape(persona.name.split()[0]) + r"\s*$", "", body).strip()
         scope_urls = {sl["url"].rstrip("/") for sl in (enquiry.scope_links(outreach) if self.inquiry else [])}
-        if self.inquiry and scope_urls and not any(l.url.rstrip("/") in scope_urls for l in chosen):
-            # The customer's reply always carries the full scope, asked for or not.
-            pick = enquiry.pick_scope_link(outreach, f"{msg.subject} {msg.body}")
-            match = next((l for l in links if pick and l.url.rstrip("/") == pick["url"].rstrip("/")), None)
-            if match is not None:
-                chosen.append(match)
-        if chosen:
+        forced = None
+        asked = f"{msg.subject} {msg.body}"
+        if (self.inquiry and scope_urls and enquiry.wants_details(asked)
+                and not any(l.url.rstrip("/") in scope_urls for l in chosen)):
+            # They asked for the details and the model forgot the link:
+            # the full scope goes with one introducing line. A stranger
+            # who asked something else gets an answer, not a brochure.
+            pick = enquiry.pick_scope_link(outreach, asked)
+            forced = next((l for l in links if pick and l.url.rstrip("/") == pick["url"].rstrip("/")), None)
+        if chosen or forced is not None:
             lines = []
             for l in chosen:
-                if l.url.rstrip("/") in scope_urls:
-                    lines.append(f"{enquiry.scope_sentence(l.label)}\n{l.url}")
-                else:
-                    lines.append(f"{l.label + ': ' if l.label else ''}{l.url}")
+                # The model already introduced what it chose to share: the
+                # link follows with its name, not a second introduction.
+                lines.append(f"{l.label + ': ' if l.label else ''}{l.url}")
+            if forced is not None:
+                lines.append(f"{enquiry.scope_sentence(forced.label)}\n{forced.url}")
             body += "\n\n" + "\n".join(lines)
         body += f"\n\n{persona.name.split()[0]}"
         body = names.ensure_greeting(body, first, sender, company,
@@ -673,12 +691,17 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
             await self.state.update_outbox_item(
                 outbox_item["id"], error=f"Bounced: {reason}. {hint}"[:600])
 
-        if kind in BLOCK_KINDS:
+        if kind in BLOCK_KINDS and outbox_item:
             # A spam verdict on us, not a bad address: the address stays
             # valid, the follow-ups to this person are dropped, and the
             # sender stands down for a while so the next batch does not
             # dig the hole deeper. Not counted toward the bad-list switch.
+            # Only a bounce of an email we sent counts: a stray or forged
+            # notice cannot pause the mailbox.
             await self._stand_down_after_block(kind, reason, prospect)
+            return
+        if kind in BLOCK_KINDS:
+            logger.warning(f"Handler: a block notice ({reason}) arrived that matches none of our sent emails; ignored.")
             return
 
         if prospect:
@@ -692,7 +715,8 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
                 f"Handler: BOUNCE for {prospect.email} ({reason}) — marked invalid, "
                 f"cancelled {cancelled} queued email(s). {hint}"
             )
-            await self._guard_domain(prospect)
+            if kind.startswith("no such address"):
+                await self._guard_domain(prospect)
         else:
             logger.warning(
                 f"Handler: bounce received ({msg.subject[:60]}) but couldn't "
@@ -967,8 +991,9 @@ Respond with ONLY the category label, nothing else."""
             link = (getattr(offer, "booking_url", "") or "").strip() if theme in ("zoom", "phone") else ""
             parts.append(
                 f"WHAT {persona.name.upper()} WANTS NEXT: {ASK_THEMES[theme]}. When they are interested or "
-                "asking how to proceed, propose exactly that (two or three concrete options if times are "
-                "involved) and nothing grander; when they are hesitant, answer them first and offer it lightly."
+                "asking how to proceed, propose exactly that and nothing grander (name a day or time only if the "
+                "standing instructions give one; otherwise ask them for one); when they are hesitant, answer "
+                "them first and offer it lightly."
                 + (f" Specifics: {detail}." if detail else "") + (f" Booking link: {link}" if link else ""))
         if outreach and outreach.reply_instructions.strip():
             parts.append(
@@ -1105,10 +1130,15 @@ Write a reply that:"""
         )
         if response and scope is not None:
             # The link goes in by code, once: where the model put the marker,
-            # or at the end when they asked for details and the model forgot.
-            # Asked for or not: the first reply in a conversation carries it.
-            response, included = enquiry.resolve_scope_marker(
-                response, scope["url"], scope["shared"], wants=True, label=scope["label"], need=need["need"])
+            # or at the end when the model forgot. Asked for or not, the
+            # first reply to someone interested, asking or passing us on
+            # carries it; a no, or an angry or legal message, gets none.
+            wants = intent in ("interested", "question", "wrong_person")
+            main, signoff = enquiry.split_signoff(response, first)
+            # A marker in a reply to a no is dropped like one already sent.
+            main, included = enquiry.resolve_scope_marker(
+                main, scope["url"], scope["shared"] or not wants, wants=wants, label=scope["label"], need=need["need"])
+            response = main + (f"\n\n{signoff}" if signoff else "")
             if included:
                 logger.info(f"Handler: the full scope ({scope['label'] or scope['url']}) goes to {prospect.email}.")
         if not response:

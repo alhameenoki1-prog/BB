@@ -16,6 +16,7 @@ cloudflared dies it is started again; if it is not installed the page says
 so instead of the site failing to start."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -52,7 +53,8 @@ def _alive(pid: int) -> bool:
 
 def _command_of(pid: int) -> str:
     """The process's command line, from /proc where it exists, else ps;
-    "" when it cannot be told (then the pid alone is trusted)."""
+    "" when it cannot be told (then the pid is not trusted: after a reboot
+    it may belong to anything)."""
     try:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
         if raw:
@@ -123,9 +125,17 @@ class Tunnel:
         try:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
             self.state_file.write_text(json.dumps({"mode": self.mode, "port": self.port, "pid": self.pid,
-                                                   "url": self.url, "started_at": self.started_at}))
+                                                   "url": self.url, "started_at": self.started_at,
+                                                   "token": self._token_tag()}))
         except OSError as e:
             logger.debug("tunnel: state not saved: %s", e)
+
+    def _token_tag(self) -> str:
+        """A fingerprint of the named tunnel's token (never the token): a
+        recorded process started with a different token is not adopted."""
+        if self.mode != "named" or not self.token:
+            return ""
+        return hashlib.sha256(self.token.encode()).hexdigest()[:16]
 
     def _clear_state(self) -> None:
         try:
@@ -140,9 +150,11 @@ class Tunnel:
         st = self.read_state()
         pid = int(st.get("pid") or 0)
         cmd = _command_of(pid) if _alive(pid) else ""
-        alive = _alive(pid) and (not cmd or "cloudflared" in cmd.lower() or Path(self.binary).name in cmd)
+        # Only a process that can be seen to be cloudflared counts: a pid
+        # with no readable command line may be anything (after a reboot).
+        alive = _alive(pid) and bool(cmd) and ("cloudflared" in cmd.lower() or Path(self.binary).name in cmd)
         return {"pid": pid, "url": st.get("url", ""), "alive": alive, "started_at": st.get("started_at", 0),
-                "mode": st.get("mode", ""), "port": st.get("port")}
+                "mode": st.get("mode", ""), "port": st.get("port"), "token": st.get("token", "")}
 
     def kill_recorded(self) -> bool:
         """Stop the cloudflared this site started (by hand: `python -m bb
@@ -160,8 +172,8 @@ class Tunnel:
                 time.sleep(0.1)
             if _alive(pid):
                 os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        except (ProcessLookupError, PermissionError):
+            pass           # gone already, or someone else's now: either way, not ours
         self._clear_state()
         return True
 
@@ -182,6 +194,12 @@ class Tunnel:
         address. The link stays the one people already have."""
         rec = self.recorded_process()
         if not rec["alive"] or rec["mode"] != self.mode or rec["port"] != self.port:
+            return False
+        if self.mode == "named" and rec.get("token", "") != self._token_tag():
+            # Started with another token: that is another tunnel. End it so
+            # the one for this token can run.
+            self.pid = rec["pid"]
+            self.kill_recorded()
             return False
         if self.mode == "quick" and not rec["url"]:
             # Alive but its address was never recorded: nobody can use it.
@@ -310,7 +328,7 @@ class Tunnel:
                     await asyncio.sleep(0.1)
                 if _alive(self.pid):
                     os.kill(self.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
             if self._proc is not None:
                 try:

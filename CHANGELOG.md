@@ -7,6 +7,32 @@ minor versions can still change behaviour.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Review fixes across the last week's changes.** An IMAP page bigger
+  than one pass now goes oldest first and the position stops at the last
+  message actually read (newer replies were skipped); a mailbox read for
+  the first time takes its position from the server (UIDNEXT), so a reply
+  opened on the phone before the first pass is not lost; a reply the model
+  could not handle (provider down, worker stopped) is read again next
+  cycle. A bounce is classified by its verdict, not by the DKIM header
+  Gmail quotes below it, and "authentication" only means the real
+  authentication codes; a block notice that matches none of our sent
+  emails cannot pause the mailbox; only a nonexistent address (never a
+  full mailbox or a block) holds the other first emails to that company,
+  and the follow-ups are left alone. The list check marks an uploaded
+  address invalid only when the domain does not exist or takes no mail;
+  a DNS lookup that merely failed is tried again next cycle, and a
+  catch-all stays "provided" with a note. A reply to someone who said no
+  carries no scope link even if the model wrote the marker, the link
+  goes above the sign-off, and the model is told to ask them for a time
+  unless the standing instructions give one. Saving the Inbox page no
+  longer erases the needs rows, and a profile save that is refused shows
+  the rows as typed, not the stored ones. The tunnel adopts a recorded
+  process only when it can be seen to be cloudflared, refuses one started
+  with another token, and the site says on shutdown that the link is
+  still up and how to stop it.
+
 ### Changed
 
 - **The quick-tunnel link survives restarts and updates.** A
@@ -26,8 +52,9 @@ minor versions can still change behaviour.
   for your approval (the pattern is probably wrong for the whole company).
   When the server has a verifier key (Reoon, ZeroBounce or Hunter), every
   uploaded address is checked before it is written to: nonexistent ones are
-  never sent, catch-alls are marked risky, domains with no mail server are
-  invalid without spending a credit.
+  never sent, domains that do not exist (or publish no mail server) are
+  invalid without spending a credit, and a catch-all domain (where nothing
+  can be proven) is kept as given and noted.
 - **Rewrite the unsent emails after an update.** First emails written with
   the old brief ("our current needs") that are still queued are counted on
   the dashboard with a button that cancels them and has the worker write
@@ -52,8 +79,10 @@ minor versions can still change behaviour.
   asked for or not, in a sentence that says what is in it and that it is
   the quickest way to see whether this is their kind of job, and the
   reply ends by pointing them to it. Once it has gone out in a thread it
-  is not sent again. The Inbox auto-reply and the command center do the
-  same.
+  is not sent again, and a no, an opt-out or a complaint never gets it.
+  The command center does the same; the Inbox auto-reply (mail from
+  strangers) sends it when the model chooses to or when they asked for
+  details.
 - **The worker no longer marks your replies as read.** The SMTP/IMAP
   reader used an UNSEEN search and a fetch that set the read flag, so a
   reply the worker had seen looked already-read in your own mail client

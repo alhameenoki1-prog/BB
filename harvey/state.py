@@ -1055,7 +1055,8 @@ class StateManager:
         async with self._connect() as db:
             cursor = await db.execute(
                 "UPDATE outbox SET status = 'pending_review', error = ?, updated_at = ? "
-                "WHERE status = 'approved' AND kind = 'sequence' AND lower(to_email) LIKE ? AND prospect_id != ?",
+                "WHERE status = 'approved' AND kind = 'sequence' AND step = 1 AND lower(to_email) LIKE ? "
+                "AND prospect_id != ?",
                 (note[:600], _utcnow().isoformat(), f"%@{domain.lower()}", exclude_prospect_id or ""),
             )
             await db.commit()

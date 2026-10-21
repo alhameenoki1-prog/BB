@@ -23,7 +23,7 @@ SECTOR_ASKS = {
     "banking": "an account, a loan or a facility: for what, roughly how much in words, when; ask whether they do that kind of lending or account and what they need to see",
     "insurance": "cover for a specific thing: the building, fleet, site or business, where, from when; ask whether they can quote it and what they need from you",
     "accounting": "bookkeeping, payroll, tax or a year-end: company size, invoice volume, the software, the year end, when; ask whether they work with companies that size and what they need to start",
-    "legal": "a matter to handle: a lease, a contract, a dispute, a formation; what it is, its size or deadline; ask whether they can take it on this month and how they bill it",
+    "legal": "a matter to handle: a lease, a contract, a dispute, a formation; what it is, its size and, if the need gives one, the date; ask whether they can take it on",
     "healthcare": "becoming a patient or arranging care: for whom, what for, when; ask whether they are taking new patients and how to book",
     "education": "a place, a course or training: for whom, what, when; ask whether there is room and what the next step is",
     "hr_recruiting": "a hire or a staffing need: the role, how many, where, the start date; ask whether they recruit for that and what they need from you",
@@ -74,6 +74,8 @@ INQUIRY_TIER_NOTES = {
 # carries one copied the example instead of writing from the need.
 EXAMPLE_LEAK_TERMS = (
     "scarsdale", "riverside", "tulsa", "houston", "precast company", "quickbooks", "bridge deck", "december 31",
+    "24-unit", "40 tons", "#5 and #6", "twelve people", "300 invoices", "landscaping business",
+    "high school teacher", "concrete podium", "wood frame", "my mother's house", "college in six years",
 )
 
 # Housekeeping sentences the upload writes into a contact's notes; they
@@ -81,6 +83,45 @@ EXAMPLE_LEAK_TERMS = (
 _HOUSEKEEPING_RE = re.compile(r"^(No name was given|Name (taken|read|matched)|Shared inbox)", re.I)
 
 SCOPE_MARKER_RE = re.compile(r"\[\s*scope\s+link(?:\s*\d+)?\s*\]", re.I)
+_LEAD_IN_RE = re.compile(r"\b(brief|scope|spec|note|document|folder|link|here|attached|page|sheet|details)\b", re.I)
+_CLOSER_RE = re.compile(r"^(thanks|thank you|many thanks|best|best regards|kind regards|regards|warm regards|"
+                        r"cheers|sincerely|all the best|yours|looking forward.*)[,.!]?$", re.I)
+
+
+def plain_signoff(body: str, first: str) -> str:
+    """A customer signs with a first name alone: drop a "Thanks," line
+    above it and make sure the last line is that name."""
+    first = (first or "").strip()
+    lines = (body or "").rstrip().split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines or not first:
+        return "\n".join(lines)
+    last = lines[-1].strip()
+    if last.lower() in (first.lower(), first.lower() + ","):
+        lines[-1] = first
+        j = len(lines) - 2
+        while j >= 0 and not lines[j].strip():
+            j -= 1
+        if j >= 0 and _CLOSER_RE.match(lines[j].strip()):
+            del lines[j:len(lines) - 1]
+        return "\n".join(lines).rstrip()
+    if _CLOSER_RE.match(last):
+        lines.pop()
+        return "\n".join(lines).rstrip() + f"\n\n{first}"
+    if re.match(rf"^(?:[A-Za-z ,]*?\b)?{re.escape(first)}(?:\s+\w+)?[.,]?$", last) and len(last.split()) <= 4:
+        lines[-1] = first
+        return "\n".join(lines).rstrip()
+    return "\n".join(lines).rstrip() + f"\n\n{first}"
+
+
+def split_signoff(body: str, first: str) -> tuple[str, str]:
+    """(body without its last-line sign-off, the sign-off line or "")."""
+    text = (body or "").rstrip()
+    lines = text.split("\n")
+    if lines and first and lines[-1].strip().lower() in (first.lower(), first.lower() + ","):
+        return "\n".join(lines[:-1]).rstrip(), lines[-1].strip()
+    return text, ""
 _URL_RE = re.compile(r"https?://\S+", re.I)
 
 # What a recipient writes when they want the scope: the cues that let code
@@ -181,6 +222,20 @@ def wants_details(text: str) -> bool:
     return bool(_DETAIL_CUES.search(text or ""))
 
 
+# A no, an opt-out or a complaint: the one kind of reply that never gets
+# the scope pushed at it (code-side, whatever the model wrote).
+_DECLINE_CUES = re.compile(
+    r"\b(not interested|no thanks|no thank you|unsubscribe|opt[- ]?out|remove me|take me off|stop (emailing|contacting|sending)|"
+    r"do(n't| not) (contact|email) (me|us)|never contact|not (able|in a position) to take|can(not|'t) take (this|it|that) on|"
+    r"(we|i)('re| are|'m| am) not (taking|accepting|looking)|not for us|not something we do|(we|i) (don't|do not) (do|offer|handle)|"
+    r"wrong (company|number|address|person to ask)|spam|report(ed|ing)? you|harass|lawyer|legal action|cease and desist)\b", re.I)
+
+
+def is_decline(text: str) -> bool:
+    """Did they say no, opt out, or complain?"""
+    return bool(_DECLINE_CUES.search(text or ""))
+
+
 def already_shared(url: str, texts) -> bool:
     """Has this link already gone out in this conversation? ``texts`` are
     the bodies already sent or queued (ours), any of which may hold it."""
@@ -242,7 +297,8 @@ def resolve_scope_marker(body: str, url: str, shared: bool, wants: bool = False,
                 prev = next((p for p in reversed(out) if p.strip()), "")
                 if stripped:
                     out.append(stripped.rstrip(" :") + ":")
-                elif not prev or not prev.rstrip().endswith(":"):
+                elif not prev or not (prev.rstrip().endswith(":") or _LEAD_IN_RE.search(prev)):
+                    # No lead-in of the model's own: add the default one.
                     out.append(scope_sentence(label, need))
                 out.append(url)
                 included = True

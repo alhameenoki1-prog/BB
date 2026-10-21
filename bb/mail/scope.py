@@ -153,13 +153,20 @@ def apply_scope_link(body: str, scope: dict | None, outbound_texts, inbound_text
                      thread_text: str = "", always: bool = True) -> tuple[str, str]:
     """Resolve the draft's marker into the right link, once per thread.
     With ``always`` (replies) the link goes in whether or not the model
-    put a marker, as long as it has not gone out in this thread; a new
-    email (``always=False``) carries it when the model asked or the
-    instruction mentions the scope. Returns (body, url_included_or_empty)."""
+    put a marker, as long as it has not gone out in this thread and the
+    last message was not a no, an opt-out or a complaint (those get an
+    answer, never the brief); a new email (``always=False``) carries it
+    when the model asked or the instruction mentions the scope.
+    Returns (body, url_included_or_empty)."""
     link = pick_link(scope, body, thread_text)
     url = link["url"] if link else ""
     shared = enquiry.already_shared(url, outbound_texts) if url else True
     text = _NUMBERED.sub("[SCOPE LINK]", body or "")
+    declined = enquiry.is_decline(inbound_text)
+    if declined:
+        # Whatever the model wrote, no link goes to someone who said no.
+        text, _ = enquiry.resolve_scope_marker(text, url, True)
+        return text, ""
     out, included = enquiry.resolve_scope_marker(
         text, url, shared, wants=bool(url) and (always or enquiry.wants_details(inbound_text)),
         label=(link or {}).get("label", ""), need=(link or {}).get("need", ""))
