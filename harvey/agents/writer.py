@@ -67,9 +67,22 @@ TIER_GUIDANCE = {
 _plain_signoff = enquiry.plain_signoff   # a customer signs with a first name alone
 
 
+def _term_re(term: str) -> re.Pattern:
+    """How a forbidden term is recognised. A domain or a multi-word name
+    anywhere, whatever the case; a single ordinary-looking word only as the
+    name is written (so "Build" the company is caught, "build" and
+    "builder" the words are not) unless it is long enough to be nobody's
+    word."""
+    esc = re.escape(term)
+    bounded = rf"(?<![\w@.]){esc}(?!\w)(?!\.\w)"
+    if not term.isalpha() or len(term) >= 8:
+        return re.compile(bounded, re.I)     # a domain, a multi-word name, digits, or long: nobody's word
+    return re.compile(bounded)
+
+
 def _mentions(text: str, terms: set[str]) -> bool:
-    low = (text or "").lower()
-    return any(t.lower() in low for t in terms if t)
+    text = text or ""
+    return any(_term_re(t).search(text) for t in terms if t)
 
 
 def _scrub(text: str, terms: set[str]) -> str:
@@ -79,14 +92,17 @@ def _scrub(text: str, terms: set[str]) -> str:
     if not text or not terms:
         return text
     for term in sorted((t for t in terms if t), key=len, reverse=True):
+        if not _term_re(term).search(text):
+            continue      # not named (a plain word that is also a company's name is left alone)
         esc = re.escape(term)
+        flag = "(?i)" if _term_re(term).flags & re.I else ""
         # "Avrum here from Wandlp." → "Avrum here."; "the team at Acme" → "the team".
         tail = r"(?!\w)(?!\.\w)"   # not inside a longer word, not the start of a domain
-        text = re.sub(rf"(?i)\s+\b(?:at|from|of)\s+{esc}{tail}", "", text)
+        text = re.sub(rf"{flag}\s+\b(?:at|from|of)\s+{esc}{tail}", "", text)
         # "working with Acme" → "working with you"; "a quote for Acme" → "a quote for you".
-        text = re.sub(rf"(?i)\b(with|for|to)\s+{esc}{tail}", r"\1 you", text)
-        text = re.sub(rf"(?i)\b{esc}['’]s{tail}", "your", text)
-        text = re.sub(rf"(?i)(?<![\w@.]){esc}{tail}", "you", text)
+        text = re.sub(rf"{flag}\b(with|for|to)\s+{esc}{tail}", r"\1 you", text)
+        text = re.sub(rf"{flag}\b{esc}['’]s{tail}", "your", text)
+        text = re.sub(rf"{flag}(?<![\w@.]){esc}{tail}", "you", text)
     # Any web address left over (a dot in a word that looks like a host) goes too.
     text = re.sub(r"(?i)\b(?:https?://|www\.)\S+", "your site", text)
     text = re.sub(r"(?i)\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|co|ng|uk|de|fr|ca|au|us|biz|info|app|dev|me)\b(?:/\S*)?",
@@ -390,9 +406,9 @@ class Writer:
             first = self._persona_first
             lines.append("- The ONE question of the first email stays the request itself (can you take this on, can you "
                          f"supply this). THE ASK is one plain extra sentence before that question, in {first}'s own words, "
-                         "never this line quoted: for a call, something like \"If it's something you do, a short call would "
-                         "be the easiest way for me to walk you through it.\" Never \"at a time that suits you\", never "
-                         "\"Zoom or Google Meet\", never an alternative way to reply, never an easy out.")
+                         "written fresh each time (never a sentence copied from this brief or the examples): that a short "
+                         "call, or the visit, would be the easiest way to explain it. Never \"at a time that suits you\", "
+                         "never \"Zoom or Google Meet\", never an alternative way to reply, never an easy out.")
             link = ""  # the booking link belongs in replies, not in a first enquiry
         else:
             lines.append("- The first email ends by proposing exactly that, in one plain sentence, as the ONE question of the email. "
@@ -617,9 +633,8 @@ class Writer:
                 intent += f"\nThe question to end on, in {persona.name}'s words: {need['question']}"
             product = self.config.product
             description = (product.description or "").strip()
-            context = (f"MORE BACKGROUND (use only what helps them answer; never paste it all): {description}"
-                       if description and product.name != persona.company else
-                       (f"Background: {description}" if description else ""))
+            context = (f"BACKGROUND, in {persona.name}'s words (a fact from it may help them answer; never paste it, "
+                       f"never a pitch, never benefits): {description}" if description else "")
             prompt = self.brain.load_prompt(
                 "inquiry_writer",
                 persona_name=persona.name, persona_first=self._persona_first, persona_tone=persona.tone,

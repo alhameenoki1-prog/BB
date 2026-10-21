@@ -249,6 +249,15 @@ def test_scrub_removes_company_names_without_wrecking_the_sentence():
     assert _scrub("Roof repair quote for Acme", terms) == "Roof repair quote for you"
     assert _scrub("Nothing to change here.", terms) == "Nothing to change here."
     assert _scrub("", terms) == "" and _scrub("Keep Acme", set()) == "Keep Acme"
+    # A company whose name is an ordinary word is caught only as the name is
+    # written: "Build" the company, not "build" or "builder" the words.
+    plain = {"Build", "build.example"}
+    assert not _mentions("I need a builder, and I want to build in April.", plain)
+    assert _mentions("I hear Build does blocks this size.", plain) and _mentions("see build.example", plain)
+    assert _scrub("I need a builder to build it; a quote for Build would help.", plain) == \
+        "I need a builder to build it; a quote for you would help."
+    # A long distinctive name is caught however it is cased.
+    assert _mentions("the fryreglet people", {"Fryreglet"}) and not _mentions("the fry people", {"Fryreglet"})
 
 
 @pytest.mark.asyncio

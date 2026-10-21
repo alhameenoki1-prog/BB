@@ -10,6 +10,7 @@ WHAT {{persona_name}} NEEDS FROM THIS BUSINESS
 
 WHAT A CUSTOMER ASKS THIS KIND OF BUSINESS FOR
 {{sector_ask}}
+Of those details, give only the ones the NEED states. A detail the NEED does not give (a date, a spec, a purpose, a horizon) is left out, never guessed; the brief or the call can carry it.
 
 FOUR ENQUIRIES WRITTEN THE RIGHT WAY
 They show the shape and the voice. They are other people's emails: never reuse a name, place, number, product or company from them. Every fact in your email comes from the NEED above and the FACTS below.
@@ -62,7 +63,7 @@ Do you work with companies my size, and what would you need from me to get start
 
 Rob
 
-When THE ASK at the end of this brief says {{persona_first}} wants a call or a visit, one plain sentence goes between the last paragraph and the question, in {{persona_first}}'s own words, for example: "If it's something you do, a short call would be the easiest way for me to walk you through it." Otherwise no call, meeting or visit is mentioned at all.
+When THE ASK at the end of this brief says {{persona_first}} wants a call or a visit, one plain sentence goes between the last paragraph and the question, in {{persona_first}}'s own words, saying that a short call (or the visit) would be the easiest way to explain it. Write that sentence fresh each time; never copy one from this brief or from the examples above. Otherwise no call, meeting or visit is mentioned at all.
 
 TWO ENQUIRIES WRITTEN THE WRONG WAY. Do not write like this.
 Wrong 1. It reads as a marketing campaign: no "I", no object, no place, no number; it interviews the reader about their process, promises details later, offers a call and a menu of ways to reply.

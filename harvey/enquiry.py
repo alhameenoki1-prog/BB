@@ -19,7 +19,7 @@ SECTOR_ASKS = {
     "construction": "a job you want built or renovated: what it is, its size, where, when it should start; ask whether they can take it on and whether you can send the drawings",
     "real_estate": "a property to buy, sell, let or manage: the type, the area, rough size, timing; ask whether they handle that and what they need from you",
     "architecture_engineering": "a design or engineering job: the building or site, where, the stage you are at (land bought, sketches, permit), when; ask whether they take it on and what to send over",
-    "financial_advisory": "being taken on as a client: where the money came from (a sale, savings, an inheritance), roughly how much in words, what it is for and over what horizon; ask whether they take on clients at that size and what the first step is",
+    "financial_advisory": "being taken on as a client: where the money came from (a sale, savings, an inheritance), roughly how much in words and, if the need says, what it is for; ask whether they take on clients at that size and what the first step is",
     "banking": "an account, a loan or a facility: for what, roughly how much in words, when; ask whether they do that kind of lending or account and what they need to see",
     "insurance": "cover for a specific thing: the building, fleet, site or business, where, from when; ask whether they can quote it and what they need from you",
     "accounting": "bookkeeping, payroll, tax or a year-end: company size, invoice volume, the software, the year end, when; ask whether they work with companies that size and what they need to start",
@@ -30,7 +30,7 @@ SECTOR_ASKS = {
     "marketing_agency": "a piece of work: a site, a launch, a campaign, a brand; what, by when, what exists already; ask whether they take on jobs that size and what they need to quote",
     "software": "a build, an integration or licences: what it must do, how many users, when; ask whether they take on that kind of work and what they need to scope it",
     "it_services": "support, a migration or a setup: how many people or machines, which systems, where, when; ask whether they take on a company your size and what they need to quote",
-    "manufacturing": "a product made or supplied: what, how many or how much, to what spec, by when, delivered where; ask whether they can make or supply that volume and who gets the drawings or spec",
+    "manufacturing": "a product made or supplied: what, how many or how much, delivered where and, if the need gives them, the spec and the date; ask whether they can make or supply that volume and who the spec or bar list should go to",
     "logistics": "freight or deliveries: what, how many pallets or loads, from where to where, how often, from when; ask whether they cover that lane and what they need to quote",
     "retail": "a bulk order or a stockist arrangement: what, how many, where to, when; ask whether they sell at that volume and how to order",
     "ecommerce": "an order or a wholesale account: what, how many, where to, when; ask whether they supply at that volume and how to set it up",
@@ -250,7 +250,7 @@ def scope_sentence(label: str = "", need: str = "") -> str:
     what it is, and that it is the quickest way to see whether this is
     something they would take on."""
     what = label.strip() or "the brief"
-    return (f"Everything you'd need to judge it is in {what}: what we need, how much, where and when. "
+    return (f"Everything you'd need to judge it is in {what}: what's needed, how much, where and when. "
             "Have a look and tell me whether it's something you'd take on:")
 
 

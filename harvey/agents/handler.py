@@ -958,7 +958,7 @@ Respond with ONLY the category label, nothing else."""
         parts = []
         if outreach and outreach.mode == "inquiry":
             need = enquiry.need_for(outreach, getattr(prospect, "industry", "") if prospect else "")
-            intent = need["need"] or outreach.intent or "to work with them as a client or partner"
+            intent = (need["need"] or outreach.intent or "to work with them as a client or partner").strip().rstrip(".")
             parts.append(
                 f"CONTEXT: {persona.name} is the prospective client or partner here, not a "
                 f"vendor. Who is writing, in their words: {enquiry.sender_line(self.config)}\n"
@@ -972,13 +972,19 @@ Respond with ONLY the category label, nothing else."""
                 if scope.get("shared"):
                     parts.append(f"THE FULL SCOPE ({label}) has ALREADY been sent to them in this conversation. "
                                  "Do not send it again and do not write [SCOPE LINK]; refer to it as the brief they have.")
+                elif scope.get("wants") is False:
+                    parts.append(f"THE FULL SCOPE ({label}) is NOT for this reply: they have said no, or this is not "
+                                 "the moment. Do not write [SCOPE LINK] and do not mention the brief at all.")
                 else:
                     parts.append(f"THE FULL SCOPE of what {persona.name} needs is written up in {label}, and it has not "
                                  "gone to them yet. This reply introduces it, whatever they asked: one plain sentence "
-                                 "saying what is in it and why it is the quickest way for them to see whether this is "
-                                 "something they would take on, then [SCOPE LINK] alone on the next line (the link is "
-                                 "filled in for you, once; never write the address yourself), and the reply ends by "
-                                 "pointing them to it (have a look and tell me whether it is something you would take on). "
+                                 "that says what it covers using only the facts above (the job, the amount, the place, "
+                                 "the dates; never a list of contents you have not been told, such as drawings or a "
+                                 "schedule, unless the facts name them) and why it is the quickest way for them to see "
+                                 "whether this is something they would take on, then [SCOPE LINK] alone on the next line "
+                                 "(the link is filled in for you, once; never write the address yourself), and the reply "
+                                 "ends by pointing them to it as a statement, not a question (have a look and tell me "
+                                 "whether it's something you'd take on). "
                                  "Only when they have said no, or the message is angry or legal, is nothing sent.")
             else:
                 parts.append("There is no document with the full scope to send; when they want details, give them "
@@ -1074,8 +1080,8 @@ Write a reply that:"""
 - Shares the full scope if they asked for details or documents and it has not gone out yet
 - One question back at most, under 90 words""",
                 "objection": """
-- Accepts what they said in one line, without arguing or re-selling
-- Asks once whether a smaller or later version would work, or who they would suggest
+- Accepts what they said in one line, without arguing, re-selling or proposing a smaller or later version
+- Asks once whether they know who could take it on, and nothing else
 - Under 60 words""",
                 "wrong_person": """
 - Thanks them politely
@@ -1117,7 +1123,8 @@ Write a reply that:"""
             except Exception:
                 pass
             scope = {"url": need["url"], "label": need["label"],
-                     "shared": enquiry.already_shared(need["url"], sent_bodies) if need["url"] else True}
+                     "shared": enquiry.already_shared(need["url"], sent_bodies) if need["url"] else True,
+                     "wants": intent in ("interested", "question", "wrong_person")}
         prompt += self._outreach_context(await self._reply_attachments(convo), prospect, scope)
         greeting_word = getattr(getattr(self.config, "outreach", None), "greeting", "") or "Hi"
         greeting = names.greeting_for(prospect.first_name, prospect.email, prospect.company, greeting_word)
@@ -1133,7 +1140,7 @@ Write a reply that:"""
             # or at the end when the model forgot. Asked for or not, the
             # first reply to someone interested, asking or passing us on
             # carries it; a no, or an angry or legal message, gets none.
-            wants = intent in ("interested", "question", "wrong_person")
+            wants = scope["wants"]
             main, signoff = enquiry.split_signoff(response, first)
             # A marker in a reply to a no is dropped like one already sent.
             main, included = enquiry.resolve_scope_marker(

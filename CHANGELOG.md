@@ -35,6 +35,23 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **Nothing in the brief is a sentence to copy.** A simulation of the
+  writer and the handler (drafts written from the real rendered prompts
+  and scored with Harvey's own checks) read as one person asking another,
+  but found the prompts nudging toward the same words every time or
+  toward facts nobody gave. Now: the call sentence in a first email is
+  described, not quoted, and must be written fresh; the sector asks say
+  which details come only "if the need gives them" (a spec, a date, a
+  purpose, a horizon) and the brief says a missing one is left out, never
+  guessed; the sentence introducing the full scope describes what it
+  covers from the facts given, never contents the model was not told
+  about (drawings, a site plan, a schedule); the pointer to the brief is
+  a statement and does not count as the one question; a reply to a no
+  is told the brief is not for this reply and asks only who could take
+  it on; the background field is marked as the sender's own words, never
+  a pitch. A company whose name is an ordinary word ("Build") is now
+  caught only as the name is written, so "a builder" no longer trips the
+  company-name retry or gets scrubbed out of the email.
 - **The quick-tunnel link survives restarts and updates.** A
   `trycloudflare.com` address lives as long as its cloudflared process,
   and the site used to start a new one on every start, so every update
