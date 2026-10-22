@@ -39,6 +39,22 @@ def within_hours(settings, now: datetime | None = None) -> bool:
     return hhmm >= settings.hours_start or hhmm <= settings.hours_end   # a window over midnight
 
 
+async def _reply_attachments(db: MailDB, env: dict, draft: dict) -> list[str]:
+    """The project brief (and other reply files) from the sender's profile,
+    on the first reply in a thread or every reply as the policy says."""
+    root = (env or {}).get("HARVEY_HOME") or ""
+    if not root or draft.get("kind", "reply") != "reply":
+        return []
+    from bb.mail import scope as scope_mod
+    scope = scope_mod.load(root)
+    prior = 0
+    if draft.get("thread_id"):
+        row = await db.one("SELECT COUNT(*) AS n FROM messages WHERE thread_id = ? AND direction = 'outbound'",
+                           (draft["thread_id"],))
+        prior = int((row or {}).get("n") or 0)
+    return scope_mod.attachment_paths(root, scope, prior)
+
+
 async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run: bool = False) -> dict:
     """Send one approved draft. Returns {status, message_id}. Raises
     SendRefused for a rule, AuthError / TransientError from the provider."""
@@ -69,11 +85,15 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
         return {"status": "dry_run", "message_id": ""}
     creds = service.open_creds(secret, mailbox)
     account = account_for(mailbox, creds, env)
+    attachments = await _reply_attachments(db, env, draft)
     message_id, provider_id, thread_key = await account.send(
         to=[recipient["email"]], subject=draft["subject"], body_text=plain, body_html=html,
         in_reply_to=draft.get("in_reply_to") or "", references=draft.get("references_text") or "",
-        reply_to=reply_to, from_name=settings.display_name,
+        reply_to=reply_to, from_name=settings.display_name, attachments=attachments or None,
     )
+    if attachments:
+        await db.log("send", f"Attached {', '.join(a.rsplit('/', 1)[-1] for a in attachments)} to the reply to "
+                             f"{recipient.get('name') or recipient['email']}", mailbox["id"], draft_id=draft["id"])
     now = now_iso()
     await db.execute("UPDATE drafts SET status = 'sent', body = ?, sent_message_id = ?, sent_at = ?, updated_at = ? WHERE id = ?",
                      (plain, message_id, now, now, draft["id"]))

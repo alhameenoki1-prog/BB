@@ -7,6 +7,65 @@ minor versions can still change behaviour.
 
 ## [Unreleased]
 
+### Added
+
+- **Sending without you in the loop.** Before an email is staged, the
+  sender runs the spam check and a subject check on the rendered email;
+  what fails is rewritten once by the model (with the campaign goal in
+  front of it) and checked again, and only what still fails goes to the
+  Outbox's **Needs review** tab, where nothing else waits on it: the rest
+  keeps sending, and the dashboard says so instead of calling the
+  pipeline stuck. The writer's own hold uses the same words.
+- **Subjects a person would type.** `spamcheck.subject_risk` scores every
+  subject on its own: boilerplate ("Quick question", "Exciting
+  opportunity", "Partnership proposal", "Following up", "Introduction"),
+  clickbait and punctuation, a gloomy or pleading tone, capitals, a
+  subject about the act of writing rather than the thing, a one-word or
+  overlong subject, and a subject that shares no content word with the
+  email it sits on. A subject that fails is replaced, in the writer, the
+  segment variants, the sender and the Rewrite, with a plain one built
+  from the sender's own need (`subject_from_need`): "About 40 tons of
+  rebar a month for a year", "A builder for a 24-unit residential block
+  in Towson". The writer's subject rule says the same.
+- **Rewrite on every queued email.** Every scheduled or held email in the
+  Outbox has a Rewrite button that opens two forms: an instruction for
+  the assistant ("shorter; end by offering the brief"), which rewrites it
+  with your own AI provider under the campaign goal, keeps the greeting
+  line and the sign-off and runs the same checks before saving; or the
+  subject and body to edit by hand, with Save and (for a held email) Save
+  and approve. Scheduled emails can also be cancelled there.
+- **The campaign goal.** A new profile field, "What this campaign is for",
+  stored as `outreach.goal`, goes into every first email, follow-up and
+  segment variant (the writer), every reply and inbox answer (the
+  handler), every command-center draft and reply run, and every Rewrite.
+  It is written as the sender's own words to serve, never copied, and it
+  outranks the shape of the worked examples.
+- **Command-center replies carry the project brief.** The files on the
+  profile's attachments list (the project brief) are now attached by the
+  command center too, on the first reply in a thread or on every reply as
+  the "Send my attachments" policy says, and the drafting prompt tells
+  the model the brief is attached so the reply refers to it; the scope
+  link still goes where the marker is. The activity log records each
+  attachment.
+- **Is the mailbox still sending?** The worker logs in to the mailbox
+  (SMTP and IMAP, as `harvey status --check` does) every 30 minutes and
+  watches delivery: a failed login, or approved emails due for an hour and
+  a half with nothing delivered and no deliberate pause (quiet hours,
+  warm-up, the daily cap, a cool-off, the kill switch), raises one plain
+  sentence that the dashboard and the Mailbox page show in red and the
+  log repeats until it clears (`harvey/health.py`). The Mailbox page shows
+  the last check and the last delivery.
+- **An address the mail server refuses is a bounce.** A permanent refusal
+  of the recipient at send time (a 5xx on RCPT, such as Vade Secure's
+  `550 5.7.1 Recipient rejected ... #_407`, which means the recipient's
+  domain does not exist) no longer sits in Failed as an SMTP error: the
+  address is marked invalid, the person's queued emails are cancelled, a
+  dead domain holds the company's other first emails for review, the
+  bounce rate counts it, and the Bounced tab explains it in plain words.
+  Every uploaded address's domain is also looked up before anything is
+  written, with no verifier key needed: a domain with no mail server is
+  marked invalid and never sent to.
+
 ### Fixed
 
 - **Review fixes across the last week's changes.** An IMAP page bigger

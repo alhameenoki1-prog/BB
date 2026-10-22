@@ -9,13 +9,13 @@
   {% endif %}
 </div>
 <div class="segs" style="margin-bottom:18px">
-  {% for s, label in [('pending_review','Awaiting approval'),('approved','Scheduled'),('sent','Sent'),('failed','Failed'),('bounced','Bounced'),('rejected','Rejected')] %}
+  {% for s, label in [('pending_review','Needs review'),('approved','Scheduled'),('sent','Sent'),('failed','Failed'),('bounced','Bounced'),('rejected','Rejected')] %}
     <a class="{{ 'on' if s == status else '' }}" href="/outbox?status={{ s }}">{{ label }}</a>
   {% endfor %}
 </div>
 {% if status == 'bounced' %}<p class="muted small" style="margin:-8px 0 14px">Emails the receiving server sent back. Each one says why in the receiving server's words and what to do about it. A few "no such address" bounces are normal; several "unsolicited" or "too fast" ones mean slow down and fix the domain's DNS on the Mailbox page.</p>{% endif %}
 {% if not items %}
-  <div class="card"><div class="empty">{{ icon('send') }}<div>Nothing here.{% if status == 'pending_review' %} If approval is on in your profile, written emails appear here before they go out. If it is off, they are sent automatically and show under Sent.{% endif %}</div></div></div>
+  <div class="card"><div class="empty">{{ icon('send') }}<div>Nothing here.{% if status == 'pending_review' %} Emails the spam check could not fix on its own wait here for you (or every email, if approval is on in your profile). Nothing else waits on them: the rest keeps sending.{% endif %}</div></div></div>
 {% endif %}
 {% for it in items %}
 <div class="card">
@@ -29,10 +29,26 @@
   <p style="margin:10px 0 8px"><b>{{ it.subject }}</b></p>
   <div class="email">{{ it.body }}</div>
   {% if it.error %}<p class="small" style="color:var(--bad);margin-top:8px">{{ it.error }}</p>{% endif %}
-  {% if status == 'pending_review' %}
+  {% if status in ('pending_review', 'approved') %}
   <div class="actions" style="margin-top:12px">
+    {% if status == 'pending_review' %}
     <form class="inline" method="post" action="/outbox/{{ it.id }}/approve"><button class="small" type="submit">{{ icon('check', 13) }} Approve</button></form>
-    <form class="inline" method="post" action="/outbox/{{ it.id }}/reject"><button class="small danger" type="submit">{{ icon('x', 13) }} Reject</button></form>
+    {% endif %}
+    <button class="small secondary" type="button" onclick="var p=document.getElementById('rw-{{ it.id }}');p.style.display=(p.style.display==='none'?'':'none')">Rewrite</button>
+    <form class="inline" method="post" action="/outbox/{{ it.id }}/reject"{% if status == 'approved' %} onsubmit="return confirm('Cancel this email? It will not be sent.')"{% endif %}><button class="small danger" type="submit">{{ icon('x', 13) }} {{ 'Reject' if status == 'pending_review' else 'Cancel' }}</button></form>
+  </div>
+  <div id="rw-{{ it.id }}" class="card flat" style="display:none;margin-top:10px">
+    <form method="post" action="/outbox/{{ it.id }}/rewrite">
+      <label>Tell the assistant how to rewrite it</label>
+      <div class="actions"><input name="instruction" style="flex:1" maxlength="500" placeholder="e.g. shorter; lead with the April start; end by offering to send the brief"><button class="small" type="submit">Rewrite with AI</button></div>
+      <div class="hint">It keeps the facts, the greeting line and the sign-off, follows your campaign goal, and the result is checked like every other email before it is saved.</div>
+    </form>
+    <form method="post" action="/outbox/{{ it.id }}/edit" style="margin-top:12px">
+      <label>Or edit it yourself</label>
+      <input name="subject" value="{{ it.subject }}" maxlength="200">
+      <textarea name="body" rows="9">{{ it.body }}</textarea>
+      <div class="actions"><button class="small" type="submit">Save</button>{% if status == 'pending_review' %}<button class="small secondary" type="submit" name="approve" value="1">Save and approve</button>{% endif %}</div>
+    </form>
   </div>
   {% endif %}
 </div>

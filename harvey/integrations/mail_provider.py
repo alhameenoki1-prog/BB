@@ -40,6 +40,7 @@ class SendResult:
     scope: str = "row"       # "row": only this recipient is affected; "mailbox": the whole pass should stop
     auth_failed: bool = False  # the mailbox refused the login: nothing sends until it is reconnected
     daily_limit: bool = False  # the mailbox's own daily ceiling: it sends again tomorrow
+    bad_address: bool = False  # the address itself was refused for good (5xx on RCPT): a bounce at send time
 
 
 # Mail hosts that only send: there is no inbox to read there, so reply
@@ -84,6 +85,20 @@ BOUNCE_HINTS = (
     # block) come before "authentication", because a real DSN quotes the
     # original message's headers (DKIM-Signature, ARC-Authentication-Results)
     # further down, and those words must not turn a block into something else.
+    # The sender's own provider refusing the recipient (Vade Secure filters
+    # OVH, Open-Xchange and other hosted mail): 407 is a domain that does
+    # not exist, 406 a malformed address, 402 an address it will not deliver to.
+    (r"vadesecure\.com/outbound_error_codes/#_407|oxsus\d*_407",
+     "no such address (the recipient's domain does not exist)",
+     "Your own mail provider refused it before sending: that domain has no mail server. The address came from the "
+     "list; it is marked invalid and never written to again."),
+    (r"vadesecure\.com/outbound_error_codes/#_406|oxsus\d*_406",
+     "no such address (badly formed)",
+     "Your own mail provider refused the address as malformed. It is marked invalid."),
+    (r"vadesecure\.com/outbound_error_codes/#_402|oxsus\d*_402|5\.7\.1 recipient rejected",
+     "no such address (your provider will not deliver to it)",
+     "Your own mail provider's filter refuses to deliver to that address. It is marked invalid; if many addresses "
+     "at one company fail this way, the list for that company is wrong."),
     (r"5\.4\.1.{0,80}(recipient address rejected|access denied)|recipient address rejected: access denied",
      "no such address (Microsoft 365 says it is not in their directory)",
      "The company uses Microsoft 365 and that address is not in its directory: the name or the address pattern "

@@ -154,7 +154,7 @@ def example_copying(text: str, allowed: str, prompt_name: str) -> list[str]:
 
 # Housekeeping sentences the upload writes into a contact's notes; they
 # are for the operator, never for the model.
-_HOUSEKEEPING_RE = re.compile(r"^(No name was given|Name (taken|read|matched)|Shared inbox)", re.I)
+_HOUSEKEEPING_RE = re.compile(r"^(No name was given|Name (taken|read|matched)|Shared inbox|Verification:|Domain check)", re.I)
 
 SCOPE_MARKER_RE = re.compile(r"\[\s*scope\s+link(?:\s*\d+)?\s*\]", re.I)
 _LEAD_IN_RE = re.compile(r"\b(brief|scope|spec|note|document|folder|link|here|attached|page|sheet|details)\b", re.I)

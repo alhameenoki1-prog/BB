@@ -21,7 +21,7 @@ from harvey.brain import Brain
 from harvey.config import HarveyConfig, EnvConfig
 from harvey.gate import pre_send_check
 from harvey.integrations.instantly import InstantlyClient
-from harvey.integrations.mail_provider import NATIVE_PROVIDERS, get_mail_provider
+from harvey.integrations.mail_provider import NATIVE_PROVIDERS, bounce_kind, bounce_reason, get_mail_provider
 from harvey.integrations.precleared import PreclearedClient
 from harvey.spamcheck import REVIEW as SPAM_REVIEW, describe, spam_risk
 from harvey.state import StateManager
@@ -82,6 +82,7 @@ BOUNCE_COUNT_KEY = "bounce_count"
 COOLOFF_KEY = "sender_cooloff_until"
 COOLOFF_REASON_KEY = "sender_cooloff_reason"
 SKIP_REASON_KEY = "sender_skip_reason"
+LAST_SENT_KEY = "mailbox_last_sent_at"     # when the mailbox last delivered an email
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
@@ -482,12 +483,14 @@ class Sender:
                 status, note = initial_status, ""
                 if status == "approved" and not campaign.name.startswith("your message"):
                     # Autopilot never sends what a filter would junk; the
-                    # operator's own words are theirs to send.
-                    score, reasons = spam_risk(subject, body)
-                    if score >= SPAM_REVIEW:
+                    # operator's own words are theirs to send. What fails is
+                    # rewritten here first, and only what still fails waits
+                    # for a person, without holding anything else up.
+                    subject, body, reasons = await self._fit_for_sending(subject, body, prospect, campaign, step)
+                    if reasons:
                         status = "pending_review"
-                        note = ("Held for your review: a spam filter would likely flag "
-                                + describe(reasons) + ". Approve it as is, or reject it.")
+                        note = ("Needs review: even after a rewrite a spam filter would likely flag "
+                                + describe(reasons) + ". Edit it, approve it as is, or reject it; everything else keeps sending.")
                         held += 1
                 item_id = await self.state.add_outbox_item(
                     prospect_id=prospect.id,
@@ -709,6 +712,110 @@ class Sender:
         logger.info("Sender: the cool-off after a spam block is over; sending resumes at the configured pace.")
         return False
 
+    async def _fit_for_sending(self, subject: str, body: str, prospect, campaign, step) -> tuple[str, str, list[str]]:
+        """The pre-send check and its own fix. The subject must be the
+        thing the email is about and the whole must pass the spam check;
+        what fails is rewritten once by the model (the goal and the rules
+        in front of it) and checked again. Returns (subject, body, reasons
+        still standing)."""
+        from harvey.spamcheck import SUBJECT_REVIEW, subject_from_need, subject_risk
+        need = ""
+        try:
+            from harvey import enquiry
+            if getattr(getattr(self.config, "outreach", None), "mode", "offer") == "inquiry":
+                need = enquiry.need_for(self.config.outreach, getattr(prospect, "industry", "") or "")["need"]
+        except Exception:
+            need = ""
+        score, reasons = spam_risk(subject, body)
+        s_score, s_reasons = subject_risk(subject, body, need)
+        if score < SPAM_REVIEW and s_score < SUBJECT_REVIEW:
+            return subject, body, []
+        if s_score >= SUBJECT_REVIEW and score < SPAM_REVIEW:
+            # Only the subject is wrong: a plain one from the sender's own need, no model call.
+            plain = subject_from_need(need, body)
+            if plain and subject_risk(plain, body, need)[0] < SUBJECT_REVIEW:
+                return plain, body, []
+        rewritten = await self._rewrite_for_filter(subject, body, reasons + s_reasons, prospect, need)
+        if rewritten:
+            new_subject, new_body = rewritten
+            score2, reasons2 = spam_risk(new_subject, new_body)
+            s_score2, s_reasons2 = subject_risk(new_subject, new_body, need)
+            if s_score2 >= SUBJECT_REVIEW:
+                plain = subject_from_need(need, new_body)
+                if plain and subject_risk(plain, new_body, need)[0] < SUBJECT_REVIEW:
+                    new_subject, s_score2, s_reasons2 = plain, 0, []
+            if score2 < SPAM_REVIEW and s_score2 < SUBJECT_REVIEW:
+                return new_subject, new_body, []
+            return new_subject, new_body, reasons2 + s_reasons2
+        return subject, body, reasons + s_reasons
+
+    async def _rewrite_for_filter(self, subject: str, body: str, reasons: list[str], prospect, need: str) -> tuple[str, str] | None:
+        """One model pass to fix a rendered email a filter would junk,
+        keeping its facts, its greeting line and its sign-off."""
+        outreach = getattr(self.config, "outreach", None)
+        goal = (getattr(outreach, "goal", "") or "").strip()
+        persona = self.config.persona
+        prompt = (
+            f"This email is about to be sent by {persona.name} and a spam filter would likely flag it: "
+            f"{describe(reasons)}.\n\nRewrite it so it passes, keeping every fact, the greeting line exactly as it "
+            "is, the sign-off, and the same request. Plain words a person would type; no marketing vocabulary, no "
+            "capitals, no exclamation marks, no links. The subject names the thing the email is about, in the "
+            "email's own words, 3 to 10 words, sentence case; never \"quick question\", \"opportunity\", "
+            "\"proposal\", \"partnership\", \"following up\" or anything about the act of writing.\n"
+            + (f"\nTHE NEED THIS EMAIL IS ABOUT: {need}\n" if need else "")
+            + (f"\nCAMPAIGN GOAL (the email serves this): {goal}\n" if goal else "")
+            + f"\nSUBJECT: {subject}\n\nBODY:\n{body}\n\n"
+            'Return ONLY JSON: {"subject": "...", "body": "..."}'
+        )
+        try:
+            result = await self.brain.think_json(prompt, session_id="harvey-sender", agent="sender", task="fit_for_sending")
+        except Exception as e:
+            logger.debug(f"Sender: pre-send rewrite failed: {e}")
+            return None
+        if not isinstance(result, dict) or not str(result.get("body") or "").strip():
+            return None
+        new_body = str(result["body"]).strip()
+        first_line = (body or "").strip().split("\n", 1)[0]
+        if first_line and not new_body.startswith(first_line):
+            new_body = first_line + "\n\n" + new_body.split("\n\n", 1)[-1] if "\n\n" in new_body else first_line + "\n\n" + new_body
+        return str(result.get("subject") or subject).strip()[:120], new_body
+
+    async def _record_bad_address(self, item: dict, prospect, error: str) -> None:
+        """A permanent refusal of the address at send time is a bounce
+        that never had to travel: the address is marked invalid, the
+        person's queued emails are cancelled, a dead domain holds the
+        company's other first emails, and the bounce rate counts it."""
+        reason_text, hint = bounce_reason(error)
+        kind = bounce_kind(error) or "no such address (refused by the mail server)"
+        await self.state.update_outbox_item(item["id"], status="failed", error=f"Bounced: {error[:220]}. {hint}"[:600])
+        if prospect:
+            try:
+                await self.state.update_prospect_email(prospect.id, prospect.email, "invalid")
+                cancelled = await self.state.cancel_pending_outbox_for_prospect(prospect.id, reason="bounced at send")
+            except Exception as e:
+                logger.debug(f"Sender: could not mark {item['to_email']} invalid: {e}")
+                cancelled = 0
+            logger.warning(f"Sender: {item['to_email']} was refused by the mail server ({kind}); marked invalid, "
+                           f"{cancelled} queued email(s) cancelled. {hint}")
+            if "domain does not exist" in kind:
+                domain = (prospect.email or "").rsplit("@", 1)[-1].lower()
+                try:
+                    held = await self.state.hold_domain_sends(
+                        domain, prospect.id,
+                        f"Held: the mail server says the domain {domain} does not exist ({prospect.email} was refused). "
+                        "Approve to send anyway, or reject.")
+                    if held:
+                        logger.warning(f"Sender: {held} queued email(s) to other people at {domain} now wait for your review.")
+                except Exception as e:
+                    logger.debug(f"Sender: domain hold failed: {e}")
+        try:
+            bounces = await self.state.increment_setting(BOUNCE_COUNT_KEY)
+            await self.state.log_action(action_type="bounce", agent="sender",
+                                        details={"prospect": item["to_email"], "bounces": bounces, "reason": reason_text,
+                                                 "at": "send"})
+        except Exception:
+            pass
+
     def _plain(self, item: dict) -> bool:
         """A first email goes as plain text (no HTML, a links-free signature)
         unless the operator switched that off."""
@@ -750,6 +857,9 @@ class Sender:
                     except Exception:
                         pass
                 return False
+            if getattr(result, "bad_address", False):
+                await self._record_bad_address(item, prospect, result.error)
+                return False
             if getattr(result, "retryable", False):
                 daily = bool(getattr(result, "daily_limit", False))
                 previous = _retry_count(item.get("error") or "")
@@ -776,6 +886,10 @@ class Sender:
         ))
         if prospect.status in ("new", "queued"):
             await self.state.update_prospect_status(prospect.id, "contacted")
+        try:
+            await self.state.set_setting(LAST_SENT_KEY, now_iso)   # the mailbox health check reads this
+        except Exception:
+            pass
 
         # A sent reply belongs in its conversation thread.
         if item["kind"] == "reply" and item.get("conversation_id"):

@@ -26,6 +26,17 @@
     <p style="margin-top:10px"><button class="secondary small" type="submit">Use the selected one</button></p>
   </form>
 </div>
+{% if health %}
+<div class="card" {% if health.alert %}style="border-color:var(--bad)"{% endif %}>
+  <h2>Is it still sending?</h2>
+  {% if health.alert %}<p style="color:var(--bad)"><b>{{ health.alert }}</b></p>{% endif %}
+  <p class="small muted">The worker logs in to the mailbox every 30 minutes, the way <code>harvey status --check</code> does, and watches whether approved emails actually leave. A failed login, or nothing delivered for an hour and a half while emails are due, turns this card and the dashboard red and is written to the worker log.</p>
+  <table class="small"><tbody>
+    <tr><td>Last login check</td><td>{% if health.checked_at %}{{ health.checked_at[:16].replace('T', ' ') }} UTC: {{ 'connected' if health.ok else 'FAILED: ' ~ health.error }}{% else %}not yet (it runs once the worker is up){% endif %}</td></tr>
+    <tr><td>Last email delivered</td><td>{{ health.last_sent_at[:16].replace('T', ' ') ~ ' UTC' if health.last_sent_at else 'nothing sent yet' }}</td></tr>
+  </tbody></table>
+</div>
+{% endif %}
 
 <div class="two">
 {% if gmail_available %}  <div class="card">

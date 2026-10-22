@@ -464,6 +464,15 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
 
             consecutive_errors = 0
 
+            # 6b. Is the mailbox still sending? A login check on its own
+            # clock, and a look at whether due emails actually leave.
+            if sender.is_native and getattr(sender, "provider", None) is not None:
+                try:
+                    from harvey import health
+                    await health.run_check(state, sender.provider, config, quiet=in_quiet_hours(config))
+                except Exception as e:
+                    logger.debug(f"Mailbox health check skipped: {e}")
+
             # 7. Sleep until next heartbeat
             logger.info(
                 f"Cycle complete. Sleeping for {config.usage.heartbeat_interval_minutes} minutes."

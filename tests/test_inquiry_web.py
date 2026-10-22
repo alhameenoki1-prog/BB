@@ -171,3 +171,100 @@ def test_queued_emails_written_with_the_old_brief_can_be_rewritten(client):  # n
     new, unsent, sent_status, retired, sam = asyncio.run(after())
     assert set(new) == {"q0", "q1", "q2"} and unsent == [] and sent_status == "sent" and retired and sam == "contacted"
     assert asyncio.run(ws.stale_queued()) == 0 and "still read like a campaign" not in client.get("/").text
+
+
+def test_the_campaign_goal_is_saved_and_every_queued_email_can_be_rewritten(client, monkeypatch):  # noqa: F811
+    import asyncio
+
+    _as_user(client)
+    goal = ("The goal of the first email is to get permission to send the project brief. Every first email ends with "
+            "an open question offering it.")
+    r = client.post("/profile", data={**NEEDS_FORM, "campaign_goal": goal})
+    assert r.status_code == 303, r.text
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    assert HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach.goal == goal
+    assert goal in client.get("/profile").text
+    assert ws.rewrite_config() is not None and yaml.safe_load(ws.config_file.read_text())["outreach"]["goal"] == goal
+
+    async def seed():
+        state = ws.state()
+        await state.init_db()
+        from harvey.models.prospect import Prospect
+        await state.add_prospect(Prospect(id="q1", email="dana@build.example", first_name="Dana", company="Build Co",
+                                          email_status="provided", industry="construction"))
+        a = await state.add_outbox_item(prospect_id="q1", to_email="dana@build.example", subject="Quick question",
+                                        body="Hi Dana,\n\nI need a builder for a 24-unit block in Towson, drawings done, start in April. "
+                                             "Can you take it on?\n\nJane", send_at="2030-01-01T00:00:00", status="approved")
+        h = await state.add_outbox_item(prospect_id="q1", to_email="dana@build.example", subject="Towson block, 24 units",
+                                        body="Hi Dana,\n\nFREE!!! Act now.\n\nJane", send_at="2030-01-01T00:00:00",
+                                        status="pending_review")
+        return a, h
+    approved_id, held_id = asyncio.run(seed())
+
+    page = client.get("/outbox?status=approved").text
+    assert ">Rewrite<" in page and f'id="rw-{approved_id}"' in page and "Rewrite with AI" in page and "Or edit it yourself" in page
+    assert "Needs review" in page and "Awaiting approval" not in page
+    # Edit by hand: saved, still scheduled.
+    r = client.post(f"/outbox/{approved_id}/edit", data={"subject": "Builder for a 24-unit block in Towson", "body": "Hi Dana,\n\nNew words.\n\nJane"})
+    assert r.status_code == 303 and "Saved" in r.headers["location"]
+
+    async def read(item_id):
+        state = ws.state()
+        await state.init_db()
+        return await state.get_outbox_item(item_id)
+    item = asyncio.run(read(approved_id))
+    assert item["subject"] == "Builder for a 24-unit block in Towson" and item["body"].startswith("Hi Dana,\n\nNew words.") and item["status"] == "approved"
+    # Save and approve a held one.
+    r = client.post(f"/outbox/{held_id}/edit", data={"subject": "Towson block, 24 units", "body": "Hi Dana,\n\nPlain words about the block.\n\nJane", "approve": "1"})
+    assert r.status_code == 303 and asyncio.run(read(held_id))["status"] == "approved"
+
+    # Rewrite with the user's own AI: the goal is in front of the model, the greeting line is kept, the checks run.
+    seen = {}
+
+    class _FakeBrain:
+        configured = True
+
+        def __init__(self, env):
+            seen["env"] = env
+
+        async def complete_json(self, system, user):
+            seen["system"], seen["user"] = system, user
+            return {"subject": "Quick question", "body": "Hi Dana,\n\nShorter: a 24-unit block in Towson, drawings done, start in April. "
+                                                        "Want me to send over the project brief so you have the full scope?\n\nJane"}
+
+    monkeypatch.setattr("bb.mail.brain.MailBrain", _FakeBrain)
+    r = client.post(f"/outbox/{approved_id}/rewrite", data={"instruction": "shorter, end by offering the brief"})
+    assert r.status_code == 303 and "Rewritten" in r.headers["location"], r.headers.get("location")
+    assert "CAMPAIGN GOAL" in seen["system"] and goal in seen["system"] and "INSTRUCTION FROM Jane Doe: shorter" in seen["user"]
+    item = asyncio.run(read(approved_id))
+    assert "Want me to send over the project brief" in item["body"] and item["body"].startswith("Hi Dana,") and item["status"] == "approved"
+    assert item["subject"] != "Quick question" and "24-unit" in item["subject"]      # boilerplate swapped for the need
+
+    class _NoBrain(_FakeBrain):
+        configured = False
+    monkeypatch.setattr("bb.mail.brain.MailBrain", _NoBrain)
+    r = client.post(f"/outbox/{approved_id}/rewrite", data={"instruction": "x"})
+    assert "no%20AI%20provider" in r.headers["location"] or "no AI provider" in r.headers["location"]
+
+
+def test_the_dashboard_and_mailbox_page_show_the_health_alert(client):  # noqa: F811
+    import asyncio
+
+    _as_user(client)
+    client.post("/profile", data=NEEDS_FORM)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+
+    async def seed():
+        state = ws.state()
+        await state.init_db()
+        await state.set_setting("mailbox_check_at", "2026-10-22T06:00:00")
+        await state.set_setting("mailbox_check_ok", "0")
+        await state.set_setting("mailbox_check_error", "SMTP login failed: 535 authentication failed")
+        await state.set_setting("mailbox_alert", "The mailbox check at 06:00 UTC on 22 Oct failed: SMTP login failed: 535 authentication failed. Nothing is sent until it works again.")
+    asyncio.run(seed())
+    assert "The mailbox check at 06:00 UTC on 22 Oct failed" in client.get("/").text
+    page = client.get("/mailbox").text
+    assert "Is it still sending?" in page and "FAILED: SMTP login failed: 535" in page and "2026-10-22 06:00 UTC" in page
+

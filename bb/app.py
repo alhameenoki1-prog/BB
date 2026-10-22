@@ -354,7 +354,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace_for(user)
         revived = ws.revive_worker()
         return await render(request, "dashboard.html", user, logs=ws.log_tail(40), activity=ws.recent_activity(30),
-                            bounces=await ws.bounce_summary(), stale=await ws.stale_queued(),
+                            bounces=await ws.bounce_summary(), stale=await ws.stale_queued(), health=await ws.mailbox_health(),
                             problems=settings.problems() if user["role"] == "admin" else [],
                             msg=revived or request.query_params.get("msg", ""))
 
@@ -517,7 +517,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             smtp_masked=ws.mask(smtp["smtp_password"]),
                             m365={**m365, "m365_client_secret": ""}, m365_configured=ws.m365_configured(),
                             m365_masked=ws.mask(m365["m365_client_secret"]),
-                            sending=sending, report=report,
+                            sending=sending, report=report, health=await ws.mailbox_health(),
                             redirect_uri=gmail_oauth.redirect_uri(settings))
 
     @app.post("/mailbox/m365")
@@ -818,18 +818,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return _redirect("/outbox", msg=f"Approved {n} email(s).")
 
     @app.post("/outbox/{item_id}/{action}")
-    async def outbox_action(item_id: str, action: str, user: dict = Depends(current_user)):
-        state = workspace_for(user).state()
+    async def outbox_action(request: Request, item_id: str, action: str, user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        state = ws.state()
         await state.init_db()
         item = await state.get_outbox_item(item_id)
         if not item:
             raise HTTPException(status_code=404)
+        back = f"/outbox?status={item['status'] if item['status'] in ('pending_review', 'approved') else 'pending_review'}"
         if action == "approve":
             await state.approve_outbox(item_id)
             return _redirect("/outbox", msg="Approved.")
         if action == "reject":
             await state.update_outbox_item(item_id, status="rejected", error="rejected in the web app")
-            return _redirect("/outbox", msg="Rejected; it will not be sent.")
+            return _redirect(back, msg="It will not be sent.")
+        if action == "edit":
+            form = await request.form()
+            subject = str(form.get("subject") or "").strip()[:200]
+            body = str(form.get("body") or "").strip()
+            if not subject or not body:
+                return _redirect(back, msg="A subject and a body are needed.")
+            fields = {"subject": subject, "body": body, "error": ""}
+            if form.get("approve") and item["status"] == "pending_review":
+                fields["status"] = "approved"
+            await state.update_outbox_item(item_id, **fields)
+            return _redirect(f"/outbox?status={fields.get('status', item['status'])}",
+                             msg="Saved." + (" It is scheduled." if fields.get("status") == "approved" else ""))
+        if action == "rewrite":
+            form = await request.form()
+            instruction = str(form.get("instruction") or "").strip()[:500]
+            try:
+                result = await ws.rewrite_item(item, instruction)
+            except Exception as e:
+                return _redirect(back, msg=f"Could not rewrite it: {e}")
+            return _redirect(back, msg="Rewritten. " + result["note"])
         raise HTTPException(status_code=404)
 
     # ── replies ──

@@ -223,7 +223,7 @@ async def test_real_inquiry_prompt_renders_the_request(state):  # noqa: F811
     offer.skills = "SALES SKILL TEXT"
     prompt = offer._base_prompt()
     assert "STRICT EMAIL RULES" in prompt and "SALES SKILL TEXT" in prompt and "CUSTOMER or PARTNER" not in prompt
-    assert "lowercase, 2-5 words" in offer._subject_rule
+    assert "3 to 8 words, sentence case" in offer._subject_rule and "quick question" in offer._subject_rule
 
 
 @pytest.mark.asyncio

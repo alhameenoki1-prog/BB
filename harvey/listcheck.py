@@ -25,6 +25,7 @@ logger = logging.getLogger("harvey.listcheck")
 VERIFY_PER_CYCLE = 150
 INCONCLUSIVE_NOTE = "Verification: inconclusive"
 CATCH_ALL_NOTE = "Verification: catch-all domain"
+DOMAIN_NOTE = "Domain check"
 
 
 def verifier_configured(env) -> bool:
@@ -83,6 +84,50 @@ def _lookup_domain_sync(domain: str) -> tuple[str, str | None]:
 async def lookup_domain(domain: str) -> tuple[str, str | None]:
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _lookup_domain_sync, domain)
+
+
+async def check_domains(state, limit: int = VERIFY_PER_CYCLE) -> dict:
+    """The check that needs no key: does each uploaded address's domain
+    exist and take mail? A dead domain is marked invalid before anything
+    is written to it (the mail server would refuse it at send time
+    anyway, as a bounce that counts against the mailbox). Each address is
+    looked at once; a lookup that failed is tried again next cycle."""
+    counts = {"checked": 0, "invalid": 0, "deferred": 0}
+    prospects = await state.get_prospects_by_status("new", limit=limit * 3, email_statuses=("provided",))
+    domains: dict[str, tuple[str, str | None]] = {}
+    today = datetime.now(timezone.utc).date().isoformat()
+    for p in prospects:
+        if counts["checked"] >= limit:
+            break
+        notes = p.personalization_notes or ""
+        if DOMAIN_NOTE in notes or INCONCLUSIVE_NOTE in notes or CATCH_ALL_NOTE in notes or not p.email or "@" not in p.email:
+            continue
+        counts["checked"] += 1
+        domain = p.email.rsplit("@", 1)[-1].lower()
+        if domain not in domains:
+            try:
+                domains[domain] = await lookup_domain(domain)
+            except Exception as e:
+                logger.debug(f"listcheck: {domain}: {e}")
+                domains[domain] = ("error", None)
+        where, _mx = domains[domain]
+        if where == "error":
+            counts["deferred"] += 1
+            continue
+        if where == "none":
+            counts["invalid"] += 1
+            await state.update_prospect_email(p.id, p.email, "invalid")
+            note = f"{DOMAIN_NOTE} ({today}): {domain} has no mail server, so nothing could be delivered there; never sent."
+        else:
+            note = f"{DOMAIN_NOTE} ({today}): ok."
+        try:
+            await state.update_prospect_notes(p.id, (notes.rstrip() + "\n" + note).strip())
+        except Exception:
+            pass
+    if counts["invalid"]:
+        logger.warning(f"listcheck: {counts['invalid']} uploaded address(es) are at domains with no mail server; "
+                       "marked invalid and never sent.")
+    return counts
 
 
 async def verify_uploaded(state, env, limit: int = VERIFY_PER_CYCLE) -> dict:

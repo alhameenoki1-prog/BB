@@ -618,6 +618,7 @@ class Workspace:
                                                   self.settings.default_daily_cost_usd)),
             "mode": outreach.get("mode", "inquiry"),
             "intent": outreach.get("intent", ""),
+            "campaign_goal": outreach.get("goal", ""),
             "sender_line": outreach.get("sender_line", ""),
             "details_url": outreach.get("details_url", ""),
             "details_label": outreach.get("details_label", ""),
@@ -872,6 +873,7 @@ class Workspace:
             "outreach": {
                 "mode": mode,
                 "intent": text("intent"),
+                "goal": str(form.get("campaign_goal", "") or "").strip()[:2000],
                 "sender_line": text("sender_line")[:300],
                 "sector_needs": needs_rows,
                 "details_url": details_url,
@@ -1110,7 +1112,7 @@ class Workspace:
             return []
         from harvey.integrations.mail_provider import BOUNCE_HINTS
         rows = await self._query(
-            "SELECT error FROM outbox WHERE status = 'sent' AND error LIKE 'Bounced:%' "
+            "SELECT error FROM outbox WHERE status IN ('sent', 'failed') AND error LIKE 'Bounced:%' "
             "ORDER BY updated_at DESC LIMIT ?", (limit,))
         groups: dict[str, dict] = {}
         for r in rows:
@@ -1180,18 +1182,22 @@ class Workspace:
         a = out["allowance"]
         if a.get("reached"):
             return {"state": "stuck", "text": a["text"] + (" Switch off warm-up or raise the daily maximum on the profile." if a.get("warming") else " Raise the daily maximum on the profile."), "link": "/profile#sending"}
+        review = ""
         if out["outbox_pending"]:
-            why = "they wait for your approval" if email.get("require_approval") else "the spam check held them for your review"
-            return {"state": "stuck", "text": f"{out['outbox_pending']} emails are written but {why}. Approve them in the Outbox"
-                                               + ("" if email.get("require_approval") else ", or edit the request on the profile and they are rewritten") + ".",
-                    "link": "/outbox"}
+            review = (f" {out['outbox_pending']} wait for your approval in the Outbox." if email.get("require_approval") else
+                      f" {out['outbox_pending']} could not be fixed by the spam check and wait for your review in the Outbox; "
+                      "nothing else waits on them.")
         if out["recipients"] == 0:
             return {"state": "waiting", "text": "No recipients yet. Upload a list and the worker starts writing.", "link": "/recipients"}
         if out["outbox_scheduled"]:
             pace = (f"{email.get('sends_per_cycle') or speed['per_cycle']} every "
                     f"{email.get('send_every_seconds') or speed['send_every']} seconds")
             return {"state": "sending", "text": f"Sending: {out['outbox_scheduled']} emails are approved and leave at {pace}"
-                                                 + (f" (held to this pace because {held})" if held else "") + f"; {out['sent_today']} went out today.", "link": ""}
+                                                 + (f" (held to this pace because {held})" if held else "") + f"; {out['sent_today']} went out today."
+                                                 + review, "link": "/outbox" if review else ""}
+        if out["outbox_pending"]:
+            return {"state": "waiting", "text": f"Everything else is sent or scheduled.{review} Rewrite, edit, approve or reject them there.",
+                    "link": "/outbox"}
         if out["waiting"]:
             return {"state": "waiting", "text": f"Writing: {out['waiting']} recipients still need an email; the next batch is written this cycle and sends right after.", "link": ""}
         return {"state": "waiting", "text": "Everything on the list has been sent or is scheduled as a follow-up.", "link": ""}
@@ -1261,6 +1267,84 @@ class Workspace:
             "SELECT first_name, last_name, email, company, title, status, email_status, created_at "
             "FROM prospects ORDER BY created_at DESC LIMIT ?", (limit,))
 
+    async def rewrite_item(self, item: dict, instruction: str) -> dict:
+        """Rewrite one queued email with the user's own AI provider, to their
+        instruction (or simply better when none is given), keeping the facts,
+        the greeting line and the sign-off, under the campaign goal and the
+        same checks every email passes. Saves it and returns {subject, body, note}."""
+        from bb.mail.brain import MailBrain
+        from harvey import enquiry
+        from harvey.spamcheck import REVIEW, SUBJECT_REVIEW, describe, spam_risk, subject_from_need, subject_risk
+
+        brain = MailBrain(self.mail_brain_env())
+        if not brain.configured:
+            raise ValueError("no AI provider is set up for your account yet (AI provider page)")
+        cfg = self.config() or {}
+        outreach, persona = cfg.get("outreach") or {}, cfg.get("persona") or {}
+        name = (persona.get("name") or "").strip() or "the sender"
+        first = name.split()[0]
+        goal = (outreach.get("goal") or "").strip()
+        need = ""
+        try:
+            from harvey.config import HarveyConfig
+            hc = HarveyConfig(**cfg)
+            state = self.state()
+            await state.init_db()
+            prospect = await state.get_prospect(item.get("prospect_id") or "") if item.get("prospect_id") else None
+            need = enquiry.need_for(hc.outreach, getattr(prospect, "industry", "") or "")["need"] if hc.outreach.mode == "inquiry" else ""
+        except Exception:
+            state = self.state()
+            await state.init_db()
+        body = (item.get("body") or "").strip()
+        greeting_line = body.split("\n", 1)[0] if body else ""
+        system = (f"You rewrite one email for {name}, who is the prospective customer or partner of the recipient "
+                  "(nothing is sold). Keep every fact, the greeting line exactly as it is, the sign-off and the same "
+                  "request; plain words a person would type, first person, contractions, no marketing vocabulary, no "
+                  "capitals, no exclamation marks, no links, no bullet points. The subject names the thing the email "
+                  "is about in the email's own words, 3 to 10 words, sentence case; never \"quick question\", "
+                  "\"opportunity\", \"proposal\", \"partnership\", \"following up\" or anything about the act of writing."
+                  + (f"\n\nWHAT {name.upper()} NEEDS FROM THIS BUSINESS: {need}" if need else "")
+                  + (f"\n\nCAMPAIGN GOAL, in {name}'s words (the email serves it): {goal}" if goal else "")
+                  + "\n\nReturn ONLY JSON: {\"subject\": \"...\", \"body\": \"...\"}")
+        user = ((f"INSTRUCTION FROM {name}: {instruction}\n\n" if instruction else "Make it better: shorter, more concrete, more natural.\n\n")
+                + f"SUBJECT: {item.get('subject', '')}\n\nBODY:\n{body}")
+        data = await brain.complete_json(system, user)
+        if not isinstance(data, dict) or not str(data.get("body") or "").strip():
+            raise ValueError("the model did not return an email")
+        new_body = str(data["body"]).strip()
+        if greeting_line and not new_body.startswith(greeting_line):
+            rest = new_body.split("\n\n", 1)[-1] if new_body.lower().startswith(("hi", "hello", "dear")) else new_body
+            new_body = f"{greeting_line}\n\n{rest}"
+        new_body = enquiry.plain_signoff(new_body, first) if outreach.get("mode", "inquiry") == "inquiry" else new_body
+        new_subject = str(data.get("subject") or item.get("subject") or "").strip()[:120]
+        notes = []
+        if subject_risk(new_subject, new_body, need)[0] >= SUBJECT_REVIEW:
+            plain = subject_from_need(need, new_body)
+            if plain and subject_risk(plain, new_body, need)[0] < SUBJECT_REVIEW:
+                new_subject = plain
+                notes.append("the subject was replaced with a plain one from your need")
+        score, reasons = spam_risk(new_subject, new_body)
+        fields = {"subject": new_subject, "body": new_body[:4000], "error": ""}
+        if score >= REVIEW:
+            notes.append("a spam filter would still flag " + describe(reasons) + ", so it waits for your review")
+            fields["status"] = "pending_review"
+        await state.update_outbox_item(item["id"], **fields)
+        return {"subject": new_subject, "body": new_body, "note": ("; ".join(notes) + ".") if notes else "It passed the checks."}
+
+    async def mailbox_health(self) -> dict:
+        """The worker's view of the mailbox: last login check, last delivery,
+        and the alert it raised, if any (see harvey.health)."""
+        if not await self._table_exists("settings"):
+            return {}
+        from harvey import health
+        rows = await self._query("SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?, ?, ?)",
+                                 (health.CHECK_AT_KEY, health.CHECK_OK_KEY, health.CHECK_ERROR_KEY,
+                                  health.LAST_SENT_KEY, health.ALERT_KEY, health.ALERT_SINCE_KEY))
+        got = {r["key"]: r["value"] or "" for r in rows}
+        return {"ok": got.get(health.CHECK_OK_KEY) != "0", "checked_at": got.get(health.CHECK_AT_KEY, ""),
+                "error": got.get(health.CHECK_ERROR_KEY, ""), "last_sent_at": got.get(health.LAST_SENT_KEY, ""),
+                "alert": got.get(health.ALERT_KEY, ""), "alert_since": got.get(health.ALERT_SINCE_KEY, "")}
+
     async def outbox(self, status: str = "pending_review", limit: int = 200) -> list[dict]:
         if not await self._table_exists("outbox"):
             return []
@@ -1268,7 +1352,7 @@ class Workspace:
             return await self._query(
                 "SELECT o.*, p.first_name, p.last_name, p.company FROM outbox o "
                 "LEFT JOIN prospects p ON p.id = o.prospect_id "
-                "WHERE o.status = 'sent' AND o.error LIKE 'Bounced:%' "
+                "WHERE o.status IN ('sent', 'failed') AND o.error LIKE 'Bounced:%' "
                 "ORDER BY o.updated_at DESC LIMIT ?", (limit,))
         return await self._query(
             "SELECT o.*, p.first_name, p.last_name, p.company FROM outbox o "

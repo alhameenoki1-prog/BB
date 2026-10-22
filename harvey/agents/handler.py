@@ -571,11 +571,13 @@ class Handler:
             ("Answer as " + persona.name + " would, as the customer: briefly, in the first person, with the "
              "matching document when they want details.") if self.inquiry else
             "Answer helpfully and briefly, as " + persona.name + " would.")
+        goal = (getattr(outreach, "goal", "") or "").strip()
+        goal_block = f"\n\nCAMPAIGN GOAL, in {persona.name}'s words (answer them first, then move toward this):\n{goal}" if goal else ""
         prompt = f"""You answer email on behalf of {persona.name}{(', ' + persona.role) if persona.role else ''}.
 Tone: {persona.tone}. Write as {persona.name}, in the first person.
 
 {persona.name.upper()}'S INSTRUCTIONS FOR ANSWERING INCOMING MAIL:
-{instructions}{needs_block}
+{instructions}{needs_block}{goal_block}
 
 DOCUMENTS {persona.name.upper()} CAN SHARE (refer to them by number; the links are added for you):
 {link_lines}
@@ -1002,6 +1004,11 @@ Respond with ONLY the category label, nothing else."""
                 "standing instructions give one; otherwise ask them for one); when they are hesitant, answer "
                 "them first and offer it lightly."
                 + (f" Specifics: {detail}." if detail else "") + (f" Booking link: {link}" if link else ""))
+        goal = (getattr(outreach, "goal", "") or "").strip() if outreach else ""
+        if goal:
+            parts.append(
+                f"CAMPAIGN GOAL, in {persona.name}'s words (every reply moves toward it; answer their message first, "
+                f"then take the step the goal names, in {persona.name.split()[0] if persona.name else 'your'} own words):\n{goal}")
         if outreach and outreach.reply_instructions.strip():
             parts.append(
                 f"STANDING INSTRUCTIONS FROM {persona.name} FOR EVERY REPLY (follow them "

@@ -102,6 +102,92 @@ def describe(reasons: list[str]) -> str:
     return "; ".join(reasons[:6]) + (" …" if len(reasons) > 6 else "")
 
 
+# ── The subject line: what a real person types, not a campaign ──
+# A subject is right when it names the thing the email is about, in the
+# words the email itself uses. Boilerplate, clickbait, a gloomy or pleading
+# tone, and a subject that shares no word with the body all fail.
+SUBJECT_REVIEW = 2
+_SUBJECT_BOILERPLATE = re.compile(
+    r"^(quick question|question|hello|hi( there)?|hey|greetings|introduction|intro|touching base|checking in|"
+    r"following up|follow.?up|reaching out|connecting|let.s connect|partnership( proposal| opportunity)?|"
+    r"proposal|collaboration|opportunity|exciting opportunity|business (opportunity|proposal|inquiry)|"
+    r"inquiry|enquiry|request|a request|new business|your (services|help|expertise)|"
+    r"(re|fw|fwd)\s*:.*|no subject|\(no subject\)|important|urgent|action required|for your attention|"
+    r"hope (this|you).*|i wanted to.*|i.m writing.*|can we talk\??|got a minute\??|do you have a (minute|moment)\??)\s*[.!?]*$",
+    re.I)
+_SUBJECT_GLOOM = re.compile(
+    r"\b(unfortunately|sorry to (bother|trouble|disturb)|apolog|last chance|final (notice|reminder|attempt)|"
+    r"problem|issue|complaint|overdue|failed|urgent|immediately|asap|please help|desperate|struggling|"
+    r"warning|alert|deadline)\b", re.I)
+_SUBJECT_HYPE = re.compile(r"\b(amazing|incredible|exciting|exclusive|free|guaranteed|secret|revealed|you won.t believe|"
+                           r"game.?changer|breakthrough|limited|offer|deal|discount|bonus|win)\b|[!$%]|\.{3}|\?\s*$", re.I)
+_SUBJECT_EXTRA_STOP = {"email", "about", "regarding", "for", "and", "the", "our", "your", "from", "with",
+                       "you", "are", "need", "want"}
+
+
+def _content_words(text: str) -> set[str]:
+    stop = _STOP | _SUBJECT_EXTRA_STOP      # _STOP is defined with the vagueness rules below
+    return {w.lower().rstrip("'s") for w in re.findall(r"[A-Za-z][A-Za-z'-]{2,}", text or "")
+            if w.lower() not in stop}
+
+
+def subject_risk(subject: str, body: str, need: str = "") -> tuple[int, list[str]]:
+    """(score, reasons) for the subject alone. SUBJECT_REVIEW or more means
+    the subject is replaced: boilerplate, clickbait, gloom, shouting, a
+    bare fragment, or a subject that shares no content word with the email
+    (or the sender's need) it sits on."""
+    s = (subject or "").strip()
+    score, reasons = 0, []
+    if not s:
+        return SUBJECT_REVIEW, ["no subject"]
+    if _SUBJECT_BOILERPLATE.match(s):
+        score += 3; reasons.append("a boilerplate subject")
+    if _SUBJECT_HYPE.search(s):
+        score += 2; reasons.append("clickbait or punctuation in the subject")
+    if _SUBJECT_GLOOM.search(s):
+        score += 2; reasons.append("a gloomy or pleading subject")
+    if re.search(r"\b(looking to|start(ing)? work|work(ing)? with (you|your)|working together|your team|your firm|"
+                 r"potential (project|partnership)|reach(ing)? out|touch(ing)? base|introduc\w+ (myself|ourselves))\b", s, re.I):
+        score += 2; reasons.append("a subject about the act of writing, not the thing")
+    letters = re.findall(r"[A-Za-z]", s)
+    if len(letters) >= 6 and sum(c.isupper() for c in letters) / len(letters) > 0.6:
+        score += 2; reasons.append("a subject in capitals")
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", s)
+    if len(words) < 2:
+        score += 2; reasons.append("a one-word subject")
+    if len(words) > 12 or len(s) > 70:
+        score += 1; reasons.append("a long subject")
+    if re.search(r"\{\{|\}\}|\[[A-Z ]+\]", s):
+        score += 3; reasons.append("a merge field left in the subject")
+    mine = _content_words(s)
+    theirs = _content_words(body) | _content_words(need)
+    # Judged only against a real email (a dozen words or more), never a stub.
+    if mine and theirs and len(_WORD_RE.findall(body or "")) >= 12 and not (mine & theirs) and not any(
+            any(m[:5] == t[:5] for t in theirs) for m in mine if len(m) >= 5):
+        score += 2; reasons.append("a subject about nothing in the email")
+    return score, reasons
+
+
+def subject_from_need(need: str, body: str = "", limit: int = 60) -> str:
+    """A plain subject built from the sender's own need (or the first
+    sentence of the body): the first clause, sentence case, no final
+    punctuation, trimmed to a mail client's width."""
+    source = (need or "").strip()
+    if not source:
+        first = re.split(r"(?<=[.!?])\s", (body or "").strip().split("\n\n", 1)[-1].strip(), 1)[0]
+        source = re.sub(r"^(hi|hello|dear)\b[^\n]*\n+", "", first, flags=re.I).strip()
+    clause = re.split(r"[.;:!?]|\s[-–—]\s|,\s(?=(?:and|but|so|which|where|when|with|delivered|start|drawings)\b)", source, 1)[0].strip()
+    clause = re.sub(r"^(i|we)('d| would| need| want| am| are|'m|'re)?\s+(like\s+)?(to\s+)?(find|need|want|buy|hire|get|looking for|after)?\s*", "",
+                    clause, flags=re.I).strip() or clause
+    clause = re.sub(r"\s+", " ", clause).strip(" ,-")
+    if len(clause) > limit:
+        cut = clause[:limit].rsplit(" ", 1)[0]
+        clause = cut.strip(" ,-")
+    if not clause:
+        return ""
+    return clause[0].upper() + clause[1:]
+
+
 # ── Vagueness: the defect spam filters are blind to ──
 # A customer's email names a thing. A campaign names "a need". These are
 # the phrases of the rejected kind of email, and the check that at least

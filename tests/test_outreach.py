@@ -172,7 +172,9 @@ async def test_writer_inquiry_mode_and_throttle(state):
     await writer.run()
     queued = await state.get_outbox()
     assert len(queued) == 2
-    assert all("hello" == q["subject"] for q in queued)
+    # The stub's "hello" is boilerplate, so the subject check swaps in a plain one from the need.
+    from harvey.spamcheck import subject_from_need
+    assert all(q["subject"] == subject_from_need("get a quote for a two-storey extension") != "hello" for q in queued)
     personal = [p for p in brain.prompts if "Write ONE enquiry email" in p]
     assert len(personal) == 2
     for p in personal:

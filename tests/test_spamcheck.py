@@ -80,7 +80,7 @@ async def test_writer_rewrites_a_spammy_draft_once_then_holds(state):  # noqa: F
     await writer._personalize_first_emails(campaign_id, [p1, p2])
     items = {i["prospect_id"]: i for i in await state.get_outbox()}
     assert items["s1"]["status"] == "approved" and not items["s1"]["error"]
-    assert items["s2"]["status"] == "pending_review" and items["s2"]["error"].startswith("Held for your review")
+    assert items["s2"]["status"] == "pending_review" and items["s2"]["error"].startswith("Needs review")
 
 
 @pytest.mark.asyncio
@@ -105,7 +105,7 @@ async def test_sender_holds_spammy_sequence_emails_on_autopilot(state):  # noqa:
     assert by_campaign[good.id]["status"] == "approved"
     assert by_campaign[bad.id]["status"] == "approved"          # the operator's own words go out
     assert by_campaign[spam.id]["status"] == "pending_review"   # AI text that reads like spam waits
-    assert "Held for your review" in by_campaign[spam.id]["error"]
+    assert "Needs review" in by_campaign[spam.id]["error"]
 
 
 @pytest.mark.asyncio

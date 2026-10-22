@@ -169,6 +169,7 @@ class Writer:
         # bounces at one company get the rest of that company held.
         try:
             from harvey import listcheck
+            await listcheck.check_domains(self.state)      # free: a dead domain is never written to
             if listcheck.verifier_configured(self.env):
                 await listcheck.verify_uploaded(self.state, self.env)
         except Exception as e:
@@ -384,7 +385,7 @@ class Writer:
             if item_id and held:
                 from harvey.spamcheck import describe
                 await self.state.update_outbox_item(
-                    item_id, error="Held for your review: a spam filter would likely flag "
+                    item_id, error="Needs review: a spam filter would likely flag "
                     + describe(held) + ". Edit the profile's request or approve it as is.")
             if item_id:
                 drafted += 1
@@ -656,10 +657,10 @@ class Writer:
                 "Decide from the FACTS what this business does and ask for that; how much, where and when come from the NEED.",
             )
             if prompt:
-                return prompt + self._ask_block()
+                return prompt + self._ask_block() + self._goal_block()
             return (f"You are writing enquiry emails for {persona.name} ({enquiry.sender_line(self.config)}), a "
                     f"prospective customer or partner of the recipient. What {persona.name} needs: {intent}. "
-                    f"Tone: {persona.tone}. Never pitch; first person; one request question.") + self._ask_block()
+                    f"Tone: {persona.tone}. Never pitch; first person; one request question.") + self._ask_block() + self._goal_block()
         prompt = self.brain.load_prompt(
             "writer",
             product_name=self.config.product.name,
@@ -673,14 +674,42 @@ class Writer:
               f"Description: {self.config.product.description}")
         if self.skills:
             prompt += "\n\n" + self.skills
-        return prompt + self._ask_block()
+        return prompt + self._ask_block() + self._goal_block()
+
+    def _goal_block(self) -> str:
+        """The campaign's goal in the sender's words, when they gave one:
+        every email, follow-up and rewrite is written to serve it."""
+        outreach = getattr(self.config, "outreach", None)
+        goal = (getattr(outreach, "goal", "") or "").strip()
+        if not goal:
+            return ""
+        first = self._persona_first
+        return ("\n\nCAMPAIGN GOAL, in " + self.config.persona.name + "'s words (every email serves this; when it says "
+                "how an email should end or what it should ask, do exactly that, in " + first + "'s own words rather than "
+                "copying the wording, and it outranks the shape of the examples):\n" + goal)
 
     @property
     def _subject_rule(self) -> str:
         if self.inquiry:
-            return ("- Subject: sentence case, 3 to 10 words, the thing itself as a customer would "
-                    "type it (see SUBJECT LINE above). No company name, domain or person's name.")
-        return "- Subject lines: lowercase, 2-5 words, no prospect name, no \"quick question\"."
+            return ("- Subject: sentence case, 3 to 10 words, the thing itself as a customer would type it, in the "
+                    "email's own words (see SUBJECT LINE above): what, how much, where or when. No company name, "
+                    "domain or person's name; never \"quick question\", \"opportunity\", \"proposal\", "
+                    "\"introduction\", \"following up\" or anything about the act of writing.")
+        return ("- Subject: 3 to 8 words, sentence case, the thing the email is about in its own words; no prospect "
+                "name, no \"quick question\", \"opportunity\", \"proposal\", \"partnership\" or \"following up\".")
+
+    def _fix_subject(self, subject: str, body: str, need: str = "") -> str:
+        """A subject that fails the subject check is replaced by a plain one
+        built from the sender's need (or the email's first sentence)."""
+        from harvey.spamcheck import SUBJECT_REVIEW, describe, subject_from_need, subject_risk
+        score, reasons = subject_risk(subject, body, need)
+        if score < SUBJECT_REVIEW:
+            return subject
+        plain = subject_from_need(need, body)
+        if plain and subject_risk(plain, body, need)[0] < SUBJECT_REVIEW:
+            logger.info(f"Writer: subject \"{subject}\" replaced ({describe(reasons)}) with \"{plain}\".")
+            return plain
+        return subject
 
     @property
     def greeting_word(self) -> str:
@@ -836,6 +865,7 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
         if self.inquiry:
             body = _plain_signoff(body, self._persona_first)
         body = names.ensure_greeting(body, prospect.first_name, prospect.email, prospect.company, self.greeting_word)
+        subject = self._fix_subject(subject, body, need["need"])
         if not subject or not body:
             return None
         return {"subject": subject[:120], "body": body[:2000], "spam_reasons": spam_reasons}
@@ -917,6 +947,14 @@ Return ONLY a JSON array (no markdown fences, no commentary):
                 steps[0].subject = _scrub(str(fixed.get("subject") or steps[0].subject), self._forbidden_terms(prospects))
                 body = _scrub(str(fixed.get("body") or steps[0].body), self._forbidden_terms(prospects))
                 steps[0].body = _plain_signoff(body, self._persona_first) if self.inquiry else body
+            seq_need = self._need(prospects[0].industry or "")["need"] if self.inquiry else ""
+            for st in steps:
+                # Every step's subject names the thing; a follow-up that fails
+                # keeps the first email's subject so the thread stays one thread.
+                fixed_subject = self._fix_subject(st.subject, st.body, seq_need)
+                st.subject = fixed_subject if (st is steps[0] or fixed_subject != st.subject and fixed_subject) else st.subject
+                if st is not steps[0] and st.subject != fixed_subject:
+                    st.subject = steps[0].subject
             if self.inquiry:
                 leaked = self._copied(f"{steps[0].subject} {steps[0].body}", prospects)
                 if leaked:
@@ -989,6 +1027,7 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             score, _why = self._risk({"subject": subject, "body": body}, need)
             if score >= 4:
                 continue
+            subject = self._fix_subject(subject, body, need)
             subjects.append(subject[:120])
             bodies.append(body[:2000])
         if bodies:

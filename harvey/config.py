@@ -310,6 +310,11 @@ class OutreachConfig(BaseModel):
 
     mode: str = "offer"
     intent: str = ""
+    # The campaign's goal in the sender's own words ("the first email is to
+    # get permission to send the project brief; end on an open question
+    # offering it"). Every first email, follow-up, rewrite and reply is
+    # written to serve it.
+    goal: str = ""
     # Inquiry mode: who is writing, in one line, as they would say it to a
     # stranger ("I run Greystone Development, a residential developer in
     # Baltimore"). Half a line of it goes into every email.

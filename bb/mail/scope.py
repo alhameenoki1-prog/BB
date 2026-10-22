@@ -72,6 +72,9 @@ def from_config(cfg: dict | None) -> dict:
         "ask": (outreach.get("ask") or "").strip(),
         "ask_detail": (outreach.get("ask_detail") or "").strip(),
         "instructions": (outreach.get("reply_instructions") or "").strip(),
+        "goal": (outreach.get("goal") or "").strip(),
+        "attachments": [str(a) for a in (outreach.get("reply_attachments") or []) if str(a).strip()],
+        "attach_on": (outreach.get("attach_on") or "first_reply").strip(),
     }
 
 
@@ -116,9 +119,38 @@ def context_block(scope: dict | None) -> str:
     if scope["ask"] in ASK_THEMES:
         lines.append(f"WHAT YOU WOULD LIKE NEXT: {ASK_THEMES[scope['ask']]}" + (f" ({scope['ask_detail']})" if scope["ask_detail"] else "")
                      + ". Offer it once, plainly, when they are interested; take their step if they proposed one.")
+    if scope.get("goal"):
+        lines.append(f"CAMPAIGN GOAL, in {scope['name'] or 'the sender'}'s words (answer what they wrote first, then move "
+                     f"toward this, in your own words): {scope['goal']}")
+    files = attached_files(scope)
+    if files:
+        lines.append(f"THE PROJECT BRIEF IS ATTACHED by the system to the first reply in a thread ({', '.join(files)}), "
+                     "whatever they asked: refer to it as attached in one short natural sentence (what it is and that it "
+                     "is the quickest way to see the whole thing). If a document link also applies, the link still goes "
+                     "where [SCOPE LINK n] marks it.")
     if scope["instructions"]:
         lines.append(f"STANDING INSTRUCTIONS FROM {scope['name'] or 'the sender'}: {scope['instructions']}")
     return "\n\n" + "\n".join(lines)
+
+
+def attached_files(scope: dict | None) -> list[str]:
+    """The files the sender wants with replies, when a policy sends them."""
+    if not scope or scope.get("mode") != "inquiry" or (scope.get("attach_on") or "first_reply") == "never":
+        return []
+    return list(scope.get("attachments") or [])
+
+
+def attachment_paths(root, scope: dict | None, prior_outbound: int) -> list[str]:
+    """Absolute paths of the files to attach to this reply: all of them on
+    every reply, or only when nothing has gone out in the thread yet."""
+    names = attached_files(scope)
+    if not names or not root:
+        return []
+    policy = (scope or {}).get("attach_on") or "first_reply"
+    if policy == "first_reply" and prior_outbound > 0:
+        return []
+    folder = Path(root) / "attachments"
+    return [str(folder / n) for n in names if (folder / n).is_file()]
 
 
 _NUMBERED = re.compile(r"\[\s*scope\s+link\s*(\d+)\s*\]", re.I)

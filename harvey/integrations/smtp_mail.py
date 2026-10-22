@@ -60,14 +60,22 @@ def classify_smtp_error(e: Exception) -> dict:
     daily ceiling stop the pass; a refused login stops the pass and is never a
     retry count against the email."""
     text = str(e).lower()
-    out = {"retryable": False, "scope": "row", "auth_failed": False, "daily_limit": False}
+    out = {"retryable": False, "scope": "row", "auth_failed": False, "daily_limit": False, "bad_address": False}
     if isinstance(e, aiosmtplib.SMTPAuthenticationError) or any(w in text for w in AUTH_WORDS):
         return {**out, "retryable": True, "scope": "mailbox", "auth_failed": True}
     if any(w in text for w in DAILY_LIMIT_WORDS):
         return {**out, "retryable": True, "scope": "mailbox", "daily_limit": True}
     if isinstance(e, aiosmtplib.SMTPRecipientsRefused):
         codes = [getattr(r, "code", 0) for r in (getattr(e, "recipients", None) or [])]
+        if codes and all(c >= 500 for c in codes):
+            # The address itself, for good: the same as a "no such address" bounce.
+            return {**out, "retryable": False, "scope": "row", "bad_address": True}
         return {**out, "retryable": any(400 <= c < 500 for c in codes), "scope": "row"}
+    if isinstance(e, aiosmtplib.SMTPRecipientRefused):
+        code = getattr(e, "code", 0) or 0
+        if code >= 500:
+            return {**out, "retryable": False, "scope": "row", "bad_address": True}
+        return {**out, "retryable": 400 <= code < 500, "scope": "row"}
     code = getattr(e, "code", None)
     if isinstance(code, int):
         if 400 <= code < 500:

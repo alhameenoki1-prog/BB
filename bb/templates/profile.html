@@ -179,6 +179,11 @@
   </div>
 </div>
 <div class="card">
+  <h2>What this campaign is for</h2>
+  <p class="muted small">Say in plain words what every email should achieve and how it should end. Every first email, follow-up, rewrite and reply is written to this, in the sender's own words each time; it outranks the examples the writer learns from.</p>
+  <textarea name="campaign_goal" placeholder="e.g. The goal of the first email is to get permission to send the project brief. Every first email ends with an open question offering it, something like: want me to send over the project brief so you have the full scope before we talk? Replies answer what they asked and always get the brief to them, attached or linked.">{{ profile.campaign_goal }}</textarea>
+</div>
+<div class="card">
   <h2>Sending</h2>
   <div class="row">
     <div><label>Max emails per day <span class="muted" style="font-weight:400">(0 = no limit)</span></label><input type="number" name="max_daily_sends" min="0" max="5000" value="{{ profile.max_daily_sends }}"><div class="hint">With no limit, your mailbox's own ceiling applies: Google allows 500 a day on free Gmail and 2,000 on Workspace. Cold email near those numbers gets an account flagged, so a new mailbox is safer around 30–50.</div></div>

@@ -426,6 +426,17 @@ being built in phases; sync, reply state, the composer and sending are in.
 - **AI provider**: the mail center uses the key and model chosen on the
   site's AI provider page, so it costs the user, never the site.
 
+### Replies carry the project brief
+
+In an inquiry workspace the command center's replies deliver the brief
+whatever the person wrote: the scope link goes where the model marks
+it, once per thread, and the files on the profile's attachments list
+(upload the project brief there) are attached to the first reply in a
+thread, or to every reply, as the profile's "Send my attachments" policy
+says. The drafting prompt tells the model the brief is attached so the
+reply refers to it in a sentence, and the activity log records each
+attachment. The campaign goal is in front of every reply draft too.
+
 ## Going live: the checklist
 
 Run `python -m bb doctor` where the site runs. It prints OK / WARN / FAIL
@@ -468,6 +479,17 @@ the daily maximum or the warm-up ramp, emails waiting for approval or
 held by the spam check (Outbox), a paused AI provider, a worker that is
 not running. Sending itself runs on its own clock and needs no AI call;
 only writing new emails and answering replies do.
+
+### Sending on its own
+
+With approval off (the default), nothing waits for you. Before an email
+is staged the sender runs the spam check and a subject check on the
+rendered email; what fails is rewritten once by the model, with your
+campaign goal in front of it, and checked again. Only an email that still
+fails goes to the Outbox's **Needs review** tab, and nothing else waits on
+it: the rest of the campaign keeps sending, and the dashboard counts the
+held ones as a queue for you to clear, not as a stuck pipeline. Clear it
+whenever you come back: Rewrite, edit, approve or reject each one.
 
 ## Speed
 
@@ -529,6 +551,21 @@ are free, where you are) and it is used where it fits; for calls, your
 booking link is added once under the ask. Replies steer toward the same
 thing once someone is interested.
 
+## The campaign goal
+
+"What this campaign is for" on the profile is one paragraph in your own
+words about what every email should achieve and how it should end, for
+example: *the goal of the first email is to get permission to send the
+project brief; every first email ends with an open question offering it,
+something like "want me to send over the project brief so you have the
+full scope before we talk?"; replies answer what they asked and always
+get the brief to them.* It is stored as `outreach.goal` and goes into
+every first email, follow-up and segment variant the writer produces,
+every reply and inbox answer the worker writes, every command-center
+draft and reply run, and every Rewrite from the Outbox. The model is told
+to serve it in its own words each time, never to copy its wording, and
+that it outranks the shape of the worked examples.
+
 ## Inbox auto-reply
 
 In inquiry mode the auto-reply already knows the full-scope documents from
@@ -586,6 +623,19 @@ The dashboard has three controls besides Start and Stop:
   replies and the counters. Profile, mailbox, AI provider, attachments and
   signature stay. Upload a new list and press Start to begin again.
 
+### Rewriting a queued email
+
+Every scheduled or held email in the Outbox has a **Rewrite** button.
+It opens two forms: tell the assistant how to rewrite it ("shorter; lead
+with the April start; end by offering the brief") and it is rewritten
+with your own AI provider under your campaign goal, keeping the facts,
+the greeting line and the sign-off, then checked like every other email
+before it is saved; or edit the subject and body yourself and press
+Save (a held email also has Save and approve). A scheduled email can be
+cancelled there too. Subjects are checked on their own everywhere: a
+boilerplate, clickbait or gloomy subject, or one that names nothing in
+the email, is replaced with a plain one built from your need.
+
 ## If the worker stops
 
 The worker's log (dashboard → Worker) ends with a line that says why it
@@ -598,6 +648,19 @@ Mac rebooted, it crashed) is started again the next time its owner opens
 the dashboard, and again when `python -m bb` starts. Press Start on the
 dashboard to bring a stopped worker back by hand; nothing is lost either
 way, it carries on from the outbox and the recipients it had not reached.
+
+## Is the mailbox still sending?
+
+The worker logs in to the connected mailbox every 30 minutes (SMTP and
+IMAP, the way `harvey status --check` does) and watches delivery. A
+failed login, or approved emails due for an hour and a half with nothing
+delivered and no deliberate pause to explain it (quiet hours, the warm-up
+ramp, the daily cap, a cool-off after a spam block, the kill switch),
+raises one plain sentence that the dashboard and the Mailbox page show
+in red and the worker log repeats until it clears. The Mailbox page's
+"Is it still sending?" card shows the last check, its result and the
+last email delivered. The alert clears on its own once a check passes
+and mail leaves again.
 
 ## Operations
 
@@ -707,6 +770,22 @@ things that matter, in order:
    bulk senders, and the reply handler stops a thread on any "no".
 5. **Clean lists.** Bounces damage reputation faster than anything else;
    the worker trips its kill switch at 5% for that reason.
+
+### Your own mail provider refusing an address
+
+Some providers (OVH, Open-Xchange hosted mail and others behind Vade
+Secure) refuse a recipient before sending: `550 5.7.1 Recipient rejected
+- OXSUS003_407 - https://postmaster-oxsus.vadesecure.com/...#_407`. Code
+407 means the recipient's domain does not exist; 406 a malformed
+address; 402 an address the filter will not deliver to. These are bad
+addresses in the upload (`yejn6oig@ss1.xfourrich.com` is the shape of a
+made-up one), not a verdict on your mailbox. The worker now treats such a
+refusal as a bounce that never had to travel: the address is marked
+invalid, that person's queued emails are cancelled, a dead domain holds
+the company's other first emails for your review, and the Bounced tab
+explains it. Every uploaded address's domain is also looked up before
+anything is written, with no verifier key needed, so an address at a
+domain with no mail server is marked invalid and never sent to.
 
 ## Security notes
 
