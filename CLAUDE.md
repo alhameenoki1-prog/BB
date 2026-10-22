@@ -131,7 +131,9 @@ per-user ledger `harvey/ledger.py` (`data/sendlog.db`) that splits each
 account's daily limit (`service.account_daily_limit`) and holds opt-outs
 for every campaign. Replies have no send limit anywhere: `Ledger.reserve(free=True)` records an answer without counting or
 holding it, reply-only members take no part of the limit, `sending.is_answer` skips the command center's
-cap, and Harvey's `Sender._drain_due` limits only `sequence` items (scans stay limited). Accounts can be added in bulk (`/mail/accounts/bulk`,
+cap, and Harvey's `Sender._drain_due` limits only `sequence` items (scans stay limited). Only the mailbox's own
+maximum stops a reply (`limits.hard` via `service.set_ledger_limit`, `mailbox_daily_ceiling` in the Sender), counted over
+everything; first emails stop a tenth short of it. A send pass takes nothing new after `PASS_SECONDS`. Accounts can be added in bulk (`/mail/accounts/bulk`,
 `/mail/accounts/graph/bulk`). **Wake up now** (`/worker/wake`,
 `/campaigns/outreach/<id>/wake`; `Workspace.wake_worker`) reaches a
 running worker through `data/worker.wake`; the worker's `harvey/wake.py`

@@ -158,6 +158,8 @@ You can skip editing `.env` for these. Log in as the admin and open
   signed in there), enter it, pick your account and agree. The site then
   registers the app in your directory with both redirect addresses, the
   mail permissions and a secret, saves them and switches the button on.
+  Pressed again later, it updates that same app with a new secret, so
+  mailboxes already signed in keep working.
   It needs a work or school account that may register apps (the owner of
   a Microsoft 365 or Entra directory can; a free Microsoft 365 developer
   account has one). The sign-in uses Microsoft Graph Command Line Tools,
@@ -454,8 +456,13 @@ than a personal one where you can. The brief the writer follows is
 **Replies have no send limit.** Every daily limit below (an account's
 limit, the command center's cap, the warm-up) counts first emails,
 follow-ups and mailbox scans. An answer to someone who wrote, from a reply
-run, a reply campaign, an outreach campaign or by hand, always goes and
-uses none of it; the Campaigns page lists replies beside the limit.
+run, a reply campaign, an outreach campaign or by hand, is never held back
+by them and uses none of them; the Campaigns page lists replies beside the
+limit. The one thing that stops a reply is the mailbox itself: what the
+provider allows a day (gmail.com 450, Workspace 1,800, outlook.com 250,
+Microsoft 365 9,000), counting everything sent, because past it the
+provider refuses mail and can lock the account for a day. First emails
+stop a tenth short of that, so the last tenth is always there for replies.
 
 A user can run several campaigns at the same time, on several accounts,
 in any mix. The **Campaigns** page (top of the menu) shows them all with

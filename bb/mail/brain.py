@@ -28,7 +28,8 @@ def env_from_llm(llm: dict) -> dict:
 
 
 _THINK_RE = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.S | re.I)
-_FENCE_RE = re.compile(r"^\s*```[A-Za-z]*\s*$", re.M)
+_FENCE_RE = re.compile(r"^[ \t]*```[A-Za-z]*[ \t]*$", re.M)
+_OPEN_THINK_RE = re.compile(r"(?is)<(think|thinking|reasoning)>.*\Z")
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 _CLOSERS = {"{": "}", "[": "]"}
 
@@ -79,6 +80,7 @@ def _clean(text: str) -> str:
     text = _THINK_RE.sub("", text or "")
     if re.search(r"(?i)</think>", text):        # the opening tag fell off: drop up to the close
         text = re.split(r"(?i)</think>", text)[-1]
+    text = _OPEN_THINK_RE.sub("", text)          # reasoning cut off before it closed: none of it is an answer
     return _FENCE_RE.sub("", text).strip()
 
 
@@ -186,7 +188,7 @@ class MailBrain:
         as that field, marked ``_salvaged`` so the caller routes it to a
         person, rather than failing the item."""
         _CUT_OFF.set(False)
-        first = await self.complete(system, user, max_tokens)
+        first = _clean(await self.complete(system, user, max_tokens))
         data = extract_json(first)
         if data is not None:
             return data
@@ -194,7 +196,11 @@ class MailBrain:
         token = _JSON_MODE.set(True)
         try:
             _CUT_OFF.set(False)
-            second = await self.complete(system, user + "\n\n" + JSON_AGAIN, max_tokens * 2 if cut else max_tokens)
+            second = _clean(await self.complete(system, user + "\n\n" + JSON_AGAIN, max_tokens * 2 if cut else max_tokens))
+        except BrainError:
+            if not salvage:
+                raise
+            second = ""            # (a refused second ask: the first answer may still be usable)
         finally:
             _JSON_MODE.reset(token)
         data = extract_json(second)
@@ -205,7 +211,7 @@ class MailBrain:
             for text in (second, first):
                 value = salvage_field(text, salvage) or plain_answer(text)
                 if value:
-                    out = {salvage: value, "_salvaged": True}
+                    out = {salvage: value, "_salvaged": True, "_raw": text[:4000]}
                     for extra in ("subject", "confidence", "confidence_reason", "stance", "why"):
                         got = salvage_field(text, extra)
                         if got and extra != salvage:

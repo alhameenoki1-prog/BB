@@ -1526,14 +1526,17 @@ class Workspace:
                 day = 0
         out = {"allowed": allowed, "sent": sent_today, "warming": warming, "day": day + 1,
                "reached": bool(allowed and sent_today >= allowed), "max_daily": max_daily}
+        replies = (f" Replies have no limit of their own: only the mailbox's maximum of {ceiling} a day, counting "
+                   f"everything, stops them, and first emails leave its last {ceiling // 10} to replies."
+                   if ceiling else " Replies have no limit.")
         if warming:
             out["text"] = (f"Warm-up day {day + 1}: {sent_today} of {allowed} first emails and follow-ups sent today. "
                            f"Starts at {WARMUP_START} a day and rises by {WARMUP_STEP} each day"
-                           + (f" up to your limit of {max_daily}." if max_daily else ".") + " Replies have no limit.")
+                           + (f" up to your limit of {max_daily}." if max_daily else ".") + replies)
         elif allowed:
             out["text"] = (f"{sent_today} of {allowed} first emails and follow-ups sent today "
                            + ("(what this mailbox allows per day)." if ceiling and allowed == ceiling else "(your daily limit).")
-                           + " Replies have no limit.")
+                           + replies)
         else:
             out["text"] = f"{sent_today} sent today, no daily limit set."
         return out
@@ -1621,7 +1624,9 @@ class Workspace:
                   + "\n\nReturn ONLY JSON: {\"subject\": \"...\", \"body\": \"...\"}")
         user = ((f"INSTRUCTION FROM {name}: {instruction}\n\n" if instruction else "Make it better: shorter, more concrete, more natural.\n\n")
                 + f"SUBJECT: {item.get('subject', '')}\n\nBODY:\n{body}")
-        data = await brain.complete_json(system, user, salvage="body")
+        # (No salvage here: a rewrite replaces an email that may already be
+        # approved, so an answer not in the form asked for is never used.)
+        data = await brain.complete_json(system, user)
         if not isinstance(data, dict) or not str(data.get("body") or "").strip():
             raise ValueError("the model did not return an email")
         new_body = str(data["body"]).strip()
@@ -1798,7 +1803,7 @@ class Workspace:
                                "connect another mailbox here (one campaign per account).")
         try:
             # The account's daily limit, shared with any reply campaign or scan on it.
-            self.ledger().set_limit(self.sending_address(), self.account_daily_limit())
+            self.ledger().set_limit(self.sending_address(), self.account_daily_limit(), hard=self.mailbox_daily_ceiling())
             if self.is_main:
                 self.sync_main_registry()
             from bb import campaigns as campaigns_mod

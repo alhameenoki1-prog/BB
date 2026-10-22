@@ -103,9 +103,9 @@ def register_campaign_routes(app, settings, current_user, base_workspace, render
             if account:
                 pic = led.summary(account)
                 me = next((m for m in pic["members"] if m["campaign"] == ws.campaign_id), None)
+                used, answers = led.used_split(account, ws.campaign_id)       # paused or stopped ones too
                 share = {"limit": pic["limit"], "total": pic["total"], "share": pic["share"] if me else 0,
-                         "used": (me or {}).get("used", 0), "answers": (me or {}).get("answers", 0),
-                         "members": len(pic["members"])}
+                         "used": used, "answers": answers, "members": pic["sharing"]}
             cfg = ws.config() or {}
             rows.append({"id": ws.campaign_id, "name": ws.campaign_name(), "account": account, "status": status,
                          "goal": ((cfg.get("outreach") or {}).get("goal") or "")[:160], "summary": summ, "share": share,
@@ -140,7 +140,7 @@ def register_campaign_routes(app, settings, current_user, base_workspace, render
         led = base.ledger()
         for m in mailboxes:   # the ledger follows each account's limit as set now
             try:
-                led.set_limit(m["address"], mail_service.account_daily_limit(m, mail_service.open_creds(settings.secret_key(), m)))
+                mail_service.set_ledger_limit(led, m, mail_service.open_creds(settings.secret_key(), m))
             except Exception:
                 pass
         outreach = await _outreach_rows(base, led)

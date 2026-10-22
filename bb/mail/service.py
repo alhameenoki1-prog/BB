@@ -57,6 +57,12 @@ def account_daily_limit(mailbox: dict, creds: dict | None = None) -> int:
     return provider_daily_limit(mailbox, creds)
 
 
+def set_ledger_limit(led, mailbox: dict, creds: dict | None = None):
+    """Tell the shared ledger this account's limit for the campaigns and
+    what the mailbox itself allows (which replies keep to as well)."""
+    led.set_limit(mailbox["address"], account_daily_limit(mailbox, creds), hard=provider_daily_limit(mailbox, creds))
+
+
 def provider_daily_limit(mailbox: dict, creds: dict | None = None) -> int:
     address = (mailbox.get("address") or "").lower()
     domain = address.rsplit("@", 1)[-1]

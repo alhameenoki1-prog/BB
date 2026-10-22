@@ -72,6 +72,10 @@ def qa_check(subject: str, body: str, allowed_links: list[str] | None = None) ->
 
 
 SALVAGED_REASON = "the model did not answer in the form asked for; its text was kept, so read it before it goes"
+# A follow-up the model declined in prose instead of JSON.
+_NOT_SUITABLE_RE = re.compile(r"(?i)[\"']suitable[\"']\s*:\s*false|\bnot\s+(?:a\s+)?suitable\b|\bunsuitable\b|"
+                              r"\bI\s+(?:won't|will\s+not|wouldn't|would\s+not|shouldn't|should\s+not)\s+(?:write|send|follow)\b|"
+                              r"\bno\s+natural\s+bridge\b|\b(?:personal|private)\s+(?:exchange|thread|conversation)\b")
 
 
 def greeting_for(name: str) -> str:
@@ -120,9 +124,10 @@ async def draft_reply(brain: MailBrain, settings: MailboxSettings, mailbox: dict
         if data.get("_salvaged"):
             # Not the JSON asked for, but a usable answer: their stance is read
             # here instead, and a person looks at it before it goes.
+            said = str(data.get("stance") or "").strip().lower()
             data = {**data, "confidence": "low", "confidence_reason": SALVAGED_REASON,
-                    "stance": "opt_out" if _enq.is_opt_out(their_text) else
-                              "soft_no" if _enq.is_soft_no(their_text) else str(data.get("stance") or "other")}
+                    "stance": "opt_out" if said == "opt_out" or _enq.is_opt_out(their_text) else
+                              "soft_no" if _enq.is_soft_no(their_text) else said or "other"}
         stance = str(data.get("stance") or "").strip().lower()
         result["stance"] = stance if stance in ("interested", "question", "soft_no", "opt_out", "other") else ""
         if result["stance"] == "opt_out":
@@ -203,6 +208,11 @@ async def draft_reconnect(brain: MailBrain, settings: MailboxSettings, mailbox: 
         if not isinstance(data, dict):
             raise BrainError("The model did not return a draft.")
         if data.get("_salvaged"):
+            raw = str(data.get("_raw") or "")
+            if _NOT_SUITABLE_RE.search(raw) or _NOT_SUITABLE_RE.search(str(data.get("body") or "")[:200]):
+                # It said, in its own words, that this thread is not one to write in.
+                result.update(suitable=False, why=(str(data.get("why") or "") or raw.strip())[:200])
+                return result
             data = {**data, "confidence": "low", "confidence_reason": SALVAGED_REASON}
         if data.get("suitable") is False or (not str(data.get("body") or "").strip() and data.get("why")):
             result.update(suitable=False, why=str(data.get("why") or "")[:200])

@@ -17,7 +17,9 @@ minor versions can still change behaviour.
   Microsoft's own page with the account their browser already uses (a
   short code), and the site registers the app in their directory through
   Microsoft Graph with both redirect addresses, the mail permissions and a
-  secret, then switches it on (`bb/signin_auto.py`). Google offers no
+  secret, then switches it on (`bb/signin_auto.py`). Run again, it
+  updates the site's existing app and gives it a new secret, so mailboxes
+  already signed in keep working. Google offers no
   such API, so its steps link straight to each Google Cloud screen and
   the `client_secret_….json` Google offers is dropped on the page instead
   of copying anything by hand. The sign-in buttons show on every Mailbox
@@ -266,7 +268,14 @@ minor versions can still change behaviour.
   the warm-up or the account's shared limit, and does not use them up.
   The limits now count first emails, follow-ups and mailbox scans; the
   Campaigns page shows replies beside them (`Ledger.reserve(free=True)`,
-  `sending.is_answer`, `Sender._drain_due`).
+  `sending.is_answer`, `Sender._drain_due`). The one thing that stops a
+  reply is the mailbox itself: what the provider allows a day (a little
+  under its published limit), counted over everything sent, since past it
+  the provider refuses mail and can lock the account. First emails stop a
+  tenth short of it, so that last tenth is always there for replies
+  (`limits.hard`, `service.set_ledger_limit`). A send pass also stops
+  taking new emails after seven minutes, so a big batch of approved
+  replies goes over several passes instead of overrunning the cycle.
 
 - **A draft the model answers in the wrong shape no longer fails.** The
   JSON is read through code fences, a reasoning model's `<think>` block,
@@ -275,7 +284,10 @@ minor versions can still change behaviour.
   asked for once more (in the endpoint's JSON mode where it has one, with
   more room when it was cut off), and a reply that then still is not JSON
   is kept as a low-confidence draft for review instead of "drafting
-  failed" (`bb/mail/brain.py` `complete_json(salvage=)`).
+  failed" (`bb/mail/brain.py` `complete_json(salvage=)`). Never kept: a
+  reasoning model's cut-off thinking, an Outbox Rewrite (the email stays as
+  it was), and a follow-up the model declined in its own words; the model's
+  no-contact reading still suppresses the address.
 
 - **The pipeline does not wait its turn.** Writing now runs every cycle
   while recipients are waiting for an email, beside reading replies and

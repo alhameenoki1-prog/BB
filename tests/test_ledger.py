@@ -134,3 +134,37 @@ def test_replies_have_no_limit_and_do_not_use_it_up(tmp_path):
     lg2.join("me@acme.com", "reply-a", "reply", now=T)
     lg2.join("me@acme.com", "scan-a", "scan", now=T)
     assert lg2.allowance("me@acme.com", "outreach-a", now=T + 1)["share"] == 2
+
+
+def test_replies_keep_to_what_the_mailbox_itself_allows(tmp_path):
+    lg = Ledger(tmp_path / "h.db")
+    lg.set_limit("me@gmail.com", 450, hard=20)          # (small numbers: a mailbox that allows 20 a day)
+    # First emails stop a tenth short of it: the last two are for replies.
+    sent = sum(bool(lg.reserve("me@gmail.com", "out", "outreach", now=T + i)[0]) for i in range(30))
+    assert sent == 18
+    slot, pic = lg.reserve("me@gmail.com", "out", "outreach", now=T + 40)
+    assert slot is None and "kept for replies" in pic["reason"]
+    # Replies take those two, then the mailbox's own maximum stops them too.
+    assert lg.reserve("me@gmail.com", "rc", "reply", free=True, now=T + 50)[0]
+    assert lg.reserve("me@gmail.com", "rc", "reply", free=True, now=T + 51)[0]
+    slot, pic = lg.reserve("me@gmail.com", "rc", "reply", free=True, now=T + 52)
+    assert slot is None and "own daily maximum of 20 is reached" in pic["reason"]
+    # An answer never makes its campaign a member that holds a part.
+    assert [m["campaign"] for m in lg.members("me@gmail.com", now=T + 60)] == ["out"]
+    assert lg.used_split("me@gmail.com", "rc", now=T + 60) == (0, 2)
+    # Setting the limit again without the maximum keeps the maximum.
+    lg.set_limit("me@gmail.com", 450)
+    assert lg.summary("me@gmail.com", now=T + 61)["hard"] == 20
+
+
+def test_an_old_ledger_gets_the_new_column(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(str(path))
+    con.execute("CREATE TABLE limits (account TEXT PRIMARY KEY, daily INTEGER NOT NULL, updated_at REAL NOT NULL)")
+    con.execute("INSERT INTO limits VALUES ('a@x.com', 5, 0)")
+    con.commit(); con.close()
+    lg = Ledger(path)
+    assert lg.limit("a@x.com") == 5
+    lg.set_limit("a@x.com", 5, hard=9)
+    assert lg.summary("a@x.com")["hard"] == 9

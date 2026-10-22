@@ -234,7 +234,7 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     led, slot = ledger_for(env), None
     if led is not None:
         run = await db.one("SELECT * FROM reply_runs WHERE id = ?", (draft.get("run_id") or "",)) if draft.get("run_id") else None
-        led.set_limit(mailbox["address"], service.account_daily_limit(mailbox, service.open_creds(secret, mailbox)))
+        service.set_ledger_limit(led, mailbox, service.open_creds(secret, mailbox))
         # A reply a run wrote (approved on Review or sent on its own) checks
         # whether another campaign answered the same message meanwhile: on a
         # mailbox that keeps no copy of what an outreach campaign sends, the

@@ -413,8 +413,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         if (m["settings"].get("reply_to") or "") != new.reply_to:
             await c["ws"].main().account_changed(mailbox_id)       # the outreach campaign sends with the new Reply-To
         try:   # campaigns on this account share the new limit at once
-            c["ws"].ledger().set_limit(m["address"], service.account_daily_limit({**m, "settings": new.model_dump()},
-                                                                                 service.open_creds(settings.secret_key(), m)))
+            service.set_ledger_limit(c["ws"].ledger(), {**m, "settings": new.model_dump()},
+                                     service.open_creds(settings.secret_key(), m))
         except Exception:
             pass
         ok, why = new.ready_to_send()

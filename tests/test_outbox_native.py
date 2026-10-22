@@ -609,3 +609,32 @@ async def test_a_shared_limit_used_up_mid_pass_holds_first_emails_not_replies(st
     await sender._drain_due()
     # The first emails wait for room; the reply, queued after them, still went.
     assert [s["to"] for s in provider.sent] == ["p0@acme.com"] and provider.sent[0]["subject"] == "Re: hi"
+
+
+@pytest.mark.asyncio
+async def test_the_mailbox_maximum_counts_replies_and_a_pass_ends_in_time(state, monkeypatch):
+    import harvey.agents.sender as sender_mod
+    provider = FakeProvider()
+    sender = make_sender(state, provider, require_approval=False)
+    sender.config.channels.email.mailbox_daily_ceiling = 10
+    try:
+        ids = [await seed_prospect(state, email=f"p{i}@acme.com") for i in range(12)]
+        await seed_campaign(state, ids)
+        await sender._run_native()
+        assert len(provider.sent) == 8                  # per pass: 8 (and first emails may go up to 9 of 10)
+        await sender._run_native()
+        assert len(provider.sent) == 9                  # the tenth is kept for a reply
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+        for i in range(3):
+            await state.add_outbox_item(prospect_id=ids[i], to_email=f"p{i}@acme.com", subject="Re: hi", body="Thanks, Tuesday works.",
+                                        send_at=now, status="approved", kind="reply", in_reply_to=f"<r{i}@acme.com>")
+        await sender._run_native()
+        # One reply fits under the mailbox's maximum; the others wait (the provider would refuse them).
+        assert len(provider.sent) == 10 and provider.sent[-1]["subject"] == "Re: hi"
+    finally:
+        sender.config.channels.email.mailbox_daily_ceiling = 0
+    # A pass stops taking new emails once its time is up; the rest stay approved for the next one.
+    monkeypatch.setattr(sender_mod, "PASS_SECONDS", -1)
+    before = len(provider.sent)
+    await sender._run_native()
+    assert len(provider.sent) == before and [i for i in await state.get_outbox(status="approved") if i["kind"] == "reply"]

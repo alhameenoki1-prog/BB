@@ -15,7 +15,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
-import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -1226,7 +1225,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if provider == "google" and upload is not None and getattr(upload, "filename", ""):
             # The file Google offers when the client is made: no copying by hand.
             from bb.signin_auto import read_google_client
-            values, bad, warnings = read_google_client(await upload.read(), settings.base_url)
+            raw = await upload.read(65537)
+            if len(raw) > 65536:
+                return _redirect("/admin/signin", error="That file is far bigger than the one Google gives for a client "
+                                                        "(client_secret_….json, a few hundred bytes).")
+            values, bad, warnings = read_google_client(raw, settings.base_url)
             if bad:
                 return _redirect("/admin/signin", error=" ".join(bad))
             fields.update(values)
@@ -1234,6 +1237,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if problems:
             return _redirect("/admin/signin", error=" ".join(problems))
         restarted = await _restart_for_signin()
+        if provider == "microsoft":
+            from bb import signin_auto
+            signin_auto.forget(admin["id"])       # a finished automatic setup's report no longer holds
         name = "Google" if provider == "google" else "Microsoft"
         if clear:
             msg = f"Sign in with {name} is off."
@@ -1264,7 +1270,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def admin_signin_ms_auto(admin: dict = Depends(current_admin)):
         """Set Microsoft sign-in up from the admin's own Microsoft sign-in."""
         from bb import signin_auto, signin_setup
-        if "ms_client_id" in signin_setup.from_server(settings):
+        if {"ms_client_id", "ms_client_secret", "ms_tenant"} & signin_setup.from_server(settings):
             return _redirect("/admin/signin", error="Microsoft sign-in is set in the server's own settings (bb.env); change it there.")
 
         async def save(client_id, secret, tenant):
@@ -1273,11 +1279,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await _restart_for_signin()
             return problems
 
-        try:
-            job = await signin_auto.start(admin["id"], settings.base_url, save)
-        except httpx.HTTPError as e:
-            return _redirect("/admin/signin", error=f"Could not reach Microsoft: {e}")
+        # The app this site uses now, if any, is updated rather than replaced.
+        current = settings.ms_client_id if signin_setup.stored(settings).get("ms_client_id") == settings.ms_client_id else ""
+        job = await signin_auto.start(admin["id"], settings.base_url, save, current_client_id=current)
         if job.state == "failed":
+            signin_auto.cancel(admin["id"])
             return _redirect("/admin/signin", error=job.error)
         return RedirectResponse("/admin/signin#microsoft", status_code=303)
 
@@ -1290,7 +1296,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/admin/signin/microsoft/auto/cancel")
     async def admin_signin_ms_auto_cancel(admin: dict = Depends(current_admin)):
         from bb import signin_auto
-        signin_auto.cancel(admin["id"])
+        if not signin_auto.cancel(admin["id"]):
+            return _redirect("/admin/signin", msg="It is setting things up now and finishes by itself in a moment.")
         return RedirectResponse("/admin/signin#microsoft", status_code=303)
 
     @app.post("/admin/users")

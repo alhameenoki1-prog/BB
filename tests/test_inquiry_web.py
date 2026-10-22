@@ -4,6 +4,7 @@ page lists them, and a mailbox change does not lose them."""
 import yaml
 
 from bb.accounts import Accounts
+from bb.mail.brain import MailBrain as _RealMailBrain  # the class itself, before a test swaps it
 from bb.workspaces import Workspace
 from harvey.config import HarveyConfig
 
@@ -247,6 +248,18 @@ def test_the_campaign_goal_is_saved_and_every_queued_email_can_be_rewritten(clie
     r = client.post(f"/outbox/{approved_id}/rewrite", data={"instruction": "x"})
     assert "no%20AI%20provider" in r.headers["location"] or "no AI provider" in r.headers["location"]
 
+    # A model that answers with its own thinking instead of the email: the
+    # approved email is left exactly as it was (never sent as the rewrite).
+    class _Rambling(_RealMailBrain):
+        async def complete(self, system, user, max_tokens=1200):
+            return "Okay, the user wants me to rewrite this email so it is shorter. Let me think about the subject first."
+    before = asyncio.run(read(approved_id))
+    monkeypatch.setattr("bb.mail.brain.MailBrain", lambda env: _Rambling({"BB_LLM_PROVIDER": "anthropic", "BB_LLM_API_KEY": "k"}))
+    r = client.post(f"/outbox/{approved_id}/rewrite", data={"instruction": "shorter"})
+    assert "Could%20not%20rewrite" in r.headers["location"] and "JSON" in r.headers["location"]
+    after = asyncio.run(read(approved_id))
+    assert after["body"] == before["body"] and after["subject"] == before["subject"] and after["status"] == "approved"
+
 
 def test_the_dashboard_and_mailbox_page_show_the_health_alert(client):  # noqa: F811
     import asyncio
@@ -267,4 +280,5 @@ def test_the_dashboard_and_mailbox_page_show_the_health_alert(client):  # noqa: 
     assert "The mailbox check at 06:00 UTC on 22 Oct failed" in client.get("/").text
     page = client.get("/mailbox").text
     assert "Is it still sending?" in page and "FAILED: SMTP login failed: 535" in page and "2026-10-22 06:00 UTC" in page
+
 

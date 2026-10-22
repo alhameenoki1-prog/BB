@@ -78,7 +78,7 @@
     <td>{% if a.ledger.members %}{% for m in a.ledger.members %}{{ m.label or m.feature }} ({% if m.answers_only %}{{ m.answers }} repl{{ 'ies' if m.answers != 1 else 'y' }}, no limit{% else %}{{ m.used }}{% if a.ledger.share %} of a {{ a.ledger.share }} part{% endif %}{% if m.answers %}, + {{ m.answers }} repl{{ 'ies' if m.answers != 1 else 'y' }}{% endif %}{% endif %}){{ ', ' if not loop.last else '' }}{% endfor %}{% else %}<span class="muted">nothing</span>{% endif %}</td></tr>
   {% endfor %}
   </tbody></table>
-  <p class="tiny muted" style="margin-top:8px">Every campaign on an account is guaranteed an equal part of its daily limit and may use more only from what no other campaign there still has a claim on. Pausing or stopping one gives its part back at once. Replies to people who wrote are never limited and do not use up the limit: it is for first emails, follow-ups and scans.</p>
+  <p class="tiny muted" style="margin-top:8px">Every campaign on an account is guaranteed an equal part of its daily limit and may use more only from what no other campaign there still has a claim on. Pausing or stopping one gives its part back at once. Replies to people who wrote are never held back by it and do not use it up: it is for first emails, follow-ups and scans. Only the mailbox's own daily maximum, counting everything, stops a reply (past it the provider refuses mail), and first emails leave its last tenth to replies.</p>
 </div>
 
 <div class="card" id="new">

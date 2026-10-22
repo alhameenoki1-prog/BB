@@ -746,7 +746,7 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
     feature, label = FEATURES.get(kind, "reply-run"), run_label(run, mailbox["address"])
     if led is not None:
         try:
-            led.set_limit(mailbox["address"], service.account_daily_limit(mailbox, service.open_creds(secret, mailbox)))
+            service.set_ledger_limit(led, mailbox, service.open_creds(secret, mailbox))
         except Exception:
             led = None
     user_root = (env or {}).get("HARVEY_HOME") or ""

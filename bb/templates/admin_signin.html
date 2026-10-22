@@ -39,7 +39,7 @@
 
 <div class="card" id="microsoft">
   <h2>{{ icon('mail', 16) }} Microsoft (Outlook, Hotmail, Microsoft 365) <span class="tag {{ 'good' if st.microsoft_on else '' }}" style="margin-left:6px">{{ 'on' if st.microsoft_on else 'off' }}</span></h2>
-  {% if 'ms_client_id' in st.fixed %}<div class="hint">Set in the server's own settings (bb.env or the environment); change it there.</div>{% else %}
+  {% if 'ms_client_id' in st.fixed or 'ms_client_secret' in st.fixed or 'ms_tenant' in st.fixed %}<div class="hint">Set in the server's own settings (bb.env or the environment); change it there.</div>{% else %}
   <div class="auto" id="ms-auto">
     {% if ms_job and ms_job.state in ('waiting', 'working', 'starting') %}
       <div id="ms-wait" {{ 'hidden' if ms_job.state != 'waiting' else '' }}>
@@ -51,15 +51,15 @@
         <div class="tiny muted">Waiting for you<span id="ms-left"></span>.</div>
       </div>
       <ul class="small" id="ms-steps">{% for line in ms_job.steps %}<li>{{ line }}</li>{% endfor %}</ul>
-      <form method="post" action="/admin/signin/microsoft/auto/cancel"><button type="submit" class="secondary small">Cancel</button></form>
-    {% elif ms_job and ms_job.state == 'done' %}
+      <form method="post" action="/admin/signin/microsoft/auto/cancel" id="ms-cancel" {{ 'hidden' if ms_job.state == 'working' else '' }}><button type="submit" class="secondary small">Cancel</button></form>
+    {% elif ms_job and ms_job.state == 'done' and st.microsoft_on and ms_job.client_id == st.ms_client_id %}
       <div class="note good">Done: Sign in with Microsoft is on.</div>
       <ul class="small">{% for line in ms_job.steps %}<li>{{ line }}</li>{% endfor %}</ul>
       {% if ms_job.done_note %}<p class="tiny muted">{{ ms_job.done_note }}</p>{% endif %}
     {% else %}
       {% if ms_job and ms_job.state == 'failed' %}<div class="note bad">{{ ms_job.error }}</div>{% endif %}
       <p class="small" style="margin-top:0"><b>Let the site do steps 1 to 5.</b> Sign in on Microsoft's own page with the account your browser already uses, and the site registers the app in your directory with both sign-in addresses and the mail permissions, makes its secret and switches the button on. Nothing but a one-time token for this reaches the site.</p>
-      <form method="post" action="/admin/signin/microsoft/auto"><button type="submit">{{ 'Set it up again with my Microsoft sign-in' if st.microsoft_on else 'Set it up with my Microsoft sign-in' }}</button></form>
+      <form method="post" action="/admin/signin/microsoft/auto"><button type="submit" {% if st.microsoft_on %}onclick="return confirm('Set Microsoft sign-in up again? This site\'s app is updated and gets a new secret, so mailboxes already signed in keep working. If the app is not in the directory you sign in to, a new one is made and those mailboxes need Reconnect.')"{% endif %}>{{ 'Set it up again with my Microsoft sign-in' if st.microsoft_on else 'Set it up with my Microsoft sign-in' }}</button></form>
       <p class="tiny muted" style="margin-bottom:0">Needs a work or school Microsoft account that may register apps (the owner of a Microsoft 365 or Entra directory can; a free Microsoft 365 developer account has one). Microsoft asks you once to agree that the setup may manage app registrations.</p>
     {% endif %}
   </div>
@@ -113,6 +113,7 @@
     fetch('/admin/signin/microsoft/auto', {credentials: 'same-origin'}).then(r => r.json()).then(j => {
       if (j.state === 'done' || j.state === 'failed' || j.state === 'none') { location.replace('/admin/signin#microsoft'); location.reload(); return; }
       const wait = document.getElementById('ms-wait'); if (wait) wait.hidden = j.state !== 'waiting';
+      const stop = document.getElementById('ms-cancel'); if (stop) stop.hidden = j.state === 'working';   // it finishes by itself now
       const left = document.getElementById('ms-left'); if (left && j.expires_in) left.textContent = ' (the code works for ' + Math.ceil(j.expires_in / 60) + ' more minute' + (j.expires_in > 60 ? 's' : '') + ')';
       const ul = document.getElementById('ms-steps'); if (ul) ul.innerHTML = j.steps.map(s => '<li>' + s.replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c])) + '</li>').join('');
       setTimeout(poll, 2000);

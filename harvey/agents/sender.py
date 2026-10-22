@@ -15,6 +15,7 @@ import threading
 import logging
 import random
 import re
+import time
 from datetime import date, datetime, timedelta, timezone
 
 from harvey import names
@@ -39,6 +40,7 @@ PER_COPY_REWRITES = 3
 # instead of bursting the daily cap in one minute.
 MAX_SENDS_PER_CYCLE = 8
 REPLIES_PER_PASS = 200      # replies have no limit; this only bounds one pass (the next pass takes the rest)
+PASS_SECONDS = 420          # a pass takes nothing new after this, well inside the cycle's 600 s; the rest goes next pass
 # Warm-up ramp for a mailbox new to cold outreach: this many on day one,
 # then WARMUP_STEP more each day until the configured daily cap (or, with
 # no cap, until the ramp no longer binds). Mailbox providers watch a
@@ -595,6 +597,21 @@ class Sender:
             logger.info(
                 f"Sender: daily send allowance reached ({sent_today}/{allowance}"
                 f"{' warm-up' if allowance != max_daily else ''}); only replies go.")
+        # The mailbox's own maximum counts everything, replies included: past
+        # it the provider refuses mail. First emails stop a tenth short of it,
+        # so that last tenth is always there for replies.
+        reply_room = REPLIES_PER_PASS
+        if ceiling:
+            everything = await self.state.count_outbox_sent_today()
+            reply_room = min(REPLIES_PER_PASS, max(0, ceiling - everything))
+            if budget and everything >= ceiling - ceiling // 10:
+                budget = 0
+                logger.info(f"Sender: {everything} sent today against the mailbox's own maximum of {ceiling}; "
+                            f"the last {ceiling // 10} are kept for replies.")
+            budget = min(budget, max(0, ceiling - ceiling // 10 - everything))
+            if not reply_room:
+                logger.warning(f"Sender: the mailbox's own daily maximum of {ceiling} is reached, replies included; "
+                               "everything waits for tomorrow (the provider would refuse it).")
 
         if self.ledger is not None and budget > 0:
             # Other campaigns send from this account too: this one keeps to
@@ -629,9 +646,9 @@ class Sender:
         # compliance check) never keep them waiting.
         seen = {item["id"] for item in due}
         replies = await self.state.get_outbox(
-            status="approved", due_before=now, limit=REPLIES_PER_PASS,
+            status="approved", due_before=now, limit=reply_room,
             exclude_kind="sequence",
-        )
+        ) if reply_room else []
         extra = [item for item in replies if item["id"] not in seen]
         if extra:
             due = sorted(
@@ -758,10 +775,14 @@ class Sender:
         self._cold_held = False
         self._auth_logged = False
 
+        started = time.monotonic()
+
         async def lane():
             nonlocal sent
             first = True
             while queue and not self._throttled:
+                if time.monotonic() - started > PASS_SECONDS:
+                    break             # the rest stays approved for the next pass
                 item, prospect, receipt_id = queue.pop(0)
                 if self._cold_held and item["kind"] == "sequence":
                     continue          # the shared limit ran out this pass
@@ -1070,8 +1091,8 @@ class Sender:
                 # first emails of this pass; replies (no limit) still go. A
                 # ledger that cannot be read ends the pass.
                 await self.state.update_outbox_item(item["id"], status="approved")
-                if pic.get("unread"):
-                    self._throttled = True
+                if pic.get("unread") or (item.get("kind") or "sequence") != "sequence":
+                    self._throttled = True      # a reply held back means the mailbox's own maximum: nothing more goes
                 else:
                     self._cold_held = True
                 logger.info(f"Sender: {pic.get('reason')}; the rest waits.")

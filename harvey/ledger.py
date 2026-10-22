@@ -25,10 +25,15 @@ left. A send is reserved before it goes (one transaction, so two
 processes cannot both take the last slot) and released if it fails.
 
 Replies are not limited: an answer to someone who wrote is never held
-back by any limit, and does not use up the account's limit for first
-emails. It is still written down (its feature starts with ``free:``) so
-the Campaigns page can show it, and a campaign that only answers people
-(a reply campaign, a reply run) holds no part of the limit.
+back by the campaigns' limit, and does not use it up. It is still written
+down (its feature starts with ``free:``) so the Campaigns page can show
+it, and a campaign that only answers people (a reply campaign, a reply
+run) holds no part of the limit. The one thing that stops a reply is the
+mailbox itself: ``hard`` is what the provider allows a day (a little
+under its published limit), counted over everything sent, replies
+included, since past it the provider refuses mail and can lock the
+account. First emails stop a tenth short of it, so that last tenth is
+always there for replies.
 
 The same file holds **suppressed** addresses: someone who asks one
 campaign never to be contacted again is skipped by all of them.
@@ -66,7 +71,8 @@ CREATE TABLE IF NOT EXISTS members (
 CREATE TABLE IF NOT EXISTS limits (
     account TEXT PRIMARY KEY,
     daily INTEGER NOT NULL,
-    updated_at REAL NOT NULL
+    updated_at REAL NOT NULL,
+    hard INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS suppressed (
     email TEXT PRIMARY KEY,
@@ -114,6 +120,9 @@ class Ledger:
                 try:
                     con.execute("PRAGMA journal_mode=WAL")
                     con.executescript(SCHEMA)
+                    cols = {r[1] for r in con.execute("PRAGMA table_info(limits)")}
+                    if "hard" not in cols:      # a ledger from before the mailbox's own maximum was kept
+                        con.execute("ALTER TABLE limits ADD COLUMN hard INTEGER DEFAULT 0")
                     break
                 except sqlite3.OperationalError:
                     if attempt == 19:
@@ -128,12 +137,16 @@ class Ledger:
 
     # ── limits and members ──
 
-    def set_limit(self, account: str, daily: int, now: float | None = None):
+    def set_limit(self, account: str, daily: int, now: float | None = None, hard: int | None = None):
+        """The account's limit for the campaigns (``daily``) and, when
+        given, what the mailbox itself allows a day (``hard``, 0 = unknown),
+        which stops replies too."""
         con = self._con()
         try:
-            con.execute("INSERT INTO limits(account, daily, updated_at) VALUES (?, ?, ?) "
-                        "ON CONFLICT(account) DO UPDATE SET daily = excluded.daily, updated_at = excluded.updated_at",
-                        (_key(account), max(0, int(daily or 0)), self._now(now)))
+            con.execute("INSERT INTO limits(account, daily, updated_at, hard) VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(account) DO UPDATE SET daily = excluded.daily, updated_at = excluded.updated_at"
+                        + (", hard = excluded.hard" if hard is not None else ""),
+                        (_key(account), max(0, int(daily or 0)), self._now(now), max(0, int(hard or 0))))
         finally:
             con.close()
 
@@ -204,10 +217,10 @@ class Ledger:
 
     # ── the split ──
 
-    def _used(self, con, account: str, since: float, campaign: str | None = None, free: bool = False) -> int:
+    def _used(self, con, account: str, since: float, campaign: str | None = None, free: bool | None = False) -> int:
         """Sends in the window that count against the limit (``free``: the
-        answers instead, which do not)."""
-        which = "feature LIKE 'free:%'" if free else "feature NOT LIKE 'free:%'"
+        answers instead, which do not; None: everything)."""
+        which = "1" if free is None else "feature LIKE 'free:%'" if free else "feature NOT LIKE 'free:%'"
         if campaign is None:
             row = con.execute(f"SELECT COUNT(*) FROM sends WHERE account = ? AND sent_at > ? AND {which}",
                               (account, since)).fetchone()
@@ -221,10 +234,24 @@ class Ledger:
         """The members that take a part of the limit (not those that only answer)."""
         return [m for m in members if m.get("feature") not in ANSWERS_ONLY]
 
-    def _picture(self, con, account: str, campaign: str, now: float, priority: bool = False) -> dict:
+    def _picture(self, con, account: str, campaign: str, now: float, priority: bool = False, free: bool = False) -> dict:
         since = now - WINDOW_SECONDS
-        row = con.execute("SELECT daily FROM limits WHERE account = ?", (account,)).fetchone()
+        row = con.execute("SELECT daily, hard FROM limits WHERE account = ?", (account,)).fetchone()
         limit = int(row[0]) if row else 0
+        hard = int(row[1] or 0) if row else 0
+        if hard:
+            # The mailbox's own maximum, over everything sent: replies may use
+            # all of it, first emails stop a tenth short so replies keep room.
+            everything = self._used(con, account, since, free=None)
+            if free:
+                ok = everything < hard
+                return {"ok": ok, "free": True, "room": max(0, hard - everything), "limited": True, "limit": limit, "share": 0,
+                        "used": 0, "total": everything, "others": 0, "hard": hard,
+                        "reason": "" if ok else (f"the mailbox's own daily maximum of {hard} is reached ({everything} sent in "
+                                                 "the last 24 hours, replies included); past it the provider refuses mail")}
+        elif free:
+            return {"ok": True, "free": True, "room": 0, "limited": False, "limit": limit, "share": 0, "used": 0,
+                    "total": 0, "others": 0, "hard": 0, "reason": ""}
         members = self._sharing(self.members(account, now, con=con))
         others = [m for m in members if m["campaign"] != campaign]
         total = self._used(con, account, since)
@@ -240,7 +267,13 @@ class Ledger:
             room = 10 ** 9            # no limit known: nothing to split
         else:
             room = max(0, limit - total - held)
-        if room > 0:
+        hard_room = max(0, hard - hard // 10 - everything) if hard else 10 ** 9
+        if room > 0 and hard_room <= 0:
+            room = 0
+            reason = (f"the mailbox's own daily maximum is {hard} and {everything} went in the last 24 hours, replies "
+                      f"included; the last {hard // 10} are kept for replies")
+        elif room > 0:
+            room = min(room, hard_room)
             reason = ""
         elif limit and total >= limit:
             reason = f"the account's daily limit of {limit} is reached ({total} sent in the last 24 hours)"
@@ -248,8 +281,8 @@ class Ledger:
             names = ", ".join(m["label"] or m["feature"] or m["campaign"] for m in others)
             reason = (f"this campaign's share of the account's daily limit is used ({mine} of {share}); the rest of the "
                       f"{limit} is held for the {len(others)} other campaign{'s' if len(others) != 1 else ''} on it ({names})")
-        return {"ok": room > 0, "room": room if limit else 0, "limited": bool(limit), "limit": limit, "share": share,
-                "used": mine, "total": total, "others": len(others), "reason": reason}
+        return {"ok": room > 0, "room": room if (limit or hard) else 0, "limited": bool(limit or hard), "limit": limit,
+                "share": share, "used": mine, "total": total, "others": len(others), "hard": hard, "reason": reason}
 
     def allowance(self, account: str, campaign: str, feature: str = "", label: str = "",
                   now: float | None = None, priority: bool = False) -> dict:
@@ -275,11 +308,11 @@ class Ledger:
         con = self._con()
         try:
             con.execute("BEGIN IMMEDIATE")
-            if not priority:
+            if not priority and not free:
+                # (An answer never makes its campaign a member: one that can
+                # send no first emails today must not hold a part of the limit.)
                 self.join(account, campaign, feature, label, now=t, con=con)
-            pic = self._picture(con, account, campaign, t, priority)
-            if free:
-                pic = {**pic, "ok": True, "free": True, "reason": ""}
+            pic = self._picture(con, account, campaign, t, priority, free=free)
             if not pic["ok"]:
                 con.execute("ROLLBACK")
                 return None, pic
@@ -318,11 +351,24 @@ class Ledger:
             limit = int(row[0]) if row else 0
             members = self.members(account, t, con=con)
             share = limit // max(1, len(self._sharing(members))) if limit else 0
+            hard = con.execute("SELECT hard FROM limits WHERE account = ?", (account,)).fetchone()
             return {"limit": limit, "total": self._used(con, account, since), "share": share,
+                    "hard": int((hard or [0])[0] or 0), "sharing": len(self._sharing(members)),
                     "answers": self._used(con, account, since, free=True),
                     "members": [{**m, "used": self._used(con, account, since, m["campaign"]),
                                  "answers": self._used(con, account, since, m["campaign"], free=True),
                                  "answers_only": m.get("feature") in ANSWERS_ONLY} for m in members]}
+        finally:
+            con.close()
+
+    def used_split(self, account: str, campaign: str, now: float | None = None) -> tuple[int, int]:
+        """(counted sends, answers) of this campaign on this account in the
+        window, member now or not."""
+        con = self._con()
+        try:
+            since = self._now(now) - WINDOW_SECONDS
+            account = _key(account)
+            return (self._used(con, account, since, campaign), self._used(con, account, since, campaign, free=True))
         finally:
             con.close()
 

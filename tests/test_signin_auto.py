@@ -130,7 +130,7 @@ def test_the_setup_page_does_it_for_the_admin(client, monkeypatch):
     # Microsoft: the button starts the sign-in, and the page shows the code until it is done.
     started = {}
 
-    async def fake_start(admin_id, base_url, save, client_factory=None):
+    async def fake_start(admin_id, base_url, save, client_factory=None, current_client_id=""):
         job = signin_auto.Job(state="waiting", user_code="WXYZ-9876", expires_at=__import__("time").time() + 600)
         signin_auto._JOBS[admin_id] = job
         started.update(base=base_url, save=save)
@@ -147,3 +147,164 @@ def test_the_setup_page_does_it_for_the_admin(client, monkeypatch):
     assert s.ms_client_id == "1a2b3c4d-1111-2222-3333-444455556666" and s.ms_client_secret == "v~1"
     client.post("/admin/signin/microsoft/auto/cancel")
     assert client.get("/admin/signin/microsoft/auto").json()["state"] == "none"
+
+
+# ── what the review found ──
+
+
+def _graph(log, existing=None, token_answers=None):
+    """Microsoft's endpoints, with this site's app already in the directory when ``existing`` is given."""
+    answers = list(token_answers or [httpx.Response(200, json={"access_token": "tok"})])
+
+    def handler(request: httpx.Request):
+        url = str(request.url)
+        log.append((request.method, url, request.content.decode() if request.content else ""))
+        if url.endswith("/devicecode"):
+            return httpx.Response(200, json={"device_code": "d", "user_code": "CODE-1", "interval": 1, "expires_in": 900})
+        if url.endswith("/token"):
+            a = answers.pop(0)
+            if isinstance(a, Exception):
+                raise a
+            return a
+        if "/applications(appId=" in url and request.method == "GET":
+            return httpx.Response(200, json=existing) if existing else httpx.Response(404, json={"error": {"message": "not found"}})
+        if request.method == "PATCH":
+            return httpx.Response(204)
+        if url.endswith("/addPassword"):
+            return httpx.Response(200, json={"secretText": "fresh~secret"})
+        if url.endswith("/applications"):
+            return httpx.Response(201, json={"id": "new-obj", "appId": "new-app", "passwordCredentials": [{"secretText": "s"}]})
+        return httpx.Response(404)
+    return httpx.MockTransport(handler)
+
+
+@pytest.fixture
+def instant(monkeypatch):
+    async def no_wait(_s):
+        await asyncio.sleep(0)               # no wait, but the loop still turns
+    monkeypatch.setattr(signin_auto, "_pause", no_wait)
+
+
+@pytest.mark.asyncio
+async def test_setting_up_again_updates_the_sites_app_so_signed_in_mailboxes_keep_working(instant):
+    log, saved = [], []
+    existing = {"id": "obj-9", "appId": "app-9", "signInAudience": "AzureADandPersonalMicrosoftAccount",
+                "web": {"redirectUris": ["https://old.example/microsoft/callback"]},
+                "requiredResourceAccess": [{"resourceAppId": signin_auto.GRAPH_APP,
+                                            "resourceAccess": [{"id": signin_auto.MAIL_SCOPES["User.Read"], "type": "Scope"}]}]}
+    t = _graph(log, existing)
+    job = await signin_auto.start("r1", "https://bb.example.com", lambda *a: saved.append(a) or [],
+                                  client_factory=lambda: httpx.AsyncClient(transport=t), current_client_id="app-9")
+    await job.task
+    assert job.state == "done" and saved == [("app-9", "fresh~secret", "common")]          # same app, new secret
+    assert not any(m == "POST" and u.endswith("/applications") for m, u, _ in log)         # nothing new registered
+    patch = json.loads(next(c for m, u, c in log if m == "PATCH"))
+    assert patch["web"]["redirectUris"][0] == "https://old.example/microsoft/callback"      # its own addresses kept
+    assert set(signin_auto.redirect_uris("https://bb.example.com")) <= set(patch["web"]["redirectUris"])
+    assert {a["id"] for a in patch["requiredResourceAccess"][0]["resourceAccess"]} == set(signin_auto.MAIL_SCOPES.values())
+    assert "keep working" in job.done_note
+    # Not in the directory signed in to: a new one, and the page says what that means.
+    log, saved = [], []
+    job = await signin_auto.start("r1", "https://bb.example.com", lambda *a: saved.append(a) or [],
+                                  client_factory=lambda: httpx.AsyncClient(transport=_graph(log)), current_client_id="app-9")
+    await job.task
+    assert job.state == "done" and saved[0][0] == "new-app" and any("Reconnect" in s for s in job.steps)
+    signin_auto.cancel("r1")
+
+
+@pytest.mark.asyncio
+async def test_the_setup_never_hangs_or_doubles_and_waits_out_hiccups(instant):
+    # Microsoft cannot be reached at the start: a failed job, not one stuck "starting".
+    def down(request):
+        raise httpx.ConnectError("no route")
+    job = await signin_auto.start("h1", "https://bb.example.com", lambda *a: [],
+                                  client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(down)))
+    assert job.state == "failed" and "Could not reach Microsoft" in job.error and job.task is None
+    # A non-JSON answer: the same.
+    job = await signin_auto.start("h1", "https://bb.example.com", lambda *a: [],
+                                  client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, text="<html>"))))
+    assert job.state == "failed"
+    # A network error, a 429 and a 503 while waiting for the sign-in are waited out.
+    log, saved = [], []
+    t = _graph(log, token_answers=[httpx.ReadTimeout(""), httpx.Response(429, text="slow"), httpx.Response(503, text="busy"),
+                                   httpx.Response(400, json={"error": "authorization_pending"}),
+                                   httpx.Response(200, json={"access_token": "tok"})])
+    job = await signin_auto.start("h1", "https://bb.example.com", lambda *a: saved.append(a) or [],
+                                  client_factory=lambda: httpx.AsyncClient(transport=t))
+    await job.task
+    assert job.state == "done" and saved
+    # Two clicks at once start one sign-in, and the first one's wait is stopped.
+    gate = asyncio.Event()
+
+    async def slow_code(request):
+        await gate.wait()
+        return httpx.Response(200, json={"device_code": "d", "user_code": "X", "interval": 1, "expires_in": 900})
+
+    class Slow(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            if str(request.url).endswith("/devicecode"):
+                return await slow_code(request)
+            return httpx.Response(400, json={"error": "authorization_pending"})
+    a = asyncio.ensure_future(signin_auto.start("h2", "https://bb.example.com", lambda *x: [],
+                                                client_factory=lambda: httpx.AsyncClient(transport=Slow())))
+    b = asyncio.ensure_future(signin_auto.start("h2", "https://bb.example.com", lambda *x: [],
+                                                client_factory=lambda: httpx.AsyncClient(transport=Slow())))
+    await asyncio.sleep(0.05)
+    gate.set()
+    j1, j2 = await a, await b
+    assert j1 is not j2 and signin_auto.job_for("h2") is j2
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert j1.task.cancelled() and not j2.task.done()           # the first wait was stopped, one goes on
+    signin_auto.cancel("h2")
+
+
+@pytest.mark.asyncio
+async def test_cancel_cannot_stop_it_halfway_through_setting_up(instant):
+    release = asyncio.Event()
+    saved = []
+
+    async def save(*a):
+        await release.wait()                 # restarting workers takes a while
+        saved.append(a)
+        return []
+    job = await signin_auto.start("c1", "https://bb.example.com", save,
+                                  client_factory=lambda: httpx.AsyncClient(transport=_graph([])))
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if job.state == "working":
+            break
+    assert job.state == "working"
+    assert signin_auto.cancel("c1") is False and signin_auto.job_for("c1") is job       # refused while it sets up
+    release.set()
+    await job.task
+    assert job.state == "done" and saved
+    signin_auto.cancel("c1")
+
+
+def test_odd_google_files_are_refused_in_words():
+    base = "https://bb.example.com"
+    for bad in ({"web": "x"}, {"web": {"client_id": "a", "client_secret": "b", "redirect_uris": 5}}, [1, 2]):
+        values, problems, _ = signin_auto.read_google_client(json.dumps(bad), base)
+        assert not values and problems
+    # A trailing slash on a registered address still counts as that address.
+    ok = {"web": {"client_id": "1-a.apps.googleusercontent.com", "client_secret": "s",
+                  "redirect_uris": [base + "/gmail/callback/", base + "/mail/gmail/callback", {"odd": 1}]}}
+    assert signin_auto.read_google_client(json.dumps(ok), base)[2] == []
+
+
+def test_the_setup_routes_refuse_what_they_cannot_do(client, monkeypatch):
+    from tests.test_bb_web import ADMIN, _login
+    s = client.settings
+    assert _login(client, ADMIN["email"], ADMIN["password"]).status_code == 303
+    # A huge file is refused before it is read whole.
+    r = client.post("/admin/signin", data={"provider": "google"},
+                    files={"client_json": ("big.json", b"{" + b" " * 70000 + b"}", "application/json")})
+    assert "far%20bigger" in r.headers["location"]
+    # A secret or tenant fixed by the server: the automatic setup is not offered and refused.
+    monkeypatch.setattr(s, "ms_client_id", "")
+    monkeypatch.setitem(s.env_at_start, "MS_CLIENT_ID", "")
+    monkeypatch.setitem(s.env_at_start, "MS_CLIENT_SECRET", "from-bb-env")
+    assert "Set it up with my Microsoft sign-in" not in client.get("/admin/signin").text
+    r = client.post("/admin/signin/microsoft/auto")
+    assert "server%27s%20own%20settings" in r.headers["location"] or "server's own settings" in r.headers["location"]

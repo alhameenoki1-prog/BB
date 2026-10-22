@@ -309,3 +309,35 @@ async def test_an_unreadable_answer_is_asked_for_once_more_then_kept_for_a_perso
     from bb.mail.brain import BrainError
     with pytest.raises(BrainError, match="twice"):
         await draft_reply(brain, settings, {"address": ME}, thread, messages)
+
+
+@pytest.mark.asyncio
+async def test_what_is_never_kept_from_an_unreadable_answer():
+    from bb.mail.brain import BrainError, plain_answer
+    from bb.mail.drafting import draft_reconnect
+    settings = MailboxSettings(display_name="Jane Doe")
+    thread = {"subject": "Site visit", "id": "t"}
+    # A reasoning model cut off mid-thought: none of it is an email.
+    assert plain_answer("<think>Okay, the user wants me to rewrite this email so it is shorter") == ""
+    # The model's own no-contact reading stands even when the regex reads a polite no.
+    rude = [{"direction": "inbound", "from_name": "Ann", "from_email": "ann@x", "sent_at": "2026-01-01",
+             "body": "Not interested. How did you get my email address? Third time this month."}]
+    broken = '{"body": "Understood. I won\'t write again, sorry for the "spam".", "confidence": "high", "stance": "opt_out"}'
+    result = await draft_reply(FakeBrain([broken, broken]), settings, {"address": ME}, thread, rude)
+    assert result["stance"] == "opt_out" and result["body"] == ""
+    # A second ask that errors (a free tier's 429): the first answer is still used.
+    class Flaky(FakeBrain):
+        async def complete(self, system, user, max_tokens=1200):
+            if self.prompts:
+                raise BrainError("answered 429")
+            return await super().complete(system, user, max_tokens)
+    ask = [{"direction": "inbound", "from_name": "Bob", "from_email": "bob@x", "body": "Can we do Tuesday?", "sent_at": "2026-01-01"}]
+    first = "Tuesday works for the site visit, Bob. I'll bring the drawings you asked about and we can walk it together."
+    result = await draft_reply(Flaky([first]), settings, {"address": ME}, thread, ask)
+    assert result["body"].startswith("Tuesday works") and result["confidence"] == "low"
+    # A follow-up declined in prose is a skip, not a draft to a doctor's office.
+    clinic = [{"direction": "inbound", "from_name": "Clinic", "from_email": "desk@clinic.example", "sent_at": "2025-01-01",
+               "body": "Your appointment is confirmed for Monday."}]
+    prose = "Not suitable: this is a private exchange with a doctor's office about an appointment, so I won't write a follow-up."
+    result = await draft_reconnect(FakeBrain([prose, prose]), settings, {"address": ME}, thread, clinic)
+    assert result["suitable"] is False and "private exchange" in result["why"]
