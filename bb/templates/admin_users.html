@@ -53,7 +53,7 @@
             {% if u.disabled %}
               <form class="inline" method="post" action="/admin/users/{{ u.id }}/enable" style="margin-top:6px"><button class="small secondary" type="submit">Enable</button></form>
             {% else %}
-              <form class="inline" method="post" action="/admin/users/{{ u.id }}/disable" style="margin-top:6px" onsubmit="return confirm('Disable {{ u.email }}? Their worker stops and they are signed out.')"><button class="small danger" type="submit">Disable</button></form>
+              <form class="inline" method="post" action="/admin/users/{{ u.id }}/disable" style="margin-top:6px" onsubmit="return confirm('Disable this user? Their worker stops and they are signed out.')"><button class="small danger" type="submit">Disable</button></form>
             {% endif %}
           {% endif %}
         </td>

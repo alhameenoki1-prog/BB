@@ -66,7 +66,7 @@
     <form class="inline" method="post" action="/mail/accounts/{{ box.id }}/sync"><button class="secondary small" type="submit">Sync now</button></form>
     <form class="inline" method="post" action="/mail/accounts/{{ box.id }}/resync" onsubmit="return confirm('Read the whole mailbox again? Nothing is duplicated.')"><button class="secondary small" type="submit">Full re-sync</button></form>
     <form class="inline" method="post" action="/mail/accounts/{{ box.id }}/enable"><button class="secondary small" type="submit">{{ 'Disable' if box.enabled else 'Enable' }}</button></form>
-    <form class="inline" method="post" action="/mail/accounts/{{ box.id }}/remove" onsubmit="return confirm('Remove {{ box.address }} and everything synced from it?')"><button class="danger small" type="submit">{{ icon('trash', 13) }} Remove</button></form>
+    <form class="inline" method="post" action="/mail/accounts/{{ box.id }}/remove" onsubmit="return confirm('Remove this account and everything synced from it?')"><button class="danger small" type="submit">{{ icon('trash', 13) }} Remove</button></form>
   </div>
 </div>
 {% endblock %}

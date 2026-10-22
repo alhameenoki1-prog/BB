@@ -22,13 +22,13 @@
       <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/open"><button class="secondary small" type="submit">Open</button></form>
       {% if c.status == 'running' %}
         <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/pause"><button class="secondary small" type="submit">Pause</button></form>
-        <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/stop" onsubmit="return confirm('Stop {{ c.name }}? Its leads and emails are kept.')"><button class="danger small" type="submit">Stop</button></form>
+        <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/stop" onsubmit="return confirm('Stop this campaign? Its leads and emails are kept.')"><button class="danger small" type="submit">Stop</button></form>
       {% elif c.status == 'paused' %}
         <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/resume"><button class="small" type="submit">Resume</button></form>
         <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/stop"><button class="danger small" type="submit">Stop</button></form>
       {% else %}
         <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/start"><button class="small" type="submit">Start</button></form>
-        {% if not c.main %}<form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/remove" onsubmit="return confirm('Remove {{ c.name }}? Its folder is set aside, not deleted.')"><button class="danger small" type="submit">Remove</button></form>{% endif %}
+        {% if not c.main %}<form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/remove" onsubmit="return confirm('Remove this campaign? Its folder is set aside, not deleted.')"><button class="danger small" type="submit">Remove</button></form>{% endif %}
       {% endif %}
     </td>
   </tr>
