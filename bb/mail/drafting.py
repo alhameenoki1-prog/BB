@@ -300,7 +300,7 @@ def finalize(body: str, settings: MailboxSettings, greeting_name: str = "", link
     each one."""
     import html as _html
 
-    from harvey.integrations.mail_provider import body_to_html, html_to_text
+    from harvey.integrations.mail_provider import body_to_html, html_to_text, links_to_text
 
     greeting = greeting_for(greeting_name)
     core = (body or "").strip()
@@ -313,7 +313,7 @@ def finalize(body: str, settings: MailboxSettings, greeting_name: str = "", link
         sig_text = (sig_text + "\n" if sig_text else "") + link
     if link and link.lower() not in sig_html.lower():
         sig_html = (sig_html + "<br>" if sig_html else "") + f'<a href="{_html.escape(link)}">View the project</a>'
-    plain = f"{greeting}\n\n{core}\n\n-- \n{sig_text}".rstrip()
+    plain = f"{greeting}\n\n{links_to_text(core)}\n\n-- \n{sig_text}".rstrip()
     labels = dict(link_labels or {})
     if settings.project_link:
         labels.setdefault(settings.project_link, "the project")

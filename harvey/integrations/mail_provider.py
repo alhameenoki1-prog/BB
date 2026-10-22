@@ -305,7 +305,7 @@ def strip_links(text: str) -> str:
 
 
 # A line that is only a link, or "label: link" (the label may hold colons).
-_BARE_URL_LINE_RE = re.compile(r"^\s*(?:(?P<label>.{1,80}):\s+)?(?P<url>(?:https?://|www\.)\S+)\s*$", re.I)
+_BARE_URL_LINE_RE = re.compile(r"^\s*(?:(?P<label>.{1,300}?):\s+)?(?P<url>(?:https?://|www\.)\S+)\s*$", re.I)
 # A web address inside a sentence (matched on the raw text, escaped after).
 _INLINE_URL_RE = re.compile(r"(?<![\w@/.\-])((?:https?://|www\.)[^\s<>\"'\]]+)", re.I)
 # Words a sentence starts with but a link's name does not.
@@ -364,43 +364,82 @@ def _anchor(url: str, text: str, bold: bool = False) -> str:
 
 
 # What a document is called in a sentence: "the project brief", "our
-# scope", "the Towson drawings". The words a link goes on.
-_DOC_NOUNS = (r"(?:brief|briefs|scope|spec|specs|specification|specifications|drawings?|plans?|documents?|docs?|"
-              r"proposal|deck|overview|summary|description|brochure|portfolio|details|page|website|link|listing|"
-              r"pack|packet|outline|requirements|rfp|rfq|tender|bid package|file|files|pdf|sheet)")
+# scope", "the Towson drawings", "a two-page note". The words a link goes on.
+_DOC_NOUN_WORDS = (r"brief|briefs|scope|spec|specs|specification|specifications|drawing|drawings|plan|plans|document|documents|"
+                   r"doc|docs|proposal|deck|overview|summary|description|brochure|portfolio|details|page|website|link|"
+                   r"listing|pack|packet|outline|requirements|rfp|rfq|tender|file|files|pdf|sheet|note|notes|folder|"
+                   r"one-pager|write-up|writeup|report|presentation|slides|calendar|form|photos|pictures|video|set|package|"
+                   r"breakdown|schedule|timeline|budget|quote|estimate")
+_DOC_NOUNS = r"(?:" + _DOC_NOUN_WORDS + r")"
 # (Up to three describing words between: "the full project brief"; never
-# another "the", "and" or "of", which would run two things together.)
+# another "the", "and" or "of", which would run two things together, and
+# English words only.)
 _DOC_PHRASE_RE = re.compile(r"\b(?:the|our|this|my|that|a|an)\s+"
-                            r"(?:(?!(?:the|a|an|and|or|of|to|for|with|in|on|at|your|their)\b)[\w'’&-]+\s+){0,3}?"
-                            + _DOC_NOUNS + r"\b", re.I)
+                            r"(?:(?!(?:the|a|an|and|or|of|to|for|with|in|on|at|your|their|his|her)\b)[A-Za-z0-9'’&-]+\s+){0,3}?"
+                            + _DOC_NOUNS + r"(?:\s+" + _DOC_NOUNS + r")*\b", re.I)
+# The core of a document's name: what a word like "schedule" or "budget"
+# must be part of to count ("the delivery schedule" is content, not a link,
+# unless a word below is in the phrase too).
+_DOC_CORE_RE = re.compile(r"\b(?:brief|briefs|scope|spec|specs|specification|specifications|drawings?|plans?|documents?|docs?|"
+                          r"proposal|deck|overview|brochure|portfolio|page|website|link|listing|pack|packet|outline|rfp|rfq|"
+                          r"tender|file|files|pdf|sheet|notes?|folder|one-pager|write-up|writeup|report|presentation|slides|"
+                          r"calendar|form|photos|pictures|video|package|set|summary|description|details|breakdown)\b", re.I)
 # Words that hand the document over: the phrase right after them is the one.
-_OFFER_CUE_RE = re.compile(r"(?:here(?:'|’)?s|here is|here are|attached|attaching|sending|sent|share|sharing|"
-                           r"find|see|look (?:at|through|over)|read|open|linked|link to|check|review|view|is|are|in)\s*$", re.I)
+_OFFER_CUE_RE = re.compile(r"(?:here(?:'|’)?s|here is|here are|attached|attaching|sending|sent|share|sharing|shared|"
+                           r"find|see|look (?:at|through|over)|read|open|linked|link to|check|review|view|is|are|in|into|"
+                           r"put|wrote|written up|grab|book|pick)\s*$", re.I)
+# The phrase is theirs, not ours: "the proposal you sent", "the report you shared".
+_THEIRS_AFTER_RE = re.compile(r"^\s*(?:that\s+)?(?:you|you've|you'd|they|he|she)\b(?:\s+\w+){0,2}?\s+"
+                              r"(?:sent|shared|attached|wrote|mentioned|forwarded|made|put together)\b", re.I)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 def _doc_phrase(text: str, url: str, labels: dict) -> tuple[int, int] | None:
-    """Where in ``text`` (the sentence before an address on its own line)
-    the document is named, so that name can become the link: the phrase
-    right after "here's" / "attached" / "see", else the link's own name
-    from the profile, else the last document named. None when the text
-    names none (then the address keeps a line of its own)."""
-    if not text or _INLINE_URL_RE.search(text):
+    """Where in ``text`` (the sentence before an address, or the words
+    before "…: <address>") the document is named, so that name can become
+    the link. Sentence by sentence from the one nearest the address back:
+    the phrase right after "here's", "attached", "in", "see"… (nearest the
+    end), else the link's own name from the profile, else any document
+    named there. Someone else's document ("your proposal", "the report you
+    sent") is never the link. None when nothing is named (then the address
+    keeps a line of its own)."""
+    if not text or _INLINE_URL_RE.search(text) or MD_LINK_RE.search(text):
         return None                      # a sentence with an address in it already has its link
-    tail = text[-400:]
+    tail = text[-600:]
     base = len(text) - len(tail)
-    found = [(m.start(), m.end()) for m in _DOC_PHRASE_RE.finditer(tail)]
-    for start, end in found:
-        if _OFFER_CUE_RE.search(tail[:start]):
-            return base + start, base + end
     label = (labels.get(_norm_url(url), "") or "").strip().rstrip(".:")
-    if label:
-        bare = re.sub(r"^(?:the|our|this|my)\s+", "", label, flags=re.I)
-        m = re.search(r"\b(?:(?:the|our|this|my)\s+)?" + re.escape(bare) + r"\b", tail, re.I)
-        if m:
-            return base + m.start(), base + m.end()
-    if found:
-        return base + found[-1][0], base + found[-1][1]
+    bare = re.sub(r"^(?:the|our|this|my|a|an)\s+", "", label, flags=re.I) if label else ""
+
+    def ours(start, end, sentence):
+        return (_DOC_CORE_RE.search(sentence[start:end]) is not None
+                and not _THEIRS_AFTER_RE.match(sentence[end:]))
+    offsets, pos = [], 0
+    for part in _SENTENCE_SPLIT_RE.split(tail):
+        at = tail.find(part, pos)
+        offsets.append((at, part))
+        pos = at + len(part)
+    for at, sentence in reversed(offsets):
+        found = [(m.start(), m.end()) for m in _DOC_PHRASE_RE.finditer(sentence) if ours(m.start(), m.end(), sentence)]
+        for start, end in reversed(found):
+            if _OFFER_CUE_RE.search(sentence[:start]):
+                return base + at + start, base + at + end
+        if bare:
+            hits = list(re.finditer(r"\b(?:(?:the|our|this|my|a|an)\s+)?" + re.escape(bare) + r"\b", sentence, re.I))
+            if hits:
+                return base + at + hits[-1].start(), base + at + hits[-1].end()
+        if found:
+            return base + at + found[-1][0], base + at + found[-1][1]
     return None
+
+
+def _end_sentence(text: str) -> str:
+    """A sentence that read on to an address ("…is in the brief:") ends
+    where its link is: the colon goes, and a full stop comes only if it
+    does not already end in one."""
+    text = text.rstrip()
+    if text.endswith(":"):
+        text = text[:-1].rstrip()
+    return text if text.endswith((".", "!", "?")) else text + "."
 
 
 def _fold_links(paras: list[list[str]], labels: dict) -> tuple[list[list[str]], dict]:
@@ -432,7 +471,7 @@ def _fold_links(paras: list[list[str]], labels: dict) -> tuple[list[list[str]], 
                 continue
             if target.rstrip().endswith(":"):
                 # "Everything is in the brief:" read on to the address: now it ends where its link is.
-                target = target.rstrip()[:-1].rstrip() + "."
+                target = _end_sentence(target)
                 out[where[0]][where[1]] = target
             links[where] = (span[0], span[1], url)
             lines[li] = None                                  # the address's own line goes
@@ -451,19 +490,64 @@ def _fold_links(paras: list[list[str]], labels: dict) -> tuple[list[list[str]], 
     return kept, moved
 
 
-def body_to_html(body: str, labels: dict | None = None) -> str:
-    """The HTML paragraphs for a plain body. An address on its own line
-    after a sentence that names the document goes into that sentence, on
-    the document's name ("here's <the project brief>"); otherwise a line
-    that is only a link (or "label: link") becomes a link the recipient
-    clicks, never a raw address; a sentence that ends in a colon keeps its
-    words and only the address becomes the link; an address inside a
-    sentence becomes a link on the document's name, with the sentence's
-    own punctuation kept outside it."""
-    import html as _html
+# [words](address): a link on its words, the form the editors keep and
+# every email is built from (the HTML part shows the words, the text part
+# "words (address)").
+MD_LINK_RE = re.compile(r"\[([^\[\]\n]{1,300})\]\(((?:https?://|www\.)[^\s()]*(?:\([^\s()]*\)[^\s()]*)*)\)", re.I)
 
+
+def _md(text: str, url: str) -> str:
+    text = re.sub(r"\s+", " ", (text or "").replace("[", "(").replace("]", ")")).strip() or "here"
+    return f"[{text}]({_href(url)})"
+
+
+def _md_spans(line: str) -> list[tuple[int, int]]:
+    return [(m.start(), m.end()) for m in MD_LINK_RE.finditer(line)]
+
+
+def _inline_links(ln: str, labels: dict) -> str:
+    """The addresses inside a sentence, each on words: the document's name,
+    else "here" ("this link" after a preposition). Links already on words
+    are left as they are; one whose words are only its own address gets
+    the document's name."""
+    def named(m):
+        text, url = m.group(1), m.group(2)
+        if _INLINE_URL_RE.fullmatch(text.strip()) or text.strip().rstrip("/").lower() == url.rstrip("/").lower():
+            return _md(link_text(url, labels, inline=True), url)
+        return m.group(0)
+    ln = MD_LINK_RE.sub(named, ln)
+    spans = _md_spans(ln)
+    pieces, pos = [], 0
+    for mm in _INLINE_URL_RE.finditer(ln):
+        if any(a <= mm.start() < b for a, b in spans):
+            continue                                    # inside a link that already has its words
+        url, tail = _split_url(mm.group(1))
+        if not url or "." not in url.split("//", 1)[-1]:
+            continue
+        start, end = mm.start(), mm.end()
+        if start < pos:
+            continue
+        if not tail and start > pos and ln[start - 1] == "<" and ln[end:end + 1] == ">":
+            start, end = start - 1, end + 1          # <https://…>: the brackets were only a wrapper
+        pieces.append(ln[pos:start])
+        pieces.append(_md(link_text(url, labels, inline=True, before=ln[:start]), url))
+        pieces.append(tail)
+        pos = end
+    pieces.append(ln[pos:])
+    return "".join(pieces)
+
+
+def embed_links(body: str, labels: dict | None = None) -> str:
+    """The body with every web address on words, as [words](address): an
+    address alone on its line after a sentence that names the document goes
+    into that sentence, on the document's name ("here's [the project
+    brief](…)"); "Here's the brief: <address>" the same; a line that is
+    only a link (or "label: link") becomes [View the project brief](…); an
+    address inside a sentence goes on the document's name, else on "here".
+    Idempotent: what is already on words stays."""
     labels = {_norm_url(k): v for k, v in (labels or {}).items() if k}
-    paras = [p.split("\n") for p in (body or "").strip().split("\n\n") if p.strip()]
+    body = re.sub(r"(?m)([.!?]):[ \t]*$", r"\1", normalize_newlines(body))   # "…we need.:" was only ever "…we need."
+    paras = [p.split("\n") for p in re.split(r"\n[ \t]*\n", body.strip()) if p.strip()]
     paras, folded = _fold_links(paras, labels)
     out = []
     for pi, para_lines in enumerate(paras):
@@ -471,7 +555,7 @@ def body_to_html(body: str, labels: dict | None = None) -> str:
         for li, ln in enumerate(para_lines):
             if (pi, li) in folded:
                 start, end, url = folded[(pi, li)]
-                lines.append(_html.escape(ln[:start]) + _anchor(url, ln[start:end]) + _html.escape(ln[end:]))
+                lines.append(ln[:start] + _md(ln[start:end], url) + ln[end:])
                 continue
             m = _BARE_URL_LINE_RE.match(ln)
             if m:
@@ -480,34 +564,64 @@ def body_to_html(body: str, labels: dict | None = None) -> str:
                 known = labels.get(_norm_url(url), "")
                 span = _doc_phrase(prefix, url, labels) if prefix else None
                 if span is not None and (span[0] > 0 or span[1] < len(prefix.rstrip())):
-                    pass            # a sentence naming the document: its name becomes the link (below)
-                elif not prefix or (known and prefix.lower().rstrip(".:") == known.lower().rstrip(".:")) or _looks_like_label(prefix):
-                    lines.append(_anchor(url, link_text(url, labels, prefix), bold=True) + _html.escape(tail))
-                    continue
-                if span is not None:
                     # "Here's the project brief: <address>": the name is the link, the address goes.
                     start, end = span
-                    lines.append(_html.escape(prefix[:start]) + _anchor(url, prefix[start:end]) + _html.escape(prefix[end:])
-                                 + _html.escape(tail if tail.strip(".") else "."))
+                    rest = prefix[end:]
+                    ending = tail if tail.strip(".") else ("" if rest.rstrip().endswith((".", "!", "?")) else ".")
+                    lines.append(prefix[:start] + _md(prefix[start:end], url) + rest + ending)
+                elif not prefix or (known and prefix.lower().rstrip(".:") == known.lower().rstrip(".:")) or _looks_like_label(prefix):
+                    lines.append(_md(link_text(url, labels, prefix), url) + tail)
                 else:
-                    lines.append(_html.escape(prefix) + ": " + _anchor(url, link_text(url, labels), bold=True) + _html.escape(tail))
+                    lines.append(prefix + ": " + _md(link_text(url, labels), url) + tail)
                 continue
-            pieces, pos = [], 0
-            for mm in _INLINE_URL_RE.finditer(ln):
-                url, tail = _split_url(mm.group(1))
-                if not url or "." not in url.split("//", 1)[-1]:
-                    continue
-                start, end = mm.start(), mm.end()
-                if not tail and start > pos and ln[start - 1] == "<" and ln[end:end + 1] == ">":
-                    start, end = start - 1, end + 1          # <https://…>: the brackets were only a wrapper
-                pieces.append(_html.escape(ln[pos:start]))
-                pieces.append(_anchor(url, link_text(url, labels, inline=True, before=ln[:start])))
-                pieces.append(_html.escape(tail))
-                pos = end
-            pieces.append(_html.escape(ln[pos:]))
-            lines.append("".join(pieces))
-        out.append("<p style=\"margin:0 0 14px\">" + "<br>".join(lines) + "</p>")
+            lines.append(_inline_links(ln, labels))
+        out.append("\n".join(lines))
+    return "\n\n".join(out)
+
+
+def _links_line_html(ln: str) -> str:
+    import html as _html
+    pieces, pos = [], 0
+    for m in MD_LINK_RE.finditer(ln):
+        before, after = ln[:m.start()], ln[m.end():]
+        # A link alone on its line (or after "…:") stands out; one inside a sentence reads with it.
+        bold = not after.strip(" .,;:!?") and (not before.strip() or before.rstrip().endswith(":"))
+        pieces.append(_html.escape(ln[pos:m.start()]))
+        pieces.append(_anchor(m.group(2), m.group(1), bold=bold))
+        pos = m.end()
+    pieces.append(_html.escape(ln[pos:]))
+    return "".join(pieces)
+
+
+def links_to_html(md_body: str) -> str:
+    """HTML paragraphs for a body whose links are already on words."""
+    out = []
+    for para in re.split(r"\n[ \t]*\n", normalize_newlines(md_body).strip()):
+        if para.strip():
+            out.append("<p style=\"margin:0 0 14px\">" + "<br>".join(_links_line_html(ln) for ln in para.split("\n")) + "</p>")
     return "".join(out)
+
+
+def body_to_html(body: str, labels: dict | None = None) -> str:
+    """The HTML paragraphs for a plain body, every web address a link on
+    its words, never a raw address (see ``embed_links``)."""
+    return links_to_html(embed_links(body, labels))
+
+
+def normalize_newlines(text: str) -> str:
+    """A browser posts a text box with CRLF line endings: one "\\n" for all."""
+    return (text or "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def links_to_text(body: str) -> str:
+    """The plain-text part: a link on words reads "words (address)" (plain
+    text has nothing to click); an address that stands alone stays as it is."""
+    def plain(m):
+        text, url = m.group(1).strip(), m.group(2)
+        if text.rstrip("/").lower() in (url.rstrip("/").lower(), _href(url).rstrip("/").lower()):
+            return url
+        return f"{text} ({url})"
+    return MD_LINK_RE.sub(plain, normalize_newlines(body))
 
 
 def link_labels(outreach, booking_url: str = "") -> dict:
@@ -552,13 +666,13 @@ def render_parts(body: str, outreach, plain: bool = False, booking: str = "") ->
     sig_text = (getattr(outreach, "signature_text", "") or "").strip() or html_to_text(sig_html)
     if plain:
         sig_text = strip_links(sig_text)
-        return body.rstrip() + (f"\n\n-- \n{sig_text}" if sig_text else ""), "", None
+        return links_to_text(body).rstrip() + (f"\n\n-- \n{sig_text}" if sig_text else ""), "", None
     image_name = Path(getattr(outreach, "signature_image", "") or "").name
     image_path = SIGNATURE_DIR / image_name if image_name else None
     if image_path is not None and not image_path.is_file():
         image_path = None
 
-    plain_text = body.rstrip() + (f"\n\n-- \n{sig_text}" if sig_text else "")
+    plain_text = links_to_text(body).rstrip() + (f"\n\n-- \n{sig_text}" if sig_text else "")
     if not sig_html and image_path is None and not _URL_RE.search(body or ""):
         return plain_text, "", None     # nothing an HTML part would add
 

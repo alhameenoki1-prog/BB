@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
+{% from "_browser_signin.html" import browser_signin %}
 {% block title %}Mail accounts{% endblock %}
 {% block content %}
 <div class="page-head"><div><div class="eyebrow">Mail</div><h1>Accounts</h1><p class="lead">Connect as many mailboxes as you like. Each one keeps its own signature, project link, caps and rules, and replies always go out from the mailbox that received the email.</p></div></div>
@@ -22,6 +23,7 @@
   {% else %}<div class="empty">{{ icon('mail') }}<div>No mailboxes connected yet.</div></div>{% endif %}
 </div>
 
+{{ browser_signin('/mail/gmail/connect', '/mail/microsoft/connect', gmail_available, ms_available, user.role == 'admin') }}
 <div class="two">
   <div class="card">
     <h2>Gmail <span class="tiny" style="font-weight:400">Google sign-in, full mode</span></h2>
@@ -29,7 +31,7 @@
     <p class="muted small">Sign in with Google and the mailbox syncs through the Gmail API with push-style history updates. While the Google client is in testing mode, Google ends the sign-in after about seven days; the account then shows a Reconnect banner and one click signs it in again. Nothing crashes.</p>
     <form method="post" action="/mail/gmail/connect"><div class="row"><div><label>Address (optional hint)</label><input type="email" name="email" placeholder="you@gmail.com"></div><div style="display:flex;align-items:flex-end"><button type="submit">{{ icon('mail', 15) }} Connect with Google</button></div></div></form>
     {% else %}
-    <p class="muted small">Not switched on yet. {% if user.role == 'admin' %}Create a Google Cloud OAuth client of type <i>Web application</i> with redirect URI <code>{{ redirect_uri }}</code>, add your own addresses as test users while it is in testing mode, enable the Gmail API, and start the site with <code>GMAIL_CLIENT_ID</code> and <code>GMAIL_CLIENT_SECRET</code>.{% else %}Ask the admin to add the Google client. Until then, use the password sign-in.{% endif %}</p>
+    <p class="muted small">Not switched on yet. {% if user.role == 'admin' %}A one-time setup of about five minutes on the <a href="/admin/signin#google">Sign-in setup</a> page; no server settings or restart.{% else %}Ask the site's admin to switch it on (Sign-in setup). Until then, use the password sign-in.{% endif %}</p>
     {% endif %}
   </div>
   <div class="card">
@@ -74,7 +76,7 @@
     <p class="muted small">Sign in on Microsoft's own page with the account your browser already holds (or any other). No password reaches this site; the mailbox syncs and sends through Microsoft Graph as you, and the sign-in keeps working after you change your password. Only revoking the site's access at myaccount.microsoft.com, or a tenant policy that signs apps out, ends it, and then the account shows Reconnect.</p>
     <form method="post" action="/mail/microsoft/connect"><div class="row"><div><label>Address (optional hint)</label><input type="email" name="email" placeholder="you@outlook.com"></div><div style="display:flex;align-items:flex-end"><button type="submit">{{ icon('mail', 15) }} Sign in with Microsoft</button></div></div></form>
     {% else %}
-    <p class="muted small">Not switched on yet. {% if user.role == 'admin' %}Register an app at entra.microsoft.com with a <i>Web</i> platform redirect URI <code>{{ ms_redirect_uri }}</code> (and <code>{{ ms_redirect_uri.replace('/mail/microsoft/callback', '/microsoft/callback') }}</code> for the Mailbox page), the delegated Graph permissions <code>Mail.ReadWrite</code>, <code>Mail.Send</code>, <code>User.Read</code> and <code>offline_access</code>, "any organizational directory and personal Microsoft accounts", and start the site with <code>MS_CLIENT_ID</code> and <code>MS_CLIENT_SECRET</code>.{% else %}Ask the admin to add the site's Microsoft app registration, or use the password sign-in or the Microsoft 365 app.{% endif %}</p>
+    <p class="muted small">Not switched on yet. {% if user.role == 'admin' %}A one-time setup of about five minutes on the <a href="/admin/signin#microsoft">Sign-in setup</a> page; no server settings or restart.{% else %}Ask the site's admin to switch it on (Sign-in setup), or use the password sign-in or the Microsoft 365 app.{% endif %}</p>
     {% endif %}
   </div>
   <div class="card">

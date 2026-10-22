@@ -182,3 +182,67 @@ def test_the_outbox_shows_each_email_as_it_goes_out(client, monkeypatch):
     doc = client.post("/outbox/f2/preview", data={"body": "Hi Dana,\n\nHere is the brief.\n\nhttps://docs.example/brief"}).json()["doc"]
     assert ">the brief</a>." in doc
     assert client.post("/outbox/f1/preview", data={"body": body}).json()["plain"] is True
+
+
+# ── links on words everywhere: [words](address) ──
+
+def test_every_address_goes_on_words_and_the_text_part_reads_them():
+    from harvey.integrations.mail_provider import embed_links, links_to_text
+    body = ("Thanks, David.\n\nHere's the project brief with the full scope of what we need.\n\n"
+            "https://glaze-icing-26700938.figma.site/\n\nSee https://cal.example/jane for a time.")
+    md = embed_links(body, {"https://cal.example/jane": "a time in my calendar"})
+    assert md == ("Thanks, David.\n\nHere's [the project brief](https://glaze-icing-26700938.figma.site/) with the full scope "
+                  "of what we need.\n\nSee [a time in my calendar](https://cal.example/jane) for a time.")
+    assert embed_links(md) == md                                            # already on words: stays
+    assert links_to_text(md) == ("Thanks, David.\n\nHere's the project brief (https://glaze-icing-26700938.figma.site/) "
+                                 "with the full scope of what we need.\n\nSee a time in my calendar (https://cal.example/jane) for a time.")
+    # A link whose words are only its address gets the document's name.
+    assert embed_links("[https://d.example/b](https://d.example/b)", {"https://d.example/b": "the brief"}) == "[the brief](https://d.example/b)"
+    # Words a person linked in the editor go out as they are, in both parts.
+    html = body_to_html("Our [drawings are here](https://d.example/dwg) if useful.")
+    assert html == '<p style="margin:0 0 14px">Our <a href="https://d.example/dwg" style="color:#0a60c2">drawings are here</a> if useful.</p>'
+    plain, html2, _ = render_parts("Hi Dana,\n\nOur [drawings](https://d.example/dwg) are ready.\n\nJane", _Outreach())
+    assert "Our drawings (https://d.example/dwg) are ready." in plain and ">drawings</a> are ready." in html2
+    # A first email sent as plain text reads the same way.
+    assert "Our drawings (https://d.example/dwg) are ready." in render_parts("Our [drawings](https://d.example/dwg) are ready.", _Outreach(), plain=True)[0]
+    # Nothing but http(s) is ever a link, and the words are escaped.
+    assert "javascript" not in body_to_html("[click](javascript:alert(1))").split("href")[-1].split(">")[0]
+    assert "&lt;b&gt;" in body_to_html("[<b>x</b>](https://d.example/x)")
+
+
+def test_the_editors_show_links_on_words(mail_client, monkeypatch):
+    import asyncio
+
+    from markupsafe import escape as _esc
+
+    from bb.accounts import Accounts
+    from bb.workspaces import Workspace
+    from tests.test_bb_web import USER, _accept_key, _as_user
+    from tests.test_mail_reply import ME, _seed_thread
+
+    client = mail_client
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    monkeypatch.setattr("bb.app.check_anthropic_key", _accept_key)
+    client.post("/apikey", data={"api_key": "sk-ant-abcdefghijklmnop"})
+    client.post("/mail/accounts/imap", data={"email": ME, "password": "pw"})
+    db = ws.mail_db()
+    mid = asyncio.run(db.mailboxes())[0]["id"]
+    client.post(f"/mail/accounts/{mid}", data={"display_name": "Jane", "project_link": "https://acme.test", "signature_html": "Jane"})
+    tid = asyncio.run(_seed_thread(db, mid))
+    body = "Here's the project brief.\n\nhttps://glaze-icing-26700938.figma.site/"
+    asyncio.run(db.execute("INSERT INTO drafts(id, mailbox_id, thread_id, kind, to_json, subject, body, status, created_at, updated_at) "
+                           "VALUES ('e1', ?, ?, 'reply', ?, 'Re: x', ?, 'pending_review', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                           (mid, tid, json.dumps([{"name": "David", "email": "d@x.example"}]), body)))
+    page = client.get(f"/mail/threads/{tid}").text
+    # The editor holds the text with the link on its words; the page's script shows it as a link.
+    assert "data-rich" in page and str(_esc("Here's [the project brief](https://glaze-icing-26700938.figma.site/).")) in page
+    assert 'data-default-link="https://acme.test"' in page and "Link the selected words" in page
+    # What the editor sends back goes out on those words, and the history shows links clickable.
+    from harvey.integrations.mail_provider import links_to_html
+    assert ">the project brief</a>" in links_to_html("Here's [the project brief](https://glaze-icing-26700938.figma.site/).")
+    from bb.app import linked_text
+    assert str(linked_text("See [the brief](https://d.example/b) or https://d.example/c.")) == \
+        ('See <a href="https://d.example/b" target="_blank" rel="noopener noreferrer">the brief</a> or '
+         '<a href="https://d.example/c" target="_blank" rel="noopener noreferrer">https://d.example/c</a>.')

@@ -41,6 +41,7 @@
   </div>
   <label>Never auto-reply to</label>
   <input type="text" name="excluded" value="{{ s.excluded|join(', ') }}" placeholder="boss@company.com, competitor.com">
+  <input type="hidden" name="excluded_shown" value="{{ s.excluded|join(', ') }}">
   <label class="check" style="margin-top:12px"><input type="checkbox" name="auto_send" {{ 'checked' if s.auto_send else '' }}> Auto-send replies from this mailbox without review <span class="muted">(low-confidence drafts still wait for you)</span></label>
 </div>
 <p class="actions"><button type="submit">{{ icon('check', 15) }} Save settings</button></p>

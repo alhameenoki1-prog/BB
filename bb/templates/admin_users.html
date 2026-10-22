@@ -3,7 +3,8 @@
 {% block title %}Users{% endblock %}
 {% block content %}
 <div class="page-head"><div><div class="eyebrow">Admin</div><h1>Users</h1><p class="lead">There is no self-registration. Create an account here and send the person their email and password; you can reset it any time.</p></div></div>
-{% for p in problems %}<div class="card flat" style="border-color:var(--bad);color:var(--bad)">Server setup: {{ p }}</div>{% endfor %}
+{% for p in problems %}<div class="card flat" style="border-color:var(--bad);color:var(--bad)">Server setup: {{ p }}{% if 'Sign-in setup' in p %} <a href="/admin/signin">Open Sign-in setup</a>{% endif %}</div>{% endfor %}
+<div class="actions" style="margin-bottom:14px"><a class="button secondary small" href="/admin/signin">{{ icon('key', 14) }} Sign-in setup (Google, Microsoft)</a></div>
 <div class="card" id="public-link" style="margin-bottom:14px">
   <div class="actions" style="justify-content:space-between;align-items:flex-start">
     <div><h2 style="margin:0">The link your users open</h2>

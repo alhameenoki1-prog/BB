@@ -25,6 +25,7 @@ from harvey.models.prospect import Prospect
 from harvey.state import StateManager
 from tests.test_mail_reply import SentBox
 from tests.test_outbox_native import FakeProvider, StubBrain, make_sender, state  # noqa: F401
+from tests.test_bb_web import client, settings  # noqa: F401
 
 ME = "me@mine.example"
 
@@ -233,6 +234,7 @@ async def test_earlier_opt_outs_are_copied_into_the_shared_list(tmp_path):
     await _mail_in(db, box, 1, "2026-01-01T10:00:00Z")
     await db.execute("UPDATE messages SET from_email = 'stop@x.example'")
     await db.execute("UPDATE threads SET state = 'dismissed', state_reason = 'they asked not to be contacted'")
+    await db.log("warning", "stop@x.example asked not to be contacted: on the excluded list for me@mine.example; nothing is sent.", mid)
     led = Ledger(campaigns_mod.ledger_path(tmp_path))
     led.suppress("boss@mine.example", "on an account's excluded list", "backfill")   # what the first version copied
     assert campaigns_mod.backfill_suppressed(tmp_path) == 3
@@ -473,3 +475,110 @@ async def test_answers_from_before_the_record_are_filled_in(tmp_path, monkeypatc
     assert campaigns_mod.backfill_answered(tmp_path) == 2
     led = Ledger(campaigns_mod.ledger_path(tmp_path))
     assert led.answered_by("<a1@x>") == "run-9" and led.answered_by("<j1@x>") == "c-aaaa1"
+
+
+# ── the third look ──
+
+def test_a_no_is_a_no_and_a_request_is_a_request():
+    from harvey import enquiry
+    nos = ["No thanks. Please don't send anything else.", "Not interested, we don't quote residential work.",
+           "Not interested. Why do you keep writing to us?", "We'll pass. Please don't forward my details to anyone.",
+           "Not right now, let me know if anything changes."]
+    asks = ["We can't take this on until March. Could you send the drawings anyway so we can price it?",
+            "Not right now, but please send the full spec and we will quote next quarter.",
+            "Not right now, but could you send me the pricing sheet?"]
+    assert not any(enquiry.asks_for_something(t) for t in nos)
+    assert all(enquiry.asks_for_something(t) for t in asks)
+    cold = {"direction": "outbound", "body": "We need a GC for a 24-unit block in Towson."}
+    no1 = {"direction": "inbound", "body": "Not interested, thanks."}
+    note = {"direction": "outbound", "body": "Thanks for the straight answer."}
+    for t in nos[:4]:
+        again = {"direction": "inbound", "body": t}
+        if enquiry.is_soft_no(t):
+            assert runs.closed_after_no([cold, no1, note, again], again), t
+
+
+@pytest.mark.asyncio
+async def test_a_scan_follows_up_people_who_only_wrote_in(tmp_path):
+    root = _campaign(tmp_path)
+    sm = StateManager(str(root / "data" / "harvey.db")); await sm.init_db()
+    await sm.add_prospect(Prospect(first_name="Sam", email="sam@x.example", source="inbox", status="replied"))
+    await sm.add_prospect(Prospect(first_name="Lea", email="lead@x.example", email_status="provided", status="contacted"))
+    assert campaigns_mod.outreach_owner(tmp_path, ME, "sam@x.example")["id"] == "c-aaaa1"              # answering: the campaign's
+    assert campaigns_mod.outreach_owner(tmp_path, ME, "sam@x.example", for_answers=False) is None        # a scan may follow him up
+    assert campaigns_mod.outreach_owner(tmp_path, ME, "lead@x.example", for_answers=False)["id"] == "c-aaaa1"
+
+
+@pytest.mark.asyncio
+async def test_the_back_fill_takes_only_the_person_who_asked(tmp_path):
+    db, mid, box = await _box(tmp_path)
+    await _mail_in(db, box, 1, "2026-01-01T10:00:00Z")
+    await db.execute("UPDATE threads SET state = 'dismissed', state_reason = 'they asked not to be contacted'")
+    await db.log("warning", "ann@x.example asked not to be contacted: on the excluded list for me@mine.example; nothing is sent.", mid)
+    await Ingest(db, box).store_batch([RawMessage(provider_id="in9", thread_key="T1", message_id="<pa@x>", from_email="pa@x.example",
+                                                  from_name="PA", subject="Site visit", body="Forwarding to Ann.",
+                                                  sent_at="2025-12-31T10:00:00Z", to=[{"name": "", "email": ME}])])
+    campaigns_mod.backfill_suppressed(tmp_path)
+    led = Ledger(campaigns_mod.ledger_path(tmp_path))
+    assert led.is_suppressed("ann@x.example") and not led.is_suppressed("pa@x.example")
+
+
+@pytest.mark.asyncio
+async def test_a_stale_settings_page_never_lifts_a_new_opt_out(client, monkeypatch):
+    """Opened before ann asked to be removed, saved after: ann stays out."""
+    import asyncio as _asyncio
+    from bb.accounts import Accounts
+    from bb.workspaces import Workspace
+    from tests.test_bb_web import USER, _as_user
+    from tests.test_mail_foundation import _FakeAccount
+    monkeypatch.setattr("bb.mail.service.account_for", lambda m, c, e: _FakeAccount(m, c, e))
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    client.post("/mail/accounts/imap", data={"email": ME, "password": "pw"})
+    db = ws.mail_db()
+    box = (await db.mailboxes())[0]
+    page = client.get(f"/mail/accounts/{box['id']}").text
+    assert 'name="excluded_shown"' in page
+    await runs.suppress(db, box, "ann@x.example")                       # while the page was open
+    r = client.post(f"/mail/accounts/{box['id']}", data={"display_name": "Jane", "signature_html": "Jane",
+                                                         "project_link": "https://p.example", "excluded": "", "excluded_shown": ""})
+    assert r.status_code == 303
+    box = await db.mailbox(box["id"])
+    assert "ann@x.example" in box["settings"]["excluded"]                # kept, not dropped by the old page
+    assert ws.ledger().is_suppressed("ann@x.example")
+    # Taking it off on purpose (it was on the page) lifts it.
+    client.post(f"/mail/accounts/{box['id']}", data={"display_name": "Jane", "signature_html": "Jane",
+                                                     "project_link": "https://p.example", "excluded": "",
+                                                     "excluded_shown": "ann@x.example"})
+    assert not ws.ledger().is_suppressed("ann@x.example")
+
+
+@pytest.mark.asyncio
+async def test_approve_all_never_sends_a_follow_up_they_wrote_back_to(tmp_path, monkeypatch):
+    """Review shows no thread: a scan's follow-up from before their new
+    message is refused there, and put away rather than left on Review."""
+    from bb.mail.jobs import Jobs
+    from bb.mail.worker import Handlers
+    monkeypatch.setattr("bb.mail.sending.account_for", lambda m, c, e: SentBox(m, c, e))
+    db, mid, box = await _box(tmp_path)
+    await _mail_in(db, box, 1, "2025-06-01T10:00:00Z")
+    tid = (await db.one("SELECT id FROM threads"))["id"]
+    scan = await _run(db, mid, "reconnect", status="done", mode="review")
+    await db.execute("INSERT INTO drafts(id, mailbox_id, thread_id, run_id, kind, to_json, subject, body, status, created_at, updated_at) "
+                     "VALUES ('f1', ?, ?, ?, 'reply', ?, 'Re: Site visit', 'Picking this up.', 'approved', "
+                     "'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')", (mid, tid, scan, json.dumps([{"name": "Ann", "email": "ann@x.example"}])))
+    await _mail_in(db, box, 2, "2026-02-01T10:00:00Z", body="We signed with another firm, please hold off.")
+    h = Handlers(db, Jobs(db), "s", {"HARVEY_HOME": str(tmp_path)}, tmp_path)
+    out = await h.send_draft({"payload": {"draft_id": "f1"}, "mailbox_id": mid})       # pressed, but not from the thread page
+    assert out["status"] == "rejected"
+    d = await db.one("SELECT status, error FROM drafts WHERE id = 'f1'")
+    assert d["status"] == "rejected" and "wrote again" in d["error"] and "fresh reply" in d["error"]
+
+
+def test_a_body_posted_with_crlf_still_goes_out_on_words():
+    from harvey.integrations.mail_provider import body_to_html, links_to_text
+    body = "Here's the project brief with the full scope.\r\n\r\nhttps://glaze-icing-26700938.figma.site/\r\n\r\nThanks."
+    html = body_to_html(body)
+    assert '>the project brief</a> with the full scope.' in html and "figma.site/</a>" not in html and "\r" not in html
+    assert "\r" not in links_to_text("a [b](https://x.example/b)\r\nc")

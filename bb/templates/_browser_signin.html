@@ -1,0 +1,20 @@
+{# Connect a mailbox with the account the browser is already signed in
+   to: Google's or Microsoft's own page, one click, no password here. #}
+{% from "_icons.html" import icon %}
+{% macro browser_signin(google_action, ms_action, google_on, ms_on, is_admin, google_hint='', ms_hint='') %}
+<div class="card" id="browser-signin" style="border-color:var(--accent)">
+  <h2>Sign in with the account your browser already uses <span class="tiny" style="font-weight:400">one click, no password</span></h2>
+  <p class="muted small">Google or Microsoft opens its own page, shows the account this browser is signed in to (or lets you pick another) and asks you to allow mail access. Your password never reaches this site, and the sign-in keeps working after you change it.</p>
+  <div class="actions" style="margin-top:12px">
+    {% if google_on %}<form class="inline" method="post" action="{{ google_action }}">{% if google_hint %}<input type="hidden" name="email" value="{{ google_hint }}">{% endif %}<button type="submit">{{ icon('mail', 15) }} Sign in with Google</button></form>
+    {% elif is_admin %}<a class="button" href="/admin/signin#google">{{ icon('mail', 15) }} Sign in with Google: switch it on</a>
+    {% else %}<button type="button" disabled title="The site's admin switches this on once">{{ icon('mail', 15) }} Sign in with Google</button>{% endif %}
+    {% if ms_on %}<form class="inline" method="post" action="{{ ms_action }}">{% if ms_hint %}<input type="hidden" name="email" value="{{ ms_hint }}">{% endif %}<button type="submit">{{ icon('mail', 15) }} Sign in with Microsoft</button></form>
+    {% elif is_admin %}<a class="button" href="/admin/signin#microsoft">{{ icon('mail', 15) }} Sign in with Microsoft: switch it on</a>
+    {% else %}<button type="button" disabled title="The site's admin switches this on once">{{ icon('mail', 15) }} Sign in with Microsoft</button>{% endif %}
+  </div>
+  {% if not (google_on and ms_on) %}
+  <p class="tiny muted" style="margin-top:10px">{% if is_admin %}A button that says "switch it on" needs a one-time setup by you, the site's admin: about five minutes on the <a href="/admin/signin">Sign-in setup</a> page, then it works for everyone here.{% else %}A greyed-out button is not switched on for this site yet: ask the person who runs it (they do it once, on the Sign-in setup page). Until then, log in with your email and password below.{% endif %}</p>
+  {% endif %}
+</div>
+{% endmacro %}

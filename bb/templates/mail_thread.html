@@ -13,7 +13,7 @@
   {% for m in messages %}
   <div class="msg {{ 'me' if m.direction == 'outbound' else 'them' }}{{ ' auto' if m.automated else '' }}">
     <div class="who"><b>{% if m.direction == 'outbound' %}{{ 'AI, as you' if m.sent_by == 'ai' else 'You' }}{% else %}{{ m.from_name or m.from_email }}{% endif %}</b> <span class="muted small">{{ m.from_email }}{% if m.automated %} · automated{% endif %}</span><span class="tiny when">{{ m.sent_at }}</span></div>
-    <div class="email">{{ m.body or m.snippet }}</div>
+    <div class="email">{{ (m.body or m.snippet) | linked }}</div>
   </div>
   {% endfor %}
 </div>
@@ -30,14 +30,15 @@
   </div>
   {% if draft.error %}<p class="small" style="color:var(--bad)">{{ draft.error }}</p>{% endif %}
   <form method="post" action="/mail/drafts/{{ draft.id }}/send">
+    <input type="hidden" name="from_thread" value="1">
     <div class="row">
       <div><label>To</label><input type="text" value="{{ draft.to[0].name ~ ' <' ~ draft.to[0].email ~ '>' if draft.to else '' }}" readonly></div>
       <div><label>Subject</label><input type="text" name="subject" value="{{ draft.subject }}" maxlength="200"></div>
       <div><label>Reply-To <span class="muted" style="font-weight:400">(where their answer lands)</span></label><input type="email" name="reply_to" value="{{ draft.reply_to }}" placeholder="blank = {{ box.address if box else 'this mailbox' }}"></div>
     </div>
     <label>Reply</label>
-    <textarea name="body" rows="9" id="draft-body-{{ draft.id }}">{{ draft.body }}</textarea>
-    <div class="hint">The greeting, your signature and the project link are added when it is sent, whatever is written here. A web address on its own line goes out as a link on the words that name it ("here's the project brief"), never as the bare address.</div>
+    <textarea name="body" rows="9" id="draft-body-{{ draft.id }}" data-rich data-default-link="{{ draft.default_link }}">{{ draft.body_md }}</textarea>
+    <div class="hint">The greeting, your signature and the project link are added when it is sent. Every link goes out on its words, as it shows here; to link other words, select them and press Link.</div>
     {{ as_sent(draft_preview, '/mail/drafts/' ~ draft.id ~ '/preview', 'draft-body-' ~ draft.id) }}
     <div class="actions" style="margin-top:12px">
       <button type="submit" {{ '' if box_ready[0] else 'disabled title="' ~ box_ready[1] ~ '"' }}>{{ icon('send', 15) }} Send</button>

@@ -57,14 +57,23 @@ class Handlers:
         return await service.run_sync(self.db, self.secret, mailbox, self.env, self.jobs, job["id"], backfill=False)
 
     async def send_draft(self, job: dict):
-        from bb.mail.sending import SendRefused, send_draft
+        from bb.mail.sending import AnsweredElsewhere, SendRefused, StaleFollowUp, send_draft
         draft = await self.db.one("SELECT * FROM drafts WHERE id = ?", (job["payload"].get("draft_id", ""),))
         if not draft:
             return {"skipped": "draft gone"}
         if draft["status"] not in ("approved",):
             return {"skipped": f"draft is {draft['status']}"}
         try:
-            return await send_draft(self.db, self.secret, self.env, draft, dry_run=bool(job["payload"].get("dry_run")), pressed=True)
+            return await send_draft(self.db, self.secret, self.env, draft, dry_run=bool(job["payload"].get("dry_run")), pressed=True,
+                                    saw_thread=bool(job["payload"].get("saw_thread")))
+        except (AnsweredElsewhere, StaleFollowUp) as e:
+            # It can never be sent as it is: it is put away with the reason
+            # (and stops holding the thread), not sent back to Review.
+            await self.db.execute("UPDATE drafts SET status = 'rejected', error = ?, updated_at = ? WHERE id = ?",
+                                  (f"Not sent: {e}. Open the thread to write a fresh reply if you still want to answer.",
+                                   service.now_iso(), draft["id"]))
+            await self.db.log("review", f"Put away a draft to {draft['to_json'][:60]}: {e}", draft["mailbox_id"], draft_id=draft["id"])
+            return {"status": "rejected", "reason": str(e)}
         except SendRefused as e:
             await self.db.execute("UPDATE drafts SET status = 'pending_review', error = ?, updated_at = ? WHERE id = ?",
                                   (f"Not sent: {e}", service.now_iso(), draft["id"]))

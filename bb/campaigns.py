@@ -96,7 +96,7 @@ def answering(user_root: Path, campaign_id: str) -> bool:
         return False
 
 
-def outreach_owner(user_root: Path, account: str, email: str) -> dict | None:
+def outreach_owner(user_root: Path, account: str, email: str, for_answers: bool = True) -> dict | None:
     """The outreach campaign on ``account`` that has ``email`` on its lead
     list (not just in its inbox) and is answering its leads, or None. A stopped campaign's leads are
     left to the reply campaign on the account, so nobody goes unanswered."""
@@ -106,11 +106,15 @@ def outreach_owner(user_root: Path, account: str, email: str) -> dict | None:
     # Someone who only wrote in to an outreach campaign's inbox is answered
     # by the reply campaign on the account while one runs (the campaign
     # itself then steps back), and by the outreach campaign otherwise.
-    try:
-        from harvey.ledger import Ledger
-        reply_campaign = Ledger(ledger_path(user_root)).has_feature(account, "reply")
-    except Exception:
-        reply_campaign = False
+    # (A scan, for_answers=False, follows up past conversations: the outreach
+    # campaign never follows up the people who only wrote in, so the scan may.)
+    reply_campaign = not for_answers
+    if for_answers:
+        try:
+            from harvey.ledger import Ledger
+            reply_campaign = Ledger(ledger_path(user_root)).has_feature(account, "reply")
+        except Exception:
+            reply_campaign = False
     only_leads = " AND COALESCE(source, '') != 'inbox'" if reply_campaign else ""
     for row in on_account(user_root, account):
         if not answering(user_root, row["id"]):
@@ -192,13 +196,9 @@ def backfill_suppressed(user_root: Path) -> int:
         try:
             con = sqlite3.connect(f"file:{mail_db}?mode=ro", uri=True, timeout=5)
             try:
-                # Threads the command center put away because they asked
-                # (bb/mail/runs.suppress), and its own record of each one.
-                for (email,) in con.execute(
-                        "SELECT DISTINCT lower(m.from_email) FROM threads t JOIN messages m ON m.thread_id = t.id "
-                        "WHERE t.state = 'dismissed' AND t.state_reason = 'they asked not to be contacted' "
-                        "AND m.direction = 'inbound' AND m.from_email LIKE '%@%'"):
-                    found.setdefault(email.strip(), "asked not to be contacted")
+                # The command center's own record of each person who asked
+                # (bb/mail/runs.suppress): the exact address, never everyone
+                # else who wrote in that thread.
                 for (text,) in con.execute("SELECT text FROM activity WHERE text LIKE '% asked not to be contacted: on the excluded list%'"):
                     email = (text or "").split(" ", 1)[0].strip().lower()
                     if "@" in email:

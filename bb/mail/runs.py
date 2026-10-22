@@ -166,7 +166,7 @@ def closed_after_no(messages: list[dict], latest: dict, answered: set | frozense
         return m.get("body_text") or m.get("body") or m.get("snippet") or ""
     if not latest or latest.get("automated") or not enquiry.is_soft_no(text(latest)):
         return False
-    if _ASKS_FOR_SOMETHING.search(enquiry.fresh_text(text(latest))):
+    if enquiry.asks_for_something(text(latest)):
         return False              # a no that also asks for something ("send the spec anyway") is answered
     said_no = False
     for m in messages:
@@ -182,10 +182,6 @@ def closed_after_no(messages: list[dict], latest: dict, answered: set | frozense
             return True
     return False
 
-
-_ASKS_FOR_SOMETHING = re.compile(
-    r"\?|\b(send|share|forward|could you|can you|would you|will you|let me know|tell me|quote|call me|"
-    r"get back to)\b", re.I)
 
 
 def is_opt_out(message: dict) -> bool:
@@ -319,9 +315,13 @@ def still_syncing(mailbox: dict) -> bool:
 
 def nobody_note(mailbox: dict, months: int) -> str:
     """Why a scan on this account found nobody to follow up with."""
-    if mailbox.get("status") in ("reconnect", "error", "disabled"):
-        return (f"{mailbox['address']} cannot read its mail until it is "
-                + ("enabled again" if mailbox.get("status") == "disabled" else "signed in again (Reconnect on the Accounts page)"))
+    if not mailbox.get("enabled", 1):
+        return f"{mailbox['address']} is disabled on the Accounts page; enable it to scan its mail"
+    if mailbox.get("status") == "reconnect":
+        return f"{mailbox['address']} cannot read its mail until it is signed in again (Reconnect on the Accounts page)"
+    if mailbox.get("status") == "error" and still_syncing(mailbox):
+        return (f"{mailbox['address']} could not be reached just now ({(mailbox.get('status_detail') or 'a network error')[:80]}); "
+                "it tries again on its own, then start its scan again")
     if still_syncing(mailbox):
         return (f"{mailbox['address']} is still reading its past mail (the first sync); "
                 "start its scan again once the account shows as synced")
@@ -810,7 +810,7 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
             continue
         if contact and user_root:
             from bb import campaigns as campaigns_mod
-            owner = campaigns_mod.outreach_owner(user_root, mailbox["address"], contact)
+            owner = campaigns_mod.outreach_owner(user_root, mailbox["address"], contact, for_answers=not reconnect)
             if owner:
                 await mark(item, "skipped", f"{contact} is a lead of the outreach campaign \"{owner.get('name') or owner['id']}\" "
                                             "on this account, which answers its own leads")

@@ -177,12 +177,47 @@ async def test_smtp(smtp: dict) -> tuple[bool, str]:
         return False, f"Connection failed: {e}"
 
 
+def linked_text(text: str):
+    """A message as text with its links clickable: [words](address) shows
+    the words, a bare address shows itself; everything else escaped."""
+    import html as _html
+
+    from markupsafe import Markup
+
+    from harvey.integrations.mail_provider import MD_LINK_RE, _INLINE_URL_RE, _href, _split_url
+    text = text or ""
+    out, pos = [], 0
+    spans = []
+    for m in MD_LINK_RE.finditer(text):
+        spans.append((m.start(), m.end(), m.group(1), m.group(2)))
+    for m in _INLINE_URL_RE.finditer(text):
+        if any(a <= m.start() < b for a, b, _, _ in spans):
+            continue
+        url, tail = _split_url(m.group(1))
+        if url:
+            spans.append((m.start(), m.start() + len(url), url, url))
+    for start, end, words, url in sorted(spans):
+        if start < pos:
+            continue
+        out.append(_html.escape(text[pos:start]))
+        out.append(f'<a href="{_html.escape(_href(url), quote=True)}" target="_blank" rel="noopener noreferrer">{_html.escape(words)}</a>')
+        pos = end
+    out.append(_html.escape(text[pos:]))
+    return Markup("".join(out))
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
     settings.home.mkdir(parents=True, exist_ok=True)
     accounts = Accounts(settings.accounts_db)
     throttle = LoginThrottle()
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+    templates.env.filters["linked"] = linked_text
+
+    def on_words(text, labels=None):
+        from harvey.integrations.mail_provider import embed_links
+        return embed_links(text or "", labels or {}) if (text or "").strip() else (text or "")
+    templates.env.filters["on_words"] = on_words
     # Templates are read from disk on every request. After `git pull` the
     # files on disk can be newer than the program serving them until it is
     # restarted; a missing variable then renders empty instead of a 500.
@@ -479,7 +514,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return merged
 
     def _profile_ctx(ws: Workspace, profile: dict) -> dict:
-        return dict(profile=profile, tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES,
+        return dict(profile=profile, link_names=ws.link_names(), tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES,
                     modes=OUTREACH_MODES, policies=ATTACH_POLICIES, attachments=ws.attachments(),
                     speeds=SPEEDS, styles=STYLES, greetings=GREETINGS, asks=ASKS, sector_labels=SECTOR_LABELS, max_sector_needs=MAX_SECTOR_NEEDS,
                     max_sector_messages=MAX_SECTOR_MESSAGES, signature_image=ws.signature_image(),
@@ -1042,10 +1077,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace_for(user)
         from bb.mail.sending import preview_document
         items = await ws.outbox(status)
+        labels = ws.link_names()
+        from harvey.integrations.mail_provider import embed_links
         for it in items:
             # What the recipient sees: every link on the words that name it.
             shown = ws.as_sent(it)
             it["as_sent"] = {**shown, "doc": preview_document(shown.get("html") or "")}
+            it["body_md"] = embed_links(it.get("body") or "", labels)
+            it["default_link"] = next(iter(labels), "")
         return await render(request, "outbox.html", user, items=items, status=status)
 
     @app.post("/outbox/rewrite-unsent")
@@ -1088,7 +1127,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if action == "edit":
             form = await request.form()
             subject = str(form.get("subject") or "").strip()[:200]
-            body = str(form.get("body") or "").strip()
+            from harvey.integrations.mail_provider import normalize_newlines
+            body = normalize_newlines(str(form.get("body") or "")).strip()
             if not subject or not body:
                 return _redirect(back, msg="A subject and a body are needed.")
             fields = {"subject": subject, "body": body, "error": ""}
@@ -1159,6 +1199,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await render(request, "admin_users.html", admin, users=rows, problems=settings.problems(),
                             tunnel=tunnel.describe(), public_url=settings.base_url,
                             link=await check_public_url(settings.base_url, use_cache="recheck" not in request.query_params))
+
+    @app.get("/admin/signin", response_class=HTMLResponse)
+    async def admin_signin_page(request: Request, admin: dict = Depends(current_admin)):
+        from bb import signin_setup
+        base = settings.base_url
+        return await render(request, "admin_signin.html", admin, st=signin_setup.status(settings), base_url=base,
+                            quick_tunnel="trycloudflare.com" in base,
+                            google_uris=[base + "/gmail/callback", base + "/mail/gmail/callback"],
+                            ms_uris=[base + "/microsoft/callback", base + "/mail/microsoft/callback"])
+
+    @app.post("/admin/signin")
+    async def admin_signin_save(request: Request, admin: dict = Depends(current_admin)):
+        from bb import signin_setup
+        form = dict(await request.form())
+        provider = str(form.get("provider") or "")
+        clear = [str(form["clear"])] if form.get("clear") in ("google", "microsoft") else []
+        fields = {k: v for k, v in form.items() if k in signin_setup.FIELDS and
+                  ((provider == "google" and k.startswith("gmail_")) or (provider == "microsoft" and k.startswith("ms_")))}
+        problems = signin_setup.save(settings, {**fields, "clear": clear})
+        if problems:
+            return _redirect("/admin/signin", error=" ".join(problems))
+        # Workers hold the sign-in settings from when they started: the ones
+        # that use them start again with the new ones.
+        restarted = 0
+        for ws in all_workspaces(settings, accounts):
+            try:
+                if await ws.restart_mail_worker_if_running():
+                    restarted += 1
+                for one in ws.all_campaigns():
+                    if one.worker_running() and one.mail_provider() in ("gmail", "microsoft"):
+                        if await one.restart_worker_if_running("the site's new sign-in settings"):
+                            restarted += 1
+            except Exception as e:
+                logger.warning("restart after sign-in setup failed for %s: %s", ws.user["email"], e)
+        name = "Google" if provider == "google" else "Microsoft"
+        if clear:
+            msg = f"Sign in with {name} is off."
+        else:
+            on = settings.gmail_client_id if provider == "google" else settings.ms_client_id
+            msg = (f"Sign in with {name} is on: the button works on every Mailbox and Accounts page now."
+                   if on else f"Saved. Sign in with {name} is still off: it needs the client ID.")
+        return _redirect("/admin/signin", msg=msg + (f" {restarted} background worker(s) restarted to use it." if restarted else ""))
 
     @app.post("/admin/users")
     async def admin_create_user(admin: dict = Depends(current_admin), email: str = Form(""),

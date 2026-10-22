@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Sign-in setup{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Admin</div><h1>Sign in with Google and Microsoft</h1>
+  <p class="lead">These buttons connect a mailbox with the account the browser is already signed in to: one click, no password typed into this site, and it keeps working after the password changes. Google and Microsoft allow that only through an app the site owner registers once. Do it here once (about five minutes each) and the buttons work for everyone on this site.</p></div>
+  <div class="actions"><a class="button secondary" href="/admin/users">Back to Users</a></div></div>
+
+{% if quick_tunnel %}<div class="card flat" style="border-color:var(--warn)"><b>This site's address changes when its tunnel restarts</b> ({{ base_url }}). Google and Microsoft send people back only to the exact addresses registered below, so after a new address you would have to register it again. For sign-in that keeps working, use an address that stays the same: a named tunnel on your own domain or a server (docs/HOSTING.md).</div>{% endif %}
+
+<div class="two signin-two">
+<div class="card" id="google">
+  <h2>{{ icon('mail', 16) }} Google (Gmail and Google Workspace) <span class="tag {{ 'good' if st.google_on else '' }}" style="margin-left:6px">{{ 'on' if st.google_on else 'off' }}</span></h2>
+  <ol class="small howto">
+    <li>Open <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">console.cloud.google.com</a> and create a project (any name, e.g. "BB mail").</li>
+    <li><a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">Enable the Gmail API</a> for it.</li>
+    <li><a href="https://console.cloud.google.com/auth/overview" target="_blank" rel="noopener">Google Auth Platform</a> → Get started: app name, your email; audience <b>External</b>. Under <b>Data access</b> add the scope <code>https://www.googleapis.com/auth/gmail.modify</code> (read, send and label mail). Under <b>Audience</b>, while the app is in testing, add every Gmail address that will connect as a <b>test user</b> (Google signs testing apps out after about seven days; publish the app to stop that).</li>
+    <li><b>Clients</b> → Create client → <b>Web application</b>. Under <b>Authorized redirect URIs</b> add both:
+      <div class="copyrow"><code>{{ google_uris[0] }}</code><button type="button" class="small secondary" data-copy="{{ google_uris[0] }}">Copy</button></div>
+      <div class="copyrow"><code>{{ google_uris[1] }}</code><button type="button" class="small secondary" data-copy="{{ google_uris[1] }}">Copy</button></div></li>
+    <li>Create, then paste the <b>Client ID</b> and <b>Client secret</b> here and save.</li>
+  </ol>
+  <form method="post" action="/admin/signin" autocomplete="off">
+    <input type="hidden" name="provider" value="google">
+    <label>Client ID</label><input type="text" name="gmail_client_id" value="{{ st.gmail_client_id }}" placeholder="1234…apps.googleusercontent.com" {{ 'disabled' if 'gmail_client_id' in st.fixed else '' }}>
+    <label>Client secret</label><input type="password" name="gmail_client_secret" placeholder="{{ 'saved; leave blank to keep it' if st.gmail_secret_set else 'GOCSPX-…' }}" {{ 'disabled' if 'gmail_client_secret' in st.fixed else '' }}>
+    {% if 'gmail_client_id' in st.fixed or 'gmail_client_secret' in st.fixed %}<div class="hint">Set in the server's own settings (bb.env or the environment); change it there.</div>{% endif %}
+    <div class="actions" style="margin-top:12px"><button type="submit">Save and switch on</button>{% if st.google_on and 'gmail_client_id' not in st.fixed %}<button type="submit" class="secondary danger" name="clear" value="google" onclick="return confirm('Switch Google sign-in off? Mailboxes already signed in stop syncing until it is on again.')">Switch off</button>{% endif %}</div>
+  </form>
+</div>
+
+<div class="card" id="microsoft">
+  <h2>{{ icon('mail', 16) }} Microsoft (Outlook, Hotmail, Microsoft 365) <span class="tag {{ 'good' if st.microsoft_on else '' }}" style="margin-left:6px">{{ 'on' if st.microsoft_on else 'off' }}</span></h2>
+  <ol class="small howto">
+    <li>Open <a href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">entra.microsoft.com → App registrations</a> → <b>New registration</b> (any name).</li>
+    <li>Supported account types: <b>Accounts in any organizational directory and personal Microsoft accounts</b>.</li>
+    <li>Redirect URI: platform <b>Web</b>, then add both (the second under Authentication → Add URI):
+      <div class="copyrow"><code>{{ ms_uris[0] }}</code><button type="button" class="small secondary" data-copy="{{ ms_uris[0] }}">Copy</button></div>
+      <div class="copyrow"><code>{{ ms_uris[1] }}</code><button type="button" class="small secondary" data-copy="{{ ms_uris[1] }}">Copy</button></div></li>
+    <li><b>API permissions</b> → Add → Microsoft Graph → <b>Delegated</b>: <code>Mail.ReadWrite</code>, <code>Mail.Send</code>, <code>User.Read</code>, <code>offline_access</code>.</li>
+    <li><b>Certificates &amp; secrets</b> → New client secret; copy its <b>Value</b>. Copy the <b>Application (client) ID</b> from Overview. Paste both here.</li>
+  </ol>
+  <form method="post" action="/admin/signin" autocomplete="off">
+    <input type="hidden" name="provider" value="microsoft">
+    <label>Application (client) ID</label><input type="text" name="ms_client_id" value="{{ st.ms_client_id }}" placeholder="1a2b3c4d-…" {{ 'disabled' if 'ms_client_id' in st.fixed else '' }}>
+    <label>Client secret value</label><input type="password" name="ms_client_secret" placeholder="{{ 'saved; leave blank to keep it' if st.ms_secret_set else 'the Value, not the Secret ID' }}" {{ 'disabled' if 'ms_client_secret' in st.fixed else '' }}>
+    <label>Accounts <span class="muted" style="font-weight:400">(leave "common" for personal and work accounts)</span></label><input type="text" name="ms_tenant" value="{{ st.ms_tenant }}" {{ 'disabled' if 'ms_tenant' in st.fixed else '' }}>
+    {% if 'ms_client_id' in st.fixed %}<div class="hint">Set in the server's own settings (bb.env or the environment); change it there.</div>{% endif %}
+    <div class="actions" style="margin-top:12px"><button type="submit">Save and switch on</button>{% if st.microsoft_on and 'ms_client_id' not in st.fixed %}<button type="submit" class="secondary danger" name="clear" value="microsoft" onclick="return confirm('Switch Microsoft sign-in off? Mailboxes already signed in stop syncing until it is on again.')">Switch off</button>{% endif %}</div>
+  </form>
+</div>
+</div>
+<p class="tiny muted">The client secrets are stored sealed with this site's key in its data folder. Values set in the server's own settings (bb.env) win over this page. Saving restarts the background workers that use these sign-ins so they pick the new values up; nothing else is interrupted.</p>
+<style>
+  .signin-two > .card { min-width:0; }
+  .howto { padding-left:20px; line-height:1.55; margin:6px 0 4px; } .howto li { margin:6px 0; display:list-item; }
+  .howto code { word-break:break-all; }
+  .copyrow { display:flex; gap:8px; align-items:center; margin:4px 0; } .copyrow code { word-break:break-all; flex:1; }
+</style>
+<script>
+  document.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = 'Copied'; })));
+</script>
+{% endblock %}

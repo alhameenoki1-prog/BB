@@ -369,6 +369,27 @@ def is_opt_out(text: str) -> bool:
     return bool(_OPT_OUT_CUES.search(fresh_text(text)))
 
 
+_ASK_RE = re.compile(
+    r"\b(?:could|can|would|will)\s+(?:you|u)\s+(?:please\s+)?(?:send|share|forward|email|give|tell|let|call|"
+    r"get back|pass|include|put|show|explain|confirm|quote|price|look)\b"
+    r"|\bplease\s+(?:send|share|forward|email|call|include|tell|confirm|quote)\b"
+    r"|\b(?:send|forward|email|share)\s+(?:me|us|it|them|over|across)\b",
+    re.I)   # ("let me know if anything changes" and "keep me posted" are a polite no, not a request)
+_NEGATED_RE = re.compile(r"\b(?:don't|dont|do not|no need to|never|not)\s+(?:\w+\s+){0,2}$", re.I)
+
+
+def asks_for_something(text: str) -> bool:
+    """Do they ask for something ("could you send the drawings", "please
+    share the spec", "send me the sheet")? Judged on their own words; a refusal
+    ("please don't send anything else", "we don't quote residential work")
+    and a bare question ("why do you keep writing?") are not requests."""
+    fresh = fresh_text(text)
+    for m in _ASK_RE.finditer(fresh):
+        if not _NEGATED_RE.search(fresh[max(0, m.start() - 40):m.start()]):
+            return True
+    return False
+
+
 def is_soft_no(text: str) -> bool:
     """A polite no that still gets the one closing note."""
     return bool(_SOFT_NO_CUES.search(fresh_text(text)))

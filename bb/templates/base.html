@@ -97,13 +97,14 @@
   .progress i { display:block; height:100%; background:linear-gradient(90deg,var(--accent-2),#5e5ce6); border-radius:999px; transition:width .5s; }
 
   /* ── buttons ── */
-  button, .btn { display:inline-flex; align-items:center; gap:8px; padding:10px 18px; border-radius:999px; border:1px solid transparent; background:var(--accent); color:#fff; font:inherit; font-size:14px; font-weight:600; cursor:pointer; line-height:1.2; transition:transform .08s, filter .15s, background .15s; text-decoration:none; }
-  button:hover, .btn:hover { filter:brightness(1.07); text-decoration:none; } button:active, .btn:active { transform:scale(.98); }
+  button, .btn, a.button { display:inline-flex; align-items:center; gap:8px; padding:10px 18px; border-radius:999px; border:1px solid transparent; background:var(--accent); color:#fff; font:inherit; font-size:14px; font-weight:600; cursor:pointer; line-height:1.2; transition:transform .08s, filter .15s, background .15s; text-decoration:none; }
+  button:hover, .btn:hover, a.button:hover { filter:brightness(1.07); text-decoration:none; } button:active, .btn:active, a.button:active { transform:scale(.98); }
+  button:disabled { opacity:.5; cursor:not-allowed; filter:none; transform:none; }
   button:focus-visible, .btn:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline:3px solid var(--accent-soft); outline-offset:1px; }
   .secondary { background:var(--fill); color:var(--ink); } .secondary:hover { background:var(--fill-2); filter:none; }
   .ghost { background:transparent; color:var(--accent); border-color:var(--line-2); } .ghost:hover { background:var(--accent-soft); filter:none; }
   .danger { background:var(--bad-soft); color:var(--bad); } .danger:hover { filter:none; background:rgba(255,59,48,.2); }
-  .small-btn, button.small { padding:6px 12px; font-size:13px; }
+  .small-btn, button.small, a.button.small { padding:6px 12px; font-size:13px; }
   form.inline { display:inline; } .actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
 
   /* ── forms ── */
@@ -304,7 +305,114 @@
     });
   });
 </script>
+<script>
+  // Email editors: the text as the recipient reads it, every link on its
+  // words (blue, underlined; hover shows where it goes), never a bare
+  // address. Underneath, the form still sends the text with each link as
+  // [words](address), which is what the server sends from.
+  (function () {
+    const MD = /\[([^\[\]\n]{1,300})\]\(((?:https?:\/\/|www\.)[^\s()]*(?:\([^\s()]*\)[^\s()]*)*)\)/gi;
+    const URLISH = /^\s*(https?:\/\/|www\.)\S+\s*$/i;
+    const esc = s => s.replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+    const href = u => (/^www\./i.test(u) ? 'https://' + u : u);
+    function toHtml(md) {
+      let out = '', pos = 0, m;
+      MD.lastIndex = 0;
+      while ((m = MD.exec(md))) {
+        out += esc(md.slice(pos, m.index));
+        out += '<a href="' + esc(href(m[2])) + '" title="' + esc(href(m[2])) + '">' + esc(m[1]) + '</a>';
+        pos = m.index + m[0].length;
+      }
+      return (out + esc(md.slice(pos))).replace(/\n/g, '<br>');
+    }
+    function toMd(node) {
+      let out = '';
+      node.childNodes.forEach(n => {
+        if (n.nodeType === 3) out += n.nodeValue.replace(/ /g, ' ');
+        else if (n.nodeName === 'BR') out += '\n';
+        else if (n.nodeName === 'A') {
+          const words = n.textContent.replace(/\s+/g, ' ').trim().replace(/[\[\]]/g, '');
+          const h = (n.getAttribute('href') || '').trim();
+          out += (words && /^(https?:\/\/|www\.)\S+$/i.test(h)) ? '[' + words + '](' + href(h) + ')' : words;
+        } else if (/^(DIV|P)$/.test(n.nodeName)) {
+          if (out && !out.endsWith('\n')) out += '\n';
+          out += toMd(n);
+          if (!out.endsWith('\n')) out += '\n';
+        } else out += toMd(n);
+      });
+      return out;
+    }
+    function enhance(ta) {
+      const wrap = document.createElement('div'); wrap.className = 'rich-wrap';
+      const bar = document.createElement('div'); bar.className = 'rich-bar';
+      bar.innerHTML = '<button type="button" class="small secondary" data-act="link">Link the selected words</button>'
+        + '<button type="button" class="small secondary" data-act="unlink">Remove link</button>'
+        + '<span class="tiny muted">Select words, press Link and paste the address. Links show as their words, as the recipient sees them; hover one to see where it goes.</span>';
+      const ed = document.createElement('div');
+      ed.className = 'rich'; ed.contentEditable = 'true';
+      ed.setAttribute('role', 'textbox'); ed.setAttribute('aria-multiline', 'true');
+      ed.innerHTML = toHtml(ta.value);
+      if (ta.placeholder) ed.dataset.placeholder = ta.placeholder;
+      ta.style.display = 'none';
+      ta.parentNode.insertBefore(wrap, ta);
+      wrap.appendChild(bar); wrap.appendChild(ed); wrap.appendChild(ta);
+      const sync = () => {
+        const v = toMd(ed).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '');
+        if (v !== ta.value) { ta.value = v; ta.dispatchEvent(new Event('input', {bubbles: true})); }
+      };
+      const insertText = text => { if (!document.execCommand('insertText', false, text)) ed.append(text); };
+      ed.addEventListener('input', sync);
+      ed.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (!document.execCommand('insertLineBreak')) document.execCommand('insertHTML', false, '<br>');
+          sync();
+        }
+      });
+      ed.addEventListener('paste', e => {
+        e.preventDefault();
+        const text = (e.clipboardData || window.clipboardData).getData('text/plain') || '';
+        const sel = window.getSelection();
+        if (URLISH.test(text) && sel && !sel.isCollapsed) document.execCommand('createLink', false, href(text.trim()));
+        else insertText(text);
+        sync();
+      });
+      ed.addEventListener('drop', e => {
+        e.preventDefault();
+        const text = e.dataTransfer && e.dataTransfer.getData('text/plain');
+        if (text) { insertText(text); sync(); }
+      });
+      bar.addEventListener('mousedown', e => e.preventDefault());   // keep the selection in the text
+      bar.addEventListener('click', e => {
+        const b = e.target.closest('button'); if (!b) return;
+        const sel = window.getSelection();
+        if (b.dataset.act === 'link') {
+          if (!sel || sel.isCollapsed || !ed.contains(sel.anchorNode)) { alert('Select the words to put the link on first.'); return; }
+          const range = sel.getRangeAt(0).cloneRange();
+          const url = (prompt('Link address', ta.dataset.defaultLink || 'https://') || '').trim();
+          if (!/^(https?:\/\/|www\.)\S+$/i.test(url)) return;
+          ed.focus(); sel.removeAllRanges(); sel.addRange(range);
+          document.execCommand('createLink', false, href(url));
+          ed.querySelectorAll('a').forEach(a => { a.title = a.getAttribute('href'); });
+        } else {
+          ed.focus(); document.execCommand('unlink');
+        }
+        sync();
+      });
+      const form = ta.closest('form');
+      if (form) form.addEventListener('submit', sync);
+    }
+    document.addEventListener('DOMContentLoaded', () => document.querySelectorAll('textarea[data-rich]').forEach(enhance));
+  })();
+</script>
 <style>
+  .rich-wrap { margin-top: 2px; }
+  .rich-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:0 0 6px; }
+  .rich { min-height: 180px; max-height: 560px; overflow:auto; padding:11px 13px; border:1px solid transparent; border-radius:var(--r-sm);
+          background:var(--fill); color:var(--ink); white-space:pre-wrap; word-break:break-word; line-height:1.5; font:inherit; }
+  .rich:focus { background:var(--surface); border-color:var(--accent); box-shadow:0 0 0 4px var(--accent-soft); outline:none; }
+  .rich a { color:#0a60c2; text-decoration:underline; cursor:text; }
+  .rich:empty::before { content: attr(data-placeholder); color: var(--ink-3); white-space: pre-wrap; }
   .as-sent { margin-top: 12px; }
   .as-sent-frame { width: 100%; min-height: 120px; border: 1px solid var(--line); border-radius: var(--r-sm); background: #fff; margin-top: 6px; }
 </style>

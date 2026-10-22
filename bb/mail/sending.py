@@ -71,6 +71,19 @@ def _campaign_name(env: dict, campaign: str) -> str:
     return "a reply run" if campaign else "another campaign"
 
 
+async def editor_body(db: MailDB, env: dict, draft: dict) -> tuple[str, str]:
+    """(the draft's text with every link on its words, the link a new link
+    starts from) for the editor: the recipient's view of the links, named
+    from the profile this draft writes for."""
+    from harvey.integrations.mail_provider import embed_links
+    mailbox = await db.mailbox(draft["mailbox_id"]) if draft.get("mailbox_id") else None
+    labels = {}
+    if mailbox:
+        labels = _link_labels(await env_for_draft(db, env, draft, mailbox))
+    default = next(iter(labels), "") or ((service.settings_of(mailbox).project_link or "") if mailbox else "")
+    return embed_links(draft.get("body") or "", labels), default
+
+
 def preview_document(html: str) -> str:
     """A whole page around an email's HTML for the editors' preview frame:
     links open in a new tab, and nothing in it can reach the page."""
@@ -151,7 +164,8 @@ async def prior_replies(db: MailDB, thread_id: str, exclude_draft: str = "") -> 
     return max(sent_drafts, int((row or {}).get("n") or 0))
 
 
-async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run: bool = False, pressed: bool = False) -> dict:
+async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run: bool = False, pressed: bool = False,
+                     saw_thread: bool = False) -> dict:
     """Send one approved draft. Returns {status, message_id}. Raises
     SendRefused for a rule, AuthError / TransientError from the provider."""
     mailbox = await db.mailbox(draft["mailbox_id"])
@@ -172,8 +186,9 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
                              (draft["thread_id"], draft["created_at"]))
         if later:
             raise SendRefused("the thread was answered after this draft was written; sending it would be a second reply")
-    if not pressed and draft.get("run_id") and draft.get("thread_id") and draft.get("created_at"):
-        # (A person who pressed Send saw the thread as it is now: theirs to send.)
+    if not saw_thread and draft.get("run_id") and draft.get("thread_id") and draft.get("created_at"):
+        # (A person who pressed Send on the thread page saw the thread as it
+        # is now: theirs to send. Approve all on Review shows no thread.)
         scan = await db.one("SELECT 1 FROM reply_runs WHERE id = ? AND kind = 'reconnect'", (draft["run_id"],))
         if scan and await db.one("SELECT 1 FROM messages WHERE thread_id = ? AND direction = 'inbound' AND sent_at > ? LIMIT 1",
                                  (draft["thread_id"], draft["created_at"])):

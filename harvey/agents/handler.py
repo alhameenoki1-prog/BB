@@ -259,7 +259,7 @@ class Handler:
             # would be a duplicate. Their no still holds here.
             if any(p in text_lower for p in OPT_OUT_PATTERNS) or enquiry.is_opt_out(fresh):
                 await self.state.update_prospect_status(prospect.id, "opted_out")
-            elif self.inquiry and enquiry.is_soft_no(fresh):
+            elif self.inquiry and enquiry.is_soft_no(fresh) and not enquiry.asks_for_something(reply_text):
                 # Their no already got its closing note from the other campaign:
                 # the conversation is over here too, so a second no gets nothing.
                 await self.state.update_prospect_status(prospect.id, "lost")

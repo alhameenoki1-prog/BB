@@ -52,7 +52,7 @@
     <form method="post" action="/outbox/{{ it.id }}/edit" style="margin-top:12px">
       <label>Or edit it yourself</label>
       <input name="subject" value="{{ it.subject }}" maxlength="200">
-      <textarea name="body" rows="9" id="outbox-body-{{ it.id }}">{{ it.body }}</textarea>
+      <textarea name="body" rows="9" id="outbox-body-{{ it.id }}" data-rich data-default-link="{{ it.default_link }}">{{ it.body_md }}</textarea>
       <div class="actions"><button class="small" type="submit">Save</button>{% if status == 'pending_review' %}<button class="small secondary" type="submit" name="approve" value="1">Save and approve</button>{% endif %}</div>
     </form>
   </div>

@@ -15,7 +15,7 @@
   <p style="margin:8px 0"><b>{{ d.subject }}</b>{% if d.thread_id %} · <a class="small" href="/mail/threads/{{ d.thread_id }}?draft={{ d.id }}">open the thread</a>{% endif %}{% if d.run_id %} · <a class="small" href="/mail/runs/{{ d.run_id }}">from a reply run</a>{% endif %}</p>
   {% if d.error %}<p class="small" style="color:var(--bad)">{{ d.error }}</p>{% endif %}
   <form method="post" action="/mail/drafts/{{ d.id }}/send">
-    <textarea name="body" rows="6" id="draft-body-{{ d.id }}">{{ d.body }}</textarea>
+    <textarea name="body" rows="6" id="draft-body-{{ d.id }}" data-rich data-default-link="{{ d.default_link }}">{{ d.body_md }}</textarea>
     <details class="as-sent-toggle"><summary class="small">How it looks when sent</summary>{{ as_sent(d.preview, '/mail/drafts/' ~ d.id ~ '/preview', 'draft-body-' ~ d.id) }}</details>
     <div class="actions" style="margin-top:8px">
       <button class="small" type="submit" {{ '' if (d.box and d.box.ready) else 'disabled' }}>{{ icon('send', 13) }} Send</button>

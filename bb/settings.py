@@ -28,6 +28,7 @@ WORKER_ENV_KEYS = (
 class Settings:
     def __init__(self, env: dict | None = None):
         self.env = dict(os.environ if env is None else env)
+        self.env_at_start = dict(self.env)      # what the server itself set (the Sign-in setup page cannot change these)
         get = lambda k, d="": (self.env.get(k) or d)  # noqa: E731
         self.home = Path(get("BB_HOME") or PROJECT_ROOT / "data" / "bb").expanduser().resolve()
         self.base_url = get("BB_BASE_URL", "http://localhost:8000").rstrip("/")
@@ -71,6 +72,12 @@ class Settings:
         # Who may set X-Forwarded-For (the proxy in front): the login brake
         # keys on the client address, so a forged header must not move it.
         self.trusted_proxies = get("BB_TRUSTED_PROXIES", "127.0.0.1").strip()
+        # Google and Microsoft sign-in switched on from the Sign-in setup page.
+        try:
+            from bb import signin_setup
+            signin_setup.apply(self)
+        except Exception:
+            pass
 
     @property
     def accounts_db(self) -> Path:
@@ -112,8 +119,11 @@ class Settings:
         """Server configuration gaps worth showing the admin."""
         out = []
         if not (self.gmail_client_id and self.gmail_client_secret):
-            out.append("GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET are not set: users cannot connect "
-                       "Gmail with one click (they can still use their mailbox's SMTP settings).")
+            out.append("Sign in with Google is off: people cannot connect Gmail with the account their browser "
+                       "already uses (they can still log in with a password). Switch it on under Users → Sign-in setup.")
+        if not self.ms_client_id:
+            out.append("Sign in with Microsoft is off: Outlook, Hotmail and Microsoft 365 need a password or the "
+                       "admin app. Switch it on under Users → Sign-in setup.")
         if not self.secure_cookies and "localhost" not in self.base_url and "127.0.0.1" not in self.base_url:
             out.append("BB_BASE_URL is not https: session cookies travel in clear text.")
         if not self.tunnel_mode and ("localhost" in self.base_url or "127.0.0.1" in self.base_url):

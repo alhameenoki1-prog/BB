@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
+{% from "_as_sent.html" import as_sent %}
 {% block title %}Compose{% endblock %}
 {% block content %}
 <div class="page-head"><div><div class="eyebrow">Mail</div><h1>New email</h1><p class="lead">One-to-one, written for this person from your instruction. You edit before it goes.</p></div></div>
@@ -12,8 +13,9 @@
     <div class="row"><div><label>To</label><input type="text" value="{{ draft.to[0].name ~ ' <' ~ draft.to[0].email ~ '>' if draft.to else '' }}" readonly></div>
       <div><label>Subject</label><input type="text" name="subject" value="{{ draft.subject }}" maxlength="200"></div>
       <div><label>Reply-To</label><input type="email" name="reply_to" value="{{ draft.reply_to }}" placeholder="blank = the sending mailbox"></div></div>
-    <label>Email</label><textarea name="body" rows="9">{{ draft.body }}</textarea>
-    <div class="hint">Greeting, signature and project link are added at send time.</div>
+    <label>Email</label><textarea name="body" rows="9" id="draft-body-{{ draft.id }}" data-rich data-default-link="{{ draft.default_link }}">{{ draft.body_md }}</textarea>
+    <div class="hint">Greeting, signature and project link are added at send time. Every link goes out on its words, as it shows here.</div>
+    {{ as_sent(draft_preview, '/mail/drafts/' ~ draft.id ~ '/preview', 'draft-body-' ~ draft.id) }}
     <div class="actions" style="margin-top:12px"><button type="submit">{{ icon('send', 15) }} Send</button><button type="submit" name="dry_run" value="1" class="secondary">Dry run</button><button type="submit" formaction="/mail/drafts/{{ draft.id }}/reject" class="secondary danger">Discard</button></div>
   </form>
 </div>

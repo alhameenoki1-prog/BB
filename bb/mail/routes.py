@@ -386,11 +386,23 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         except ValidationError as e:
             first = e.errors()[0]
             return _redirect(f"/mail/accounts/{mailbox_id}", error=str(first["msg"]).replace("Value error, ", ""))
+        # The list as this page showed it: an address added since (someone
+        # asked not to be contacted while the page was open) is kept, and
+        # only what the person took off here is lifted.
+        current = [str(x).strip().lower() for x in (m["settings"].get("excluded") or [])]
+        shown_raw = form.get("excluded_shown")
+        shown = set(MailboxSettings(excluded=shown_raw or "").excluded) if shown_raw is not None else set(current)
+        typed = list(new.excluded)
+        added_since = [x for x in current if x not in shown and x not in typed]
+        if added_since:
+            new = new.model_copy(update={"excluded": typed + added_since})
         await c["db"].update_mailbox(mailbox_id, settings=new.model_dump())
         # An address taken off the list on purpose is no longer held back by
-        # the shared opt-out list either (every campaign reads that one).
-        before = {str(x).strip().lower() for x in (m["settings"].get("excluded") or [])}
-        lifted = sorted(e for e in before - {x.lower() for x in new.excluded} if "@" in e)
+        # the shared opt-out list either (every campaign reads that one),
+        # unless the list still covers it (its domain is on it).
+        from bb.mail.runs import is_excluded
+        lifted = sorted(e for e in (shown & set(current)) - set(new.excluded)
+                        if "@" in e and not is_excluded(new, e)) if shown_raw is not None else []
         if lifted:
             try:
                 led = c["ws"].ledger()
@@ -612,6 +624,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         box_ready = service.ready_to_send(box) if box else (False, "")
         draft_preview = ""
         if draft:
+            await _for_editor(c, draft)
             draft_preview = await _preview_doc(c, draft, draft.get("body") or "")
         return await render(request, "mail_thread.html", user, **page_ctx(c), thread=t, box=box, messages=messages,
                             draft=draft, in_flight=in_flight, box_ready=box_ready, draft_preview=draft_preview)
@@ -644,6 +657,15 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
     def _brain(ws):
         from bb.mail.brain import MailBrain
         return MailBrain(ws.mail_brain_env())
+
+    async def _for_editor(c, draft: dict):
+        """The draft's text as the editor shows it: every link on its words."""
+        from bb.mail.sending import editor_body
+        try:
+            draft["body_md"], draft["default_link"] = await editor_body(c["db"], {"HARVEY_HOME": str(c["ws"].user_root)}, draft)
+        except Exception as e:
+            logger.debug("editor body failed: %s", e)
+            draft["body_md"], draft["default_link"] = draft.get("body") or "", ""
 
     async def _preview_doc(c, draft: dict, body: str) -> str:
         """The draft as it would go out (links on their words), as a page for the preview frame."""
@@ -719,7 +741,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             return _redirect(f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review",
                              error="That draft was already sent.")
         form = dict(await request.form())
-        body = str(form.get("body", "") or d["body"]).strip()
+        from harvey.integrations.mail_provider import normalize_newlines
+        body = normalize_newlines(str(form.get("body", "") or d["body"])).strip()
         subject = str(form.get("subject", "") or d["subject"]).strip()[:200]
         reply_to = str(form.get("reply_to", "") or "").strip().lower()
         box = await db.mailbox(d["mailbox_id"])
@@ -731,7 +754,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         dry = bool(form.get("dry_run"))
         await db.execute("UPDATE drafts SET body = ?, subject = ?, reply_to = ?, status = 'approved', error = '', updated_at = ? WHERE id = ?",
                          (body, subject, reply_to, service.now_iso(), draft_id))
-        await Jobs(db).enqueue("send_draft", d["mailbox_id"], {"draft_id": draft_id, "dry_run": dry}, max_attempts=4)
+        await Jobs(db).enqueue("send_draft", d["mailbox_id"], {"draft_id": draft_id, "dry_run": dry,
+                                                               "saw_thread": bool(form.get("from_thread"))}, max_attempts=4)
         if not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
         back = f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review"
@@ -760,6 +784,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             r["to"] = json.loads(r.get("to_json") or "[]")
             r["qa"] = json.loads(r.get("qa_json") or "{}")
             r["box"] = boxes.get(r["mailbox_id"])
+            await _for_editor(c, r)
             r["preview"] = await _preview_doc(c, r, r.get("body") or "")
         recent = await c["db"].query(
             f"SELECT d.*, t.subject AS thread_subject FROM drafts d LEFT JOIN threads t ON t.id = d.thread_id "
@@ -773,6 +798,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         c = await ctx(user)
         ids = [m["id"] for m in c["selected"] if m["ready"]]
         marks = ",".join("?" for _ in ids) or "''"
+        from bb.mail import runs as runs_mod
+        await runs_mod.supersede_stale_followups(c["db"])     # a follow-up they wrote back to since is not sent blind
         rows = await c["db"].query(f"SELECT id, mailbox_id FROM drafts WHERE mailbox_id IN ({marks}) AND status = 'pending_review'", ids)
         jobs = Jobs(c["db"])
         for r in rows:
@@ -786,7 +813,11 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
     async def mail_compose(request: Request, user: dict = Depends(current_user), draft: str = ""):
         c = await ctx(user)
         d = await _draft_row(c["db"], draft) if draft else None
-        return await render(request, "mail_compose.html", user, **page_ctx(c), draft=d,
+        preview = ""
+        if d:
+            await _for_editor(c, d)
+            preview = await _preview_doc(c, d, d.get("body") or "")
+        return await render(request, "mail_compose.html", user, **page_ctx(c), draft=d, draft_preview=preview,
                             ready=[m for m in c["mailboxes"] if m["enabled"]])
 
     @app.post("/mail/compose")
@@ -922,7 +953,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             what = ("is paused: resume it or cancel it" if (busy or {}).get("status") == "paused"
                     else "is still going: it has to finish (or be cancelled)")
             return _redirect(f"/mail/runs/{run['busy']}", error=f"A follow-up run over these accounts {what} before another starts.")
-        if not run and boxes and all(m.get("status") in ("reconnect", "error", "disabled") for m in boxes):
+        if not run and boxes and all(m.get("status") == "reconnect" for m in boxes):
             return _redirect("/mail/runs", error="These accounts cannot read their mail until they are signed in again "
                                                  "(Reconnect on the Accounts page).")
         if not run and boxes and all(runs_mod.still_syncing(m) for m in boxes):

@@ -1260,6 +1260,20 @@ class Workspace:
                   "sector_messages", "personalize_each")
     PERSONA_BRIEF_KEYS = ("name", "role", "company", "tone")
 
+    def link_names(self) -> dict:
+        """URL → what the profile calls it (the scope links, the inbox
+        documents, the booking link): the words a link goes on."""
+        cfg = self.config() or {}
+        if not cfg:
+            return {}
+        try:
+            from harvey.config import HarveyConfig
+            from harvey.integrations.mail_provider import booking_url, link_labels
+            model = HarveyConfig(**cfg)
+            return link_labels(model.outreach, booking_url(model))
+        except Exception:
+            return {}
+
     def as_sent(self, item: dict, body: str | None = None) -> dict:
         """How an Outbox email goes out, for the page to show: {html} with
         every link on the words that name it and the signature, or {plain:
@@ -1567,7 +1581,10 @@ class Workspace:
         except Exception:
             state = self.state()
             await state.init_db()
-        body = (item.get("body") or "").strip()
+        from harvey.integrations.mail_provider import MD_LINK_RE, embed_links
+        # Its links on their words ([words](address)): the model keeps them as they are.
+        body = embed_links((item.get("body") or "").strip(), self.link_names())
+        links = [m.group(0) for m in MD_LINK_RE.finditer(body)]
         greeting_line = body.split("\n", 1)[0] if body else ""
         inquiry = (outreach.get("mode") or "inquiry") == "inquiry"
         is_reply = (item.get("kind") or "sequence") == "reply"
@@ -1584,7 +1601,8 @@ class Workspace:
         system = (who
                   + "Keep every fact, the greeting line exactly as it is, the sign-off and the same request; plain words a "
                     "person would type, first person, contractions, no marketing vocabulary, no capitals, no exclamation "
-                    "marks, no links, no bullet points. " + subject_rule
+                    "marks, no new links, no bullet points. A link is written [words](address): keep each one exactly as it "
+                    "is, inside a sentence that still names what it opens. " + subject_rule
                   + (f"\n\nWHAT {name.upper()} NEEDS FROM THIS BUSINESS: {need}" if need else "")
                   + (f"\n\nCAMPAIGN GOAL, in {name}'s words (the email serves it): {goal}" if goal else "")
                   + "\n\nReturn ONLY JSON: {\"subject\": \"...\", \"body\": \"...\"}")
@@ -1598,6 +1616,12 @@ class Workspace:
             rest = new_body.split("\n\n", 1)[-1] if new_body.lower().startswith(("hi", "hello", "dear")) else new_body
             new_body = f"{greeting_line}\n\n{rest}"
         new_body = enquiry.plain_signoff(new_body, first) if inquiry else new_body
+        for link in links:
+            url = MD_LINK_RE.match(link).group(2)
+            if url not in new_body:
+                # The model left a link out: it goes back, on its own line before the sign-off.
+                head, sep, tail = new_body.rpartition("\n\n")
+                new_body = f"{head}\n\n{link}{sep}{tail}" if sep else f"{new_body}\n\n{link}"
         new_subject = str(data.get("subject") or item.get("subject") or "").strip()[:120]
         notes = []
         if is_reply:

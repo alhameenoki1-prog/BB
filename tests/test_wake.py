@@ -450,3 +450,52 @@ async def test_wake_up_now_restarts_a_cycle_that_hangs(client, monkeypatch):
     monkeypatch.setattr(Workspace, "restart_stuck_worker", fake_restart)
     ok, msg = await ws.wake_worker()
     assert msg == "restarted" and "one cycle has been running" in restarted[0][0] and restarted[0][1]["pid_seen"] == 4242
+
+
+# ── sign in with the browser's own account, switched on from the web ──
+
+def test_the_sign_in_buttons_are_always_there_and_the_admin_switches_them_on(client, monkeypatch):
+    from bb import signin_setup
+    from tests.test_bb_web import ADMIN, _admin, _login
+
+    s = client.settings
+    for field, key in (("gmail_client_id", "GMAIL_CLIENT_ID"), ("gmail_client_secret", "GMAIL_CLIENT_SECRET")):
+        monkeypatch.setattr(s, field, "")                 # this test's site starts with neither switched on
+        monkeypatch.setitem(s.env_at_start, key, "")
+        monkeypatch.delitem(s.env, key, raising=False)
+    _ws(client)                                   # a user exists; now look as that user
+    page = client.get("/mailbox").text
+    assert "Sign in with the account your browser already uses" in page
+    assert "Sign in with Google" in page and "Sign in with Microsoft" in page and "ask the person who runs it" in page
+    assert "GMAIL_CLIENT_ID" not in page                                      # no server settings to edit
+    assert "Sign in with the account your browser already uses" in client.get("/mail/accounts").text
+    # The admin sees "switch it on" and the setup page with the addresses to register.
+    client.cookies.clear()
+    assert _login(client, ADMIN["email"], ADMIN["password"]).status_code == 303
+    assert 'href="/admin/signin#google"' in client.get("/mailbox").text
+    page = client.get("/admin/signin").text
+    assert "http://testserver/gmail/callback" in page and "http://testserver/mail/gmail/callback" in page
+    assert "http://testserver/microsoft/callback" in page and "gmail.modify" in page
+    # A wrong ID is refused in words; the right ones switch it on at once.
+    r = client.post("/admin/signin", data={"provider": "google", "gmail_client_id": "nope", "gmail_client_secret": "s"})
+    assert "apps.googleusercontent.com" in r.headers["location"]
+    r = client.post("/admin/signin", data={"provider": "google", "gmail_client_id": "123-abc.apps.googleusercontent.com",
+                                           "gmail_client_secret": "GOCSPX-secret"})
+    assert "Sign%20in%20with%20Google%20is%20on" in r.headers["location"]
+    assert s.gmail_client_id == "123-abc.apps.googleusercontent.com" and s.worker_env()["GMAIL_CLIENT_SECRET"] == "GOCSPX-secret"
+    assert "GOCSPX-secret" not in (s.home / "signin.json").read_text()       # the secret is sealed
+    r = client.post("/admin/signin", data={"provider": "microsoft", "ms_client_id": "1a2b3c4d-1111-2222-3333-444455556666",
+                                           "ms_client_secret": "v", "ms_tenant": "common"})
+    assert "Microsoft%20is%20on" in r.headers["location"] and s.ms_client_id.startswith("1a2b3c4d")
+    page = client.get("/mailbox").text
+    assert 'action="/gmail/connect"' in page and 'action="/microsoft/connect"' in page
+    # A restart keeps them (read from the site's data folder).
+    from bb.settings import Settings
+    again = Settings(env={k: v for k, v in s.env_at_start.items() if not k.startswith(("GMAIL_", "MS_"))})
+    assert again.gmail_client_id == "123-abc.apps.googleusercontent.com" and again.ms_client_id.startswith("1a2b3c4d")
+    # Switching off works; a blank secret on save keeps the stored one.
+    client.post("/admin/signin", data={"provider": "google", "gmail_client_id": "123-abc.apps.googleusercontent.com", "gmail_client_secret": ""})
+    assert s.gmail_client_secret == "GOCSPX-secret"
+    client.post("/admin/signin", data={"provider": "google", "clear": "google"})
+    assert not s.gmail_client_id and "GMAIL_CLIENT_ID" not in s.worker_env()
+    assert signin_setup.status(s)["microsoft_on"]
