@@ -38,6 +38,30 @@ def ready_to_send(mailbox: dict) -> tuple[bool, str]:
     return True, ""
 
 
+CONSUMER_DOMAINS = ("gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+                    "yahoo.com", "icloud.com", "me.com", "aol.com")
+
+
+def account_daily_limit(mailbox: dict, creds: dict | None = None) -> int:
+    """The account's daily limit that its campaigns share: the cap set on
+    the account, else a little under what its provider allows (gmail.com
+    450, Google Workspace 1,800, outlook.com 250, Microsoft 365 9,000,
+    other mailboxes 300, Yahoo and the like 450)."""
+    cap = int(settings_of(mailbox).daily_cap or 0)
+    if cap:
+        return cap
+    address = (mailbox.get("address") or "").lower()
+    domain = address.rsplit("@", 1)[-1]
+    consumer = domain in CONSUMER_DOMAINS
+    provider = mailbox.get("provider") or ""
+    host = str((creds or {}).get("smtp_host") or "").lower()
+    if provider == "gmail" or host.endswith(("gmail.com", "googlemail.com")) or domain in ("gmail.com", "googlemail.com"):
+        return 450 if consumer else 1800
+    if provider == "graph" or host.endswith(("office365.com", "outlook.com", "live.com")) or domain in ("outlook.com", "hotmail.com", "live.com", "msn.com"):
+        return 250 if consumer else 9000
+    return 450 if consumer else 300
+
+
 def open_creds(secret: str, mailbox: dict) -> dict:
     try:
         return crypto.open_json(secret, mailbox.get("creds") or "")

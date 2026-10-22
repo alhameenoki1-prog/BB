@@ -19,6 +19,33 @@ class SendRefused(Exception):
     """A rule said no. The draft stays where it is with the reason."""
 
 
+class ShareUsed(SendRefused):
+    """The account's shared daily limit has no room for this campaign now."""
+
+
+def profile_root(env: dict) -> str:
+    """Where the goal, brief and reply files come from: the campaign the
+    run writes for (HARVEY_PROFILE_HOME), else the user's main profile."""
+    return (env or {}).get("HARVEY_PROFILE_HOME") or (env or {}).get("HARVEY_HOME") or ""
+
+
+async def env_for_draft(db: MailDB, env: dict, draft: dict) -> dict:
+    """The worker's env with the profile of the run this draft came from."""
+    run_id = draft.get("run_id") or ""
+    root = (env or {}).get("HARVEY_HOME") or ""
+    if not run_id or not root:
+        return env
+    run = await db.one("SELECT profile_id FROM reply_runs WHERE id = ?", (run_id,))
+    pid = (run or {}).get("profile_id") or ""
+    if not pid:
+        return env
+    from bb import campaigns as campaigns_mod
+    try:
+        return {**env, "HARVEY_PROFILE_HOME": str(campaigns_mod.campaign_root(root, pid))}
+    except ValueError:
+        return env
+
+
 def _today_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -42,7 +69,7 @@ def within_hours(settings, now: datetime | None = None) -> bool:
 def _link_labels(env: dict) -> dict:
     """URL → name for the links the profile knows (the scope documents),
     so the HTML part says "View the Towson brief" instead of the address."""
-    root = (env or {}).get("HARVEY_HOME") or ""
+    root = profile_root(env)
     if not root:
         return {}
     from bb.mail import scope as scope_mod
@@ -53,7 +80,7 @@ def _link_labels(env: dict) -> dict:
 async def _reply_attachments(db: MailDB, env: dict, draft: dict) -> list[str]:
     """The project brief (and other reply files) from the sender's profile,
     on the first reply in a thread or every reply as the policy says."""
-    root = (env or {}).get("HARVEY_HOME") or ""
+    root = profile_root(env)
     if not root or draft.get("kind", "reply") != "reply":
         return []
     from bb.mail import scope as scope_mod
@@ -82,6 +109,7 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     mailbox = await db.mailbox(draft["mailbox_id"])
     if not mailbox:
         raise SendRefused("the mailbox no longer exists")
+    env = await env_for_draft(db, env, draft)
     settings = service.settings_of(mailbox)
     ok, why = service.ready_to_send(mailbox)
     if not ok:
@@ -108,6 +136,25 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
         await db.log("review", f"Dry run: would have replied to {recipient.get('name') or recipient['email']} — \"{draft['subject']}\"",
                      mailbox["id"], draft_id=draft["id"])
         return {"status": "dry_run", "message_id": ""}
+    # One slot of the account's daily limit, shared with every other
+    # campaign on it (the outreach campaign's worker included). A send a
+    # person pressed is held to the account's own limit only.
+    from bb.mail.runs import FEATURES, ledger_for, run_label
+    led, slot = ledger_for(env), None
+    if led is not None:
+        run = await db.one("SELECT * FROM reply_runs WHERE id = ?", (draft.get("run_id") or "",)) if draft.get("run_id") else None
+        led.set_limit(mailbox["address"], service.account_daily_limit(mailbox))
+        if run:
+            slot, pic = led.reserve(mailbox["address"], run["id"], FEATURES.get(run.get("kind") or "reply", "reply-run"),
+                                    run_label(run, mailbox["address"]), kind=draft.get("kind") or "reply")
+        else:
+            slot, pic = led.reserve(mailbox["address"], "manual", "manual", "Sent by hand", priority=True,
+                                    kind=draft.get("kind") or "reply")
+        if slot is None:
+            raise ShareUsed(pic["reason"])
+        if led.is_suppressed(recipient.get("email", "")):
+            led.release(slot)
+            raise SendRefused(f"{recipient.get('email')} asked not to be contacted (in another campaign)")
     creds = service.open_creds(secret, mailbox)
     account = account_for(mailbox, creds, env)
     attachments = await _reply_attachments(db, env, draft)
@@ -117,6 +164,10 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
             in_reply_to=draft.get("in_reply_to") or "", references=draft.get("references_text") or "",
             reply_to=reply_to, from_name=settings.display_name, attachments=attachments or None,
         )
+    except BaseException:
+        if led is not None:
+            led.release(slot)
+        raise
     finally:
         await service.persist_creds(db, secret, mailbox, account)   # a rotated Microsoft refresh token
     if attachments:

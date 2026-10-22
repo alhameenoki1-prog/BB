@@ -18,6 +18,43 @@ from bb.mail.providers import AuthError, TransientError
 from bb.mail_autoconfig import guess_settings
 
 GMAIL_STATE_COOKIE = "bb_mail_gmail_state"
+BULK_LIMIT = 50
+
+
+def parse_bulk_accounts(text: str) -> list[dict]:
+    """One account per line: ``address password``, ``address,password`` or
+    ``address<TAB>password``, optionally followed by the SMTP server and
+    the IMAP server (``host`` or ``host:port``) for a mailbox whose servers
+    cannot be worked out from the address. A password with spaces or
+    commas goes in a tab-separated line. Lines starting with # are
+    ignored; the same address twice counts once."""
+    out, seen = [], set()
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "\t" in line:
+            parts = [x.strip() for x in line.split("\t")]
+        elif "," in line:
+            parts = [x.strip() for x in line.split(",")]
+        else:
+            parts = line.split(None, 1)
+            if len(parts) == 1 and ":" in line:
+                parts = line.split(":", 1)
+        if len(parts) < 2 or "@" not in parts[0] or not parts[1]:
+            continue
+        email = parts[0].strip().lower()
+        if email in seen:
+            continue
+        seen.add(email)
+        entry = {"email": email, "password": parts[1]}
+        for key, value in zip(("smtp", "imap"), parts[2:4]):
+            host, _, port = (value or "").partition(":")
+            if host:
+                entry[f"{key}_host"] = host.strip()
+                entry[f"{key}_port"] = port.strip()
+        out.append(entry)
+    return out
 MS_STATE_COOKIE = "bb_mail_ms_state"
 
 
@@ -30,7 +67,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         ws = workspace_for(user)
         db = ws.mail_db()
         await db.init()
-        await service.migrate_from_workspace(db, settings.secret_key(), ws)
+        await service.migrate_from_workspace(db, settings.secret_key(), ws.main())
         revived = ws.revive_mail_worker()
         boxes = await db.mailboxes()
         for m in boxes:
@@ -45,6 +82,14 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
 
     def page_ctx(c: dict) -> dict:
         return {k: v for k, v in c.items() if k not in ("ws", "db")}
+
+    def _scope_for(c: dict, address: str = "") -> dict:
+        """The goal and brief an account writes with: the outreach campaign
+        that sends from it, else the main profile."""
+        from bb import campaigns as campaigns_mod
+        main = c["ws"].main()
+        target = main.campaign(campaigns_mod.profile_for_account(main.user_root, address)) if address else main
+        return scope_mod.from_config((target or main).config())
 
     # ── overview ──
 
@@ -69,7 +114,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         ws = c["ws"]
         return CommandCenter(c["db"], _brain(ws), c["mailboxes"], c["selected"], settings.secret_key(), {},
                              user.get("email", ""), on_worker_needed=lambda: (ws.mail_worker_running() or ws.start_mail_worker()),
-                             scope=scope_mod.from_config(ws.config()))
+                             scope=_scope_for(c))
 
     @app.post("/mail/command")
     async def mail_command(request: Request, user: dict = Depends(current_user)):
@@ -168,6 +213,77 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             c["ws"].start_mail_worker()
         return _redirect(f"/mail/accounts/{mid}", msg=f"Connected {email} through Microsoft 365. {detail} "
                                                      "Now set its signature and project link below.")
+
+    @app.post("/mail/accounts/bulk")
+    async def mail_connect_bulk(request: Request, user: dict = Depends(current_user)):
+        """Several mailboxes at once, one per line: address and password
+        (an app password where the provider wants one), servers worked out
+        from each address unless given. Each is tested and stored on its
+        own; one that fails is reported and the rest are kept."""
+        c = await ctx(user)
+        form = dict(await request.form())
+        lines = parse_bulk_accounts(str(form.get("lines", "") or ""))
+        if not lines:
+            return _redirect("/mail/accounts", error="Put one account per line: the address, then its password "
+                                                      "(separated by a comma, a tab or a space).")
+        if len(lines) > BULK_LIMIT:
+            return _redirect("/mail/accounts", error=f"Up to {BULK_LIMIT} accounts at a time, please.")
+        gate = asyncio.Semaphore(4)
+
+        async def one(entry):
+            async with gate:
+                email, password = entry["email"], entry["password"]
+                if entry.get("smtp_host"):
+                    smtp = {"smtp_host": entry["smtp_host"], "smtp_port": entry.get("smtp_port") or "587",
+                            "imap_host": entry.get("imap_host") or entry["smtp_host"], "imap_port": entry.get("imap_port") or "993",
+                            "imap_username": "", "imap_password": "", "smtp_username": email}
+                else:
+                    smtp, note = guess_settings(email)
+                    if smtp is None:
+                        return email, False, note
+                smtp["smtp_password"] = password
+                try:
+                    await service.connect_imap(c["db"], settings.secret_key(), address=email, smtp=smtp, env=settings.worker_env())
+                    return email, True, ""
+                except AuthError as e:
+                    hint = " (an app password is needed)" if any(h in smtp["smtp_host"] for h in ("gmail", "yahoo", "me.com")) else ""
+                    return email, False, f"sign-in refused{hint}: {str(e)[:120]}"
+                except (TransientError, ValueError) as e:
+                    return email, False, str(e)[:160]
+
+        results = await asyncio.gather(*(one(e) for e in lines))
+        ok = [e for e, good, _ in results if good]
+        bad = [f"{e}: {why}" for e, good, why in results if not good]
+        if ok and not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        msg = (f"Connected {len(ok)} account{'s' if len(ok) != 1 else ''}: {', '.join(ok)}. Give each its signature and project "
+               "link, then start campaigns on them from the Campaigns page." if ok else "")
+        return _redirect("/mail/accounts", msg=msg, error=("Not connected: " + "; ".join(bad)) if bad else "")
+
+    @app.post("/mail/accounts/graph/bulk")
+    async def mail_connect_graph_bulk(request: Request, user: dict = Depends(current_user)):
+        """Several mailboxes of one Microsoft 365 tenant through the same app
+        registration: one address per line."""
+        c = await ctx(user)
+        form = dict(await request.form())
+        addresses = [a.strip().lower() for a in str(form.get("addresses", "") or "").replace(",", "\n").splitlines() if "@" in a]
+        if not addresses:
+            return _redirect("/mail/accounts", error="Put one mailbox address per line.")
+        if len(addresses) > BULK_LIMIT:
+            return _redirect("/mail/accounts", error=f"Up to {BULK_LIMIT} mailboxes at a time, please.")
+        ok, bad = [], []
+        for email in dict.fromkeys(addresses):
+            try:
+                await service.connect_graph(c["db"], settings.secret_key(), address=email, tenant_id=str(form.get("tenant_id", "") or ""),
+                                            client_id=str(form.get("client_id", "") or ""),
+                                            client_secret=str(form.get("client_secret", "") or ""), env=settings.worker_env())
+                ok.append(email)
+            except (AuthError, TransientError, ValueError) as e:
+                bad.append(f"{email}: {str(e)[:140]}")
+        if ok and not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        return _redirect("/mail/accounts", msg=(f"Connected {len(ok)} through Microsoft 365: {', '.join(ok)}." if ok else ""),
+                         error=("Not connected: " + "; ".join(bad)) if bad else "")
 
     @app.post("/mail/accounts/imap")
     async def mail_connect_imap(request: Request, user: dict = Depends(current_user)):
@@ -494,7 +610,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         try:
             result = await draft_reply(_brain(c["ws"]), service.settings_of(box), box, t, messages,
                                        instructions=str(form.get("instructions", "") or ""),
-                                       scope=scope_mod.from_config(c["ws"].config()))
+                                       scope=_scope_for(c, box["address"]))
         except BrainError as e:
             return _redirect(f"/mail/threads/{thread_id}", error=str(e))
         subject = t["subject"] if t["subject"].lower().startswith("re:") else f"Re: {t['subject']}"
@@ -606,7 +722,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             return _redirect("/mail/compose", error="Pick a mailbox, enter the recipient, and say what the email should do.")
         try:
             result = await draft_new(_brain(c["ws"]), service.settings_of(box), box, to_name, to_email, instruction,
-                                     scope=scope_mod.from_config(c["ws"].config()))
+                                     scope=_scope_for(c, box["address"]))
         except BrainError as e:
             return _redirect("/mail/compose", error=str(e))
         draft_id = service.new_id(); now = service.now_iso()

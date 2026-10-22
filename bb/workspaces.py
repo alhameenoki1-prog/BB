@@ -233,10 +233,18 @@ def _split_lines(text: str) -> list[str]:
 
 
 class Workspace:
-    def __init__(self, settings, user: dict):
+    def __init__(self, settings, user: dict, campaign_id: str = ""):
+        from bb import campaigns as campaigns_mod
         self.settings = settings
         self.user = user
-        self.root = settings.workspaces_dir / user["id"]
+        # The user's own folder holds what every campaign shares: the AI
+        # provider, the accounts and the mail command center, the alerts.
+        # An outreach campaign other than the main one is a Harvey
+        # workspace of its own under campaigns/<id>/ in it.
+        self.user_root = settings.workspaces_dir / user["id"]
+        self.user_data_dir = self.user_root / "data"
+        self.campaign_id = campaign_id if campaign_id and campaign_id != campaigns_mod.MAIN else campaigns_mod.MAIN
+        self.root = campaigns_mod.campaign_root(self.user_root, self.campaign_id)
         self.data_dir = self.root / "data"
         self.skills_dir = self.root / "skills"
         self.config_file = self.root / "harvey.yaml"
@@ -253,15 +261,19 @@ class Workspace:
         self.microsoft_token_file = self.data_dir / "m365_token.json"
         self.microsoft_account_file = self.data_dir / "microsoft_account.json"
         self.secrets_file = self.data_dir / "secrets.json"
-        # Where mailbox alerts go (bb.alerts) and what was already said.
-        self.alerts_file = self.data_dir / "alerts.json"
-        self.alerts_state_file = self.data_dir / "alerts_state.json"
+        # Where mailbox alerts go (bb.alerts) and what was already said: per user.
+        self.alerts_file = self.user_data_dir / "alerts.json"
+        self.alerts_state_file = self.user_data_dir / "alerts_state.json"
+        # Which campaign the pages show (per user, chosen in the nav).
+        self.current_campaign_file = self.user_data_dir / "current_campaign"
+        # The account an outreach campaign was given, and the credentials last copied from it.
+        self.binding_file = self.data_dir / "account_binding.json"
         self.mailbox_file = self.data_dir / "mailbox.json"
         self.attachments_dir = self.root / "attachments"
         self.signature_dir = self.root / "signature"
 
     def ensure(self):
-        for d in (self.root, self.data_dir, self.skills_dir, self.attachments_dir, self.signature_dir):
+        for d in (self.user_data_dir, self.root, self.data_dir, self.skills_dir, self.attachments_dir, self.signature_dir):
             d.mkdir(parents=True, exist_ok=True)
         return self
 
@@ -320,8 +332,16 @@ class Workspace:
 
     # ── the user's AI provider ──
 
+    @property
+    def is_main(self) -> bool:
+        return self.campaign_id == "main"
+
+    def main(self) -> "Workspace":
+        """The user's own workspace (the main campaign)."""
+        return self if self.is_main else Workspace(self.settings, self.user)
+
     def llm(self) -> dict:
-        s = self.secrets()
+        s = self.main().secrets()       # one AI provider per user, for every campaign
         provider = str(s.get("llm_provider") or "")
         if not provider and s.get("anthropic_api_key"):  # saved before presets existed
             provider = "anthropic"
@@ -342,18 +362,19 @@ class Workspace:
         if provider not in LLM_PRESETS:
             raise ValueError("Choose a provider from the list.")
         preset = LLM_PRESETS[provider]
-        self.save_secrets(
+        self.main().save_secrets(
             llm_provider=provider, llm_api_key=api_key.strip(),
             llm_model=(model or preset["model"]).strip(),
             llm_base_url=(base_url or preset["base_url"]).strip().rstrip("/"),
             anthropic_api_key=api_key.strip() if provider == "anthropic" else "",
             anthropic_workspace_id=workspace_id.strip() if provider == "anthropic" else "",
         )
-        self.rewrite_config()
+        for ws in self.all_campaigns():
+            ws.rewrite_config()
 
     def clear_llm(self):
-        self.save_secrets(llm_provider="", llm_api_key="", llm_model="", llm_base_url="",
-                          anthropic_api_key="", anthropic_workspace_id="")
+        self.main().save_secrets(llm_provider="", llm_api_key="", llm_model="", llm_base_url="",
+                                 anthropic_api_key="", anthropic_workspace_id="")
 
     def llm_configured(self) -> bool:
         llm = self.llm()
@@ -1559,6 +1580,12 @@ class Workspace:
     def worker_env(self) -> dict:
         env = {**os.environ, **self.settings.worker_env(), "HARVEY_HOME": str(self.root),
                "PYTHONUNBUFFERED": "1"}
+        # One of possibly several campaigns on this account: the shared ledger.
+        from bb import campaigns as campaigns_mod
+        env.update({"HARVEY_LEDGER": str(campaigns_mod.ledger_path(self.user_root)),
+                    "HARVEY_LEDGER_ACCOUNT": (self.sending_address() or "").lower(),
+                    "HARVEY_LEDGER_CAMPAIGN": self.campaign_id,
+                    "HARVEY_LEDGER_LABEL": self.campaign_name()})
         for key in list(env):
             if key.startswith("BB_") or key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
                                                  "ANTHROPIC_PROFILE", "ANTHROPIC_WORKSPACE_ID"):
@@ -1604,10 +1631,21 @@ class Workspace:
     def start_worker(self) -> tuple[bool, str]:
         if not self.llm_configured():
             return False, "Set up your AI provider first."
+        if not self.is_main:
+            problem = self.bind_account()
+            if problem:
+                return False, problem[:1].upper() + problem[1:] + "."
         if not self.is_configured():
             return False, "Fill in your profile first."
         if not self.mailbox_connected():
             return False, "Connect your mailbox first."
+        try:
+            # The account's daily limit, shared with any reply campaign or scan on it.
+            self.ledger().set_limit(self.sending_address(), self.account_daily_limit())
+            if self.is_main:
+                self.sync_main_registry()
+        except Exception as e:
+            logger.warning("Could not set the shared limit for %s: %s", self.sending_address(), e)
         if pid := self.worker_running():
             return True, f"Already running (pid {pid})."
         self.ensure()
@@ -1628,6 +1666,7 @@ class Workspace:
 
     async def stop_worker(self, reason: str = "Stop pressed on the dashboard") -> tuple[bool, str]:
         self.autostart_file.unlink(missing_ok=True)
+        self._leave_ledger()             # its share of the account goes back to the others
         pid = self.worker_running()
         if not pid:
             self.pid_file.unlink(missing_ok=True)
@@ -1651,11 +1690,207 @@ class Workspace:
     def wants_autostart(self) -> bool:
         return self.autostart_file.exists()
 
+    # ── outreach campaigns: one per account, each its own Harvey workspace ──
+
+    def campaign_workspaces(self) -> list["Workspace"]:
+        """Every outreach campaign other than the main one."""
+        from bb import campaigns as campaigns_mod
+        return [Workspace(self.settings, self.user, r["id"]) for r in campaigns_mod.load(self.user_root)
+                if r["id"] != campaigns_mod.MAIN]
+
+    def all_campaigns(self) -> list["Workspace"]:
+        return [self.main(), *self.campaign_workspaces()]
+
+    def campaign_row(self) -> dict:
+        from bb import campaigns as campaigns_mod
+        return campaigns_mod.get(self.user_root, self.campaign_id) or {}
+
+    def campaign_name(self) -> str:
+        return self.campaign_row().get("name") or ("Main campaign" if self.is_main else self.campaign_id)
+
+    def campaign(self, campaign_id: str) -> "Workspace | None":
+        """Another campaign of the same user, or None when it does not exist."""
+        from bb import campaigns as campaigns_mod
+        if not campaign_id or campaign_id == campaigns_mod.MAIN:
+            return self.main()
+        if not campaigns_mod.valid_id(campaign_id) or not campaigns_mod.get(self.user_root, campaign_id):
+            return None
+        return Workspace(self.settings, self.user, campaign_id)
+
+    def selected(self) -> "Workspace":
+        """The campaign the pages show (chosen in the nav), else the main one."""
+        try:
+            cid = self.current_campaign_file.read_text().strip()
+        except OSError:
+            cid = ""
+        return (self.campaign(cid) if cid else None) or self.main()
+
+    def select(self, campaign_id: str) -> bool:
+        target = self.campaign(campaign_id)
+        if target is None:
+            return False
+        self.user_data_dir.mkdir(parents=True, exist_ok=True)
+        self.current_campaign_file.write_text(target.campaign_id)
+        return True
+
+    def sync_main_registry(self):
+        """The main campaign is in the registry with the account it sends
+        from, so a reply campaign or scan on that account knows its leads."""
+        from bb import campaigns as campaigns_mod
+        main = self.main()
+        row = campaigns_mod.get(self.user_root, campaigns_mod.MAIN) or {}
+        account = (main.sending_address() or "").lower() if main.mailbox_connected() else ""
+        if row.get("account", None) != account or not row:
+            campaigns_mod.upsert(self.user_root, {**row, "id": campaigns_mod.MAIN, "name": row.get("name") or "Main campaign",
+                                                  "account": account, "mailbox_id": ""})
+
+    def ledger(self):
+        from bb import campaigns as campaigns_mod
+        from harvey.ledger import Ledger
+        return Ledger(campaigns_mod.ledger_path(self.user_root))
+
+    # the account an outreach campaign sends from
+
+    def _mailbox_sync(self, mailbox_id: str = "", address: str = "") -> dict | None:
+        """A command-center account (mail.db), read without the async layer."""
+        import sqlite3
+        if not self.mail_db_path.exists() or not (mailbox_id or address):
+            return None
+        try:
+            con = sqlite3.connect(f"file:{self.mail_db_path}?mode=ro", uri=True, timeout=5)
+            con.row_factory = sqlite3.Row
+            try:
+                if mailbox_id:
+                    row = con.execute("SELECT * FROM mailboxes WHERE id = ?", (mailbox_id,)).fetchone()
+                else:
+                    row = con.execute("SELECT * FROM mailboxes WHERE lower(address) = ?", (address.lower(),)).fetchone()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return None
+        if not row:
+            return None
+        out = dict(row)
+        try:
+            out["settings"] = json.loads(out.get("settings_json") or out.get("settings") or "{}")
+        except (TypeError, ValueError):
+            out["settings"] = {}
+        return out
+
+    def bound_mailbox(self) -> dict | None:
+        mid = self.campaign_row().get("mailbox_id") or ""
+        return self._mailbox_sync(mailbox_id=mid) if mid else None
+
+    def bind_account(self) -> str:
+        """Copy the bound account's connection into this campaign's own files
+        (the same files a mailbox connected on the Mailbox page uses), so the
+        campaign's worker sends and reads as that account. Only copied again
+        when the account's credentials changed (a reconnect): a Microsoft
+        token the worker rotated since is kept. Returns a problem or ""."""
+        import hashlib
+        from bb import gmail_oauth, microsoft_oauth
+        from bb.mail import crypto
+        if self.is_main:
+            return ""
+        box = self.bound_mailbox()
+        if not box:
+            return "the account this campaign sends from was removed from Accounts; choose another on its Mailbox page"
+        if not box.get("enabled", 1):
+            return f"{box['address']} is disabled on the Accounts page"
+        try:
+            creds = crypto.open_json(self.settings.secret_key(), box.get("creds") or "")
+        except Exception:
+            return f"the stored sign-in for {box['address']} could not be read; reconnect it on the Accounts page"
+        stamp = hashlib.sha256((box.get("creds") or "").encode()).hexdigest()
+        try:
+            binding = json.loads(self.binding_file.read_text())
+        except (OSError, ValueError):
+            binding = {}
+        if binding.get("mailbox_id") == box["id"] and binding.get("stamp") == stamp and self.mailbox_connected():
+            return ""
+        self.ensure()
+        address = (box.get("address") or "").lower()
+        reply_to = str((box.get("settings") or {}).get("reply_to") or "")
+        provider = box.get("provider")
+        if provider == "imap":
+            self.save_secrets(smtp_host=creds.get("smtp_host", ""), smtp_port=str(creds.get("smtp_port") or 587),
+                              smtp_username=creds.get("username", ""), smtp_password=creds.get("password", ""),
+                              imap_host=creds.get("imap_host", ""), imap_port=str(creds.get("imap_port") or 993),
+                              imap_username=creds.get("imap_username", "") or "", imap_password=creds.get("imap_password", "") or "",
+                              from_email=address if address != (creds.get("username") or "").lower() else "", reply_to=reply_to)
+            self.set_mail_provider("smtp")
+        elif provider == "gmail" and creds.get("refresh_token"):
+            gmail_oauth.save_token(self, {"refresh_token": creds["refresh_token"]}, address)
+            self.set_mail_provider("gmail")
+        elif provider == "graph" and creds.get("refresh_token"):
+            microsoft_oauth.save_token(self, {"refresh_token": creds["refresh_token"]}, address)
+            self.set_mail_provider("microsoft")
+        elif provider == "graph":
+            self.save_secrets(m365_tenant_id=creds.get("tenant_id", ""), m365_client_id=creds.get("client_id", ""),
+                              m365_client_secret=creds.get("client_secret", ""), m365_mailbox=address)
+            self.set_mail_provider("microsoft_app")
+        else:
+            return f"{address} has no usable sign-in; reconnect it on the Accounts page"
+        self.binding_file.write_text(json.dumps({"mailbox_id": box["id"], "address": address, "stamp": stamp,
+                                                 "at": int(time.time())}))
+        return ""
+
+    def account_daily_limit(self) -> int:
+        """The daily limit of the account this campaign sends from, shared
+        with whatever else runs on it: the cap set on the Accounts page,
+        else what the provider allows."""
+        from bb.mail import service as mail_service
+        box = self.bound_mailbox() if not self.is_main else self._mailbox_sync(address=self.sending_address())
+        if box:
+            try:
+                from bb.mail import crypto
+                creds = crypto.open_json(self.settings.secret_key(), box.get("creds") or "")
+            except Exception:
+                creds = {}
+            return mail_service.account_daily_limit(box, creds)
+        return self.mailbox_daily_ceiling()
+
+    def leads_elsewhere(self, emails: list[str]) -> tuple[set[str], set[str]]:
+        """(addresses already on another campaign's list, addresses that asked
+        any campaign never to be contacted): neither is added here. Each
+        account sends only to its own leads, and nobody gets the same
+        enquiry from two of them."""
+        import sqlite3
+        wanted = sorted({(e or "").strip().lower() for e in emails if e and "@" in e})
+        taken: set[str] = set()
+        for other in self.all_campaigns():
+            if other.campaign_id == self.campaign_id or not other.db_path.exists():
+                continue
+            try:
+                con = sqlite3.connect(f"file:{other.db_path}?mode=ro", uri=True, timeout=5)
+            except sqlite3.Error:
+                continue
+            try:
+                for i in range(0, len(wanted), 500):
+                    chunk = wanted[i:i + 500]
+                    marks = ",".join("?" for _ in chunk)
+                    taken |= {r[0] for r in con.execute(f"SELECT lower(email) FROM prospects WHERE lower(email) IN ({marks})", chunk)}
+            except sqlite3.Error:
+                pass
+            finally:
+                con.close()
+        try:
+            suppressed = self.ledger().suppressed_among(wanted)
+        except Exception:
+            suppressed = set()
+        return taken, suppressed
+
+    def _leave_ledger(self):
+        try:
+            self.ledger().leave_everywhere(self.campaign_id)
+        except Exception as e:
+            logger.debug("ledger leave failed for %s: %s", self.campaign_id, e)
+
     # ── the mail command center (bb/mail) ──
 
     @property
     def mail_db_path(self):
-        return self.data_dir / "mail.db"
+        return self.user_data_dir / "mail.db"
 
     def mail_db(self):
         from bb.mail.db import MailDB
@@ -1671,15 +1906,15 @@ class Workspace:
 
     @property
     def mail_pid_file(self):
-        return self.data_dir / "mailworker.pid"
+        return self.user_data_dir / "mailworker.pid"
 
     @property
     def mail_autostart_file(self):
-        return self.data_dir / "mailworker.autostart"
+        return self.user_data_dir / "mailworker.autostart"
 
     @property
     def mail_log_file(self):
-        return self.data_dir / "mailworker.log"
+        return self.user_data_dir / "mailworker.log"
 
     def mail_worker_running(self) -> int | None:
         try:
@@ -1694,7 +1929,7 @@ class Workspace:
         if not self.mail_worker_running():
             return False
         try:
-            return time.time() - int((self.data_dir / "mailworker.heartbeat").read_text().strip()) < 60
+            return time.time() - int((self.user_data_dir / "mailworker.heartbeat").read_text().strip()) < 60
         except (OSError, ValueError):
             return False
 
@@ -1711,7 +1946,7 @@ class Workspace:
         try:
             with open(self.mail_log_file, "a") as log:
                 proc = subprocess.Popen(
-                    [sys.executable, "-m", "bb.mail.worker", str(self.root)], cwd=str(PROJECT_ROOT),
+                    [sys.executable, "-m", "bb.mail.worker", str(self.user_root)], cwd=str(PROJECT_ROOT),
                     env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                 )
         except Exception as e:

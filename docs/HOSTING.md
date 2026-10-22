@@ -423,6 +423,71 @@ they do), so upload rows with a website or a company email address rather
 than a personal one where you can. The brief the writer follows is
 `prompts/inquiry_writer.md`; edit it to change the voice for everyone.
 
+## Several campaigns at once
+
+A user can run several campaigns at the same time, on several accounts,
+in any mix. The **Campaigns** page (top of the menu) shows them all with
+their account, what they do, how far they are and start / pause / stop
+on each, and starts new ones: pick what they do and tick the accounts,
+and one campaign is made per account.
+
+**Accounts.** Every campaign sends from an account on the Accounts page.
+*Add several at once* there takes one line per mailbox (the address and
+its password or app password; the servers are worked out from the
+address, or follow the password as `smtp.host:587, imap.host:993`), or a
+list of mailboxes of one Microsoft 365 tenant that share an app
+registration. Each is tested on its own; one that fails does not stop the
+rest. Google and Microsoft sign-ins stay one browser sign-in each.
+
+**Outreach, one per account.** Each outreach campaign is a workspace of
+its own: its own profile (goal, request, brief files, signature, speed,
+quiet hours), its own lead list, outbox and replies, and its own worker,
+sending from its one account and only to its own leads. Starting several
+at once copies the profile of a campaign you choose into each (the goal
+replaced if you type one) and, if you upload leads, deals them out in
+turns or by the file's `account` column. Nobody lands on two lists: an
+upload to any campaign leaves out addresses already on another
+campaign's list and anyone who asked any campaign to stop. The menu's
+campaign switch decides which campaign the Dashboard, Profile,
+Recipients, Outbox, Replies and Mailbox pages show; the AI provider, the
+accounts and the command center are shared. The original setup is the
+*Main campaign*.
+
+**Reply campaigns, one per account.** A reply campaign keeps answering
+what comes into its account, from that account, with the brief (the
+goal and brief of the outreach campaign on that account, or one you
+pick), the soft no and hard no rules included. It looks for new mail
+every two minutes, can also take what is already waiting from the last
+few days, and runs until stopped. A lead of an outreach campaign on the
+same account is left to that campaign, which answers its own leads, and
+while a reply campaign runs on an account the outreach campaign there
+leaves mail from people outside its list to it.
+
+**Mailbox scans, one per account.** The follow-up scan of past
+conversations starts one run per account, each paused or stopped on its
+own; leads of an outreach campaign on that account are left out.
+
+**Independent.** Each campaign and run has its own lane in the
+background worker, so a reply campaign and a scan on the same account go
+side by side, and a campaign that finishes, pauses, fails a step or
+waits on review holds nothing else up. A reply campaign that hits an
+error notes it on its row and tries again on its next round.
+
+**The daily limit is shared.** An account's daily limit is the cap set on
+it on the Accounts page, or a little under what its provider allows
+(gmail.com 450, Google Workspace 1,800, outlook.com 250, Microsoft 365
+9,000, other mailboxes 300). Every campaign working on the account is
+guaranteed an equal part of it and may send beyond its part only from
+what no other campaign there still has a claim on, so a quiet reply
+campaign keeps room for the replies that come in later while a busy
+outreach campaign uses the rest. A campaign whose part is used waits
+(its row says so) and carries on as room comes back; nothing is dropped.
+Pausing or stopping a campaign gives its part back at once. A send a
+person presses is held only to the account's own limit. Each user's
+`data/sendlog.db` is the ledger every worker reads before it sends; the
+same file holds the addresses that asked any campaign never to be
+contacted, which every campaign then skips.
+
 ## The mail command center (`/mail`)
 
 In an inquiry workspace every draft here, in a reply run, from the

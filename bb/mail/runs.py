@@ -19,6 +19,36 @@ MODES = ("review", "auto", "dry_run")
 RECONNECT_MONTHS = (3, 6, 12)
 RECONNECT_DEFAULT_MONTHS = 6
 PACE_SECONDS = (20, 60)   # a random pause between two sends from one mailbox
+# A reply campaign looks for new mail to answer this often.
+CAMPAIGN_TICK_SECONDS = 120
+# A run that has used its part of the account's daily limit tries again after this.
+SHARE_WAIT_SECONDS = 30 * 60
+BACKLOG_CHOICES = (0, 3, 7, 14, 30)
+
+# What each kind of run is called, and the feature it counts as on the
+# account's shared daily limit (harvey.ledger).
+KIND_LABELS = {"reply": "Reply run", "reply_campaign": "Reply campaign", "reconnect": "Mailbox scan"}
+FEATURES = {"reply": "reply-run", "reply_campaign": "reply", "reconnect": "scan"}
+LIVE = ("queued", "running", "paused")
+
+
+def lane(mailbox_id: str, run_id: str) -> str:
+    """The job lane of one run on one mailbox: runs never wait on each other."""
+    return f"{mailbox_id}:{run_id}"
+
+
+def ledger_for(env: dict | None):
+    """The user's shared send ledger (beside the mail database), or None."""
+    from pathlib import Path
+
+    from harvey.ledger import Ledger
+    root = (env or {}).get("HARVEY_HOME") or ""
+    return Ledger(Path(root) / "data" / "sendlog.db") if root else None
+
+
+def run_label(run: dict, address: str = "") -> str:
+    name = (run.get("name") or "").strip()
+    return name or f"{KIND_LABELS.get(run.get('kind') or 'reply', 'Run')}{' on ' + address if address else ''}"
 
 
 # One run is created at a time per mail database: a double click (or the
@@ -38,9 +68,9 @@ def _create_lock(db: MailDB) -> asyncio.Lock:
 
 
 async def active_reconnect_run(db: MailDB, mailbox_ids: list[str] | None = None) -> dict | None:
-    """A follow-up run still queued or running (over any of these
+    """A follow-up run still queued, running or paused (over any of these
     mailboxes, when given), or None."""
-    for run in await db.query("SELECT * FROM reply_runs WHERE kind = 'reconnect' AND status IN ('queued', 'running') "
+    for run in await db.query("SELECT * FROM reply_runs WHERE kind = 'reconnect' AND status IN ('queued', 'running', 'paused') "
                               "ORDER BY created_at DESC"):
         if mailbox_ids is None or set(json.loads(run.get("mailbox_ids_json") or "[]")) & set(mailbox_ids):
             return run
@@ -88,6 +118,12 @@ async def suppress(db: MailDB, mailbox: dict, email: str, thread_id: str = "") -
         await db.update_mailbox(box["id"], settings=settings)
         if box["id"] == mailbox.get("id"):
             mailbox["settings"] = settings
+    led = ledger_for({"HARVEY_HOME": str(db.path.parent.parent)}) if getattr(db, "path", None) else None
+    if led is not None:
+        try:
+            led.suppress(email, "asked not to be contacted", f"mail:{mailbox.get('address', '')}")
+        except Exception:
+            pass
     if thread_id:
         await db.execute("UPDATE threads SET state = 'dismissed', state_reason = 'they asked not to be contacted', updated_at = ? WHERE id = ?",
                          (now_iso(), thread_id))
@@ -180,8 +216,23 @@ async def reconnect_candidates(db: MailDB, mailboxes: list[dict], months: int = 
     return out
 
 
+async def create_reconnect_runs(db: MailDB, mailboxes: list[dict], months: int = RECONNECT_DEFAULT_MONTHS, mode: str = "review",
+                                instructions: str = "", created_by: str = "", all_mailboxes: list[dict] | None = None,
+                                profile_id: str = "", name: str = "") -> list[dict]:
+    """One scan per account, each its own run (they go side by side, and
+    each can be paused or stopped alone). Returns one result per mailbox:
+    the run, {"busy": run id}, or {} with nobody to follow up with."""
+    out = []
+    for box in mailboxes:
+        res = await create_reconnect_run(db, [box], months=months, mode=mode, instructions=instructions, created_by=created_by,
+                                         all_mailboxes=all_mailboxes, profile_id=profile_id, name=name)
+        out.append({**res, "mailbox_id": box["id"], "address": box["address"]})
+    return out
+
+
 async def create_reconnect_run(db: MailDB, mailboxes: list[dict], months: int = RECONNECT_DEFAULT_MONTHS, mode: str = "review",
-                               instructions: str = "", created_by: str = "", all_mailboxes: list[dict] | None = None) -> dict:
+                               instructions: str = "", created_by: str = "", all_mailboxes: list[dict] | None = None,
+                               profile_id: str = "", name: str = "") -> dict:
     """A run over the past conversations of these mailboxes: one item per
     contact, one job per mailbox. Returns the run row with per-mailbox
     counts, or {} when there is nobody to follow up with."""
@@ -194,10 +245,10 @@ async def create_reconnect_run(db: MailDB, mailboxes: list[dict], months: int = 
             # One follow-up scan at a time: a second would race the first
             # for the same contacts.
             return {"busy": busy["id"]}
-        return await _insert_reconnect_run(db, mailboxes, months, mode, instructions, created_by, all_mailboxes)
+        return await _insert_reconnect_run(db, mailboxes, months, mode, instructions, created_by, all_mailboxes, profile_id, name)
 
 
-async def _insert_reconnect_run(db, mailboxes, months, mode, instructions, created_by, all_mailboxes) -> dict:
+async def _insert_reconnect_run(db, mailboxes, months, mode, instructions, created_by, all_mailboxes, profile_id="", name="") -> dict:
     cands = await reconnect_candidates(db, mailboxes, months, all_mailboxes=all_mailboxes)
     if not cands:
         return {}
@@ -205,8 +256,9 @@ async def _insert_reconnect_run(db, mailboxes, months, mode, instructions, creat
     involved = sorted({t["mailbox_id"] for t in cands})
     await db.execute(
         "INSERT INTO reply_runs(id, mailbox_ids_json, mode, reply_to, status, total, done, summary_json, instructions, created_by, "
-        "created_at, updated_at, kind, months) VALUES (?, ?, ?, '', 'queued', ?, 0, '{}', ?, ?, ?, ?, 'reconnect', ?)",
-        (run_id, json.dumps(involved), mode, len(cands), instructions.strip()[:2000], created_by, now, now, months))
+        "created_at, updated_at, kind, months, profile_id, name) VALUES (?, ?, ?, '', 'queued', ?, 0, '{}', ?, ?, ?, ?, 'reconnect', ?, ?, ?)",
+        (run_id, json.dumps(involved), mode, len(cands), instructions.strip()[:2000], created_by, now, now, months,
+         profile_id, name.strip()[:120]))
     per = {}
     for t in cands:
         await db.execute("INSERT INTO run_items(id, run_id, mailbox_id, thread_id, status, updated_at, contact) VALUES (?, ?, ?, ?, 'queued', ?, ?)",
@@ -214,23 +266,23 @@ async def _insert_reconnect_run(db, mailboxes, months, mode, instructions, creat
         per[t["mailbox_id"]] = per.get(t["mailbox_id"], 0) + 1
     jobs = Jobs(db)
     for mid in involved:
-        await jobs.enqueue("reply_run", mid, {"run_id": run_id}, max_attempts=3)
+        await jobs.enqueue("reply_run", mid, {"run_id": run_id}, max_attempts=3, lane=lane(mid, run_id))
     await db.log("info", f"Started a follow-up run over the last {months} months: {len(cands)} past conversation{'s' if len(cands) != 1 else ''} "
                          f"across {len(involved)} account{'s' if len(involved) != 1 else ''} ({mode.replace('_', ' ')}).", run_id=run_id)
     return {**(await db.one("SELECT * FROM reply_runs WHERE id = ?", (run_id,))), "per_mailbox": per}
 
 
 async def create_run(db: MailDB, mailboxes: list[dict], thread_ids: list[str], mode: str = "review",
-                     reply_to: str = "", instructions: str = "", created_by: str = "") -> dict:
+                     reply_to: str = "", instructions: str = "", created_by: str = "", profile_id: str = "") -> dict:
     """Insert the run and its items, queue one job per mailbox. Returns the
     run row with ``per_mailbox`` counts; a run with no items is not created."""
     if mode not in MODES:
         mode = "review"
     async with _create_lock(db):
-        return await _insert_run(db, mailboxes, thread_ids, mode, reply_to, instructions, created_by)
+        return await _insert_run(db, mailboxes, thread_ids, mode, reply_to, instructions, created_by, profile_id)
 
 
-async def _insert_run(db, mailboxes, thread_ids, mode, reply_to, instructions, created_by) -> dict:
+async def _insert_run(db, mailboxes, thread_ids, mode, reply_to, instructions, created_by, profile_id="") -> dict:
     boxes = {m["id"]: m for m in mailboxes}
     marks = ",".join("?" for _ in thread_ids) or "''"
     rows = await db.query(f"SELECT id, mailbox_id, last_from FROM threads WHERE id IN ({marks}) AND state = 'needs_reply'", thread_ids)
@@ -238,22 +290,23 @@ async def _insert_run(db, mailboxes, thread_ids, mode, reply_to, instructions, c
     # to that run (a double submit would otherwise draft it twice).
     taken = {r["thread_id"] for r in await db.query(
         "SELECT ri.thread_id FROM run_items ri JOIN reply_runs r ON r.id = ri.run_id "
-        "WHERE r.status IN ('queued', 'running') AND ri.status IN ('queued', 'drafting')")}
+        "WHERE r.status IN ('queued', 'running', 'paused') AND ri.status IN ('queued', 'drafting')")}
     rows = [r for r in rows if r["mailbox_id"] in boxes and r["id"] not in taken]
     if not rows:
         return {}
     run_id, now = new_id(), now_iso()
     involved = sorted({r["mailbox_id"] for r in rows})
     await db.execute(
-        "INSERT INTO reply_runs(id, mailbox_ids_json, mode, reply_to, status, total, done, summary_json, instructions, created_by, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, 'queued', ?, 0, '{}', ?, ?, ?, ?)",
-        (run_id, json.dumps(involved), mode, (reply_to or "").strip().lower(), len(rows), instructions.strip()[:2000], created_by, now, now))
+        "INSERT INTO reply_runs(id, mailbox_ids_json, mode, reply_to, status, total, done, summary_json, instructions, created_by, created_at, "
+        "updated_at, profile_id) VALUES (?, ?, ?, ?, 'queued', ?, 0, '{}', ?, ?, ?, ?, ?)",
+        (run_id, json.dumps(involved), mode, (reply_to or "").strip().lower(), len(rows), instructions.strip()[:2000], created_by, now, now,
+         profile_id))
     for r in rows:
         await db.execute("INSERT INTO run_items(id, run_id, mailbox_id, thread_id, status, updated_at) VALUES (?, ?, ?, ?, 'queued', ?)",
                          (new_id(), run_id, r["mailbox_id"], r["id"], now))
     jobs = Jobs(db)
     for mid in involved:
-        await jobs.enqueue("reply_run", mid, {"run_id": run_id}, max_attempts=3)
+        await jobs.enqueue("reply_run", mid, {"run_id": run_id}, max_attempts=3, lane=lane(mid, run_id))
     per = {}
     for r in rows:
         per[r["mailbox_id"]] = per.get(r["mailbox_id"], 0) + 1
@@ -262,7 +315,99 @@ async def _insert_run(db, mailboxes, thread_ids, mode, reply_to, instructions, c
     return {**(await db.one("SELECT * FROM reply_runs WHERE id = ?", (run_id,))), "per_mailbox": per}
 
 
-async def cancel_run(db: MailDB, run_id: str) -> bool:
+async def create_reply_campaign(db: MailDB, mailbox: dict, mode: str = "auto", instructions: str = "", profile_id: str = "",
+                                backlog_days: int = 0, created_by: str = "", name: str = "") -> dict:
+    """A reply campaign on one account: it keeps answering what comes into
+    that mailbox (from ``backlog_days`` ago on), from that mailbox, until
+    it is stopped. One per account. Returns the run, or {"busy": id}."""
+    if mode not in MODES:
+        mode = "auto"
+    backlog_days = backlog_days if backlog_days in BACKLOG_CHOICES else 0
+    async with _create_lock(db):
+        for run in await db.query("SELECT id, mailbox_ids_json FROM reply_runs WHERE kind = 'reply_campaign' AND status IN ('queued', 'running', 'paused')"):
+            if mailbox["id"] in json.loads(run.get("mailbox_ids_json") or "[]"):
+                return {"busy": run["id"]}
+        run_id, now = new_id(), now_iso()
+        since = (datetime.now(timezone.utc) - timedelta(days=backlog_days)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        await db.execute(
+            "INSERT INTO reply_runs(id, mailbox_ids_json, mode, reply_to, status, total, done, summary_json, instructions, created_by, "
+            "created_at, updated_at, kind, profile_id, name, since) VALUES (?, ?, ?, '', 'running', 0, 0, '{}', ?, ?, ?, ?, 'reply_campaign', ?, ?, ?)",
+            (run_id, json.dumps([mailbox["id"]]), mode, instructions.strip()[:2000], created_by, now, now, profile_id, name.strip()[:120], since))
+        await Jobs(db).enqueue("reply_campaign", mailbox["id"], {"run_id": run_id}, max_attempts=3, lane=lane(mailbox["id"], run_id))
+    await db.log("info", f"Started a reply campaign on {mailbox['address']} ({mode.replace('_', ' ')})"
+                         + (f", answering what arrived in the last {backlog_days} days too." if backlog_days else ", answering new mail from now on."),
+                 mailbox["id"], run_id=run_id)
+    return await db.one("SELECT * FROM reply_runs WHERE id = ?", (run_id,)) or {}
+
+
+async def collect_campaign_threads(db: MailDB, run: dict, mailbox: dict) -> int:
+    """New work for a reply campaign: threads in its mailbox that need a
+    reply, arrived after it started (or its backlog date), are not already
+    waiting in it or in another unfinished run, and were not handled by it
+    since their last message. Returns how many were added."""
+    rows = await db.query(
+        "SELECT t.id FROM threads t WHERE t.mailbox_id = ? AND t.state = 'needs_reply' AND t.last_message_at >= ? "
+        "AND NOT EXISTS (SELECT 1 FROM run_items ri WHERE ri.run_id = ? AND ri.thread_id = t.id "
+        "  AND (ri.status IN ('queued', 'drafting', 'needs_review') OR ri.updated_at >= t.last_message_at)) "
+        "AND NOT EXISTS (SELECT 1 FROM run_items ri JOIN reply_runs r ON r.id = ri.run_id WHERE ri.thread_id = t.id AND r.id != ? "
+        "  AND r.status IN ('queued', 'running', 'paused') AND ri.status IN ('queued', 'drafting')) "
+        "ORDER BY t.last_message_at LIMIT 200",
+        (mailbox["id"], run.get("since") or "", run["id"], run["id"]))
+    now = now_iso()
+    for r in rows:
+        await db.execute("INSERT INTO run_items(id, run_id, mailbox_id, thread_id, status, updated_at) VALUES (?, ?, ?, ?, 'queued', ?)",
+                         (new_id(), run["id"], mailbox["id"], r["id"], now))
+    if rows:
+        await db.execute("UPDATE reply_runs SET total = total + ?, updated_at = ? WHERE id = ?", (len(rows), now, run["id"]))
+    return len(rows)
+
+
+async def _cancel_jobs(db: MailDB, run_id: str):
+    now = now_iso()
+    for job in await db.query("SELECT id, payload_json FROM jobs WHERE kind IN ('reply_run', 'reply_campaign') AND status = 'queued'"):
+        if json.loads(job.get("payload_json") or "{}").get("run_id") == run_id:
+            await db.execute("UPDATE jobs SET status = 'cancelled', finished_at = ?, updated_at = ? WHERE id = ?", (now, now, job["id"]))
+
+
+async def _leave_ledger(db: MailDB, run: dict, env: dict | None):
+    led = ledger_for(env)
+    if led is None:
+        return
+    try:
+        led.leave_everywhere(run["id"])
+    except Exception:
+        pass
+
+
+async def pause_run(db: MailDB, run_id: str, env: dict | None = None) -> bool:
+    """Hold a run where it is: nothing more is drafted or sent until it is
+    resumed; what is waiting stays waiting, and every other run goes on."""
+    run = await db.one("SELECT * FROM reply_runs WHERE id = ?", (run_id,))
+    if not run or run["status"] not in ("queued", "running"):
+        return False
+    now = now_iso()
+    await db.execute("UPDATE reply_runs SET status = 'paused', paused_at = ?, updated_at = ? WHERE id = ?", (now, now, run_id))
+    await _cancel_jobs(db, run_id)
+    await _leave_ledger(db, run, env)
+    await db.log("info", f"{run_label(run)} paused.", run_id=run_id)
+    return True
+
+
+async def resume_run(db: MailDB, run_id: str) -> bool:
+    run = await db.one("SELECT * FROM reply_runs WHERE id = ?", (run_id,))
+    if not run or run["status"] != "paused":
+        return False
+    now = now_iso()
+    await db.execute("UPDATE reply_runs SET status = 'running', paused_at = NULL, detail = '', updated_at = ? WHERE id = ?", (now, run_id))
+    jobs = Jobs(db)
+    kind = "reply_campaign" if run.get("kind") == "reply_campaign" else "reply_run"
+    for mid in json.loads(run.get("mailbox_ids_json") or "[]"):
+        await jobs.enqueue(kind, mid, {"run_id": run_id}, max_attempts=3, lane=lane(mid, run_id), dedupe=True)
+    await db.log("info", f"{run_label(run)} resumed.", run_id=run_id)
+    return True
+
+
+async def cancel_run(db: MailDB, run_id: str, env: dict | None = None) -> bool:
     run = await db.one("SELECT * FROM reply_runs WHERE id = ?", (run_id,))
     if not run or run["status"] in ("done", "cancelled", "failed"):
         return False
@@ -270,10 +415,10 @@ async def cancel_run(db: MailDB, run_id: str) -> bool:
     await db.execute("UPDATE reply_runs SET status = 'cancelled', updated_at = ?, finished_at = ? WHERE id = ?", (now, now, run_id))
     await db.execute("UPDATE run_items SET status = 'skipped', detail = 'run cancelled', updated_at = ? WHERE run_id = ? AND status = 'queued'",
                      (now, run_id))
-    for job in await db.query("SELECT id, payload_json FROM jobs WHERE kind = 'reply_run' AND status = 'queued'"):
-        if json.loads(job.get("payload_json") or "{}").get("run_id") == run_id:
-            await db.execute("UPDATE jobs SET status = 'cancelled', finished_at = ?, updated_at = ? WHERE id = ?", (now, now, job["id"]))
-    await db.log("info", "Reply run cancelled.", run_id=run_id)
+    await _cancel_jobs(db, run_id)
+    await _leave_ledger(db, run, env)
+    await db.log("info", ("Reply campaign stopped." if run.get("kind") == "reply_campaign" else
+                          "Follow-up run cancelled." if run.get("kind") == "reconnect" else "Reply run cancelled."), run_id=run_id)
     return True
 
 
@@ -292,7 +437,13 @@ async def _finish_if_done(db: MailDB, run_id: str):
     if not run:
         return
     now = now_iso()
-    if summary["queued"] + summary["drafting"] == 0 and run["status"] not in ("cancelled",):
+    full = await db.one("SELECT kind FROM reply_runs WHERE id = ?", (run_id,))
+    if (full or {}).get("kind") == "reply_campaign":
+        # A reply campaign runs until it is stopped: only its counts move.
+        await db.execute("UPDATE reply_runs SET done = ?, summary_json = ?, updated_at = ? WHERE id = ?",
+                         (done, json.dumps(summary), now, run_id))
+        return
+    if summary["queued"] + summary["drafting"] == 0 and run["status"] not in ("cancelled", "paused"):
         await db.execute("UPDATE reply_runs SET status = 'done', done = ?, summary_json = ?, updated_at = ?, finished_at = ? WHERE id = ?",
                          (done, json.dumps(summary), now, now, run_id))
         parts = [f"{summary['sent']} sent"] if summary["sent"] else []
@@ -304,7 +455,6 @@ async def _finish_if_done(db: MailDB, run_id: str):
             parts.append(f"{summary['skipped']} skipped")
         if summary["failed"]:
             parts.append(f"{summary['failed']} failed")
-        full = await db.one("SELECT kind FROM reply_runs WHERE id = ?", (run_id,))
         what = "Follow-up run" if (full or {}).get("kind") == "reconnect" else "Reply run"
         await db.log("info", f"{what} finished: " + (", ".join(parts) or "nothing to do") + ".", run_id=run_id)
     else:
@@ -324,8 +474,21 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
     mailbox = await db.mailbox(mailbox_id)
     if not run or not mailbox:
         return {"skipped": "run or mailbox gone"}
-    reconnect = (run.get("kind") or "reply") == "reconnect"
+    if run["status"] in ("paused", "cancelled", "done", "failed"):
+        return {"skipped": f"run is {run['status']}"}
+    kind = run.get("kind") or "reply"
+    reconnect = kind == "reconnect"
     settings = service.settings_of(mailbox)
+    # The account's daily limit is shared with every other campaign on it.
+    led = ledger_for(env) if run["mode"] != "dry_run" else None
+    feature, label = FEATURES.get(kind, "reply-run"), run_label(run, mailbox["address"])
+    if led is not None:
+        try:
+            led.set_limit(mailbox["address"], service.account_daily_limit(mailbox))
+        except Exception:
+            led = None
+    user_root = (env or {}).get("HARVEY_HOME") or ""
+    waiting = ""
     # An item left 'drafting' by a worker that died mid-draft is picked up again.
     await db.execute("UPDATE run_items SET status = 'queued', updated_at = ? WHERE run_id = ? AND mailbox_id = ? AND status = 'drafting'",
                      (now_iso(), run_id, mailbox_id))
@@ -350,6 +513,8 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
 
     for item in items:
         fresh = await db.one("SELECT status FROM reply_runs WHERE id = ?", (run_id,))
+        if fresh and fresh["status"] == "paused":
+            break                     # what is left waits for Resume
         if not fresh or fresh["status"] == "cancelled":
             await mark(item, "skipped", "run cancelled")
             continue
@@ -365,6 +530,22 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
         if last_in and is_excluded(settings, last_in["from_email"]):
             await mark(item, "skipped", f"{last_in['from_email']} is on this account's excluded list")
             continue
+        contact = (last_in or {}).get("from_email") or item.get("contact") or ""
+        if contact and led is not None and led.is_suppressed(contact):
+            await mark(item, "skipped", f"{contact} asked not to be contacted (in another campaign); nothing sent")
+            continue
+        if contact and user_root:
+            from bb import campaigns as campaigns_mod
+            owner = campaigns_mod.outreach_owner(user_root, mailbox["address"], contact)
+            if owner:
+                await mark(item, "skipped", f"{contact} is a lead of the outreach campaign \"{owner.get('name') or owner['id']}\" "
+                                            "on this account, which answers its own leads")
+                continue
+        if led is not None:
+            pic = led.allowance(mailbox["address"], run_id, feature, label)
+            if not pic["ok"]:
+                waiting = pic["reason"]
+                break                 # the rest waits for room on the account; nothing is dropped
         if run["mode"] != "dry_run" and settings.daily_cap and await sent_today(db, mailbox_id) >= settings.daily_cap:
             if run["mode"] == "auto":
                 await mark(item, "skipped", f"daily cap of {settings.daily_cap} reached; nothing drafted")
@@ -397,7 +578,8 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
             # The prompt mentions the attached brief only when this very draft will carry it.
             from bb.mail import scope as scope_mod
             from bb.mail.sending import prior_replies
-            root = (env or {}).get("HARVEY_HOME") or ""
+            from bb.mail.sending import profile_root
+            root = profile_root(env)
             will_attach = bool(scope_mod.attachment_paths(root, scope, await prior_replies(db, thread["id"]))) if root else False
             draft_scope = {**scope, "attach_now": will_attach}
         try:
@@ -467,5 +649,16 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
         else:
             sent_in_a_row += 1
             await mark(item, "sent", "", draft_id)
+    if waiting:
+        await db.execute("UPDATE reply_runs SET detail = ?, updated_at = ? WHERE id = ?",
+                         (f"waiting for room on {mailbox['address']}: {waiting}"[:300], now_iso(), run_id))
+        if jobs is not None and kind != "reply_campaign":     # a reply campaign comes back on its own tick
+            await jobs.enqueue("reply_run", mailbox_id, {"run_id": run_id}, delay_seconds=SHARE_WAIT_SECONDS,
+                               max_attempts=3, lane=lane(mailbox_id, run_id))
+    elif run.get("detail"):
+        await db.execute("UPDATE reply_runs SET detail = '', updated_at = ? WHERE id = ?", (now_iso(), run_id))
     await _finish_if_done(db, run_id)
-    return {"run_id": run_id, **counts}
+    final = await db.one("SELECT status FROM reply_runs WHERE id = ?", (run_id,))
+    if led is not None and (final or {}).get("status") in ("done", "cancelled", "failed", "paused"):
+        led.leave(mailbox["address"], run_id)
+    return {"run_id": run_id, "waiting": waiting, **counts}

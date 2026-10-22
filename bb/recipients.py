@@ -43,6 +43,9 @@ COLUMN_ALIASES = {
     "why": "notes", "reason": "notes",
     "industry": "industry", "sector": "industry", "category": "industry", "business_type": "industry",
     "type": "industry", "trade": "industry", "city": "city", "location": "city", "town": "city",
+    # Which of the user's accounts writes to them (one upload, several campaigns).
+    "account": "account", "sender": "account", "send_from": "account", "from_account": "account",
+    "sending_account": "account",
 }
 
 

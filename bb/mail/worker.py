@@ -1,6 +1,7 @@
 """The mail worker: one process per user, started by the site, running
-the job queue. Jobs for different mailboxes run concurrently; two jobs
-for the same mailbox never overlap. A heartbeat file tells the site it
+the job queue. Jobs for different mailboxes run concurrently, and so do
+the campaigns on one mailbox (each run has a lane of its own); two jobs
+in the same lane never overlap. A heartbeat file tells the site it
 is alive; the log is plain text at data/mailworker.log.
 
     python -m bb.mail.worker /path/to/workspace
@@ -21,7 +22,7 @@ from bb.mail.jobs import Jobs
 logger = logging.getLogger("bb.mailworker")
 
 POLL_SECONDS = 2.0
-MAX_CONCURRENT = 6
+MAX_CONCURRENT = 16
 SCHEDULE_EVERY = 60.0
 
 
@@ -65,17 +66,70 @@ class Handlers:
             await self.db.log("review", f"Held a reply to {draft['to_json'][:60]}: {e}", draft["mailbox_id"], draft_id=draft["id"])
             return {"status": "held", "reason": str(e)}
 
+    async def _run_env(self, run: dict | None) -> tuple[dict, dict | None]:
+        """The env and the profile (goal, brief, files) a run writes with:
+        the campaign it belongs to, else the user's main profile. Read
+        fresh each time: the profile may have changed since the worker
+        started."""
+        from bb import campaigns as campaigns_mod
+        from bb.mail import scope as scope_mod
+        env, root = self.env, self.root
+        pid = (run or {}).get("profile_id") or ""
+        if pid and self.root:
+            try:
+                root = campaigns_mod.campaign_root(self.root, pid)
+                env = {**self.env, "HARVEY_PROFILE_HOME": str(root)}
+            except ValueError:
+                root = self.root
+        return env, (scope_mod.load(root) if root else None)
+
     async def reply_run(self, job: dict):
         from bb.mail import runs
         from bb.mail.brain import MailBrain
         brain = MailBrain(os.environ)
         if not brain.configured:
             raise RuntimeError("no AI provider is configured for this account (AI provider page)")
-        from bb.mail import scope as scope_mod
-        # Read fresh each run: the profile may have changed since the worker started.
-        scope = scope_mod.load(self.root) if self.root else None
-        return await runs.process_mailbox(self.db, self.secret, self.env, brain, self.jobs, job["id"],
+        run = await self.db.one("SELECT * FROM reply_runs WHERE id = ?", (job["payload"].get("run_id", ""),))
+        env, scope = await self._run_env(run)
+        return await runs.process_mailbox(self.db, self.secret, env, brain, self.jobs, job["id"],
                                           job["payload"].get("run_id", ""), job["mailbox_id"], scope=scope)
+
+    async def reply_campaign(self, job: dict):
+        """One tick of a reply campaign: take in what arrived, answer it,
+        and come back in a couple of minutes. A failure here is noted on
+        the campaign and tried again on the next tick; it never stops
+        another campaign, and never stops this one."""
+        from bb.mail import runs
+        from bb.mail.brain import MailBrain
+        run_id = job["payload"].get("run_id", "")
+        run = await self.db.one("SELECT * FROM reply_runs WHERE id = ?", (run_id,))
+        mailbox = await self.db.mailbox(job["mailbox_id"])
+        if not run or not mailbox or run["status"] not in ("queued", "running"):
+            return {"stopped": (run or {}).get("status", "gone")}
+        out: dict = {}
+        try:
+            brain = MailBrain(os.environ)
+            if not brain.configured:
+                raise RuntimeError("no AI provider is configured for this account (AI provider page)")
+            env, scope = await self._run_env(run)
+            led = runs.ledger_for(env)
+            if led is not None and run["mode"] != "dry_run":
+                led.join(mailbox["address"], run_id, "reply", runs.run_label(run, mailbox["address"]))
+            added = await runs.collect_campaign_threads(self.db, run, mailbox)
+            out = await runs.process_mailbox(self.db, self.secret, env, brain, self.jobs, job["id"], run_id, mailbox["id"], scope=scope)
+            out["added"] = added
+            if not out.get("waiting") and run.get("detail"):
+                await self.db.execute("UPDATE reply_runs SET detail = '' WHERE id = ? AND detail NOT LIKE 'waiting%'", (run_id,))
+        except Exception as e:
+            logger.warning("reply campaign %s: %s", run_id, e)
+            await self.db.execute("UPDATE reply_runs SET detail = ?, updated_at = ? WHERE id = ?",
+                                  (f"last try failed, trying again shortly: {type(e).__name__}: {str(e)[:200]}", service.now_iso(), run_id))
+            out = {"error": str(e)[:200]}
+        fresh = await self.db.one("SELECT status FROM reply_runs WHERE id = ?", (run_id,))
+        if fresh and fresh["status"] in ("queued", "running"):
+            await self.jobs.enqueue("reply_campaign", mailbox["id"], {"run_id": run_id}, delay_seconds=runs.CAMPAIGN_TICK_SECONDS,
+                                    max_attempts=3, lane=runs.lane(mailbox["id"], run_id))
+        return out
 
     async def run(self, job: dict) -> dict:
         handler = getattr(self, job["kind"], None)
@@ -96,7 +150,7 @@ class Worker:
         self.tasks: set[asyncio.Task] = set()
 
     async def _run_job(self, job: dict):
-        key = job["mailbox_id"] or f"job:{job['id']}"
+        key = job.get("lane") or job["mailbox_id"] or f"job:{job['id']}"
         self.busy.add(key)
         try:
             result = await self.handlers.run(job)

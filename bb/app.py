@@ -204,9 +204,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.error("Could not create the admin account: %s", e)
         # Workers that were running before a restart come back.
         for ws in all_workspaces(settings, accounts):
-            if ws.wants_autostart() and not ws.worker_running() and not ws.user["disabled"]:
-                ok, detail = ws.start_worker()
-                logger.info("Autostart worker for %s: %s", ws.user["email"], detail)
+            for one in ws.all_campaigns():
+                if one.wants_autostart() and not one.worker_running() and not ws.user["disabled"]:
+                    ok, detail = one.start_worker()
+                    logger.info("Autostart worker for %s (%s): %s", ws.user["email"], one.campaign_name(), detail)
             if ws.mail_autostart_file.exists() and not ws.mail_worker_running() and not ws.user["disabled"]:
                 ok, detail = ws.start_mail_worker()
                 logger.info("Autostart mail worker for %s: %s", ws.user["email"], detail)
@@ -215,8 +216,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # one, all at once, after the site is already answering requests.
             async def one(ws):
                 try:
-                    for what in await ws.restart_workers_on_old_code():
-                        logger.info("Restarted the %s for %s on the updated code", what, ws.user["email"])
+                    for one in ws.all_campaigns():
+                        for what in await one.restart_workers_on_old_code():
+                            logger.info("Restarted the %s for %s (%s) on the updated code", what, ws.user["email"], one.campaign_name())
                 except Exception as e:
                     logger.warning("version check failed for %s: %s", ws.user["email"], e)
             await asyncio.gather(*(one(ws) for ws in all_workspaces(settings, accounts)))
@@ -229,9 +231,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await asyncio.sleep(120)
                 try:
                     for ws in all_workspaces(settings, accounts):
-                        note = ws.revive_worker()
-                        if note:
-                            logger.info("Revived worker for %s", ws.user["email"])
+                        for one in ws.all_campaigns():
+                            if one.revive_worker():
+                                logger.info("Revived worker for %s (%s)", ws.user["email"], one.campaign_name())
                         ws.revive_mail_worker()
                 except Exception as e:
                     logger.warning("worker check failed: %s", e)
@@ -268,8 +270,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=403, detail="Admins only.")
         return user
 
-    def workspace_for(user: dict) -> Workspace:
+    def base_workspace(user: dict) -> Workspace:
+        """The user's own workspace: the main campaign and everything per user."""
         return Workspace(settings, user).ensure()
+
+    def workspace_for(user: dict) -> Workspace:
+        """The campaign the pages show (picked in the nav); the main one by default."""
+        return base_workspace(user).selected().ensure()
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -299,10 +306,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     async def render(request: Request, name: str, user: dict | None = None, **ctx):
         summary = None
+        campaign_nav = None
         if user:
-            summary = await workspace_for(user).summary()
+            current = workspace_for(user)
+            summary = await current.summary()
+            options = [(w.campaign_id, w.campaign_name()) for w in current.all_campaigns()]
+            campaign_nav = {"current": current.campaign_id, "name": current.campaign_name(), "options": options,
+                            "main": current.is_main}
         return templates.TemplateResponse(request, name, {
-            "user": user, "summary": summary, "settings": settings,
+            "user": user, "summary": summary, "settings": settings, "campaign_nav": campaign_nav,
             "msg": request.query_params.get("msg", ""),
             "error": ctx.pop("error", "") or request.query_params.get("error", ""),
             **ctx,
@@ -527,7 +539,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         domain = deliverability.domain_of(sending)
         report = await check_domain(domain) if domain and ws.mailbox_connected() else None
         health = await ws.mailbox_health()
+        bound, choices = None, []
+        if not ws.is_main:
+            bound = ws.bound_mailbox()
+            mdb = ws.mail_db()
+            await mdb.init()
+            from bb import campaigns as campaigns_mod
+            others = {(r.get("account") or "").lower() for r in campaigns_mod.load(ws.user_root) if r["id"] != ws.campaign_id}
+            choices = [m for m in await mdb.mailboxes() if m["address"].lower() not in others]
         return await render(request, "mailbox.html", user, provider=ws.mail_provider(),
+                            campaign_bound=bound, campaign_choices=choices, campaign_main=ws.is_main,
+                            campaign_id=ws.campaign_id, campaign_label=ws.campaign_name(),
                             gmail_connected=ws.gmail_connected(), account=ws.gmail_account(),
                             gmail_available=bool(settings.gmail_client_id and settings.gmail_client_secret),
                             microsoft_available=bool(settings.ms_client_id),
@@ -576,6 +598,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/mailbox/m365")
     async def mailbox_m365_save(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
+        if not ws.is_main:
+            return _redirect("/mailbox", error=f"{ws.campaign_name()} sends from an account on the Accounts page; change it below.")
         form = dict(await request.form())
         current = ws.m365_settings()
         m365 = {}
@@ -648,6 +672,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/mailbox/provider")
     async def mailbox_choose(user: dict = Depends(current_user), provider: str = Form("gmail")):
         ws = workspace_for(user)
+        if not ws.is_main:
+            return _redirect("/mailbox", error=f"{ws.campaign_name()} sends from an account on the Accounts page; change it below.")
         try:
             ws.set_mail_provider(provider)
         except ValueError as e:
@@ -662,6 +688,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/mailbox/smtp")
     async def mailbox_smtp_save(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
+        if not ws.is_main:
+            return _redirect("/mailbox", error=f"{ws.campaign_name()} sends from an account on the Accounts page; change it below.")
         form = dict(await request.form())
         current = ws.smtp_settings()
         smtp = {}
@@ -763,6 +791,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/gmail/connect")
     async def gmail_connect(user: dict = Depends(current_user)):
+        if not workspace_for(user).is_main:
+            return _redirect("/mail/accounts", error="This campaign sends from an account on the Accounts page; connect or reconnect it there.")
         if not (settings.gmail_client_id and settings.gmail_client_secret):
             return _redirect("/mailbox", error="The site has no Google OAuth client configured yet. "
                                                "Use your mailbox's SMTP settings instead.")
@@ -820,6 +850,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/microsoft/connect")
     async def microsoft_connect(user: dict = Depends(current_user)):
+        if not workspace_for(user).is_main:
+            return _redirect("/mail/accounts", error="This campaign sends from an account on the Accounts page; connect or reconnect it there.")
         if not settings.ms_client_id:
             return _redirect("/mailbox", error="The site has no Microsoft app registration configured yet. "
                                                "Use the Microsoft 365 admin app or your mailbox's SMTP settings instead.")
@@ -897,10 +929,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/recipients", error="No rows found. Upload a CSV with an email column, "
                                                   "or paste one address per line.")
         ws = workspace_for(user)
-        result = await recipients_mod.import_rows(ws.state(), rows)
+        from bb.campaign_routes import import_for
+        result = await import_for(ws, rows)
         msg = f"Added {result['added']} recipient(s)."
         if result["duplicates"]:
             msg += f" {result['duplicates']} already on your list."
+        if result.get("elsewhere"):
+            msg += f" {result['elsewhere']} already on another campaign's list (each account writes only to its own leads)."
+        if result.get("suppressed"):
+            msg += f" {result['suppressed']} asked never to be contacted."
         if result["invalid"]:
             msg += f" {result['invalid']} skipped (no valid email)."
         if result["too_many"]:
@@ -981,6 +1018,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ── the mail command center ──
     from bb.mail.routes import register_mail_routes
     register_mail_routes(app, settings, current_user, workspace_for, render, _redirect, templates)
+    from bb.campaign_routes import register_campaign_routes
+    register_campaign_routes(app, settings, current_user, base_workspace, render, _redirect)
 
     # ── inbox auto-reply ──
 

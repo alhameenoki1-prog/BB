@@ -96,6 +96,19 @@ application* OAuth client are optional). Deployment and Mac quick-start:
 `bb/workspaces.py` (per-user home, config writer, worker control),
 `bb/recipients.py` (CSV import), `bb/gmail_oauth.py`, `bb/accounts.py`.
 When someone asks to "host this" or "give users logins", that is this.
+**Several campaigns at once** (`/campaigns`, `bb/campaign_routes.py`): one
+outreach campaign per account, each a Harvey workspace of its own under
+`campaigns/<id>/` (`bb/campaigns.py` registry; `Workspace(settings, user,
+campaign_id)`, `bind_account` copies the Accounts entry's connection in,
+`selected()`/`select()` drive the menu's campaign switch; the AI provider,
+mail DB, mail worker and alerts stay per user), reply campaigns
+(`runs.create_reply_campaign`, worker `reply_campaign` tick) and scans
+(`runs.create_reconnect_runs`) one per account, pause/resume
+(`runs.pause_run/resume_run`), a job lane per run (`jobs.lane`), and the
+per-user ledger `harvey/ledger.py` (`data/sendlog.db`) that splits each
+account's daily limit (`service.account_daily_limit`) and holds opt-outs
+for every campaign. Accounts can be added in bulk (`/mail/accounts/bulk`,
+`/mail/accounts/graph/bulk`).
 The **mail command center** (`bb/mail/`, pages under `/mail`) is the newer
 multi-mailbox side: `db.py` (per-user `data/mail.db`, WAL), `crypto.py`
 (sealed credentials), `jobs.py` (SQLite queue, retries, dead-letter),

@@ -72,15 +72,20 @@ async def current_alerts(ws) -> dict[str, str]:
     The worker's mailbox counts only while the worker runs or is meant to
     (an alert left behind by a worker the user stopped is history)."""
     out: dict[str, str] = {}
-    if ws.worker_running() or ws.wants_autostart():
+    campaigns = ws.all_campaigns() if hasattr(ws, "all_campaigns") else [ws]
+    for one in campaigns:
+        if not (one.worker_running() or one.wants_autostart()):
+            continue
         try:
-            health = await ws.mailbox_health()
+            health = await one.mailbox_health()
         except Exception:
             health = {}
         if health.get("alert"):
-            reconnect = ws.needs_reconnect(health)
-            out["mailbox"] = health["alert"] + (" The mailbox needs signing in again: open the Mailbox page and press "
-                                                "Reconnect." if reconnect else "")
+            reconnect = one.needs_reconnect(health)
+            where = "" if getattr(one, "is_main", True) else f"{one.campaign_name()} ({one.sending_address()}): "
+            key = "mailbox" if getattr(one, "is_main", True) else f"campaign:{one.campaign_id}"
+            out[key] = where + health["alert"] + (" The mailbox needs signing in again: open the Mailbox page and press "
+                                                  "Reconnect." if reconnect else "")
     if ws.mail_worker_running() or ws.mail_autostart_file.exists():
         out.update(_mail_reconnects(ws))
     return out
@@ -197,8 +202,8 @@ async def check_workspace(settings, ws, now: datetime | None = None) -> list[str
         if last and now - last < timedelta(hours=REMIND_HOURS):
             continue
         again = bool(last)
-        title = ("Still not working: " if again else "") + ("your mailbox needs attention" if key == "mailbox"
-                                                           else "a mailbox needs reconnecting")
+        title = ("Still not working: " if again else "") + ("a mailbox needs reconnecting" if key.startswith("mail:")
+                                                           else "your mailbox needs attention")
         reached, problems = await deliver(settings, ws, title[:1].upper() + title[1:], text)
         if reached:
             inc["notified_at"] = now.isoformat()
@@ -211,8 +216,8 @@ async def check_workspace(settings, ws, now: datetime | None = None) -> list[str
     for key in [k for k in incidents if k not in active]:
         inc = incidents.pop(key)
         if inc.get("notified_at"):
-            reached, _ = await deliver(settings, ws, "Your mailbox is working again" if key == "mailbox"
-                                       else "The mailbox is connected again",
+            reached, _ = await deliver(settings, ws, "The mailbox is connected again" if key.startswith("mail:")
+                                       else "Your mailbox is working again",
                                        "The problem we wrote to you about has cleared: " + (inc.get("text") or "")[:300], ok=True)
             if reached:
                 sent.append(f"{key} cleared: {', '.join(reached)}")

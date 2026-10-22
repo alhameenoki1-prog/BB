@@ -22,22 +22,26 @@ class Jobs:
         self.db = db
 
     async def enqueue(self, kind: str, mailbox_id: str = "", payload: dict | None = None,
-                      delay_seconds: int = 0, max_attempts: int = 5, dedupe: bool = False) -> str:
+                      delay_seconds: int = 0, max_attempts: int = 5, dedupe: bool = False, lane: str = "") -> str:
         """Queue a job. With ``dedupe``, an identical queued or running job for
-        the same mailbox is reused instead of duplicated."""
+        the same mailbox (and lane) is reused instead of duplicated.
+
+        ``lane`` is what may not run twice at once; it defaults to the
+        mailbox. A campaign's run gets a lane of its own on its mailbox, so
+        a reply campaign and a scan on one account go side by side."""
         if dedupe:
             row = await self.db.one(
-                "SELECT id FROM jobs WHERE kind = ? AND mailbox_id = ? AND status IN ('queued', 'running') LIMIT 1",
-                (kind, mailbox_id))
+                "SELECT id FROM jobs WHERE kind = ? AND mailbox_id = ? AND lane = ? AND status IN ('queued', 'running') LIMIT 1",
+                (kind, mailbox_id, lane))
             if row:
                 return row["id"]
         jid = new_id()
         now = datetime.now(timezone.utc)
         await self.db.execute(
-            "INSERT INTO jobs(id, kind, mailbox_id, payload_json, status, run_at, max_attempts, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+            "INSERT INTO jobs(id, kind, mailbox_id, payload_json, status, run_at, max_attempts, created_at, updated_at, lane) "
+            "VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
             (jid, kind, mailbox_id, json.dumps(payload or {}), _iso(now + timedelta(seconds=delay_seconds)),
-             max_attempts, _iso(now), _iso(now)))
+             max_attempts, _iso(now), _iso(now), lane))
         return jid
 
     async def claim(self, exclude_mailboxes: set[str] | None = None) -> dict | None:
@@ -47,7 +51,7 @@ class Jobs:
         now = now_iso()
         exclude = sorted(exclude_mailboxes or set())
         marks = ",".join("?" for _ in exclude)
-        not_busy = f" AND mailbox_id NOT IN ({marks})" if exclude else ""
+        not_busy = f" AND (CASE WHEN lane != '' THEN lane ELSE mailbox_id END) NOT IN ({marks})" if exclude else ""
         async with self.db._connect() as db:
             await db.execute("PRAGMA busy_timeout=15000")
             # Recover jobs whose worker died mid-run.

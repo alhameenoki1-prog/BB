@@ -45,6 +45,28 @@
     </form>
   </div>
 </div>
+<div class="card" style="margin-top:14px" id="bulk">
+  <h2>Add several at once</h2>
+  <div class="two">
+    <div>
+      <p class="muted small">One account per line: the address and its password (an <b>app password</b> for Gmail, Yahoo and iCloud), separated by a comma, a tab or a space. The servers are worked out from each address; add them after the password (<code>smtp.host:587, imap.host:993</code>) for a mailbox they cannot be worked out for. Each is tested on its own, and one that fails does not stop the rest.</p>
+      <form method="post" action="/mail/accounts/bulk">
+        <textarea name="lines" rows="6" placeholder="sales@acme.com, app-password-1&#10;ops@acme.com, app-password-2&#10;me@mydomain.com	pass word	mail.mydomain.com:587	mail.mydomain.com:993" autocomplete="off" spellcheck="false"></textarea>
+        <p style="margin-top:10px"><button type="submit">{{ icon('check', 15) }} Connect them all</button></p>
+      </form>
+    </div>
+    <div>
+      <p class="muted small">Several mailboxes of one Microsoft 365 tenant through the same app registration (the <b>Microsoft 365 app</b> card below explains the app): the app's ids once, then one address per line.</p>
+      <form method="post" action="/mail/accounts/graph/bulk">
+        <div class="row"><div><label>Tenant id</label><input type="text" name="tenant_id" required></div><div><label>Client id</label><input type="text" name="client_id" required></div><div><label>Client secret</label><input type="password" name="client_secret" required autocomplete="off"></div></div>
+        <textarea name="addresses" rows="3" placeholder="sales@yourcompany.com&#10;ops@yourcompany.com" style="margin-top:8px"></textarea>
+        <p style="margin-top:10px"><button class="secondary" type="submit">{{ icon('check', 15) }} Connect these mailboxes</button></p>
+      </form>
+    </div>
+  </div>
+  <p class="tiny muted" style="margin-top:8px">Google and Microsoft sign-ins are one browser sign-in each: use the buttons below once per account (each opens that account's settings afterwards; come back here for the next).</p>
+</div>
+
 <div class="two" style="margin-top:14px">
   <div class="card">
     <h2>Microsoft <span class="tiny" style="font-weight:400">Outlook, Hotmail or Microsoft 365 sign-in, full mode</span></h2>

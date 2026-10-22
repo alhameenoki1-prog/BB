@@ -9,6 +9,32 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Several campaigns at once, on several accounts.** A Campaigns page
+  shows every outreach campaign, reply campaign, mailbox scan and reply
+  run with its account, progress and its use of the account's daily
+  limit, with start / pause / resume / stop on each, and starts one
+  campaign per ticked account in one go (`bb/campaign_routes.py`).
+  Outreach campaigns are Harvey workspaces of their own under
+  `campaigns/<id>/` (`bb/campaigns.py` registry, `Workspace(campaign_id=)`),
+  bound to an account from the Accounts page (`Workspace.bind_account`),
+  each with its own profile, goal, brief files, leads and worker; the
+  menu's switch picks the campaign the pages show. Leads uploaded once
+  can be dealt out in turns or by an `account` column, and no address is
+  on two lists. Reply campaigns (`kind = 'reply_campaign'`) keep
+  answering one account's incoming mail with that account's brief;
+  scans start one run per account; runs can pause and resume; every run
+  has its own job lane (`jobs.lane`, migration v4) so nothing on one
+  account waits for anything else. A per-user ledger (`harvey/ledger.py`,
+  `data/sendlog.db`) splits each account's daily limit between what runs
+  on it (an equal part each, the unclaimed rest for whoever needs it,
+  reserved atomically before every send by the outreach workers and the
+  command center alike) and holds the opt-outs every campaign honours.
+  Leads of an outreach campaign are left to that campaign by reply
+  campaigns, reply runs and scans on the same account.
+- **Several accounts at once.** The Accounts page connects a list of
+  mailboxes in one go (address and password per line, servers worked out
+  or given), or a list of mailboxes of one Microsoft 365 tenant through
+  one app registration; each is tested on its own.
 - **Mailbox alerts by email and on the phone.** The site checks every
   workspace every five minutes (`bb/alerts.py`) and sends each new
   mailbox problem once, again a day later if it is still there, and a

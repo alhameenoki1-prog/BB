@@ -317,6 +317,7 @@ class Handler:
             # Honor opt-outs ALWAYS. No reply, no future contact.
             await self.state.update_conversation(convo.id, status="closed", stage="closed_lost")
             await self.state.update_prospect_status(prospect.id, "opted_out")
+            self._suppress_everywhere(lead_email, "unsubscribed")
             await self.state.log_action(
                 action_type="opt_out",
                 agent="handler",
@@ -333,6 +334,7 @@ class Handler:
             await self.state.update_conversation(convo.id, status="needs_human")
             if hard_escalation:
                 await self.state.update_prospect_status(prospect.id, "opted_out")
+                self._suppress_everywhere(lead_email, "hostile or legal reply")
             await self.state.log_action(
                 action_type="escalation",
                 agent="handler",
@@ -540,6 +542,24 @@ class Handler:
         outreach = getattr(self.config, "outreach", None)
         return bool(getattr(outreach, "inbox_autoreply", False))
 
+    def _ledger(self):
+        """(ledger, account, campaign, label) when this worker is one of
+        several campaigns on the account, else (None, "", "", "")."""
+        if not hasattr(self, "_ledger_info"):
+            from harvey import ledger as ledger_mod
+            self._ledger_info = ledger_mod.from_env()
+        return self._ledger_info
+
+    def _suppress_everywhere(self, email: str, reason: str):
+        """An opt-out here holds for every campaign of this user."""
+        led, _, campaign, _ = self._ledger()
+        if led is None:
+            return
+        try:
+            led.suppress(email, reason, campaign)
+        except Exception as e:
+            logger.warning(f"Handler: could not add {email} to the shared suppression list: {e}")
+
     def _has_brief(self, prospect) -> bool:
         """Is there something to leave with someone who said no: a scope
         link for their sector, the general one, or a file sent with replies?"""
@@ -580,6 +600,19 @@ class Handler:
         sender = (msg.from_email or "").strip().lower()
         if not sender or sender == (persona.email or "").strip().lower():
             return False
+        led, account, _, _ = self._ledger()
+        if led is not None:
+            try:
+                if led.has_feature(account, "reply"):
+                    # A reply campaign runs on this account: answering mail
+                    # from people outside this campaign's list is its job.
+                    logger.info(f"Handler: inbox: a reply campaign answers {sender} on this account; no reply here.")
+                    return False
+                if led.is_suppressed(sender):
+                    logger.info(f"Handler: inbox: {sender} asked not to be contacted; no reply.")
+                    return False
+            except Exception as e:
+                logger.debug(f"Handler: ledger read failed: {e}")
         if looks_automated(sender, msg.subject, msg.headers):
             logger.info(f"Handler: inbox: {sender} looks automated; no reply.")
             return False

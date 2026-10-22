@@ -194,6 +194,19 @@ MIGRATIONS = [
     ALTER TABLE reply_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply';
     ALTER TABLE reply_runs ADD COLUMN months INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE run_items ADD COLUMN contact TEXT NOT NULL DEFAULT '';
+    """,
+    # v4 — campaigns side by side: a job runs in its own lane (two runs on
+    # one account never wait for each other), a run can pause, writes with
+    # a chosen campaign's goal and brief, and a reply campaign keeps going
+    # (kind 'reply_campaign') answering what arrives after ``since``.
+    """
+    ALTER TABLE jobs ADD COLUMN lane TEXT NOT NULL DEFAULT '';
+    ALTER TABLE reply_runs ADD COLUMN profile_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE reply_runs ADD COLUMN name TEXT NOT NULL DEFAULT '';
+    ALTER TABLE reply_runs ADD COLUMN detail TEXT NOT NULL DEFAULT '';
+    ALTER TABLE reply_runs ADD COLUMN since TEXT NOT NULL DEFAULT '';
+    ALTER TABLE reply_runs ADD COLUMN paused_at TEXT;
+    CREATE INDEX IF NOT EXISTS jobs_lane ON jobs(lane, status);
     """
 ]
 

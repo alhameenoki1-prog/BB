@@ -4,6 +4,18 @@
 {% block content %}
 <div class="page-head"><div><div class="eyebrow">Setup</div><h1>Your mailbox</h1><p class="lead">Emails are sent from your own address and replies are read from its inbox. Nothing is sent on anyone's behalf but yours.</p></div></div>
 
+{% if not campaign_main %}
+<div class="card" style="border-color:var(--accent)">
+  <h2>{{ campaign_label }} sends from {{ campaign_bound.address if campaign_bound else 'no account' }}</h2>
+  {% if campaign_bound %}<p class="small">The account comes from the <a href="/mail/accounts/{{ campaign_bound.id }}">Accounts</a> page: connect, reconnect, set its daily limit and signature there. This campaign's worker sends and reads as it, and shares its daily limit with any reply campaign or scan on it.</p>
+  {% else %}<p class="small" style="color:var(--bad)">Its account was removed from the Accounts page. Choose another below before starting it again.</p>{% endif %}
+  {% if campaign_choices %}
+  <form method="post" action="/campaigns/{{ campaign_id }}/account" style="margin-top:10px">
+    <div class="row"><div><label>Send from another account</label><select name="mailbox_id">{% for m in campaign_choices %}<option value="{{ m.id }}" {{ 'selected' if campaign_bound and m.id == campaign_bound.id else '' }}>{{ m.address }}</option>{% endfor %}</select></div>
+    <div style="display:flex;align-items:flex-end"><button class="secondary" type="submit">Use this account</button></div></div>
+  </form>{% endif %}
+</div>
+{% else %}
 <div class="card">
   <h2>Log in with your email</h2>
   <p class="muted small">The quickest way in: your address and its password, and the servers are worked out for you. Gmail, Yahoo and iCloud want an <b>app password</b> (not your normal one): Gmail at myaccount.google.com/apppasswords after turning on 2-Step Verification. Replies are read from the same inbox.</p>
@@ -27,13 +39,16 @@
     <p style="margin-top:10px"><button class="secondary small" type="submit">Use the selected one</button></p>
   </form>
 </div>
+{% endif %}
 {% if reconnect %}
 <div class="card" style="border-color:var(--bad)" id="reconnect">
   <h2 style="color:var(--bad)">Reconnect your mailbox</h2>
   <p class="small"><b>The mailbox refused the sign-in:</b> {{ reconnect }}</p>
   <p class="muted small">Changing your password does not do this on its own: Google and Microsoft sign-ins keep working after a password change. It happens when you revoked the site's access in your account, when your organisation's policy signs every app out after a password change, or when an app password or SMTP password stopped being valid. One sign-in puts it right; nothing already queued is lost.</p>
   <div class="actions" style="margin-top:10px">
-    {% if provider == 'gmail' %}
+    {% if not campaign_main %}
+      <a class="button" href="/mail/accounts{{ '/' ~ campaign_bound.id if campaign_bound else '' }}">Reconnect it on the Accounts page</a>
+    {% elif provider == 'gmail' %}
       {% if gmail_available %}<form class="inline" method="post" action="/gmail/connect"><button type="submit">{{ icon('mail', 15) }} Reconnect Google</button></form>{% else %}<span class="small">The site's Google client is missing; the admin must add it before Gmail can be reconnected.</span>{% endif %}
     {% elif provider == 'microsoft' %}
       {% if microsoft_available %}<form class="inline" method="post" action="/microsoft/connect"><button type="submit">{{ icon('mail', 15) }} Reconnect Microsoft</button></form>{% else %}<span class="small">The site's Microsoft app registration is missing; the admin must add it before this can be reconnected.</span>{% endif %}
@@ -77,6 +92,7 @@
   {% if alert_state.last_problem %}<p class="tiny" style="margin-top:4px;color:var(--bad)">The last alert could not be delivered: {{ alert_state.last_problem }}</p>{% endif %}
 </div>
 
+{% if campaign_main %}
 <div class="two">
 {% if gmail_available %}  <div class="card">
     <h2>{{ "Option A" if gmail_available else "Option B" }} <span class="tiny" style="font-weight:400">Gmail or Google Workspace, one click</span></h2>
@@ -278,6 +294,8 @@
   </div>
   {% endif %}
 </div>
+
+{% endif %}
 
 <div class="card" id="deliverability">
   <h2>Deliverability <span class="tiny" style="font-weight:400">why emails get blocked, and how to stop it</span></h2>

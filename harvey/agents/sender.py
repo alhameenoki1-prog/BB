@@ -148,6 +148,10 @@ class Sender:
         self.precleared = PreclearedClient.from_config(config, env)
         # Disabled in tests to skip inter-send sleeps.
         self.send_pacing = True
+        # One of several campaigns on the same account (started by the site):
+        # every send takes a slot of the account's shared daily limit.
+        from harvey import ledger as ledger_mod
+        self.ledger, self.ledger_account, self.ledger_campaign, self.ledger_label = ledger_mod.from_env()
 
     @property
     def is_native(self) -> bool:
@@ -485,6 +489,10 @@ class Sender:
             if (prospect.email_status or "guess") not in sendable_email:
                 skipped += 1
                 continue
+            if self.ledger is not None and self.ledger.is_suppressed(email):
+                # They asked another of this user's campaigns never to be contacted.
+                await self.state.update_prospect_status(prospect.id, "opted_out")
+                continue
             seen_emails.add(email)
 
             cumulative_days = 0
@@ -584,6 +592,21 @@ class Sender:
                 f"{' warm-up' if allowance != max_daily else ''}).")
             return
 
+        if self.ledger is not None:
+            # Other campaigns send from this account too: this one keeps to
+            # its part of the account's daily limit.
+            try:
+                pic = self.ledger.allowance(self.ledger_account, self.ledger_campaign, "outreach", self.ledger_label)
+            except Exception as e:
+                logger.warning(f"Sender: the shared send ledger could not be read ({e}); sending waits for the next pass.")
+                return
+            if not pic["ok"]:
+                logger.info(f"Sender: {pic['reason']}.")
+                await self.state.set_setting(SKIP_REASON_KEY, f"daily allowance shared with other campaigns: {pic['reason']}")
+                return
+            if pic["limited"]:
+                budget = min(budget, pic["room"])
+
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         stale = await self.state.release_stale_sending()
         if stale:
@@ -633,6 +656,13 @@ class Sender:
                 # address dead after this email was staged.
                 await self.state.update_outbox_item(
                     item["id"], status="cancelled", error="address marked invalid before sending")
+                continue
+            if self.ledger is not None and self.ledger.is_suppressed(item["to_email"]):
+                # They asked another of this user's campaigns never to be contacted.
+                await self.state.update_outbox_item(
+                    item["id"], status="cancelled", error="asked not to be contacted (in another campaign)")
+                if prospect.status != "opted_out":
+                    await self.state.update_prospect_status(prospect.id, "opted_out")
                 continue
 
             # Stop-on-reply / opt-out: never continue a sequence after contact.
@@ -953,12 +983,33 @@ class Sender:
             send_kwargs["attachments"] = files
         if self._plain(item):
             send_kwargs["plain"] = True
-        result = await asyncio.shield(self.provider.send_email(
-            item["to_email"], item["subject"], item["body"],
-            thread_ref=item.get("thread_ref", ""),
-            in_reply_to=item.get("in_reply_to", ""),
-            **send_kwargs,
-        ))
+        slot = None
+        if self.ledger is not None:
+            try:
+                slot, pic = self.ledger.reserve(self.ledger_account, self.ledger_campaign, "outreach",
+                                                self.ledger_label, kind=item.get("kind") or "sequence")
+            except Exception as e:
+                slot, pic = None, {"reason": f"the shared send ledger could not be read ({e})"}
+            if slot is None:
+                # Another campaign on this account took the last of the shared
+                # limit in the meantime: the email waits, the pass ends.
+                await self.state.update_outbox_item(item["id"], status="approved")
+                self._throttled = True
+                logger.info(f"Sender: {pic.get('reason')}; the rest waits.")
+                return False
+        try:
+            result = await asyncio.shield(self.provider.send_email(
+                item["to_email"], item["subject"], item["body"],
+                thread_ref=item.get("thread_ref", ""),
+                in_reply_to=item.get("in_reply_to", ""),
+                **send_kwargs,
+            ))
+        except BaseException:
+            if self.ledger is not None:
+                self.ledger.release(slot)
+            raise
+        if not result.ok and self.ledger is not None:
+            self.ledger.release(slot)
         if not result.ok:
             if getattr(result, "auth_failed", False):
                 # The mailbox refused the login: nothing can leave until it is

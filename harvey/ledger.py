@@ -1,0 +1,324 @@
+"""One account, several campaigns: who may send next.
+
+A user can run an outreach campaign, a reply campaign and a mailbox scan
+on the same account at once, each in its own process (an outreach
+campaign is its own Harvey worker; replies and scans run in the mail
+command center's worker). The account still has one daily limit, and if
+one of them used it up the account would be blocked for all of them. So
+every process that sends for a user shares this small SQLite file
+(``data/sendlog.db`` in the user's workspace) and asks it before each
+send:
+
+* **members**: the campaigns working on each account right now (each
+  checks in as it works; a paused, stopped or finished one leaves at
+  once, and one that has not checked in for six hours is taken to have
+  stopped);
+* **limits**: each account's daily limit, set by the site from the
+  account's own cap or what its provider allows;
+* **sends**: every send of the last 24 hours, per account and campaign.
+
+The rule: each active campaign on an account is guaranteed an equal part
+of its daily limit. It may send beyond its part only from what nobody
+else still has a claim on, so a quiet reply campaign keeps room for the
+replies that come in later while a busy outreach campaign uses what is
+left. A send is reserved before it goes (one transaction, so two
+processes cannot both take the last slot) and released if it fails.
+
+The same file holds **suppressed** addresses: someone who asks one
+campaign never to be contacted again is skipped by all of them.
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+import time
+from pathlib import Path
+
+WINDOW_SECONDS = 24 * 3600     # providers count a rolling day
+ACTIVE_SECONDS = 6 * 3600       # a member that has not checked in for this long has stopped (a paused or finished one leaves at once)
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS sends (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account TEXT NOT NULL,
+    campaign TEXT NOT NULL,
+    feature TEXT DEFAULT '',
+    sent_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sends_account ON sends(account, sent_at);
+CREATE TABLE IF NOT EXISTS members (
+    account TEXT NOT NULL,
+    campaign TEXT NOT NULL,
+    feature TEXT DEFAULT '',
+    label TEXT DEFAULT '',
+    active_until REAL NOT NULL,
+    PRIMARY KEY (account, campaign)
+);
+CREATE TABLE IF NOT EXISTS limits (
+    account TEXT PRIMARY KEY,
+    daily INTEGER NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS suppressed (
+    email TEXT PRIMARY KEY,
+    reason TEXT DEFAULT '',
+    source TEXT DEFAULT '',
+    at REAL NOT NULL
+);
+"""
+
+
+def _key(account: str) -> str:
+    return (account or "").strip().lower()
+
+
+class Ledger:
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self._ready = False
+
+    # ── plumbing ──
+
+    def _con(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(str(self.path), timeout=15, isolation_level=None)
+        con.execute("PRAGMA busy_timeout=15000")
+        if not self._ready:
+            con.execute("PRAGMA journal_mode=WAL")
+            con.executescript(SCHEMA)
+            self._ready = True
+        return con
+
+    @staticmethod
+    def _now(now: float | None) -> float:
+        return time.time() if now is None else float(now)
+
+    # ── limits and members ──
+
+    def set_limit(self, account: str, daily: int, now: float | None = None):
+        con = self._con()
+        try:
+            con.execute("INSERT INTO limits(account, daily, updated_at) VALUES (?, ?, ?) "
+                        "ON CONFLICT(account) DO UPDATE SET daily = excluded.daily, updated_at = excluded.updated_at",
+                        (_key(account), max(0, int(daily or 0)), self._now(now)))
+        finally:
+            con.close()
+
+    def limit(self, account: str) -> int:
+        con = self._con()
+        try:
+            row = con.execute("SELECT daily FROM limits WHERE account = ?", (_key(account),)).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            con.close()
+
+    def join(self, account: str, campaign: str, feature: str = "", label: str = "", now: float | None = None,
+             con: sqlite3.Connection | None = None):
+        """Say "I am working on this account" (again). Call it on every pass."""
+        own = con is None
+        con = con or self._con()
+        try:
+            t = self._now(now)
+            con.execute("INSERT INTO members(account, campaign, feature, label, active_until) VALUES (?, ?, ?, ?, ?) "
+                        "ON CONFLICT(account, campaign) DO UPDATE SET feature = excluded.feature, "
+                        "label = CASE WHEN excluded.label != '' THEN excluded.label ELSE members.label END, "
+                        "active_until = excluded.active_until",
+                        (_key(account), campaign, feature, label, t + ACTIVE_SECONDS))
+        finally:
+            if own:
+                con.close()
+
+    def leave(self, account: str, campaign: str):
+        """Paused, stopped or finished: the share goes back to the others now."""
+        con = self._con()
+        try:
+            con.execute("DELETE FROM members WHERE account = ? AND campaign = ?", (_key(account), campaign))
+        finally:
+            con.close()
+
+    def leave_everywhere(self, campaign: str):
+        con = self._con()
+        try:
+            con.execute("DELETE FROM members WHERE campaign = ?", (campaign,))
+        finally:
+            con.close()
+
+    def members(self, account: str, now: float | None = None, con: sqlite3.Connection | None = None) -> list[dict]:
+        own = con is None
+        con = con or self._con()
+        try:
+            rows = con.execute("SELECT campaign, feature, label, active_until FROM members WHERE account = ? AND active_until > ? "
+                               "ORDER BY campaign", (_key(account), self._now(now))).fetchall()
+            return [{"campaign": r[0], "feature": r[1], "label": r[2], "active_until": r[3]} for r in rows]
+        finally:
+            if own:
+                con.close()
+
+    def has_feature(self, account: str, feature: str, now: float | None = None) -> bool:
+        return any(m["feature"] == feature for m in self.members(account, now))
+
+    # ── the split ──
+
+    def _used(self, con, account: str, since: float, campaign: str | None = None) -> int:
+        if campaign is None:
+            row = con.execute("SELECT COUNT(*) FROM sends WHERE account = ? AND sent_at > ?", (account, since)).fetchone()
+        else:
+            row = con.execute("SELECT COUNT(*) FROM sends WHERE account = ? AND campaign = ? AND sent_at > ?",
+                              (account, campaign, since)).fetchone()
+        return int(row[0] or 0)
+
+    def _picture(self, con, account: str, campaign: str, now: float, priority: bool = False) -> dict:
+        since = now - WINDOW_SECONDS
+        row = con.execute("SELECT daily FROM limits WHERE account = ?", (account,)).fetchone()
+        limit = int(row[0]) if row else 0
+        members = [m for m in self.members(account, now, con=con)]
+        others = [m for m in members if m["campaign"] != campaign]
+        total = self._used(con, account, since)
+        mine = self._used(con, account, since, campaign)
+        n = len(others) + 1
+        share = max(1, limit // n) if limit else 0
+        held = 0 if priority or not limit else sum(max(0, share - self._used(con, account, since, m["campaign"])) for m in others)
+        if not limit:
+            room = 10 ** 9            # no limit known: nothing to split
+        else:
+            room = max(0, limit - total - held)
+        if room > 0:
+            reason = ""
+        elif limit and total >= limit:
+            reason = f"the account's daily limit of {limit} is reached ({total} sent in the last 24 hours)"
+        else:
+            names = ", ".join(m["label"] or m["feature"] or m["campaign"] for m in others)
+            reason = (f"this campaign's share of the account's daily limit is used ({mine} of {share}); the rest of the "
+                      f"{limit} is held for the {len(others)} other campaign{'s' if len(others) != 1 else ''} on it ({names})")
+        return {"ok": room > 0, "room": room if limit else 0, "limited": bool(limit), "limit": limit, "share": share,
+                "used": mine, "total": total, "others": len(others), "reason": reason}
+
+    def allowance(self, account: str, campaign: str, feature: str = "", label: str = "",
+                  now: float | None = None, priority: bool = False) -> dict:
+        """Where this campaign stands on this account (and a check-in).
+        {ok, room, limited, limit, share, used, total, others, reason}."""
+        t, account = self._now(now), _key(account)
+        con = self._con()
+        try:
+            if feature or label:
+                self.join(account, campaign, feature, label, now=t, con=con)
+            return self._picture(con, account, campaign, t, priority)
+        finally:
+            con.close()
+
+    def reserve(self, account: str, campaign: str, feature: str = "", label: str = "",
+                now: float | None = None, priority: bool = False, kind: str = "") -> tuple[int | None, dict]:
+        """Take one send slot, or say why not. (slot id or None, picture).
+        ``priority`` (a person pressing Send) is held only to the account's
+        own limit, not to the campaigns' parts."""
+        t, account = self._now(now), _key(account)
+        con = self._con()
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            if not priority:
+                self.join(account, campaign, feature, label, now=t, con=con)
+            pic = self._picture(con, account, campaign, t, priority)
+            if not pic["ok"]:
+                con.execute("ROLLBACK")
+                return None, pic
+            cur = con.execute("INSERT INTO sends(account, campaign, feature, sent_at) VALUES (?, ?, ?, ?)",
+                              (account, campaign, kind or feature, t))
+            con.execute("DELETE FROM sends WHERE sent_at < ?", (t - 2 * WINDOW_SECONDS,))
+            con.execute("COMMIT")
+            return cur.lastrowid, pic
+        except Exception:
+            try:
+                con.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+        finally:
+            con.close()
+
+    def release(self, slot: int | None):
+        """The send did not go: give the slot back."""
+        if not slot:
+            return
+        con = self._con()
+        try:
+            con.execute("DELETE FROM sends WHERE id = ?", (slot,))
+        finally:
+            con.close()
+
+    def summary(self, account: str, now: float | None = None) -> dict:
+        """For the Campaigns page: the account's limit, what went in the last
+        day, and each active member's part and use."""
+        t, account = self._now(now), _key(account)
+        con = self._con()
+        try:
+            since = t - WINDOW_SECONDS
+            row = con.execute("SELECT daily FROM limits WHERE account = ?", (account,)).fetchone()
+            limit = int(row[0]) if row else 0
+            members = self.members(account, t, con=con)
+            share = max(1, limit // max(1, len(members))) if limit else 0
+            return {"limit": limit, "total": self._used(con, account, since), "share": share,
+                    "members": [{**m, "used": self._used(con, account, since, m["campaign"])} for m in members]}
+        finally:
+            con.close()
+
+    def used_by(self, campaign: str, now: float | None = None) -> int:
+        con = self._con()
+        try:
+            row = con.execute("SELECT COUNT(*) FROM sends WHERE campaign = ? AND sent_at > ?",
+                              (campaign, self._now(now) - WINDOW_SECONDS)).fetchone()
+            return int(row[0] or 0)
+        finally:
+            con.close()
+
+    # ── nobody writes to them again ──
+
+    def suppress(self, email: str, reason: str = "", source: str = "", now: float | None = None):
+        email = (email or "").strip().lower()
+        if "@" not in email:
+            return
+        con = self._con()
+        try:
+            con.execute("INSERT OR IGNORE INTO suppressed(email, reason, source, at) VALUES (?, ?, ?, ?)",
+                        (email, reason[:200], source[:80], self._now(now)))
+        finally:
+            con.close()
+
+    def is_suppressed(self, email: str) -> bool:
+        con = self._con()
+        try:
+            return con.execute("SELECT 1 FROM suppressed WHERE email = ?", ((email or "").strip().lower(),)).fetchone() is not None
+        finally:
+            con.close()
+
+    def suppressed_among(self, emails: list[str]) -> set[str]:
+        wanted = sorted({(e or "").strip().lower() for e in emails if e})
+        out: set[str] = set()
+        con = self._con()
+        try:
+            for i in range(0, len(wanted), 500):
+                chunk = wanted[i:i + 500]
+                marks = ",".join("?" for _ in chunk)
+                out |= {r[0] for r in con.execute(f"SELECT email FROM suppressed WHERE email IN ({marks})", chunk)}
+            return out
+        finally:
+            con.close()
+
+
+# ── how a Harvey worker finds its place in the ledger ──
+
+ENV_PATH = "HARVEY_LEDGER"
+ENV_ACCOUNT = "HARVEY_LEDGER_ACCOUNT"
+ENV_CAMPAIGN = "HARVEY_LEDGER_CAMPAIGN"
+ENV_LABEL = "HARVEY_LEDGER_LABEL"
+
+
+def from_env(env: dict | None = None) -> tuple[Ledger | None, str, str, str]:
+    """(ledger, account, campaign, label) when the site started this worker
+    as one of several campaigns; (None, "", "", "") for a worker on its own."""
+    env = os.environ if env is None else env
+    path = (env.get(ENV_PATH) or "").strip()
+    account = (env.get(ENV_ACCOUNT) or "").strip().lower()
+    if not path or not account:
+        return None, "", "", ""
+    return Ledger(path), account, (env.get(ENV_CAMPAIGN) or "main").strip(), (env.get(ENV_LABEL) or "").strip()

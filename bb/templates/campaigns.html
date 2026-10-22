@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Campaigns{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Campaigns</div><h1>Everything that is running</h1><p class="lead">Outreach, reply campaigns and mailbox scans, on any of your accounts, side by side. Each one is independent: one finishing, pausing, failing or waiting on review never holds another up. When several run on one account they share its daily limit, so none of them can use it up for the rest.</p></div></div>
+
+{% if not accounts %}<div class="card flat" style="border-color:var(--warn)"><b>No accounts yet.</b> Connect the mailboxes you want to send from on the <a href="/mail/accounts">Accounts</a> page (several at once if you like); every campaign picks from them.</div>{% endif %}
+{% if not brain_ok %}<div class="card flat" style="border-color:var(--warn)"><b>No AI provider yet.</b> Every campaign writes with it: <a href="/apikey">set it up</a> first.</div>{% endif %}
+
+<div class="card">
+  <h2>Outreach <span class="tiny" style="font-weight:400">one per account, each with its own leads, goal, brief and schedule</span></h2>
+  <table class="small"><thead><tr><th>Campaign</th><th>Account</th><th>Status</th><th>Progress</th><th>Today on the account</th><th></th></tr></thead><tbody>
+  {% for c in outreach %}
+  <tr>
+    <td><b>{{ c.name }}</b>{% if c.goal %}<div class="tiny muted">{{ c.goal }}</div>{% endif %}</td>
+    <td>{{ c.account or '—' }}{% if c.account_missing %} <span class="tag bad">account removed</span>{% endif %}</td>
+    <td>{% if c.status == 'running' %}<span class="tag good">running</span>{% elif c.status == 'paused' %}<span class="tag warn">paused</span>{% elif c.status == 'stopped' %}<span class="tag">stopped</span>{% else %}<span class="tag">not set up</span>{% endif %}
+      {% if c.summary.sending %}<div class="tiny muted">{{ c.summary.sending.text if c.summary.sending.text is defined else '' }}</div>{% endif %}</td>
+    <td>{{ c.summary.recipients }} lead{{ 's' if c.summary.recipients != 1 else '' }} · {{ c.summary.sent + c.summary.replied }} emailed · {{ c.summary.replied }} replied · {{ c.summary.outbox_scheduled }} scheduled{% if c.summary.outbox_pending %} · <a href="/outbox">{{ c.summary.outbox_pending }} need review</a>{% endif %}</td>
+    <td>{% if c.share and c.share.limit %}{{ c.share.used }} sent{% if c.share.share %}, part {{ c.share.share }}{% endif %} · account {{ c.share.total }} of {{ c.share.limit }}{% if c.share.members > 1 %} · shared by {{ c.share.members }}{% endif %}{% elif c.account %}no limit known{% endif %}</td>
+    <td style="text-align:right;white-space:nowrap">
+      <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/open"><button class="secondary small" type="submit">Open</button></form>
+      {% if c.status == 'running' %}
+        <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/pause"><button class="secondary small" type="submit">Pause</button></form>
+        <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/stop" onsubmit="return confirm('Stop {{ c.name }}? Its leads and emails are kept.')"><button class="danger small" type="submit">Stop</button></form>
+      {% elif c.status == 'paused' %}
+        <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/resume"><button class="small" type="submit">Resume</button></form>
+        <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/stop"><button class="danger small" type="submit">Stop</button></form>
+      {% else %}
+        <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/start"><button class="small" type="submit">Start</button></form>
+        {% if not c.main %}<form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/remove" onsubmit="return confirm('Remove {{ c.name }}? Its folder is set aside, not deleted.')"><button class="danger small" type="submit">Remove</button></form>{% endif %}
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+  <p class="tiny muted" style="margin-top:8px">Open switches the Dashboard, Profile, Recipients, Outbox and Replies pages to that campaign (the switch at the top of the menu does the same).</p>
+</div>
+
+<div class="card">
+  <h2>Reply campaigns, scans and reply runs</h2>
+  {% if runs %}
+  <table class="small"><thead><tr><th>What</th><th>Account</th><th>Status</th><th>Progress</th><th>Sent today</th><th></th></tr></thead><tbody>
+  {% for r in runs %}
+  <tr>
+    <td><b>{{ r.feature_label }}</b>{% if r.name %} · {{ r.name }}{% endif %} <span class="tiny muted">{{ r.mode.replace('_', ' ') }}</span>{% if r.detail %}<div class="tiny" style="color:var(--warn)">{{ r.detail }}</div>{% endif %}</td>
+    <td>{{ r.addresses | join(', ') }}</td>
+    <td>{% if r.status == 'running' or r.status == 'queued' %}<span class="tag good">{{ 'running' if r.kind == 'reply_campaign' or r.status == 'running' else 'queued' }}</span>{% elif r.status == 'paused' %}<span class="tag warn">paused</span>{% elif r.status == 'cancelled' %}<span class="tag">stopped</span>{% elif r.status == 'done' %}<span class="tag">finished</span>{% else %}<span class="tag bad">{{ r.status }}</span>{% endif %}</td>
+    <td>{% set p = r.progress %}{% if r.kind == 'reply_campaign' %}{{ p.sent }} answered{% else %}{{ p.sent + p.needs_review + p.skipped + p.failed + p.dry_run }} of {{ r.total }} done · {{ p.sent }} sent{% endif %}{% if p.needs_review %} · <a href="/mail/review">{{ p.needs_review }} for review</a>{% endif %}{% if p.queued %} · {{ p.queued }} waiting{% endif %}{% if p.skipped %} · {{ p.skipped }} skipped{% endif %}{% if p.failed %} · {{ p.failed }} failed{% endif %}</td>
+    <td>{{ r.used }}</td>
+    <td style="text-align:right;white-space:nowrap">
+      <a class="small" href="/mail/runs/{{ r.id }}">Details</a>
+      {% if r.status in ('queued', 'running') %}
+        <form class="inline" method="post" action="/campaigns/run/{{ r.id }}/pause"><button class="secondary small" type="submit">Pause</button></form>
+        <form class="inline" method="post" action="/campaigns/run/{{ r.id }}/stop" onsubmit="return confirm('Stop this one? Nothing already sent is touched.')"><button class="danger small" type="submit">Stop</button></form>
+      {% elif r.status == 'paused' %}
+        <form class="inline" method="post" action="/campaigns/run/{{ r.id }}/resume"><button class="small" type="submit">Resume</button></form>
+        <form class="inline" method="post" action="/campaigns/run/{{ r.id }}/stop"><button class="danger small" type="submit">Stop</button></form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+  {% if not mail_worker %}<p class="tiny" style="margin-top:8px;color:var(--warn)">The background worker that runs these is not running; starting a campaign starts it, or use the Command center page.</p>{% endif %}
+  {% else %}<div class="empty">{{ icon('play') }}<div>No reply campaigns or scans yet. Start some below.</div></div>{% endif %}
+</div>
+
+{% if accounts %}
+<div class="card">
+  <h2>Accounts and their daily limit</h2>
+  <table class="small"><thead><tr><th>Account</th><th>Daily limit</th><th>Sent in the last 24 hours</th><th>Working on it now</th></tr></thead><tbody>
+  {% for a in accounts %}
+  <tr><td>{{ a.address }}{% if a.status == 'reconnect' %} <span class="tag bad">reconnect</span>{% endif %}</td>
+    <td>{{ a.limit }} <a class="tiny" href="/mail/accounts/{{ a.id }}">change</a></td>
+    <td>{{ a.ledger.total }}</td>
+    <td>{% if a.ledger.members %}{% for m in a.ledger.members %}{{ m.label or m.feature }} ({{ m.used }}{% if a.ledger.share %} of a {{ a.ledger.share }} part{% endif %}){{ ', ' if not loop.last else '' }}{% endfor %}{% else %}<span class="muted">nothing</span>{% endif %}</td></tr>
+  {% endfor %}
+  </tbody></table>
+  <p class="tiny muted" style="margin-top:8px">Every campaign on an account is guaranteed an equal part of its daily limit and may use more only from what no other campaign there still has a claim on. Pausing or stopping one gives its part back at once.</p>
+</div>
+
+<div class="card" id="new">
+  <h2>Start campaigns</h2>
+  <form method="post" action="/campaigns/new" enctype="multipart/form-data">
+    <label>What they do</label>
+    <div class="row">
+      <label class="choice"><input type="radio" name="feature" value="outreach" checked onchange="pick(this.value)"><span><b>Outreach</b><span class="small muted">first emails to a lead list, follow-ups, and answers to their replies</span></span></label>
+      <label class="choice"><input type="radio" name="feature" value="reply" onchange="pick(this.value)"><span><b>Reply campaign</b><span class="small muted">keeps answering what comes into the account, with the brief</span></span></label>
+      <label class="choice"><input type="radio" name="feature" value="scan" onchange="pick(this.value)"><span><b>Mailbox scan</b><span class="small muted">continues past two-way conversations with the project link</span></span></label>
+    </div>
+    <label style="margin-top:12px">On which accounts <span class="muted" style="font-weight:400">(one campaign per account)</span></label>
+    <div class="row">
+      {% for a in accounts %}<label class="check"><input type="checkbox" name="mailbox_ids" value="{{ a.id }}" data-outreach="{{ 'taken' if a.has_outreach else '' }}"> {{ a.address }}{% if a.has_outreach %} <span class="tiny muted">(has outreach)</span>{% endif %}{% if not a.ready %} <span class="tiny muted">(needs signature and link to send on its own)</span>{% endif %}</label>{% endfor %}
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div><label>Name (optional)</label><input type="text" name="name" maxlength="80" placeholder="Spring enquiries"></div>
+      <div><label>Goal and brief from</label><select name="profile_id"><option value="">{{ 'each account\'s own outreach campaign, else the main one' }}</option>{% for pid, pname in profiles %}<option value="{{ pid }}">{{ pname }}</option>{% endfor %}</select><div class="hint">Outreach copies this campaign's profile, brief files and signature into each new one.</div></div>
+    </div>
+    <div class="for for-outreach">
+      <label style="margin-top:10px">Goal for these campaigns (optional, replaces the copied one)</label>
+      <textarea name="goal" rows="2" placeholder="e.g. Get permission to send the project brief; every first email ends offering it."></textarea>
+      <div class="row" style="margin-top:10px">
+        <div><label>Leads (CSV, optional)</label><input type="file" name="leads" accept=".csv,text/csv,text/plain"><div class="hint">Or add them later on each campaign's Recipients page. Nobody lands on two lists, and anyone who asked any campaign to stop is left out.</div></div>
+        <div><label>How to share them out</label>
+          <label class="check"><input type="radio" name="split" value="turns" checked> In turns, so each account gets an equal share</label>
+          <label class="check"><input type="radio" name="split" value="column"> By the file's <code>account</code> column (the address that should write to them)</label></div>
+      </div>
+      <label class="check" style="margin-top:8px"><input type="checkbox" name="start" value="1"> Start them straight away</label>
+    </div>
+    <div class="for for-reply for-scan" style="display:none">
+      <div class="row" style="margin-top:10px">
+        <div><label>Mode</label><select name="mode"><option value="auto">Send the confident ones, hold the rest for review</option><option value="review">Draft everything for review</option><option value="dry_run">Dry run: draft, send nothing</option></select></div>
+        <div class="for for-reply" style="display:none"><label>Also answer what is already waiting</label><select name="backlog_days">{% for d in backlog_choices %}<option value="{{ d }}">{{ 'only new mail from now on' if d == 0 else 'from the last ' ~ d ~ ' days' }}</option>{% endfor %}</select></div>
+        <div class="for for-scan" style="display:none"><label>Conversations from the last</label><select name="months">{% for m in months %}<option value="{{ m }}" {{ 'selected' if m == 6 else '' }}>{{ m }} months</option>{% endfor %}</select></div>
+      </div>
+      <label style="margin-top:10px">Instructions (optional)</label>
+      <textarea name="instructions" rows="2" placeholder="e.g. offer a call on Tuesday afternoons"></textarea>
+    </div>
+    <p style="margin-top:14px"><button type="submit">{{ icon('play', 15) }} Start</button></p>
+  </form>
+</div>
+<script>
+  function pick(v) {
+    document.querySelectorAll('#new .for').forEach(el => { el.style.display = el.classList.contains('for-' + v) ? '' : 'none'; });
+    document.querySelectorAll('#new input[name=mailbox_ids]').forEach(el => { el.disabled = (v === 'outreach' && el.dataset.outreach === 'taken'); if (el.disabled) el.checked = false; });
+  }
+  pick('outreach');
+</script>
+{% endif %}
+{% endblock %}
