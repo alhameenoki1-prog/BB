@@ -11,6 +11,7 @@ wrong sector.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 # What a customer asks this kind of business for: the thing, the details
 # that let them answer, the shape of the one question. Keyed by the
@@ -30,7 +31,7 @@ SECTOR_ASKS = {
     "marketing_agency": "a piece of work: a site, a launch, a campaign, a brand; what, by when, what exists already; ask whether they take on jobs that size and what they need to quote",
     "software": "a build, an integration or licences: what it must do, how many users, when; ask whether they take on that kind of work and what they need to scope it",
     "it_services": "support, a migration or a setup: how many people or machines, which systems, where, when; ask whether they take on a company your size and what they need to quote",
-    "manufacturing": "a product made or supplied: what, how many or how much, delivered where and, if the need gives them, the spec and the date; ask whether they can make or supply that volume and who the spec or bar list should go to",
+    "manufacturing": "a product made or supplied: what, how many or how much, delivered where and, if the need gives them, the spec and the date; ask whether they can make or supply that volume and who the spec should go to",
     "logistics": "freight or deliveries: what, how many pallets or loads, from where to where, how often, from when; ask whether they cover that lane and what they need to quote",
     "retail": "a bulk order or a stockist arrangement: what, how many, where to, when; ask whether they sell at that volume and how to order",
     "ecommerce": "an order or a wholesale account: what, how many, where to, when; ask whether they supply at that volume and how to set it up",
@@ -76,7 +77,80 @@ EXAMPLE_LEAK_TERMS = (
     "scarsdale", "riverside", "tulsa", "houston", "precast company", "quickbooks", "bridge deck", "december 31",
     "24-unit", "40 tons", "#5 and #6", "twelve people", "300 invoices", "landscaping business",
     "high school teacher", "concrete podium", "wood frame", "my mother's house", "college in six years",
+    "bar list", "savings account doing nothing", "lowest number",
 )
+
+# How many words in a row make a sentence copied rather than echoed.
+COPY_NGRAM = 6
+_EXAMPLE_START_RE = re.compile(r"WRITTEN THE RIGHT WAY", re.I)
+_EXAMPLE_END_RE = re.compile(r"^(THE RULES|OUTPUT)\s*$", re.M)
+_examples_cache: dict[str, tuple[float, str]] = {}
+
+
+def prompt_examples(name: str) -> str:
+    """The worked examples in ``prompts/<name>.md`` (right and wrong), as
+    one text: everything from the "WRITTEN THE RIGHT WAY" heading to THE
+    RULES or OUTPUT. Cached by file time. "" when there are none."""
+    from harvey import paths
+    path = Path(paths.PROMPTS_DIR) / f"{name}.md"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return ""
+    hit = _examples_cache.get(str(path))
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        text = path.read_text()
+    except OSError:
+        return ""
+    m = _EXAMPLE_START_RE.search(text)
+    if not m:
+        _examples_cache[str(path)] = (mtime, "")
+        return ""
+    rest = text[m.end():]
+    e = _EXAMPLE_END_RE.search(rest)
+    section = rest[:e.start()] if e else rest
+    _examples_cache[str(path)] = (mtime, section)
+    return section
+
+
+def _ngrams(text: str, n: int) -> dict[tuple, str]:
+    words = re.findall(r"[a-z0-9']+", (text or "").lower())
+    return {tuple(words[i:i + n]): " ".join(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+
+def copied_phrases(text: str, examples: str, allowed: str = "", n: int = COPY_NGRAM) -> list[str]:
+    """Runs of ``n`` words a draft shares with the worked examples and not
+    with the sender's own facts: the sentences a model lifted instead of
+    writing. Overlapping runs are merged into one phrase each."""
+    if not text or not examples:
+        return []
+    # The link marker is structure, not words: it sits after "is in the brief:" in every reply.
+    text, examples = SCOPE_MARKER_RE.sub(" ", text), SCOPE_MARKER_RE.sub(" ", examples)
+    mine, theirs, ok = _ngrams(text, n), _ngrams(examples, n), _ngrams(allowed, n)
+    shared = [g for g in mine if g in theirs and g not in ok]
+    if not shared:
+        return []
+    words = re.findall(r"[a-z0-9']+", text.lower())
+    hits = set(shared)
+    phrases, i = [], 0
+    while i <= len(words) - n:
+        if tuple(words[i:i + n]) in hits:
+            j = i
+            while j + 1 <= len(words) - n and tuple(words[j + 1:j + 1 + n]) in hits:
+                j += 1
+            phrases.append(" ".join(words[i:j + n]))
+            i = j + n
+        else:
+            i += 1
+    return phrases
+
+
+def example_copying(text: str, allowed: str, prompt_name: str) -> list[str]:
+    """Everything a draft took from the worked examples of ``prompt_name``:
+    their facts (EXAMPLE_LEAK_TERMS) and their sentences (copied_phrases)."""
+    return example_leaks(text, allowed) + copied_phrases(text, prompt_examples(prompt_name), allowed)
 
 # Housekeeping sentences the upload writes into a contact's notes; they
 # are for the operator, never for the model.

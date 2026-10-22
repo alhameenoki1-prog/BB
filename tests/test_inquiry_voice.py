@@ -92,8 +92,8 @@ async def test_a_reply_answers_on_the_need_and_sends_the_scope_once(state):  # n
                   sender_line="I run Greystone Development, a residential developer in Baltimore.",
                   sector_needs=NEEDS, ask="zoom", reply_instructions="Never discuss the budget by email.")
     brain = _ReplyBrain([
-        "Hi Dana,\n\nStart is April; the drawings and permits are done. Everything a builder wants first is in the brief:\n[SCOPE LINK]\n\nWould Thursday afternoon suit you?\n\nJane",
-        "Hi Dana,\n\nPossibly. Two phases of twelve would change the financing, so let's go through it on the call.\n[SCOPE LINK]\n\nJane",
+        "Hi Dana,\n\nWe want to be on site in April and the drawings are finished. The budget I'll keep for the call. Everything a builder would ask before pricing it is in the brief:\n[SCOPE LINK]\n\nWould Thursday afternoon suit you?\n\nJane",
+        "Hi Dana,\n\nMaybe. Splitting it in two would alter the financing, so I'd need to hear your sequence first; let's cover that on the call.\n[SCOPE LINK]\n\nJane",
     ])
     handler = Handler(brain, state, cfg, EnvConfig())
     prospect = Prospect(id="c1", first_name="Dana", email="dana@build.example", email_status="provided",
@@ -109,13 +109,14 @@ async def test_a_reply_answers_on_the_need_and_sends_the_scope_once(state):  # n
     assert "THE FULL SCOPE of what Jane needs is written up in the Towson brief" in prompt and "[SCOPE LINK]" in prompt
     assert "WHAT JANE WANTS NEXT: a short video call" in prompt and "Never discuss the budget" in prompt
     assert text.count("https://docs.example/towson") == 1 and "[SCOPE LINK]" not in text
-    assert "in the brief:\nhttps://docs.example/towson\n\nWould Thursday" in text
+    assert "before pricing it is in the brief:\nhttps://docs.example/towson\n\nWould Thursday" in text
     await handler._queue_native_reply(text, prospect, convo, {"subject": "Re: block"}, "question")
 
     # The second reply in the same conversation: the context says it went out, and the marker is dropped.
     text2 = await handler._generate_response("interested", "Got the brief. Open to a phased build?", prospect, convo)
     assert "has ALREADY been sent to them" in brain.prompts[-1]
     assert "docs.example" not in text2 and "[SCOPE LINK]" not in text2 and text2.endswith("on the call.\n\nJane")
+    assert len(brain.prompts) == 2          # neither reply copied the examples, so no retry
 
     # A model that forgot the marker when they asked for the documents: the link goes in by code.
     brain.texts = ["Hi Sam,\n\nOf course, April start, drawings done.\n\nJane"]
@@ -159,6 +160,14 @@ async def test_writer_prompts_carry_the_sender_line_and_the_sector_need(state): 
     assert "I run Greystone Development in Baltimore." in p and "A builder for a 24-unit residential block" in p
     assert enquiry.SECTOR_ASKS["construction"] in p and "FOUR ENQUIRIES WRITTEN THE RIGHT WAY" in p
     assert "THE ASK: what" in p and "a short video call" in p and "never an easy out" in p and "Booking link" not in p
+    assert "saying that a short call would be the easiest way to explain it" in p and "walk you through" in p
+    # The ask bullet follows the theme: a visit is a visit, and an email reply adds no call at all.
+    cfg.outreach.ask = "visit"
+    assert "saying that coming to see it would be the easiest way" in writer._ask_block()
+    cfg.outreach.ask = "email"
+    block = writer._ask_block()
+    assert "no call, meeting or visit is mentioned anywhere" in block and "easiest way" not in block
+    cfg.outreach.ask = "zoom"
     assert "SALES SKILLS" not in p and "{{" not in p
     assert "Services for a 24-unit block" in writer._base_prompt("legal")          # uncovered sector: the general need
     seg = writer._segment_block([Prospect(industry="construction", title="CEO", email="x@y.example")])
@@ -213,3 +222,77 @@ async def test_the_inbox_auto_reply_shares_the_matching_scope_on_its_own(state):
     body3 = sorted((await state.get_outbox()), key=lambda i: i["created_at"])[-1]["body"]
     assert body3.count("https://docs.example/rebar") == 1 and "Everything you'd need to judge it" not in body3
     assert "the rebar spec: https://docs.example/rebar" in body3 and body3.rstrip().endswith("Jane")
+
+
+def test_a_sentence_lifted_from_the_examples_is_caught_and_the_senders_own_facts_are_not():
+    writer_examples = enquiry.prompt_examples("inquiry_writer")
+    handler_examples = enquiry.prompt_examples("inquiry_handler")
+    assert "Example 1" in writer_examples and "THE RULES" not in writer_examples and "They wrote:" in handler_examples
+    # The closing question of the steel example, with one word changed, is still a copy.
+    assert enquiry.copied_phrases("Can you supply that volume month to month, and who should I send the bar list to for pricing?",
+                                  writer_examples) == ["and who should i send the bar list to for pricing"]
+    # The sender's own line is theirs, however many words it shares with anything.
+    mine = "I run Greystone Development, a residential developer in Baltimore."
+    assert enquiry.copied_phrases(f"{mine} Can you take this on?", writer_examples, allowed=mine) == []
+    # Same shape, own words: not a copy.
+    assert enquiry.copied_phrases("Could you build it, and where should the drawings go?", writer_examples) == []
+    assert enquiry.example_copying("the bar list for a 24-unit block", "", "inquiry_writer") == ["24-unit", "bar list"]
+    # The handler example's opening, copied into a reply, is caught too.
+    assert enquiry.copied_phrases("Start is April; the drawings and permits are done, so nothing is holding it up.",
+                                  handler_examples) == ["start is april the drawings and permits are done so nothing"]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_written_in_the_examples_words_is_asked_for_again(state):  # noqa: F811
+    from harvey.agents.handler import Handler
+
+    cfg = _config(mode="inquiry", intent="Services and materials for a 24-unit block in Towson.",
+                  sender_line="I run Greystone Development, a residential developer in Baltimore.",
+                  sector_needs=NEEDS, ask="zoom")
+    copied = ("Hi Dana,\n\nStart is April; the drawings and permits are done, so nothing on our side is holding it up. "
+              "The rest is in the brief:\n[SCOPE LINK]\n\nIs there an afternoon this week you could talk?\n\nJane")
+    own = ("Hi Dana,\n\nApril is when we want to break ground, and the drawings are finished. What you'd need before "
+           "quoting is in the brief:\n[SCOPE LINK]\n\nWhich afternoon this week could you talk?\n\nJane")
+    brain = _ReplyBrain([copied, own])
+    handler = Handler(brain, state, cfg, EnvConfig())
+    prospect = Prospect(id="c9", first_name="Dana", email="dana@build.example", email_status="provided",
+                        industry="construction", company="Build Co")
+    await state.add_prospect(prospect)
+    convo = Conversation(id="", prospect_id="c9", channel="email", status="open")
+    convo.id = await state.add_conversation(convo)
+    text = await handler._generate_response("question", "When do you want to start?", prospect, convo)
+    assert len(brain.prompts) == 2 and "copied sentences from the examples" in brain.prompts[1]
+    assert '"start is april the drawings and permits are done so nothing' in brain.prompts[1]
+    assert text.startswith("Hi Dana,\n\nApril is when we want to break ground") and text.count("https://docs.example/towson") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_first_email_in_the_examples_words_is_asked_for_again(state):  # noqa: F811
+    from harvey.agents.writer import Writer
+
+    drafts = iter([
+        {"subject": "Rebar, 40 tons a month", "body": "Hi Luis,\n\nI need about 40 tons of rebar a month for a year, delivered to a Baltimore site. "
+                                                      "I run Greystone Development here.\n\nCan you supply that volume on a monthly schedule, and who "
+                                                      "should I send the bar list to for pricing?\n\nJane"},
+        {"subject": "Rebar, 40 tons a month", "body": "Hi Luis,\n\nI need about 40 tons of rebar a month for a year, delivered to a Baltimore site. "
+                                                      "I run Greystone Development here.\n\nCould you supply that much every month, and where should "
+                                                      "the spec go for a price?\n\nJane"},
+    ])
+
+    class _CopyingBrain(_Brain):
+        async def think_json(self, prompt, **kw):
+            self.prompts.append(prompt)
+            return next(drafts)
+
+    cfg = _config(mode="inquiry", intent="Materials for a 24-unit block in Towson.",
+                  sender_line="I run Greystone Development, a residential developer in Baltimore.", sector_needs=NEEDS)
+    brain = _CopyingBrain()
+    writer = Writer(brain, state, cfg, EnvConfig())
+    writer.skills = ""
+    p = Prospect(id="s1", first_name="Luis", email="luis@steel.example", email_status="provided", industry="manufacturing")
+    await state.add_prospect(p)
+    draft = await writer._write_personal_email(p)
+    assert len(brain.prompts) == 2 and "copied from the examples" in brain.prompts[1]
+    assert '"bar list"' in brain.prompts[1] and 'send the bar list to for pricing"' in brain.prompts[1]
+    assert "bar list" not in draft["body"] and "where should the spec go" in draft["body"]
+

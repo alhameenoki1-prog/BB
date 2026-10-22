@@ -258,6 +258,11 @@ def test_scrub_removes_company_names_without_wrecking_the_sentence():
         "I need a builder to build it; a quote for you would help."
     # A long distinctive name is caught however it is cased.
     assert _mentions("the fryreglet people", {"Fryreglet"}) and not _mentions("the fry people", {"Fryreglet"})
+    # However the upload cased the company, it is the written name that counts: "BUILD" and
+    # "Build" are the company, "build" is still the verb.
+    assert _mentions("I saw that BUILD finished the Towson job.", {"build"}) and not _mentions("we build in April", {"build"})
+    assert _scrub("I saw that BUILD finished the job; we build in April.", {"build"}) == "I saw that you finished the job; we build in April."
+    assert _mentions("ZENITH's crews were recommended to me", {"Zenith"}) and _scrub("ZENITH's crews", {"zenith"}) == "your crews"
 
 
 @pytest.mark.asyncio

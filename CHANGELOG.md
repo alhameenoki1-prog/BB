@@ -50,8 +50,25 @@ minor versions can still change behaviour.
   is told the brief is not for this reply and asks only who could take
   it on; the background field is marked as the sender's own words, never
   a pitch. A company whose name is an ordinary word ("Build") is now
-  caught only as the name is written, so "a builder" no longer trips the
-  company-name retry or gets scrubbed out of the email.
+  caught only written as a name, capitalised or in capitals, however the
+  upload cased it, so "a builder" no longer trips the company-name retry
+  or gets scrubbed out of the email.
+- **A draft that lifts the examples' sentences is written again.** A
+  second simulation with three independent stand-ins and six judges found
+  the drafts still copying the worked examples' closing questions and
+  sentences nearly word for word ("and who should I send the bar list to
+  for pricing?", "Start is April; the drawings and permits are done"). Any
+  run of six words a first email or a reply shares with the examples, and
+  not with the sender's own need, line or instructions, is now caught by
+  code and the model is asked once more for its own words (writer,
+  segment variants and handler alike); "bar list" and two other example
+  phrases join the list of example-only facts. The handler's examples no
+  longer share one closing line, say "I" rather than a company "we", and
+  the brief says a reply ends either with the question about a day or
+  with one short pointer to the brief, never both. The ask bullet follows
+  the chosen next step: a visit is a visit, and "a reply by email" adds
+  no call sentence at all. "Walk you through", "glad to" and "happy to"
+  join the banned list.
 - **The quick-tunnel link survives restarts and updates.** A
   `trycloudflare.com` address lives as long as its cloudflared process,
   and the site used to start a new one on every start, so every update

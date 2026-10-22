@@ -981,10 +981,11 @@ Respond with ONLY the category label, nothing else."""
                                  "that says what it covers using only the facts above (the job, the amount, the place, "
                                  "the dates; never a list of contents you have not been told, such as drawings or a "
                                  "schedule, unless the facts name them) and why it is the quickest way for them to see "
-                                 "whether this is something they would take on, then [SCOPE LINK] alone on the next line "
-                                 "(the link is filled in for you, once; never write the address yourself), and the reply "
-                                 "ends by pointing them to it as a statement, not a question (have a look and tell me "
-                                 "whether it's something you'd take on). "
+                                 "whether this is something they would take on, in your own words, then [SCOPE LINK] alone "
+                                 "on the next line (the link is filled in for you, once; never write the address yourself). "
+                                 "If the reply then asks them for a day or a time, that question is the end of it; otherwise "
+                                 "it ends with one short statement pointing them to the brief. Never both, and never the "
+                                 "same introducing sentence as the examples. "
                                  "Only when they have said no, or the message is angry or legal, is nothing sent.")
             else:
                 parts.append("There is no document with the full scope to send; when they want details, give them "
@@ -1072,7 +1073,7 @@ Write a reply that:"""
         if self.inquiry:
             prompt += {
                 "interested": f"""
-- Thanks them in one line, then gives the details they need next (from WHAT {persona.name.upper()} NEEDS and the standing instructions)
+- Thanks them in one line, then gives the details they need next (from WHAT {persona.name.upper()} NEEDS and the standing instructions), without repeating what the first email already told them
 - Shares the full scope as the rules say, if there is one and it has not gone out yet
 - Confirms the next step in {first}'s words, under 90 words""",
                 "question": f"""
@@ -1081,7 +1082,7 @@ Write a reply that:"""
 - One question back at most, under 90 words""",
                 "objection": """
 - Accepts what they said in one line, without arguing, re-selling or proposing a smaller or later version
-- Asks once whether they know who could take it on, and nothing else
+- Asks once whether they know who could take it on, naming the job in a few words (the block, the tonnage, the money), and nothing else
 - Under 60 words""",
                 "wrong_person": """
 - Thanks them politely
@@ -1135,6 +1136,19 @@ Write a reply that:"""
             prompt, session_id="harvey-handler",
             agent="handler", task="generate_response",
         )
+        if response and self.inquiry:
+            allowed = " ".join([need["need"], enquiry.sender_line(self.config),
+                                getattr(self.config.outreach, "reply_instructions", "") or "", reply_text])
+            copied = enquiry.copied_phrases(response, enquiry.prompt_examples("inquiry_handler"), allowed)
+            if copied:
+                # The model answered with the worked examples' sentences. Once more, pointed out.
+                retry = await self.brain.think(
+                    prompt + "\n\nYour previous reply copied sentences from the examples (" + "; ".join(f'"{x}"' for x in copied[:3])
+                    + "). Those are someone else's words. Say what this reply needs in your own words, from the facts "
+                    "you were given only. Same output.",
+                    session_id="harvey-handler", agent="handler", task="generate_response")
+                if retry and retry.strip():
+                    response = retry
         if response and scope is not None:
             # The link goes in by code, once: where the model put the marker,
             # or at the end when the model forgot. Asked for or not, the

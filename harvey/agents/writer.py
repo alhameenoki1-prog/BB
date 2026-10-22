@@ -67,17 +67,23 @@ TIER_GUIDANCE = {
 _plain_signoff = enquiry.plain_signoff   # a customer signs with a first name alone
 
 
-def _term_re(term: str) -> re.Pattern:
-    """How a forbidden term is recognised. A domain or a multi-word name
-    anywhere, whatever the case; a single ordinary-looking word only as the
-    name is written (so "Build" the company is caught, "build" and
-    "builder" the words are not) unless it is long enough to be nobody's
-    word."""
-    esc = re.escape(term)
-    bounded = rf"(?<![\w@.]){esc}(?!\w)(?!\.\w)"
+def _term_pattern(term: str) -> tuple[str, int]:
+    """How a forbidden term is recognised: (regex source, flags).
+
+    A domain, a multi-word name, a name with digits or a long name is
+    caught anywhere, whatever the case. A short ordinary-looking word
+    ("Build", "Zenith", however the upload cased it) is caught only
+    written as a name, capitalised or in capitals, so "build" and
+    "builder" the words are left alone."""
     if not term.isalpha() or len(term) >= 8:
-        return re.compile(bounded, re.I)     # a domain, a multi-word name, digits, or long: nobody's word
-    return re.compile(bounded)
+        return re.escape(term), re.I
+    low = term.lower()
+    return rf"(?:{re.escape(low.capitalize())}|{re.escape(low.upper())})", 0
+
+
+def _term_re(term: str) -> re.Pattern:
+    src, flags = _term_pattern(term)
+    return re.compile(rf"(?<![\w@.]){src}(?!\w)(?!\.\w)", flags)
 
 
 def _mentions(text: str, terms: set[str]) -> bool:
@@ -94,8 +100,8 @@ def _scrub(text: str, terms: set[str]) -> str:
     for term in sorted((t for t in terms if t), key=len, reverse=True):
         if not _term_re(term).search(text):
             continue      # not named (a plain word that is also a company's name is left alone)
-        esc = re.escape(term)
-        flag = "(?i)" if _term_re(term).flags & re.I else ""
+        esc, flags = _term_pattern(term)
+        flag = "(?i)" if flags & re.I else ""
         # "Avrum here from Wandlp." → "Avrum here."; "the team at Acme" → "the team".
         tail = r"(?!\w)(?!\.\w)"   # not inside a longer word, not the start of a domain
         text = re.sub(rf"{flag}\s+\b(?:at|from|of)\s+{esc}{tail}", "", text)
@@ -404,11 +410,18 @@ class Writer:
         lines = [f"THE ASK: what {persona.name} would like to happen next is {ASK_THEMES[theme]}."]
         if self.inquiry:
             first = self._persona_first
-            lines.append("- The ONE question of the first email stays the request itself (can you take this on, can you "
-                         f"supply this). THE ASK is one plain extra sentence before that question, in {first}'s own words, "
-                         "written fresh each time (never a sentence copied from this brief or the examples): that a short "
-                         "call, or the visit, would be the easiest way to explain it. Never \"at a time that suits you\", "
-                         "never \"Zoom or Google Meet\", never an alternative way to reply, never an easy out.")
+            if theme == "email":
+                lines.append("- A reply by email is what the question itself asks for, so nothing is added: no call, "
+                             "meeting or visit is mentioned anywhere in the email.")
+            else:
+                how = ("a short call" if theme in ("zoom", "phone") else
+                       "meeting in person" if theme in ("coffee", "in_person") else "coming to see it")
+                lines.append("- The ONE question of the first email stays the request itself (can you take this on, can "
+                             f"you supply this). THE ASK is one plain extra sentence before that question, in {first}'s "
+                             f"own words, written fresh each time (never a sentence copied from this brief or the examples), "
+                             f"saying that {how} would be the easiest way to explain it. Never \"walk you through\", never "
+                             "\"glad to\" or \"happy to\", never \"at a time that suits you\", never \"Zoom or Google "
+                             "Meet\", never an alternative way to reply, never an easy out.")
             link = ""  # the booking link belongs in replies, not in a first enquiry
         else:
             lines.append("- The first email ends by proposing exactly that, in one plain sentence, as the ONE question of the email. "
@@ -795,13 +808,13 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
             return None
         need = self._need(prospect.industry or "") if self.inquiry else {"need": ""}
         if self.inquiry:
-            leaked = enquiry.example_leaks(f"{result.get('subject', '')} {result.get('body', '')}",
-                                           self._leak_allowed([prospect]))
+            leaked = self._copied(f"{result.get('subject', '')} {result.get('body', '')}", [prospect])
             if leaked:
-                # The model copied a fact from the worked examples. Once more, pointed out.
+                # The model copied a fact or a sentence from the worked examples. Once more, pointed out.
                 retry = await self.brain.think_json(
-                    prompt + "\n\nYour previous draft copied a detail from the examples (" + ", ".join(leaked[:4])
-                    + "). Those are other people's facts. Use only the NEED, WHO IS WRITING and the FACTS. Same JSON.",
+                    prompt + "\n\nYour previous draft copied from the examples (" + "; ".join(f'"{x}"' for x in leaked[:4])
+                    + "). Those are other people's facts and sentences. Say the same things in your own words, from the "
+                    "NEED, WHO IS WRITING and the FACTS only. Same JSON.",
                     session_id="harvey-writer", agent="writer", task="personal_email",
                 )
                 if isinstance(retry, dict) and retry.get("body"):
@@ -905,15 +918,16 @@ Return ONLY a JSON array (no markdown fences, no commentary):
                 body = _scrub(str(fixed.get("body") or steps[0].body), self._forbidden_terms(prospects))
                 steps[0].body = _plain_signoff(body, self._persona_first) if self.inquiry else body
             if self.inquiry:
-                leaked = enquiry.example_leaks(f"{steps[0].subject} {steps[0].body}", self._leak_allowed(prospects))
+                leaked = self._copied(f"{steps[0].subject} {steps[0].body}", prospects)
                 if leaked:
-                    # The segment's email copied a fact from the worked examples: once more, pointed out.
+                    # The segment's email copied a fact or a sentence from the worked examples: once more, pointed out.
                     retry = await self.brain.think_json(
-                        single + "\n\nYour previous draft copied a detail from the examples (" + ", ".join(leaked[:4])
-                        + "). Those are other people's facts. Use only the NEED, WHO IS WRITING and the SEGMENT. Same JSON.",
+                        single + "\n\nYour previous draft copied from the examples (" + "; ".join(f'"{x}"' for x in leaked[:4])
+                        + "). Those are other people's facts and sentences. Say the same things in your own words, from "
+                        "the NEED, WHO IS WRITING and the SEGMENT only. Same JSON.",
                         session_id="harvey-writer", agent="writer", task="sequence")
-                    if isinstance(retry, dict) and retry.get("body") and not enquiry.example_leaks(
-                            f"{retry.get('subject', '')} {retry.get('body', '')}", self._leak_allowed(prospects)):
+                    if isinstance(retry, dict) and retry.get("body") and not self._copied(
+                            f"{retry.get('subject', '')} {retry.get('body', '')}", prospects):
                         steps[0].subject = _scrub(str(retry.get("subject") or steps[0].subject), self._forbidden_terms(prospects))[:120]
                         steps[0].body = _plain_signoff(_scrub(str(retry.get("body")), self._forbidden_terms(prospects)), self._persona_first)
                     else:
@@ -928,6 +942,12 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         return steps
 
     VARIANTS = 2  # other wordings of email 1 per segment, on top of the original
+
+    def _copied(self, text: str, prospects: list) -> list[str]:
+        """What a draft took from the brief's worked examples: their facts
+        and their sentences (six words in a row). The sender's own facts
+        never count."""
+        return enquiry.example_copying(text, self._leak_allowed(prospects), "inquiry_writer")
 
     def _leak_allowed(self, prospects: list) -> str:
         """Facts that are the sender's own (the need, who they are, their
@@ -964,7 +984,7 @@ Return ONLY a JSON array (no markdown fences, no commentary):
                                   self._persona_first)
             if not subject or not body or body == step.body:
                 continue
-            if enquiry.example_leaks(f"{subject} {body}", self._leak_allowed(prospects)):
+            if self._copied(f"{subject} {body}", prospects):
                 continue
             score, _why = self._risk({"subject": subject, "body": body}, need)
             if score >= 4:
