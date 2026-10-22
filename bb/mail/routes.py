@@ -3,6 +3,7 @@ the scope selector, Gmail OAuth for mailboxes, and the live event stream."""
 
 import asyncio
 import json
+import re
 import secrets
 
 from fastapi import Depends, HTTPException, Request
@@ -33,26 +34,33 @@ def parse_bulk_accounts(text: str) -> list[dict]:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        if "\t" in line:
-            parts = [x.strip() for x in line.split("\t")]
-        elif "," in line:
-            parts = [x.strip() for x in line.split(",")]
-        else:
-            parts = line.split(None, 1)
-            if len(parts) == 1 and ":" in line:
-                parts = line.split(":", 1)
-        if len(parts) < 2 or "@" not in parts[0] or not parts[1]:
+        m = re.match(r"^([^\s,;:\t]+@[^\s,;:\t]+)[\s,;:\t]+(.+)$", line)
+        if not m:
             continue
-        email = parts[0].strip().lower()
+        email, rest = m.group(1).strip().lower(), m.group(2)
+        # The servers, if any, are the last one or two fields and look like
+        # host[:port]; everything between the address and them is the
+        # password, commas and spaces included.
+        servers = []
+        for _ in range(2):
+            tail = re.search(r"[\s,;\t]+([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::\d{1,5})?)\s*$", rest)
+            if not tail or "." not in tail.group(1).split(":")[0]:
+                break
+            servers.insert(0, tail.group(1))
+            rest = rest[:tail.start()]
+        password = rest.strip()
+        if not password:
+            continue
         if email in seen:
             continue
         seen.add(email)
-        entry = {"email": email, "password": parts[1]}
-        for key, value in zip(("smtp", "imap"), parts[2:4]):
-            host, _, port = (value or "").partition(":")
-            if host:
-                entry[f"{key}_host"] = host.strip()
-                entry[f"{key}_port"] = port.strip()
+        entry = {"email": email, "password": password}
+        for key, value in zip(("smtp", "imap"), servers):
+            host, _, port = value.partition(":")
+            entry[f"{key}_host"] = host
+            entry[f"{key}_port"] = port
+        if "smtp_host" in entry and "imap_host" not in entry:
+            entry["imap_host"] = entry["smtp_host"]
         out.append(entry)
     return out
 MS_STATE_COOKIE = "bb_mail_ms_state"
@@ -114,7 +122,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         ws = c["ws"]
         return CommandCenter(c["db"], _brain(ws), c["mailboxes"], c["selected"], settings.secret_key(), {},
                              user.get("email", ""), on_worker_needed=lambda: (ws.mail_worker_running() or ws.start_mail_worker()),
-                             scope=_scope_for(c))
+                             scope=_scope_for(c), scope_for=lambda address: _scope_for(c, address))
 
     @app.post("/mail/command")
     async def mail_command(request: Request, user: dict = Depends(current_user)):
@@ -239,7 +247,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                             "imap_host": entry.get("imap_host") or entry["smtp_host"], "imap_port": entry.get("imap_port") or "993",
                             "imap_username": "", "imap_password": "", "smtp_username": email}
                 else:
-                    smtp, note = guess_settings(email)
+                    smtp, note = await asyncio.to_thread(guess_settings, email)      # DNS off the event loop
                     if smtp is None:
                         return email, False, note
                 smtp["smtp_password"] = password
@@ -247,11 +255,15 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                     mid, _ = await service.connect_imap(c["db"], settings.secret_key(), address=email, smtp=smtp, env=settings.worker_env())
                     await c["ws"].main().account_changed(mid)
                     return email, True, ""
-                except AuthError as e:
+                except AuthError:
                     hint = " (an app password is needed)" if any(h in smtp["smtp_host"] for h in ("gmail", "yahoo", "me.com")) else ""
-                    return email, False, f"sign-in refused{hint}: {str(e)[:120]}"
-                except (TransientError, ValueError) as e:
-                    return email, False, str(e)[:160]
+                    return email, False, f"sign-in refused{hint}"
+                except TransientError:
+                    return email, False, "the mail server could not be reached"
+                except ValueError as e:
+                    return email, False, str(e)[:120]
+                except Exception as e:      # one odd server never sinks the batch
+                    return email, False, f"could not be checked ({type(e).__name__})"
 
         results = await asyncio.gather(*(one(e) for e in lines))
         ok = [e for e, good, _ in results if good]
@@ -259,7 +271,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         if ok and not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
         msg = (f"Connected {len(ok)} account{'s' if len(ok) != 1 else ''}: {', '.join(ok)}. Give each its signature and project "
-               "link, then start campaigns on them from the Campaigns page." if ok else "")
+               "link here for replies and scans (an outreach campaign signs with its own Profile), then start campaigns on them "
+               "from the Campaigns page." if ok else "")
         return _redirect("/mail/accounts", msg=msg, error=("Not connected: " + "; ".join(bad)) if bad else "")
 
     @app.post("/mail/accounts/graph/bulk")
@@ -274,15 +287,24 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         if len(addresses) > BULK_LIMIT:
             return _redirect("/mail/accounts", error=f"Up to {BULK_LIMIT} mailboxes at a time, please.")
         ok, bad = [], []
-        for email in dict.fromkeys(addresses):
-            try:
-                mid, _ = await service.connect_graph(c["db"], settings.secret_key(), address=email, tenant_id=str(form.get("tenant_id", "") or ""),
-                                            client_id=str(form.get("client_id", "") or ""),
-                                            client_secret=str(form.get("client_secret", "") or ""), env=settings.worker_env())
-                await c["ws"].main().account_changed(mid)
-                ok.append(email)
-            except (AuthError, TransientError, ValueError) as e:
-                bad.append(f"{email}: {str(e)[:140]}")
+        gate = asyncio.Semaphore(4)
+
+        async def one(email):
+            async with gate:
+                try:
+                    mid, _ = await service.connect_graph(c["db"], settings.secret_key(), address=email,
+                                                         tenant_id=str(form.get("tenant_id", "") or ""),
+                                                         client_id=str(form.get("client_id", "") or ""),
+                                                         client_secret=str(form.get("client_secret", "") or ""), env=settings.worker_env())
+                    await c["ws"].main().account_changed(mid)
+                    return email, ""
+                except (AuthError, TransientError, ValueError) as e:
+                    return email, str(e)[:140]
+                except Exception as e:
+                    return email, f"could not be checked ({type(e).__name__})"
+
+        for email, why in await asyncio.gather(*(one(e) for e in dict.fromkeys(addresses))):
+            (bad.append(f"{email}: {why}") if why else ok.append(email))
         if ok and not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
         return _redirect("/mail/accounts", msg=(f"Connected {len(ok)} through Microsoft 365: {', '.join(ok)}." if ok else ""),
@@ -360,6 +382,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             first = e.errors()[0]
             return _redirect(f"/mail/accounts/{mailbox_id}", error=str(first["msg"]).replace("Value error, ", ""))
         await c["db"].update_mailbox(mailbox_id, settings=new.model_dump())
+        if (m["settings"].get("reply_to") or "") != new.reply_to:
+            await c["ws"].main().account_changed(mailbox_id)       # the outreach campaign sends with the new Reply-To
         try:   # campaigns on this account share the new limit at once
             c["ws"].ledger().set_limit(m["address"], service.account_daily_limit({**m, "settings": new.model_dump()},
                                                                                  service.open_creds(settings.secret_key(), m)))

@@ -199,6 +199,16 @@
       <a href="/mailbox" class="{{ 'active' if path.startswith('/mailbox') or path.startswith('/gmail') else '' }}">{{ icon('mail') }}<span class="t">Mailbox</span></a>
       <a href="/apikey" class="{{ 'active' if path.startswith('/apikey') else '' }}">{{ icon('key') }}<span class="t">AI provider</span></a>
     </nav>
+    {% if campaign_nav %}<script>
+      // Every form on this page acts on the campaign this page shows, even if
+      // another tab has switched campaigns since.
+      document.addEventListener('DOMContentLoaded', () => {
+        document.querySelectorAll('form[method=post], form[method=POST]').forEach(f => {
+          try { const u = new URL(f.getAttribute('action') || location.pathname, location.href);
+                if (u.origin === location.origin && !u.searchParams.has('c')) { u.searchParams.set('c', {{ campaign_nav.current | tojson }}); f.setAttribute('action', u.pathname + u.search); } } catch (e) {}
+        });
+      });
+    </script>{% endif %}
     <div class="me">
       <div class="av">{{ user.email[0] | upper }}</div>
       <div class="who"><b>{{ user.email }}</b><span class="tiny">{{ user.role }}</span></div>

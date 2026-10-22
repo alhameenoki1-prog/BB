@@ -49,10 +49,12 @@ async def import_for(ws, rows: list[dict]) -> dict:
     """Import rows into one campaign's list, leaving out anyone already on
     another campaign's list or suppressed anywhere."""
     taken, suppressed = ws.leads_elsewhere([r.get("email", "") for r in rows])
-    keep = [r for r in rows if (r.get("email") or "").strip().lower() not in taken | suppressed]
+    skip = taken | suppressed
+    norm = [(r, (r.get("email") or "").strip().lower()) for r in rows]
+    keep = [r for r, e in norm if e not in skip]
     result = await recipients_mod.import_rows(ws.state(), keep) if keep else {"added": 0, "duplicates": 0, "invalid": 0, "too_many": 0}
-    result["elsewhere"] = sum(1 for r in rows if (r.get("email") or "").strip().lower() in taken)
-    result["suppressed"] = sum(1 for r in rows if (r.get("email") or "").strip().lower() in suppressed)
+    result["elsewhere"] = sum(1 for _, e in norm if e in taken)
+    result["suppressed"] = sum(1 for _, e in norm if e in suppressed and e not in taken)
     return result
 
 
@@ -66,6 +68,8 @@ def describe_import(result: dict) -> str:
         parts.append(f"{result['suppressed']} asked never to be contacted")
     if result.get("invalid"):
         parts.append(f"{result['invalid']} with no valid email")
+    if result.get("too_many"):
+        parts.append(f"{result['too_many']} beyond the {recipients_mod.MAX_ROWS:,} limit were ignored")
     return ", ".join(parts)
 
 
@@ -234,6 +238,15 @@ def register_campaign_routes(app, settings, current_user, base_workspace, render
         uploaded leads dealt out between them."""
         source = base.campaign(str(form.get("profile_id", "") or "")) or base.main()
         goal = str(form.get("goal", "") or "").strip()
+        # The leads are read first: a bad file never leaves campaigns half made.
+        upload = form.get("leads")
+        text = str(form.get("pasted", "") or "")
+        if hasattr(upload, "read") and getattr(upload, "filename", ""):
+            raw = await upload.read()
+            if len(raw) > 20 * 1024 * 1024:
+                return _redirect("/campaigns", error="That leads file is over 20 MB; nothing was created.")
+            text = raw.decode("utf-8-sig", errors="replace")
+        rows = recipients_mod.parse_rows(text) if text.strip() else []
         taken = {(w.sending_address() or "").lower() for w in base.all_campaigns() if w.mailbox_connected()}
         taken |= {(r.get("account") or "").lower() for r in campaigns_mod.load(base.user_root) if r.get("account")}
         created, notes = [], []
@@ -244,12 +257,16 @@ def register_campaign_routes(app, settings, current_user, base_workspace, render
                 continue
             cid = campaigns_mod.new_id()
             label = name if (name and len(boxes) == 1) else (f"{name} · {address}" if name else f"Outreach from {address}")
-            campaigns_mod.upsert(base.user_root, {"id": cid, "name": label[:100], "mailbox_id": m["id"], "account": address})
-            ws = Workspace(settings, user, cid).ensure()
-            problem = ws.bind_account()
+            try:
+                campaigns_mod.upsert(base.user_root, {"id": cid, "name": label[:100], "mailbox_id": m["id"], "account": address})
+                ws = Workspace(settings, user, cid).ensure()
+                problem = ws.bind_account()
+            except Exception as e:      # nothing half made is left behind
+                problem = f"could not be set up ({type(e).__name__})"
+                ws = None
             if problem:
                 campaigns_mod.remove(base.user_root, cid)
-                shutil.rmtree(ws.root, ignore_errors=True)
+                shutil.rmtree(campaigns_mod.campaign_root(base.user_root, cid), ignore_errors=True)
                 notes.append(f"{address}: {problem}")
                 continue
             if source.is_configured():
@@ -267,12 +284,6 @@ def register_campaign_routes(app, settings, current_user, base_workspace, render
             created.append(ws)
             taken.add(address)
         lead_note = ""
-        upload = form.get("leads")
-        text = str(form.get("pasted", "") or "")
-        if hasattr(upload, "read") and getattr(upload, "filename", ""):
-            raw = await upload.read()
-            text = raw.decode("utf-8-sig", errors="replace") if len(raw) <= 20 * 1024 * 1024 else ""
-        rows = recipients_mod.parse_rows(text) if text.strip() else []
         if rows and created:
             how = "column" if str(form.get("split", "") or "") == "column" else "turns"
             dealt, left_out = split_leads(rows, created, how)
@@ -367,16 +378,30 @@ def register_campaign_routes(app, settings, current_user, base_workspace, render
         box = await db.mailbox(str(form.get("mailbox_id", "") or ""))
         if not box:
             return _redirect("/mailbox", error="Choose an account.")
+        base.sync_main_registry()          # the main campaign's account as it is now
         others = {(r.get("account") or "").lower() for r in campaigns_mod.load(base.user_root) if r["id"] != ws.campaign_id}
         if box["address"].lower() in others:
             return _redirect("/mailbox", error=f"{box['address']} already has an outreach campaign.")
+        # Checked before anything changes, so a bad choice changes nothing.
+        if not box.get("enabled", 1):
+            return _redirect("/mailbox", error=f"{box['address']} is disabled on the Accounts page.")
+        if not mail_service.open_creds(settings.secret_key(), box):
+            return _redirect("/mailbox", error=f"{box['address']} has no usable sign-in; reconnect it on the Accounts page.")
+        previous = ws.campaign_row()
+        old_binding = ws.binding_file.read_text() if ws.binding_file.exists() else ""
         was_running = bool(ws.worker_running())
         if was_running:
             await ws.stop_worker("the campaign was given another account")
-        campaigns_mod.upsert(base.user_root, {**ws.campaign_row(), "mailbox_id": box["id"], "account": box["address"].lower()})
+        campaigns_mod.upsert(base.user_root, {**previous, "mailbox_id": box["id"], "account": box["address"].lower()})
         ws.binding_file.unlink(missing_ok=True)
         problem = ws.bind_account()
         if problem:
+            campaigns_mod.upsert(base.user_root, previous)          # put it back as it was
+            if old_binding:
+                ws.binding_file.write_text(old_binding)
+            ws.bind_account()
+            if was_running:
+                ws.start_worker()
             return _redirect("/mailbox", error=problem)
         ws.rewrite_config()
         if was_running:

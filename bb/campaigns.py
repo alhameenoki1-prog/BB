@@ -82,13 +82,30 @@ def on_account(user_root: Path, account: str) -> list[dict]:
     return [r for r in load(user_root) if (r.get("account") or "").lower() == account and account]
 
 
+def answering(user_root: Path, campaign_id: str) -> bool:
+    """Is this campaign's worker answering its leads: running, meant to run,
+    or paused for edits (it comes back)? A stopped one is not."""
+    import os
+    data = campaign_root(user_root, campaign_id) / "data"
+    if (data / "worker.autostart").exists() or (data / "worker.paused").exists():
+        return True
+    try:
+        os.kill(int((data / "harvey.pid").read_text().strip()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def outreach_owner(user_root: Path, account: str, email: str) -> dict | None:
     """The outreach campaign on ``account`` that has ``email`` on its lead
-    list, or None. That campaign's own worker answers its leads."""
+    list and is answering its leads, or None. A stopped campaign's leads are
+    left to the reply campaign on the account, so nobody goes unanswered."""
     email = (email or "").strip().lower()
     if not email:
         return None
     for row in on_account(user_root, account):
+        if not answering(user_root, row["id"]):
+            continue
         db = campaign_root(user_root, row["id"]) / "data" / "harvey.db"
         if not db.exists():
             continue

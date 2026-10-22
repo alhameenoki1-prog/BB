@@ -7,7 +7,7 @@
 {% if not campaign_main %}
 <div class="card" style="border-color:var(--accent)">
   <h2>{{ campaign_label }} sends from {{ campaign_bound.address if campaign_bound else 'no account' }}</h2>
-  {% if campaign_bound %}<p class="small">The account comes from the <a href="/mail/accounts/{{ campaign_bound.id }}">Accounts</a> page: connect, reconnect, set its daily limit and signature there. This campaign's worker sends and reads as it, and shares its daily limit with any reply campaign or scan on it.</p>
+  {% if campaign_bound %}<p class="small">The account comes from the <a href="/mail/accounts/{{ campaign_bound.id }}">Accounts</a> page: connect, reconnect and set its daily limit there. This campaign's own signature, goal and brief are on its Profile page. This campaign's worker sends and reads as it, and shares its daily limit with any reply campaign or scan on it.</p>
   {% else %}<p class="small" style="color:var(--bad)">Its account was removed from the Accounts page. Choose another below before starting it again.</p>{% endif %}
   {% if campaign_choices %}
   <form method="post" action="/campaigns/{{ campaign_id }}/account" style="margin-top:10px">

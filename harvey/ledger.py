@@ -85,8 +85,17 @@ class Ledger:
         con = sqlite3.connect(str(self.path), timeout=15, isolation_level=None)
         con.execute("PRAGMA busy_timeout=15000")
         if not self._ready:
-            con.execute("PRAGMA journal_mode=WAL")
-            con.executescript(SCHEMA)
+            # Several processes may open a new ledger at once; switching to
+            # WAL needs a moment alone, so a busy answer is simply retried.
+            for attempt in range(20):
+                try:
+                    con.execute("PRAGMA journal_mode=WAL")
+                    con.executescript(SCHEMA)
+                    break
+                except sqlite3.OperationalError:
+                    if attempt == 19:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
             self._ready = True
         return con
 

@@ -106,7 +106,7 @@ async def prior_replies(db: MailDB, thread_id: str, exclude_draft: str = "") -> 
     return max(sent_drafts, int((row or {}).get("n") or 0))
 
 
-async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run: bool = False) -> dict:
+async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run: bool = False, pressed: bool = False) -> dict:
     """Send one approved draft. Returns {status, message_id}. Raises
     SendRefused for a rule, AuthError / TransientError from the provider."""
     mailbox = await db.mailbox(draft["mailbox_id"])
@@ -122,6 +122,11 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
             raise SendRefused(f"the daily cap of {settings.daily_cap} for {mailbox['address']} is reached; it sends again tomorrow")
         if not within_hours(settings):
             raise SendRefused(f"outside {mailbox['address']}'s send window ({settings.hours_start} to {settings.hours_end})")
+    if draft.get("kind", "reply") == "reply" and draft.get("thread_id") and draft.get("created_at"):
+        later = await db.one("SELECT 1 FROM messages WHERE thread_id = ? AND direction = 'outbound' AND sent_at > ? LIMIT 1",
+                             (draft["thread_id"], draft["created_at"]))
+        if later:
+            raise SendRefused("the thread was answered after this draft was written; sending it would be a second reply")
     import json
     to = json.loads(draft.get("to_json") or "[]")
     if not to:
@@ -147,12 +152,15 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     if led is not None:
         run = await db.one("SELECT * FROM reply_runs WHERE id = ?", (draft.get("run_id") or "",)) if draft.get("run_id") else None
         led.set_limit(mailbox["address"], service.account_daily_limit(mailbox, service.open_creds(secret, mailbox)))
-        if run:
+        if run and not pressed and run["status"] in ("queued", "running"):
             slot, pic = led.reserve(mailbox["address"], run["id"], FEATURES.get(run.get("kind") or "reply", "reply-run"),
                                     run_label(run, mailbox["address"]), kind=draft.get("kind") or "reply")
         else:
-            slot, pic = led.reserve(mailbox["address"], "manual", "manual", "Sent by hand", priority=True,
-                                    kind=draft.get("kind") or "reply")
+            # A person pressed Send (from Review or a thread), or the run is
+            # over: held only to the account's own limit, counted under the
+            # run, and never making a stopped run a member again.
+            slot, pic = led.reserve(mailbox["address"], (run or {}).get("id") or "manual", "manual", "Sent by hand",
+                                    priority=True, kind=draft.get("kind") or "reply")
         if slot is None:
             raise ShareUsed(pic["reason"])
         if led.is_suppressed(recipient.get("email", "")):

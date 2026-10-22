@@ -38,6 +38,8 @@ def ready_to_send(mailbox: dict) -> tuple[bool, str]:
     return True, ""
 
 
+SENDING_SERVICES = ("amazonaws.com", "sendgrid", "mailgun", "postmarkapp", "sparkpost", "mailjet", "sendinblue", "brevo",
+                    "mandrillapp", "elasticemail", "smtp2go", "resend.com", "mailersend", "socketlabs", "zeptomail")
 CONSUMER_DOMAINS = ("gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
                     "yahoo.com", "icloud.com", "me.com", "aol.com")
 
@@ -61,6 +63,8 @@ def provider_daily_limit(mailbox: dict, creds: dict | None = None) -> int:
     consumer = domain in CONSUMER_DOMAINS
     provider = mailbox.get("provider") or ""
     host = str((creds or {}).get("smtp_host") or "").lower()
+    if host.startswith("smtp-relay.") or any(s in host for s in SENDING_SERVICES):
+        return 0          # a sending service: its own plan sets the limit, nothing to split
     if provider == "gmail" or host.endswith(("gmail.com", "googlemail.com")) or domain in ("gmail.com", "googlemail.com"):
         return 450 if consumer else 1800
     if provider == "graph" or host.endswith(("office365.com", "outlook.com", "live.com")) or domain in ("outlook.com", "hotmail.com", "live.com", "msn.com"):

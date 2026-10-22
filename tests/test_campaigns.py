@@ -190,6 +190,7 @@ async def test_a_reply_campaign_keeps_answering_leaves_outreach_leads_alone_and_
     cid = campaigns_mod.new_id()
     campaigns_mod.upsert(tmp_path, {"id": cid, "name": "Outreach A", "mailbox_id": mid, "account": ME})
     sm = StateManager(str(campaigns_mod.campaign_root(tmp_path, cid) / "data" / "harvey.db")); await sm.init_db()
+    (campaigns_mod.campaign_root(tmp_path, cid) / "data" / "worker.autostart").write_text("1")    # it is running
     await sm.add_prospect(Prospect(id="p1", first_name="Bo", email="bo@lead.example", email_status="provided", status="contacted"))
     from bb.mail.ingest import Ingest
     from bb.mail.providers.base import RawMessage
@@ -200,6 +201,9 @@ async def test_a_reply_campaign_keeps_answering_leaves_outreach_leads_alone_and_
     out = await runs.process_mailbox(db, "s", env, FakeBrain([]), Jobs(db), "job", run["id"], mid)
     item = await db.one("SELECT * FROM run_items WHERE run_id = ? AND status = 'skipped'", (run["id"],))
     assert out["skipped"] == 1 and "lead of the outreach campaign \"Outreach A\"" in item["detail"]
+    # Stopped, that campaign answers nobody: its leads are this campaign's again.
+    (campaigns_mod.campaign_root(tmp_path, cid) / "data" / "worker.autostart").unlink()
+    assert campaigns_mod.outreach_owner(tmp_path, ME, "bo@lead.example") is None
 
     # Pause: nothing more is done and its part of the limit goes back; resume queues it again.
     assert await runs.pause_run(db, run["id"], env)

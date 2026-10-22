@@ -23,6 +23,10 @@ logger = logging.getLogger("bb.mailworker")
 
 POLL_SECONDS = 2.0
 MAX_CONCURRENT = 16
+# Runs and reply campaigns can take long (paced sends); they never take the
+# last few slots, so syncs, checks and a person's Send always get one.
+LONG_KINDS = ("reply_run", "reply_campaign")
+MAX_LONG = MAX_CONCURRENT - 4
 SCHEDULE_EVERY = 60.0
 
 
@@ -59,7 +63,7 @@ class Handlers:
         if draft["status"] not in ("approved",):
             return {"skipped": f"draft is {draft['status']}"}
         try:
-            return await send_draft(self.db, self.secret, self.env, draft, dry_run=bool(job["payload"].get("dry_run")))
+            return await send_draft(self.db, self.secret, self.env, draft, dry_run=bool(job["payload"].get("dry_run")), pressed=True)
         except SendRefused as e:
             await self.db.execute("UPDATE drafts SET status = 'pending_review', error = ?, updated_at = ? WHERE id = ?",
                                   (f"Not sent: {e}", service.now_iso(), draft["id"]))
@@ -127,7 +131,9 @@ class Handlers:
             out = {"error": str(e)[:200]}
         fresh = await self.db.one("SELECT status FROM reply_runs WHERE id = ?", (run_id,))
         if fresh and fresh["status"] in ("queued", "running"):
-            await self.jobs.enqueue("reply_campaign", mailbox["id"], {"run_id": run_id}, delay_seconds=runs.CAMPAIGN_TICK_SECONDS,
+            # More waiting than one batch: back in a moment, otherwise at the next round.
+            delay = 5 if out.get("more") else runs.CAMPAIGN_TICK_SECONDS
+            await self.jobs.enqueue("reply_campaign", mailbox["id"], {"run_id": run_id}, delay_seconds=delay,
                                     max_attempts=3, lane=runs.lane(mailbox["id"], run_id))
         return out
 
@@ -148,10 +154,13 @@ class Worker:
         self.stop = asyncio.Event()
         self.busy: set[str] = set()
         self.tasks: set[asyncio.Task] = set()
+        self.long_running = 0
 
     async def _run_job(self, job: dict):
         key = job.get("lane") or job["mailbox_id"] or f"job:{job['id']}"
         self.busy.add(key)
+        long = job["kind"] in LONG_KINDS
+        self.long_running += 1 if long else 0
         try:
             result = await self.handlers.run(job)
             await self.jobs.complete(job["id"], **(result or {}))
@@ -169,6 +178,7 @@ class Worker:
                     await runs.job_died(self.db, job["payload"].get("run_id", ""), job["mailbox_id"], f"{type(e).__name__}: {e}")
         finally:
             self.busy.discard(key)
+            self.long_running -= 1 if long else 0
 
     async def loop(self):
         await self.db.init()
@@ -191,7 +201,8 @@ class Worker:
                 last_schedule = time.time()
             started = 0
             while len(self.tasks) < MAX_CONCURRENT:
-                job = await self.jobs.claim(exclude_mailboxes=self.busy)
+                job = await self.jobs.claim(exclude_mailboxes=self.busy,
+                                            exclude_kinds=LONG_KINDS if self.long_running >= MAX_LONG else ())
                 if not job:
                     break
                 task = asyncio.create_task(self._run_job(job))

@@ -603,6 +603,10 @@ class Sender:
                 logger.info(f"Sender: {pic['reason']}.")
                 await self.state.set_setting(SKIP_REASON_KEY, f"daily allowance shared with other campaigns: {pic['reason']}")
                 return
+            # Room again: the wait is over, so the dashboard (and the stall
+            # check, which ignores a deliberate wait) stop reading it.
+            if ((await self.state.get_setting(SKIP_REASON_KEY)) or "").startswith("daily allowance shared with other campaigns"):
+                await self.state.set_setting(SKIP_REASON_KEY, "")
             if pic["limited"]:
                 budget = min(budget, pic["room"])
 
@@ -1011,19 +1015,24 @@ class Sender:
                 self._throttled = True
                 logger.info(f"Sender: {pic.get('reason')}; the rest waits.")
                 return False
-        try:
-            result = await asyncio.shield(self.provider.send_email(
-                item["to_email"], item["subject"], item["body"],
-                thread_ref=item.get("thread_ref", ""),
-                in_reply_to=item.get("in_reply_to", ""),
-                **send_kwargs,
-            ))
-        except BaseException:
-            if self.ledger is not None:
-                self.ledger.release(slot)
-            raise
-        if not result.ok and self.ledger is not None:
-            self.ledger.release(slot)
+        inner = asyncio.ensure_future(self.provider.send_email(
+            item["to_email"], item["subject"], item["body"],
+            thread_ref=item.get("thread_ref", ""),
+            in_reply_to=item.get("in_reply_to", ""),
+            **send_kwargs,
+        ))
+        if self.ledger is not None and slot:
+            # The slot goes back only when the email did not leave, decided
+            # by the send itself: a pass cut off while it finishes keeps it.
+            def _settle(task, _slot=slot, _ledger=self.ledger):
+                try:
+                    failed = task.cancelled() or task.exception() is not None or not task.result().ok
+                except Exception:
+                    failed = True
+                if failed:
+                    _ledger.release(_slot)
+            inner.add_done_callback(_settle)
+        result = await asyncio.shield(inner)
         if not result.ok:
             if getattr(result, "auth_failed", False):
                 # The mailbox refused the login: nothing can leave until it is

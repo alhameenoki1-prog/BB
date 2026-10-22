@@ -24,6 +24,12 @@ CAMPAIGN_TICK_SECONDS = 120
 # A run that has used its part of the account's daily limit tries again after this.
 SHARE_WAIT_SECONDS = 30 * 60
 BACKLOG_CHOICES = (0, 3, 7, 14, 30)
+# A job handles this many threads, then hands its lane to a fresh job, so no
+# run holds a worker slot for hours.
+BATCH_ITEMS = 10
+# A conversation whose reply failed this many times since their last message
+# waits for them to write again (or for a person).
+MAX_TRIES = 3
 
 # What each kind of run is called, and the feature it counts as on the
 # account's shared daily limit (harvey.ledger).
@@ -345,12 +351,22 @@ async def collect_campaign_threads(db: MailDB, run: dict, mailbox: dict) -> int:
     since their last message. Returns how many were added."""
     rows = await db.query(
         "SELECT t.id FROM threads t WHERE t.mailbox_id = ? AND t.state = 'needs_reply' AND t.last_message_at >= ? "
-        "AND NOT EXISTS (SELECT 1 FROM run_items ri WHERE ri.run_id = ? AND ri.thread_id = t.id "
-        "  AND (ri.status IN ('queued', 'drafting', 'needs_review') OR ri.updated_at >= t.last_message_at)) "
+        # Not while it waits in this campaign, or its draft waits for a person,
+        # or it was answered (or ruled out) since their last message. A skip
+        # for the daily cap and a failure are tried again, a few times.
+        "AND NOT EXISTS (SELECT 1 FROM run_items ri WHERE ri.run_id = ? AND ri.thread_id = t.id AND ("
+        "  ri.status IN ('queued', 'drafting') "
+        "  OR (ri.status = 'needs_review' AND EXISTS (SELECT 1 FROM drafts d WHERE d.id = ri.draft_id AND d.status IN ('pending_review', 'approved'))) "
+        "  OR (ri.status IN ('sent', 'dry_run', 'needs_review') AND ri.updated_at >= t.last_message_at) "
+        "  OR (ri.status = 'skipped' AND ri.updated_at >= t.last_message_at AND ri.detail NOT LIKE 'daily cap%'))) "
+        "AND (SELECT COUNT(*) FROM run_items ri WHERE ri.run_id = ? AND ri.thread_id = t.id AND ri.status = 'failed' "
+        "  AND ri.updated_at >= t.last_message_at) < ? "
+        # Not while another run has it, nor while any draft for it waits.
         "AND NOT EXISTS (SELECT 1 FROM run_items ri JOIN reply_runs r ON r.id = ri.run_id WHERE ri.thread_id = t.id AND r.id != ? "
-        "  AND r.status IN ('queued', 'running', 'paused') AND ri.status IN ('queued', 'drafting')) "
+        "  AND ((r.status IN ('queued', 'running', 'paused') AND ri.status = 'queued') OR ri.status = 'drafting')) "
+        "AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.thread_id = t.id AND d.status IN ('pending_review', 'approved') AND d.run_id != ?) "
         "ORDER BY t.last_message_at LIMIT 200",
-        (mailbox["id"], run.get("since") or "", run["id"], run["id"]))
+        (mailbox["id"], run.get("since") or "", run["id"], run["id"], MAX_TRIES, run["id"], run["id"]))
     now = now_iso()
     for r in rows:
         await db.execute("INSERT INTO run_items(id, run_id, mailbox_id, thread_id, status, updated_at) VALUES (?, ?, ?, ?, 'queued', ?)",
@@ -361,11 +377,18 @@ async def collect_campaign_threads(db: MailDB, run: dict, mailbox: dict) -> int:
 
 
 async def threads_in_live_runs(db: MailDB, exclude_run: str = "") -> set[str]:
-    """Threads waiting (or being drafted) in a run that has not finished."""
+    """Threads waiting (or being drafted) in a run that has not finished, or
+    whose reply draft waits for a person: a second run would answer twice."""
     rows = await db.query(
         "SELECT ri.thread_id FROM run_items ri JOIN reply_runs r ON r.id = ri.run_id "
-        "WHERE r.status IN ('queued', 'running', 'paused') AND ri.status IN ('queued', 'drafting') AND r.id != ?", (exclude_run,))
-    return {r["thread_id"] for r in rows}
+        "WHERE ((r.status IN ('queued', 'running', 'paused') AND ri.status = 'queued') OR ri.status = 'drafting') AND r.id != ?",
+        (exclude_run,))
+    if exclude_run:
+        drafts = await db.query("SELECT thread_id FROM drafts WHERE status IN ('pending_review', 'approved') AND thread_id != '' "
+                                "AND run_id != ?", (exclude_run,))
+    else:     # drafts written by hand have no run: they count too
+        drafts = await db.query("SELECT thread_id FROM drafts WHERE status IN ('pending_review', 'approved') AND thread_id != ''")
+    return {r["thread_id"] for r in rows} | {d["thread_id"] for d in drafts}
 
 
 async def answered_elsewhere(db: MailDB, thread_id: str, run_id: str, reconnect: bool = False) -> str:
@@ -381,7 +404,11 @@ async def answered_elsewhere(db: MailDB, thread_id: str, run_id: str, reconnect:
         "SELECT r.kind FROM run_items ri JOIN reply_runs r ON r.id = ri.run_id WHERE ri.thread_id = ? AND ri.run_id != ? "
         "AND (ri.status = 'drafting' OR (ri.status = 'sent' AND ri.updated_at >= ?)) LIMIT 1",
         (thread_id, run_id, thread["last_message_at"] or ""))
-    return "another run is answering this thread" if other else ""
+    if other:
+        return "another run is answering this thread"
+    waiting = await db.one("SELECT 1 FROM drafts WHERE thread_id = ? AND status IN ('pending_review', 'approved') AND run_id != ? LIMIT 1",
+                           (thread_id, run_id))
+    return "a reply to this thread already waits on Review" if waiting else ""
 
 
 async def job_died(db: MailDB, run_id: str, mailbox_id: str, error: str):
@@ -456,7 +483,12 @@ async def pause_run(db: MailDB, run_id: str, env: dict | None = None) -> bool:
     if not run or run["status"] not in ("queued", "running"):
         return False
     now = now_iso()
-    await db.execute("UPDATE reply_runs SET status = 'paused', paused_at = ?, updated_at = ? WHERE id = ?", (now, now, run_id))
+    async with db._connect() as con:
+        cur = await con.execute("UPDATE reply_runs SET status = 'paused', paused_at = ?, updated_at = ? WHERE id = ? "
+                                "AND status IN ('queued', 'running')", (now, now, run_id))
+        await con.commit()
+        if cur.rowcount != 1:
+            return False
     await _cancel_jobs(db, run_id)
     await _leave_ledger(db, run, env)
     await db.log("info", f"{run_label(run)} paused.", run_id=run_id)
@@ -468,11 +500,20 @@ async def resume_run(db: MailDB, run_id: str) -> bool:
     if not run or run["status"] != "paused":
         return False
     now = now_iso()
-    await db.execute("UPDATE reply_runs SET status = 'running', paused_at = NULL, detail = '', updated_at = ? WHERE id = ?", (now, run_id))
+    async with db._connect() as con:
+        cur = await con.execute("UPDATE reply_runs SET status = 'running', paused_at = NULL, detail = '', updated_at = ? "
+                                "WHERE id = ? AND status = 'paused'", (now, run_id))
+        await con.commit()
+        if cur.rowcount != 1:
+            return False
     jobs = Jobs(db)
     kind = "reply_campaign" if run.get("kind") == "reply_campaign" else "reply_run"
     for mid in json.loads(run.get("mailbox_ids_json") or "[]"):
-        await jobs.enqueue(kind, mid, {"run_id": run_id}, max_attempts=3, lane=lane(mid, run_id), dedupe=True)
+        # A job still finishing from before the pause does not count: it
+        # saw the pause and ends without coming back.
+        queued = await db.one("SELECT 1 FROM jobs WHERE kind = ? AND lane = ? AND status = 'queued' LIMIT 1", (kind, lane(mid, run_id)))
+        if not queued:
+            await jobs.enqueue(kind, mid, {"run_id": run_id}, max_attempts=3, lane=lane(mid, run_id))
     await db.log("info", f"{run_label(run)} resumed.", run_id=run_id)
     return True
 
@@ -482,7 +523,12 @@ async def cancel_run(db: MailDB, run_id: str, env: dict | None = None) -> bool:
     if not run or run["status"] in ("done", "cancelled", "failed"):
         return False
     now = now_iso()
-    await db.execute("UPDATE reply_runs SET status = 'cancelled', updated_at = ?, finished_at = ? WHERE id = ?", (now, now, run_id))
+    async with db._connect() as con:
+        cur = await con.execute("UPDATE reply_runs SET status = 'cancelled', updated_at = ?, finished_at = ? WHERE id = ? "
+                                "AND status NOT IN ('done', 'cancelled', 'failed')", (now, now, run_id))
+        await con.commit()
+        if cur.rowcount != 1:
+            return False
     await db.execute("UPDATE run_items SET status = 'skipped', detail = 'run cancelled', updated_at = ? WHERE run_id = ? AND status = 'queued'",
                      (now, run_id))
     await _cancel_jobs(db, run_id)
@@ -526,6 +572,10 @@ async def _finish_if_done(db: MailDB, run_id: str):
         if summary["failed"]:
             parts.append(f"{summary['failed']} failed")
         what = "Follow-up run" if (full or {}).get("kind") == "reconnect" else "Reply run"
+        try:
+            ledger_for({"HARVEY_HOME": str(db.path.parent.parent)}).leave_everywhere(run_id)
+        except Exception:
+            pass
         await db.log("info", f"{what} finished: " + (", ".join(parts) or "nothing to do") + ".", run_id=run_id)
     else:
         await db.execute("UPDATE reply_runs SET done = ?, summary_json = ?, updated_at = ?, status = CASE WHEN status = 'queued' THEN 'running' ELSE status END WHERE id = ?",
@@ -559,6 +609,7 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
             led = None
     user_root = (env or {}).get("HARVEY_HOME") or ""
     waiting = ""
+    handled, more = 0, False
     # An item left 'drafting' by a worker that died mid-draft is picked up again.
     await db.execute("UPDATE run_items SET status = 'queued', updated_at = ? WHERE run_id = ? AND mailbox_id = ? AND status = 'drafting'",
                      (now_iso(), run_id, mailbox_id))
@@ -624,9 +675,16 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
                 waiting = pic["reason"]
                 break                 # the rest waits for room on the account; nothing is dropped
         if run["mode"] != "dry_run" and settings.daily_cap and await sent_today(db, mailbox_id) >= settings.daily_cap:
+            if run["mode"] == "auto" and kind == "reply_campaign":
+                waiting = f"the command center's daily cap of {settings.daily_cap} for this account is reached"
+                break                 # tried again tomorrow, not dropped
             if run["mode"] == "auto":
                 await mark(item, "skipped", f"daily cap of {settings.daily_cap} reached; nothing drafted")
                 continue
+        if handled >= BATCH_ITEMS:
+            more = True
+            break
+        handled += 1
         await db.execute("UPDATE run_items SET status = 'drafting', updated_at = ? WHERE id = ?", (now_iso(), item["id"]))
         messages = await db.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY sent_at, created_at", (thread["id"],))
         them = next((m for m in reversed(messages) if m["direction"] == "inbound" and (not reconnect or not m.get("automated"))), None)
@@ -750,8 +808,14 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
                                max_attempts=3, lane=lane(mailbox_id, run_id))
     elif run.get("detail"):
         await db.execute("UPDATE reply_runs SET detail = '', updated_at = ? WHERE id = ?", (now_iso(), run_id))
+    if more and not waiting and jobs is not None and kind != "reply_campaign":
+        # The next batch in a fresh job, so this one gives its slot back.
+        await jobs.enqueue("reply_run", mailbox_id, {"run_id": run_id}, max_attempts=3, lane=lane(mailbox_id, run_id))
     await _finish_if_done(db, run_id)
     final = await db.one("SELECT status FROM reply_runs WHERE id = ?", (run_id,))
-    if led is not None and (final or {}).get("status") in ("done", "cancelled", "failed", "paused"):
-        led.leave(mailbox["address"], run_id)
-    return {"run_id": run_id, "waiting": waiting, **counts}
+    left_here = await db.one("SELECT COUNT(*) AS n FROM run_items WHERE run_id = ? AND mailbox_id = ? AND status IN ('queued', 'drafting')",
+                             (run_id, mailbox_id))
+    if led is not None and ((final or {}).get("status") in ("done", "cancelled", "failed", "paused")
+                            or (kind != "reply_campaign" and not (left_here or {}).get("n"))):
+        led.leave(mailbox["address"], run_id)      # nothing more from this run on this account
+    return {"run_id": run_id, "waiting": waiting, "more": more, **counts}

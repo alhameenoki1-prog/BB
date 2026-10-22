@@ -68,9 +68,12 @@ Sending email (auto reply runs, send_reply) only prepares a pending action the p
 
 class CommandCenter:
     def __init__(self, db: MailDB, brain: MailBrain, mailboxes: list[dict], selected: list[dict], secret: str = "",
-                 env: dict | None = None, user_email: str = "", on_worker_needed=None, scope: dict | None = None):
+                 env: dict | None = None, user_email: str = "", on_worker_needed=None, scope: dict | None = None,
+                 scope_for=None):
         self.db, self.brain, self.secret, self.env = db, brain, secret, env or {}
         self.scope = scope
+        # address -> the goal and brief that account writes with (its outreach campaign's, else the main one)
+        self.scope_for = scope_for
         self.mailboxes, self.selected, self.user_email = mailboxes, selected, user_email
         self.on_worker_needed = on_worker_needed
         self.steps: list[dict] = []
@@ -156,7 +159,7 @@ class CommandCenter:
             await runs_mod.suppress(self.db, box, hard_no["from_email"], thread_id)
             return {"error": f"{hard_no['from_email']} asked not to be contacted; nothing drafted, and the address is on the excluded list"}
         result = await draft_reply(self.brain, service.settings_of(box), box, t, messages, instructions=instructions or "",
-                                   scope=self.scope)
+                                   scope=self.scope_for(box["address"]) if self.scope_for else self.scope)
         if result.get("stance") == "opt_out":
             await runs_mod.suppress(self.db, box, them["from_email"], thread_id)
             return {"error": f"{them['from_email']} asked not to be contacted (the model's reading); nothing drafted, "

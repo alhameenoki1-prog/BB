@@ -44,7 +44,7 @@ class Jobs:
              max_attempts, _iso(now), _iso(now), lane))
         return jid
 
-    async def claim(self, exclude_mailboxes: set[str] | None = None) -> dict | None:
+    async def claim(self, exclude_mailboxes: set[str] | None = None, exclude_kinds=()) -> dict | None:
         """The next due job, marked running by the caller in one statement.
         Mailboxes already busy in this worker are skipped so one slow
         mailbox never blocks the others."""
@@ -52,6 +52,10 @@ class Jobs:
         exclude = sorted(exclude_mailboxes or set())
         marks = ",".join("?" for _ in exclude)
         not_busy = f" AND (CASE WHEN lane != '' THEN lane ELSE mailbox_id END) NOT IN ({marks})" if exclude else ""
+        kinds = list(exclude_kinds or ())
+        if kinds:
+            not_busy += f" AND kind NOT IN ({','.join('?' for _ in kinds)})"
+            exclude = exclude + kinds
         async with self.db._connect() as db:
             await db.execute("PRAGMA busy_timeout=15000")
             # Recover jobs whose worker died mid-run.

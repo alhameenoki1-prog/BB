@@ -1683,6 +1683,13 @@ class Workspace:
             return False, "Fill in your profile first."
         if not self.mailbox_connected():
             return False, "Connect your mailbox first."
+        if self.is_main:
+            from bb import campaigns as campaigns_mod
+            other = next((r for r in campaigns_mod.on_account(self.user_root, self.sending_address())
+                          if r["id"] != campaigns_mod.MAIN), None)
+            if other:
+                return False, (f"{self.sending_address()} already sends for the campaign {other.get('name') or other['id']}; "
+                               "connect another mailbox here (one campaign per account).")
         try:
             # The account's daily limit, shared with any reply campaign or scan on it.
             self.ledger().set_limit(self.sending_address(), self.account_daily_limit())
@@ -1848,13 +1855,15 @@ class Workspace:
             creds = crypto.open_json(self.settings.secret_key(), box.get("creds") or "")
         except Exception:
             return f"the stored sign-in for {box['address']} could not be read; reconnect it on the Accounts page"
-        stamp = hashlib.sha256((box.get("creds") or "").encode()).hexdigest()
+        reply_to_now = str((box.get("settings") or {}).get("reply_to") or "")
+        stamp = hashlib.sha256(((box.get("creds") or "") + "|" + reply_to_now).encode()).hexdigest()
         try:
             binding = json.loads(self.binding_file.read_text())
         except (OSError, ValueError):
             binding = {}
-        if binding.get("mailbox_id") == box["id"] and binding.get("stamp") == stamp and self.mailbox_connected():
-            return ""
+        if (binding.get("mailbox_id") == box["id"] and binding.get("stamp") == stamp and self.mailbox_connected()
+                and (self.sending_address() or "").lower() == (box.get("address") or "").lower()):
+            return ""          # unchanged, and still sending as the bound address
         self.ensure()
         address = (box.get("address") or "").lower()
         reply_to = str((box.get("settings") or {}).get("reply_to") or "")
@@ -1889,14 +1898,18 @@ class Workspace:
         else what the provider allows."""
         from bb.mail import service as mail_service
         box = self.bound_mailbox() if not self.is_main else self._mailbox_sync(address=self.sending_address())
-        if box:
-            try:
-                from bb.mail import crypto
-                creds = crypto.open_json(self.settings.secret_key(), box.get("creds") or "")
-            except Exception:
-                creds = {}
-            return mail_service.account_daily_limit(box, creds)
-        return self.mailbox_daily_ceiling()
+        if box and int((box.get("settings") or {}).get("account_limit") or 0):
+            return int(box["settings"]["account_limit"])
+        if self.is_main or not box:
+            # The main campaign's own mailbox: what it allows (0 for a
+            # sending service, which has no ceiling to share).
+            return self.mailbox_daily_ceiling()
+        try:
+            from bb.mail import crypto
+            creds = crypto.open_json(self.settings.secret_key(), box.get("creds") or "")
+        except Exception:
+            creds = {}
+        return mail_service.account_daily_limit(box, creds)
 
     def leads_elsewhere(self, emails: list[str]) -> tuple[set[str], set[str]]:
         """(addresses already on another campaign's list, addresses that asked
@@ -1906,18 +1919,24 @@ class Workspace:
         import sqlite3
         wanted = sorted({(e or "").strip().lower() for e in emails if e and "@" in e})
         taken: set[str] = set()
-        for other in self.all_campaigns():
-            if other.campaign_id == self.campaign_id or not other.db_path.exists():
+        # Every other campaign's list, and the people a removed campaign had
+        # already written to (its folder is kept under campaigns/.removed).
+        sources = [(o.db_path, "") for o in self.all_campaigns() if o.campaign_id != self.campaign_id]
+        removed_dir = self.user_root / "campaigns" / ".removed"
+        if removed_dir.is_dir():
+            sources += [(d / "data" / "harvey.db", " AND status != 'new'") for d in removed_dir.iterdir() if d.is_dir()]
+        for db_path, only in sources:
+            if not db_path.exists():
                 continue
             try:
-                con = sqlite3.connect(f"file:{other.db_path}?mode=ro", uri=True, timeout=5)
+                con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
             except sqlite3.Error:
                 continue
             try:
                 for i in range(0, len(wanted), 500):
                     chunk = wanted[i:i + 500]
                     marks = ",".join("?" for _ in chunk)
-                    taken |= {r[0] for r in con.execute(f"SELECT lower(email) FROM prospects WHERE lower(email) IN ({marks})", chunk)}
+                    taken |= {r[0] for r in con.execute(f"SELECT lower(email) FROM prospects WHERE lower(email) IN ({marks}){only}", chunk)}
             except sqlite3.Error:
                 pass
             finally:

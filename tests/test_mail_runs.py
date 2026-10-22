@@ -105,7 +105,9 @@ async def test_run_across_accounts_routes_by_mode_and_confidence(tmp_path, monke
     for mid in (ma, mb):
         await runs.process_mailbox(db, "s", {}, brain, None, "", run3["id"], mid)
     r = await db.one("SELECT * FROM reply_runs WHERE id = ?", (run3["id"],))
-    assert r["status"] == "done" and json.loads(r["summary_json"])["dry_run"] == 2 and SentBox.sent == []
+    # The thread whose reply still waits on Review is left out: drafting it
+    # again would put a second reply in the tray.
+    assert r["status"] == "done" and json.loads(r["summary_json"])["dry_run"] == 1 and SentBox.sent == []
     assert (await db.query("SELECT * FROM drafts WHERE run_id = ? AND status = 'dry_run'", (run3["id"],)))
 
 

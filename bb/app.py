@@ -6,6 +6,7 @@ install serves many people without any of Harvey's code knowing.
 """
 
 import asyncio
+import contextvars
 import os
 import logging
 import secrets
@@ -274,9 +275,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """The user's own workspace: the main campaign and everything per user."""
         return Workspace(settings, user).ensure()
 
+    # The campaign a submitted form was showing (?c= on its action, added by
+    # the page): another tab switching campaigns in between must not move a
+    # Start over, an upload or a profile save onto a different campaign.
+    posted_campaign = contextvars.ContextVar("bb_posted_campaign", default="")
+
     def workspace_for(user: dict) -> Workspace:
-        """The campaign the pages show (picked in the nav); the main one by default."""
-        return base_workspace(user).selected().ensure()
+        """The campaign the pages show (picked in the nav); the main one by
+        default; for a form, the campaign that page was showing."""
+        base = base_workspace(user)
+        cid = posted_campaign.get()
+        if cid:
+            target = base.campaign(cid)
+            if target is not None:
+                return target.ensure()
+        return base.selected().ensure()
+
+    def campaign_taken(ws: Workspace, address: str) -> str:
+        """The outreach campaign (other than the main one) that already sends
+        from ``address``, or "": one campaign per account."""
+        from bb import campaigns as campaigns_mod
+        for row in campaigns_mod.on_account(ws.user_root, address):
+            if row["id"] != campaigns_mod.MAIN:
+                return row.get("name") or row["id"]
+        return ""
+
+    @app.middleware("http")
+    async def campaign_of_the_form(request: Request, call_next):
+        token = posted_campaign.set(request.query_params.get("c", "") if request.method == "POST" else "")
+        try:
+            return await call_next(request)
+        finally:
+            posted_campaign.reset(token)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -549,8 +579,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             mdb = ws.mail_db()
             await mdb.init()
             from bb import campaigns as campaigns_mod
+            ws.main().sync_main_registry()
             others = {(r.get("account") or "").lower() for r in campaigns_mod.load(ws.user_root) if r["id"] != ws.campaign_id}
-            choices = [m for m in await mdb.mailboxes() if m["address"].lower() not in others]
+            choices = [m for m in await mdb.mailboxes() if m["address"].lower() not in others and m.get("enabled", 1)]
         return await render(request, "mailbox.html", user, provider=ws.mail_provider(),
                             campaign_bound=bound, campaign_choices=choices, campaign_main=ws.is_main,
                             campaign_id=ws.campaign_id, campaign_label=ws.campaign_name(),
@@ -611,6 +642,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             value = str(form.get(key, "") or "").strip()
             m365[key] = value or (current[key] if key == "m365_client_secret" else "")
         m365["m365_mailbox"] = m365["m365_mailbox"].lower()
+        taken = campaign_taken(ws, m365["m365_mailbox"])
+        if taken:
+            return _redirect("/mailbox", error=f"Not saved: that mailbox already sends for the campaign {taken} (one campaign per account).")
         if not all(m365.values()):
             return _redirect("/mailbox", error="Tenant ID, client ID, client secret and mailbox are all required.")
         ok, detail = await test_m365(m365)
@@ -714,6 +748,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for port in ("smtp_port", "imap_port"):
             if smtp[port] and not str(smtp[port]).isdigit():
                 return _redirect("/mailbox", error=f"{port.replace('_', ' ')} must be a number.")
+        taken = campaign_taken(ws, smtp.get("from_email") or smtp["smtp_username"])
+        if taken:
+            return _redirect("/mailbox", error=f"Not saved: that account already sends for the campaign {taken} (one campaign per account).")
         ok, detail = await test_smtp(smtp)
         if not ok:
             return _redirect("/mailbox", error=f"Not saved: {detail}")
@@ -728,11 +765,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def mailbox_login(request: Request, user: dict = Depends(current_user)):
         """Email + password: the servers are worked out from the address."""
         ws = workspace_for(user)
+        if not ws.is_main:
+            return _redirect("/mailbox", error=f"{ws.campaign_name()} sends from an account on the Accounts page; change it below.")
         form = dict(await request.form())
         email = str(form.get("email", "") or "").strip().lower()
         password = str(form.get("password", "") or "")
         if not email or not password:
             return _redirect("/mailbox", error="Enter the email address and its password.")
+        taken = campaign_taken(ws, email)
+        if taken:
+            return _redirect("/mailbox", error=f"That account already sends for the campaign {taken} (one campaign per account).")
         guess, note = guess_settings(email)
         if guess is None:
             return _redirect("/mailbox", error=note)
@@ -827,12 +869,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/mailbox", error=f"Google said: {error}")
         if not gmail_oauth.verify_state(settings.secret_key(), user["id"], nonce, state):
             return _redirect("/mailbox", error="The sign-in did not match this session. Try again.")
-        ws = workspace_for(user)
+        ws = base_workspace(user)      # the Mailbox page's own sign-in is the main campaign's
         try:
             data = await gmail_oauth.exchange_code(settings, code)
             email = await gmail_oauth.account_email(data.get("access_token", ""))
         except Exception as e:
             return _redirect("/mailbox", error=str(e))
+        taken = campaign_taken(ws, email)
+        if taken:
+            return _redirect("/mailbox", error=f"{email} already sends for the campaign {taken} (one campaign per account).")
         gmail_oauth.save_token(ws, data, email)
         ws.set_mail_provider("gmail")
         ws.clear_mailbox_problem()
@@ -889,12 +934,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/mailbox", error=f"Microsoft said: {error_description or error}")
         if not microsoft_oauth.verify_state(settings.secret_key(), user["id"], nonce, state):
             return _redirect("/mailbox", error="The sign-in did not match this session. Try again.")
-        ws = workspace_for(user)
+        ws = base_workspace(user)      # the Mailbox page's own sign-in is the main campaign's
         try:
             data = await microsoft_oauth.exchange_code(settings, code)
             email = await microsoft_oauth.account_email(data.get("access_token", ""))
         except Exception as e:
             return _redirect("/mailbox", error=str(e))
+        taken = campaign_taken(ws, email)
+        if taken:
+            return _redirect("/mailbox", error=f"{email} already sends for the campaign {taken} (one campaign per account).")
         if not email:
             return _redirect("/mailbox", error="Microsoft did not say which mailbox this is. Try again.")
         microsoft_oauth.save_token(ws, data, email)
@@ -1075,7 +1123,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rows = []
         for u in accounts.list_users():
             ws = Workspace(settings, u)
-            rows.append({**u, "running": bool(ws.worker_running()), "configured": ws.is_configured(),
+            rows.append({**u, "running": any(one.worker_running() for one in ws.all_campaigns()), "configured": ws.is_configured(),
                          "gmail": ws.gmail_connected()})
         return await render(request, "admin_users.html", admin, users=rows, problems=settings.problems(),
                             tunnel=tunnel.describe(), public_url=settings.base_url,
