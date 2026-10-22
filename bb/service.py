@@ -47,6 +47,9 @@ def launchd_plist(python: str, project_root: Path, log_file: Path, env: dict) ->
         # restart; launchd must not sweep it up with the site.
         "AbandonProcessGroup": True,
         "ThrottleInterval": 10,
+        # A background job is throttled by launchd (CPU, disk, timers), and
+        # the workers it starts inherit that: run at normal priority.
+        "ProcessType": "Interactive",
         "StandardOutPath": str(log_file),
         "StandardErrorPath": str(log_file),
         "EnvironmentVariables": {"PATH": _path_env(), "PYTHONUNBUFFERED": "1", **env},

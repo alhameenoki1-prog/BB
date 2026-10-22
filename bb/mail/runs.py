@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import random
+import re
 from datetime import datetime, timedelta, timezone
 
 from bb.mail import service
@@ -108,22 +109,23 @@ async def cap_room(db: MailDB, mailbox_id: str, run_id: str, cap: int) -> tuple[
     total = await sent_today(db, mailbox_id)
     if total >= cap:
         return True, f"the command center's daily cap of {cap} for this account is reached"
+    # (Review-mode runs too: what a person approves there sends under the
+    # same cap, and the account's shared limit already counts them.)
     others = await db.query(
         "SELECT r.id, r.kind FROM reply_runs r WHERE r.id != ? AND r.status IN ('queued', 'running') "
-        "AND r.mode = 'auto' AND r.mailbox_ids_json LIKE ?", (run_id, f'%"{mailbox_id}"%'))
+        "AND r.mode IN ('auto', 'review') AND r.mailbox_ids_json LIKE ?", (run_id, f'%"{mailbox_id}"%'))
     live = []
     for o in others:
         if o["kind"] != "reply_campaign":
-            left = await db.one("SELECT 1 FROM run_items WHERE run_id = ? AND mailbox_id = ? AND status IN ('queued', 'drafting') "
-                                "LIMIT 1", (o["id"], mailbox_id))
+            left = await db.one(
+                "SELECT 1 FROM run_items WHERE run_id = ? AND mailbox_id = ? AND status IN ('queued', 'drafting') "
+                "UNION ALL SELECT 1 FROM drafts WHERE run_id = ? AND mailbox_id = ? AND status IN ('pending_review', 'approved') "
+                "LIMIT 1", (o["id"], mailbox_id, o["id"], mailbox_id))
             if not left:
                 continue          # done on this account: it holds nothing back
         live.append(o["id"])
     if not live:
         return False, ""
-    share = cap // (len(live) + 1)
-    if not share:
-        return False, ""          # too small a cap to split: first come, first served
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d") + "T00:00:00Z"
 
     async def used(rid):
@@ -131,12 +133,19 @@ async def cap_room(db: MailDB, mailbox_id: str, run_id: str, cap: int) -> tuple[
                            "AND sent_at >= ?", (mailbox_id, rid, today))
         return int((row or {}).get("n") or 0)
 
-    held = 0
-    for rid in live:
-        held += max(0, share - await used(rid))
+    mine = await used(run_id)
+    others_used = [await used(rid) for rid in live]
+    # Sends by runs that are over, or by hand, are no run's part: the parts
+    # are cut from what is left after them, or two live runs could each be
+    # holding the other's part with the cap only half used.
+    elsewhere = max(0, total - mine - sum(others_used))
+    share = (cap - elsewhere) // (len(live) + 1)
+    if share <= 0:
+        return False, ""          # too little left to split: first come, first served
+    held = sum(max(0, share - u) for u in others_used)
     if cap - total - held > 0:
         return False, ""
-    return False, (f"this run's part of the command center's daily cap of {cap} is used ({await used(run_id)} of {share}); "
+    return False, (f"this run's part of the command center's daily cap of {cap} is used ({mine} of {share}); "
                    f"the rest is held for the {len(live)} other campaign{'s' if len(live) != 1 else ''} on this account")
 
 
@@ -146,7 +155,7 @@ def is_excluded(settings, email: str) -> bool:
     return any(x == email or x == domain or (x.startswith(".") and domain.endswith(x)) for x in settings.excluded)
 
 
-def closed_after_no(messages: list[dict], latest: dict) -> bool:
+def closed_after_no(messages: list[dict], latest: dict, answered: set | frozenset = frozenset()) -> bool:
     """Is their newest message another polite no, after an earlier no in
     this thread that was already answered (the one closing note)? Then
     nothing more is sent: a second closing note would be pestering. A
@@ -155,17 +164,28 @@ def closed_after_no(messages: list[dict], latest: dict) -> bool:
 
     def text(m):
         return m.get("body_text") or m.get("body") or m.get("snippet") or ""
-    if not latest or not enquiry.is_soft_no(text(latest)):
+    if not latest or latest.get("automated") or not enquiry.is_soft_no(text(latest)):
         return False
+    if _ASKS_FOR_SOMETHING.search(enquiry.fresh_text(text(latest))):
+        return False              # a no that also asks for something ("send the spec anyway") is answered
     said_no = False
     for m in messages:
         if m is latest:
             break
-        if m.get("direction") == "inbound" and enquiry.is_soft_no(text(m)):
-            said_no = True
+        if m.get("direction") == "inbound":
+            # An out-of-office ("not at the moment checking email") is not a no.
+            if not m.get("automated") and enquiry.is_soft_no(text(m)):
+                said_no = True
+                if m.get("message_id") and m["message_id"] in answered:
+                    return True   # answered by another campaign, whose note this thread may not show
         elif m.get("direction") == "outbound" and said_no:
             return True
     return False
+
+
+_ASKS_FOR_SOMETHING = re.compile(
+    r"\?|\b(send|share|forward|could you|can you|would you|will you|let me know|tell me|quote|call me|"
+    r"get back to)\b", re.I)
 
 
 def is_opt_out(message: dict) -> bool:
@@ -299,6 +319,9 @@ def still_syncing(mailbox: dict) -> bool:
 
 def nobody_note(mailbox: dict, months: int) -> str:
     """Why a scan on this account found nobody to follow up with."""
+    if mailbox.get("status") in ("reconnect", "error", "disabled"):
+        return (f"{mailbox['address']} cannot read its mail until it is "
+                + ("enabled again" if mailbox.get("status") == "disabled" else "signed in again (Reconnect on the Accounts page)"))
     if still_syncing(mailbox):
         return (f"{mailbox['address']} is still reading its past mail (the first sync); "
                 "start its scan again once the account shows as synced")
@@ -466,20 +489,22 @@ async def collect_campaign_threads(db: MailDB, run: dict, mailbox: dict) -> int:
 STALE_FOLLOWUP = "they wrote again after this follow-up was written; their message is answered as a reply instead"
 
 
-async def supersede_stale_followups(db: MailDB, mailbox_id: str) -> int:
+async def supersede_stale_followups(db: MailDB, mailbox_id: str = "") -> int:
     """A scan's follow-up still waiting (on Review, or approved) when they
     write again is out of date: it would ignore what they just said. It
     gives way, so the reply campaign (or a person) answers their message.
     Returns how many gave way."""
     stale = await db.query(
         "SELECT d.id, d.run_id FROM drafts d JOIN reply_runs r ON r.id = d.run_id "
-        "WHERE d.mailbox_id = ? AND r.kind = 'reconnect' AND d.status IN ('pending_review', 'approved') "
+        # (On Review only: one a person pressed Send on is theirs to send. And
+        # not one a person saved after their message came in.)
+        "WHERE (d.mailbox_id = ? OR ? = '') AND r.kind = 'reconnect' AND d.status = 'pending_review' "
         "AND EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = d.thread_id AND m.direction = 'inbound' "
-        "            AND m.sent_at > d.created_at)", (mailbox_id,))
+        "            AND m.sent_at > d.created_at AND m.sent_at >= d.updated_at)", (mailbox_id, mailbox_id))
     for d in stale:
         now = now_iso()
         n = await db.execute("UPDATE drafts SET status = 'rejected', error = ?, updated_at = ? WHERE id = ? "
-                             "AND status IN ('pending_review', 'approved')", (f"not sent: {STALE_FOLLOWUP}", now, d["id"]))
+                             "AND status = 'pending_review'", (f"not sent: {STALE_FOLLOWUP}", now, d["id"]))
         if n:
             await db.execute("UPDATE run_items SET status = 'skipped', detail = ?, updated_at = ? WHERE draft_id = ? "
                              "AND status IN ('needs_review', 'queued')", (STALE_FOLLOWUP, now, d["id"]))
@@ -489,7 +514,9 @@ async def supersede_stale_followups(db: MailDB, mailbox_id: str) -> int:
 
 async def threads_in_live_runs(db: MailDB, exclude_run: str = "") -> set[str]:
     """Threads waiting (or being drafted) in a run that has not finished, or
-    whose reply draft waits for a person: a second run would answer twice."""
+    whose reply draft waits for a person: a second run would answer twice.
+    (A scan's follow-up from before their newest message gives way first.)"""
+    await supersede_stale_followups(db)
     rows = await db.query(
         "SELECT ri.thread_id FROM run_items ri JOIN reply_runs r ON r.id = ri.run_id "
         "WHERE ((r.status IN ('queued', 'running', 'paused') AND ri.status = 'queued') OR ri.status = 'drafting') AND r.id != ?",
@@ -670,6 +697,11 @@ async def _finish_if_done(db: MailDB, run_id: str):
         await db.execute("UPDATE reply_runs SET done = ?, summary_json = ?, updated_at = ? WHERE id = ?",
                          (done, json.dumps(summary), now, run_id))
         return
+    if run["status"] in ("done", "failed"):
+        # Already over (an item of it changed later): only the counts move,
+        # it is not finished, timed or announced a second time.
+        await db.execute("UPDATE reply_runs SET done = ?, summary_json = ? WHERE id = ?", (done, json.dumps(summary), run_id))
+        return
     if summary["queued"] + summary["drafting"] == 0 and run["status"] not in ("cancelled", "paused"):
         await db.execute("UPDATE reply_runs SET status = 'done', done = ?, summary_json = ?, updated_at = ?, finished_at = ? WHERE id = ?",
                          (done, json.dumps(summary), now, now, run_id))
@@ -699,7 +731,7 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
     in order. Drafts, routes by mode and confidence, sends with pacing."""
     from bb.mail.brain import BrainError
     from bb.mail.drafting import draft_reconnect, draft_reply
-    from bb.mail.sending import AnsweredElsewhere, SendRefused, send_draft, sent_today
+    from bb.mail.sending import AnsweredElsewhere, SendRefused, StaleFollowUp, send_draft, sent_today
 
     run = await db.one("SELECT * FROM reply_runs WHERE id = ?", (run_id,))
     mailbox = await db.mailbox(mailbox_id)
@@ -757,8 +789,11 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
         if reconnect and thread["state"] in ("dismissed", "snoozed"):
             await mark(item, "skipped", "the thread was put away by hand")
             continue
-        if reconnect and thread["state"] == "needs_reply" and (thread["last_message_at"] or "") > (run.get("created_at") or ""):
-            await mark(item, "skipped", "they wrote again after this scan started; that needs a reply, not a follow-up")
+        if reconnect and (thread["last_message_at"] or "") > (run.get("created_at") or ""):
+            # Someone wrote in this thread after the scan started (them, you,
+            # a reply campaign): the conversation is live again, and a
+            # "picking this up" note would talk past it.
+            await mark(item, "skipped", "the conversation moved on after this scan started; no follow-up needed")
             continue
         clash = await answered_elsewhere(db, thread["id"], run_id, reconnect)
         if clash:
@@ -820,7 +855,13 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
             settings = service.settings_of(mailbox)        # the list just grew
             await mark(item, "skipped", f"{hard_no['from_email']} asked not to be contacted; added to the excluded list, nothing sent")
             continue
-        if not reconnect and scope and scope.get("mode") == "inquiry" and closed_after_no(messages, them):
+        answered_ids = frozenset()
+        if not reconnect and led is not None:
+            # (An outreach campaign's closing note sent through a mailbox that
+            # keeps no Sent copy is not in this thread: the ledger knows of it.)
+            answered_ids = frozenset(m["message_id"] for m in messages if m["direction"] == "inbound" and m.get("message_id")
+                                     and led.answered_by(m["message_id"]) not in (None, run_id))
+        if not reconnect and scope and scope.get("mode") == "inquiry" and closed_after_no(messages, them, answered_ids):
             await mark(item, "skipped", "they said no earlier and already got the closing note; a second would be pestering")
             continue
         if reconnect and item.get("contact"):
@@ -908,7 +949,7 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
                 await mark(item, "skipped", clash, draft_id)
                 continue
             out = await send_draft(db, secret, env, draft, dry_run=(run["mode"] == "dry_run"))
-        except AnsweredElsewhere as e:
+        except (AnsweredElsewhere, StaleFollowUp) as e:
             await db.execute("UPDATE drafts SET status = 'rejected', error = ?, updated_at = ? WHERE id = ?",
                              (f"not sent: {e}", now_iso(), draft_id))
             await mark(item, "skipped", str(e), draft_id)

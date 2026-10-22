@@ -15,12 +15,14 @@
     <td><b>{{ c.name }}</b>{% if c.goal %}<div class="tiny muted">{{ c.goal }}</div>{% endif %}</td>
     <td>{{ c.account or '—' }}{% if c.account_missing %} <span class="tag bad">account removed</span>{% endif %}</td>
     <td>{% if c.status == 'running' %}<span class="tag good">running</span>{% elif c.status == 'paused' %}<span class="tag warn">paused</span>{% elif c.status == 'stopped' %}<span class="tag">stopped</span>{% else %}<span class="tag">not set up</span>{% endif %}
+      {% if c.summary.worker_doing %}<div class="tiny {{ 'bad' if c.summary.worker_doing.state == 'stuck' else 'muted' }}">{{ c.summary.worker_doing.text }}</div>{% endif %}
       {% if c.summary.sending %}<div class="tiny muted">{{ c.summary.sending.text if c.summary.sending.text is defined else '' }}</div>{% endif %}</td>
     <td>{{ c.summary.recipients }} lead{{ 's' if c.summary.recipients != 1 else '' }} · {{ c.summary.sent + c.summary.replied }} emailed · {{ c.summary.replied }} replied · {{ c.summary.outbox_scheduled }} scheduled{% if c.summary.outbox_pending %} · <a href="/outbox">{{ c.summary.outbox_pending }} need review</a>{% endif %}</td>
     <td>{% if c.share and c.share.limit %}{{ c.share.used }} sent{% if c.share.share %}, part {{ c.share.share }}{% endif %} · account {{ c.share.total }} of {{ c.share.limit }}{% if c.share.members > 1 %} · shared by {{ c.share.members }}{% endif %}{% elif c.account %}no limit known{% endif %}</td>
     <td style="text-align:right;white-space:nowrap">
       <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/open"><button class="secondary small" type="submit">Open</button></form>
       {% if c.status == 'running' %}
+        <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/wake" title="Ends its sleep so it works now; one that does not answer is restarted"><button class="small" type="submit">Wake up</button></form>
         <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/pause"><button class="secondary small" type="submit">Pause</button></form>
         <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/stop" onsubmit="return confirm('Stop this campaign? Its leads and emails are kept.')"><button class="danger small" type="submit">Stop</button></form>
       {% elif c.status == 'paused' %}

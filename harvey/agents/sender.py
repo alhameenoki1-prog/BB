@@ -488,7 +488,7 @@ class Sender:
             if (prospect.email_status or "guess") not in sendable_email:
                 skipped += 1
                 continue
-            if self.ledger is not None and self.ledger.is_suppressed(email):
+            if self.ledger is not None and await self._led(self.ledger.is_suppressed, email):
                 # They asked another of this user's campaigns never to be contacted.
                 await self.state.update_prospect_status(prospect.id, "opted_out")
                 continue
@@ -595,7 +595,7 @@ class Sender:
             # Other campaigns send from this account too: this one keeps to
             # its part of the account's daily limit.
             try:
-                pic = self.ledger.allowance(self.ledger_account, self.ledger_campaign, "outreach", self.ledger_label)
+                pic = await self._led(self.ledger.allowance, self.ledger_account, self.ledger_campaign, "outreach", self.ledger_label)
             except Exception as e:
                 logger.warning(f"Sender: the shared send ledger could not be read ({e}); sending waits for the next pass.")
                 return
@@ -660,7 +660,7 @@ class Sender:
                 await self.state.update_outbox_item(
                     item["id"], status="cancelled", error="address marked invalid before sending")
                 continue
-            if self.ledger is not None and self.ledger.is_suppressed(item["to_email"]):
+            if self.ledger is not None and await self._led(self.ledger.is_suppressed, item["to_email"]):
                 # They asked another of this user's campaigns never to be contacted.
                 await self.state.update_outbox_item(
                     item["id"], status="cancelled", error="asked not to be contacted (in another campaign)")
@@ -669,7 +669,7 @@ class Sender:
                 continue
             if self.ledger is not None and item["kind"] != "sequence" and item.get("in_reply_to"):
                 try:
-                    by = self.ledger.answered_by(item["in_reply_to"])
+                    by = await self._led(self.ledger.answered_by, item["in_reply_to"])
                 except Exception:
                     by = None
                 if by and by != self.ledger_campaign:
@@ -765,6 +765,12 @@ class Sender:
         if sent:
             logger.info(f"Sender: {sent} email(s) sent this cycle "
                         f"({sent_today + sent}/{max_daily or 'no limit'} today).")
+
+    async def _led(self, fn, *args, **kw):
+        """A call on the shared ledger, off the event loop: the file is shared
+        with other processes, and a write can wait seconds for its turn while
+        the heartbeat, the send loop and the beat must keep running."""
+        return await asyncio.to_thread(fn, *args, **kw)
 
     async def _in_cooloff(self) -> bool:
         """True while a spam block has the sender standing down. The reason
@@ -1014,9 +1020,18 @@ class Sender:
             send_kwargs["plain"] = True
         slot = None
         if self.ledger is not None:
+            taking = asyncio.ensure_future(asyncio.to_thread(
+                self.ledger.reserve, self.ledger_account, self.ledger_campaign, "outreach",
+                self.ledger_label, kind=item.get("kind") or "sequence"))
             try:
-                slot, pic = self.ledger.reserve(self.ledger_account, self.ledger_campaign, "outreach",
-                                                self.ledger_label, kind=item.get("kind") or "sequence")
+                slot, pic = await asyncio.shield(taking)
+            except asyncio.CancelledError:
+                # Cut off while the slot was being taken: it goes back once taken.
+                def _give_back(f, _ledger=self.ledger):
+                    if not f.cancelled() and f.exception() is None and f.result()[0]:
+                        _ledger.release(f.result()[0])
+                taking.add_done_callback(_give_back)
+                raise
             except Exception as e:
                 slot, pic = None, {"reason": f"the shared send ledger could not be read ({e})"}
             if slot is None:
@@ -1035,13 +1050,15 @@ class Sender:
         if self.ledger is not None and slot:
             # The slot goes back only when the email did not leave, decided
             # by the send itself: a pass cut off while it finishes keeps it.
-            def _settle(task, _slot=slot, _ledger=self.ledger):
+            loop = asyncio.get_running_loop()
+
+            def _settle(task, _slot=slot, _ledger=self.ledger, _loop=loop):
                 try:
                     failed = task.cancelled() or task.exception() is not None or not task.result().ok
                 except Exception:
                     failed = True
                 if failed:
-                    _ledger.release(_slot)
+                    _loop.run_in_executor(None, _ledger.release, _slot)   # off the loop: the file may be busy
             inner.add_done_callback(_settle)
         result = await asyncio.shield(inner)
         if not result.ok:
@@ -1090,7 +1107,7 @@ class Sender:
             await self.state.update_prospect_status(prospect.id, "contacted")
         if self.ledger is not None and item.get("kind") != "sequence" and item.get("in_reply_to"):
             try:
-                self.ledger.mark_answered(self.ledger_account, self.ledger_campaign, [item["in_reply_to"]])
+                await self._led(self.ledger.mark_answered, self.ledger_account, self.ledger_campaign, [item["in_reply_to"]])
             except Exception:
                 pass
         try:

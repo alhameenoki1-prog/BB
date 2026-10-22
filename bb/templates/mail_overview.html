@@ -5,6 +5,7 @@
 <div class="page-head"><div><div class="eyebrow">Mail</div><h1>Command center</h1><p class="lead">Every connected mailbox, what needs a reply, and what the background worker is doing right now.</p></div>
   <div class="actions">
     {% if mail_worker %}<span class="tag good" id="worker-tag">Worker running</span><form class="inline" method="post" action="/mail/worker/stop"><button class="secondary small" type="submit">Stop</button></form>
+    {% elif mail_worker_pid %}<span class="tag bad" id="worker-tag" title="Its process is there but it has not checked in for a while">Worker not answering</span><form class="inline" method="post" action="/mail/worker/restart"><button class="small" type="submit">{{ icon('play', 14) }} Restart worker</button></form>
     {% else %}<span class="tag" id="worker-tag">Worker stopped</span><form class="inline" method="post" action="/mail/worker/start"><button class="small" type="submit">{{ icon('play', 14) }} Start worker</button></form>{% endif %}
   </div>
 </div>

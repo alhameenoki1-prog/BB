@@ -206,6 +206,7 @@ class Worker:
                 try:
                     from bb import campaigns as campaigns_mod
                     await asyncio.to_thread(campaigns_mod.backfill_suppressed, self.root)
+                    await asyncio.to_thread(campaigns_mod.backfill_answered, self.root)
                 except Exception as e:
                     logger.warning("opt-out back-fill failed: %s", e)
                 last_backfill = time.time()

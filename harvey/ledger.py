@@ -66,6 +66,10 @@ CREATE TABLE IF NOT EXISTS suppressed (
     source TEXT DEFAULT '',
     at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS lifted (
+    email TEXT PRIMARY KEY,
+    at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS answered (
     message_id TEXT PRIMARY KEY,
     account TEXT DEFAULT '',
@@ -148,6 +152,18 @@ class Ledger:
         finally:
             if own:
                 con.close()
+
+    def refresh(self, account: str, campaign: str, now: float | None = None) -> bool:
+        """Still here, nothing sent: extend a membership that is still
+        active, never start one (a campaign that stopped checking in because
+        it cannot send must not hold a part again). True when extended."""
+        con = self._con()
+        try:
+            t = self._now(now)
+            return con.execute("UPDATE members SET active_until = ? WHERE account = ? AND campaign = ? AND active_until > ?",
+                               (t + ACTIVE_SECONDS, _key(account), campaign, t)).rowcount > 0
+        finally:
+            con.close()
 
     def leave(self, account: str, campaign: str):
         """Paused, stopped or finished: the share goes back to the others now."""
@@ -303,8 +319,33 @@ class Ledger:
             return
         con = self._con()
         try:
+            if source == "backfill":
+                # Copied from an old record: one a person lifted stays lifted.
+                if con.execute("SELECT 1 FROM lifted WHERE email = ?", (email,)).fetchone():
+                    return
+            else:
+                con.execute("DELETE FROM lifted WHERE email = ?", (email,))   # they asked again: it holds again
             con.execute("INSERT OR IGNORE INTO suppressed(email, reason, source, at) VALUES (?, ?, ?, ?)",
                         (email, reason[:200], source[:80], self._now(now)))
+        finally:
+            con.close()
+
+    def unsuppress(self, email: str):
+        """A person took this address off an opt-out list on purpose: it is
+        no longer held back, and old records do not put it back."""
+        email = (email or "").strip().lower()
+        con = self._con()
+        try:
+            con.execute("DELETE FROM suppressed WHERE email = ?", (email,))
+            con.execute("INSERT OR REPLACE INTO lifted(email, at) VALUES (?, ?)", (email, time.time()))
+        finally:
+            con.close()
+
+    def forget(self, source: str, reason: str) -> int:
+        """Take out the rows one source put in for one reason."""
+        con = self._con()
+        try:
+            return con.execute("DELETE FROM suppressed WHERE source = ? AND reason = ?", (source, reason)).rowcount
         finally:
             con.close()
 

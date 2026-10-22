@@ -69,6 +69,9 @@ def _mail_reconnects(ws) -> tuple[dict[str, str], set[str]]:
     return alerts, {r[0] for r in rows}
 
 
+FROZEN_ALERT_SECONDS = 900   # a worker that has not answered for this long, restarts included, is reported
+
+
 async def observe(ws) -> dict:
     """What is wrong now and what is being watched at all:
     {alerts: {key: sentence}, kinds: {key: kind}, watched: {keys}, mailboxes: {ids}}.
@@ -94,6 +97,17 @@ async def observe(ws) -> dict:
             alerts[key] = where + health["alert"] + (" The mailbox needs signing in again: open the Mailbox page and press "
                                                      "Reconnect." if reconnect else "")
             kinds[key] = "reconnect" if reconnect else ("login" if not health.get("ok", True) else "stall")
+        elif hasattr(one, "worker_beat"):
+            # Frozen: the process is there but has not answered for a quarter
+            # of an hour, so the site's own restart did not bring it back.
+            # (Its own health check cannot say so: it runs inside the worker.)
+            beat = one.worker_beat()
+            stuck = one.worker_stuck() if beat and beat.get("age", 0) >= FROZEN_ALERT_SECONDS else ""
+            if stuck:
+                where = "" if main else f"{one.campaign_name()} ({one.sending_address()}): "
+                alerts[key] = where + (f"The worker stopped answering ({stuck}), and restarting it did not help. "
+                                       "Open the dashboard and press Wake up now, or look at the raw log there.")
+                kinds[key] = "frozen"
     mail_alerts, mailboxes = _mail_reconnects(ws)
     if ws.mail_worker_running() or ws.mail_autostart_file.exists():
         watched.add("mail:*")

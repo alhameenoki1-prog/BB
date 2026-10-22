@@ -127,7 +127,7 @@ class Harness:
         monkeypatch.setattr(main_mod, "StateManager", lambda: self.state)
         monkeypatch.setattr(main_mod, "in_quiet_hours", lambda config: False)
 
-        async def one_cycle_sleep(seconds, stop_event):
+        async def one_cycle_sleep(seconds, stop_event, *_what):   # (state, detail: for the beat)
             self.cycles += 1
             step = self.between.get(self.cycles)
             if step is not None:

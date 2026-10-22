@@ -185,6 +185,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             ok, detail = ws.start_mail_worker()
         elif action == "stop":
             ok, detail = await ws.stop_mail_worker()
+        elif action == "restart":
+            ok, detail = await ws.restart_mail_worker("Restart pressed on the Mail page")
         else:
             raise HTTPException(404)
         return _redirect("/mail", msg=detail if ok else "", error="" if ok else detail)
@@ -382,6 +384,17 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             first = e.errors()[0]
             return _redirect(f"/mail/accounts/{mailbox_id}", error=str(first["msg"]).replace("Value error, ", ""))
         await c["db"].update_mailbox(mailbox_id, settings=new.model_dump())
+        # An address taken off the list on purpose is no longer held back by
+        # the shared opt-out list either (every campaign reads that one).
+        before = {str(x).strip().lower() for x in (m["settings"].get("excluded") or [])}
+        lifted = sorted(e for e in before - {x.lower() for x in new.excluded} if "@" in e)
+        if lifted:
+            try:
+                led = c["ws"].ledger()
+                for email in lifted:
+                    led.unsuppress(email)
+            except Exception:
+                pass
         if (m["settings"].get("reply_to") or "") != new.reply_to:
             await c["ws"].main().account_changed(mailbox_id)       # the outreach campaign sends with the new Reply-To
         try:   # campaigns on this account share the new limit at once
@@ -884,6 +897,9 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             what = ("is paused: resume it or cancel it" if (busy or {}).get("status") == "paused"
                     else "is still going: it has to finish (or be cancelled)")
             return _redirect(f"/mail/runs/{run['busy']}", error=f"A follow-up run over these accounts {what} before another starts.")
+        if not run and boxes and all(m.get("status") in ("reconnect", "error", "disabled") for m in boxes):
+            return _redirect("/mail/runs", error="These accounts cannot read their mail until they are signed in again "
+                                                 "(Reconnect on the Accounts page).")
         if not run and boxes and all(runs_mod.still_syncing(m) for m in boxes):
             return _redirect("/mail/runs", error="These accounts are still reading their past mail (the first sync). "
                                                  "Start the scan again once they show as synced.")

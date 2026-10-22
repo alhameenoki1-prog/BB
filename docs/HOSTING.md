@@ -66,8 +66,10 @@ Google entirely: users can connect any mailbox with its own SMTP/IMAP
 settings on the **Mailbox** page (Gmail works there with an app password).
 
 **Letting other people use it from your Mac.** The Mac has to stay on and
-awake (`caffeinate -i python -m bb` keeps it awake while running). The
-site can open a public https address itself:
+awake. `python -m bb` keeps it from idling to sleep while the site runs
+(it starts `caffeinate` for itself; `BB_ALLOW_SLEEP=1` turns that off);
+a closed lid still puts it to sleep. The site can open a public https
+address itself:
 
 ```bash
 brew install cloudflared
@@ -501,8 +503,10 @@ person presses is held only to the account's own limit. Each user's
 `data/sendlog.db` is the ledger every worker reads before it sends; the
 same file holds the addresses that asked any campaign never to be
 contacted, which every campaign then skips (opt-outs recorded before it
-existed, and full addresses on any account's excluded list, are copied
-in), and which messages have been answered. An outreach campaign in
+existed are copied in; an address on an account's "Never auto-reply to"
+list is not an opt-out and stays that account's own; taking an address
+off that list lifts it everywhere), and which messages have been
+answered. An outreach campaign in
 quiet hours keeps its part through the night.
 
 ## The mail command center (`/mail`)
@@ -886,6 +890,53 @@ Save (a held email also has Save and approve). A scheduled email can be
 cancelled there too. Subjects are checked on their own everywhere: a
 boilerplate, clickbait or gloomy subject, or one that names nothing in
 the email, is replaced with a plain one built from your need.
+
+## When the worker seems asleep
+
+Between cycles the worker sleeps: a minute on the Fast, Relay and Custom
+speeds, two on Normal, five on Gentle, 45 seconds while recipients still
+wait for their first email. The dashboard says what it is doing under
+the page title ("Sleeping: the next cycle starts in 40 seconds", "Quiet
+hours: it starts again in 6h 10m", "Waiting 52 minutes before it checks
+again: …", "Recovering from an error"), the pill at the top of every
+page says the same in a word, and both keep themselves current.
+
+**Wake up now** (on the dashboard, and on each running row of the
+Campaigns page) ends whatever sleep the worker is in and runs a cycle at
+once, sending what is due. If it was waiting on the AI provider (a
+rejected key, out of credit) it tries again now instead of after its own
+half hour or hour, so press it after fixing the key or adding credit. In
+quiet hours it re-checks the clock and still sends nothing until they
+end, and says so. A worker in the middle of a cycle goes straight on to
+the next instead of sleeping; one busy with a slow step keeps the wake
+for when it is done. A worker that does not answer within 15 seconds and
+has not checked in for a minute is restarted (nothing is lost), and one
+that is not running is started.
+
+**A worker that froze is restarted on its own.** Every worker writes a
+small beat file (`data/worker.beat`) every ten seconds, whatever it is
+doing. When the beat stops for five minutes while the process is still
+there, or one cycle runs for 45 minutes, the site notes it in the log,
+asks the worker where it was stuck (every thread's stack goes into
+`data/harvey.log`) and restarts it, checking twice two minutes apart
+first so a Mac that just woke is not mistaken for a frozen worker. A
+worker still frozen after a quarter of an hour, restarts included, is
+reported by the mailbox alerts (email or webhook). The mail command
+center's worker has the same watch: the Mail page shows "Worker not
+answering" with a **Restart worker** button, and the site restarts it on
+its own too.
+
+**Why it used to sleep "forever".** Almost always the Mac itself was
+asleep: a sleeping Mac stops every program, and the worker's timers
+counted only the time it was awake, so a one-minute sleep begun before
+the Mac dozed off could still have most of its minute to run after it
+woke, and an hour's wait for the AI provider could stretch over a night.
+Every sleep now ends by the wall clock as well, so the worker carries on
+the moment the Mac wakes; the site keeps the Mac awake while it runs; the
+activity feed now shows errors, retries and the AI provider's waits it
+used to hide; and a full day's sending limit says when it starts again
+(00:00 UTC). On the login service, the site and its workers also run at
+normal priority instead of as a throttled background job.
 
 ## If the worker stops
 

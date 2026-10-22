@@ -210,6 +210,10 @@ STYLES = {
 }
 MAIL_PROVIDERS = ("gmail", "smtp", "microsoft", "microsoft_app")
 STOP_GRACE_SECONDS = 30   # how long a worker gets to finish after SIGTERM before SIGKILL
+WAKE_WAIT_SECONDS = 15    # how long Wake up now waits for the worker to answer before restarting it
+STUCK_GRACE_SECONDS = 5   # a frozen worker cannot finish anything: it is ended sooner
+STUCK_CYCLE_SECONDS = 45 * 60   # one cycle is cut off after 20 minutes at most; one running this long is stuck
+WAKE_BUSY_SECONDS = 60    # a beat this fresh with no answer to a wake: busy (a slow step), not frozen
 MAX_SIGNATURE_IMAGE = 1024 * 1024
 
 COMMON_TIMEZONES = (
@@ -1165,7 +1169,7 @@ class Workspace:
             "bounced": 0, "outbox_pending": 0, "outbox_scheduled": 0, "outbox_sent": 0,
             "outbox_failed": 0, "outbox_rejected": 0, "replies": 0, "open_replies": 0,
             "sent_today": 0, "sending_paused": "", "worker_running": bool(self.worker_running()),
-            "worker_paused": self.worker_paused(),
+            "worker_paused": self.worker_paused(), "worker_doing": self.worker_doing(),
             "configured": self.is_configured(), "gmail": self.mailbox_connected(),
             "mailbox": self.mail_provider(), "api_key": self.llm_configured(),
             "llm": self.llm()["label"],
@@ -1344,6 +1348,9 @@ class Workspace:
             if out["worker_paused"]:
                 return {"state": "stuck", "text": "Paused for edits: nothing is written or sent until you press Resume.", "link": ""}
             return {"state": "stuck", "text": "The worker is not running, so nothing is written or sent.", "link": ""}
+        if (out.get("worker_doing") or {}).get("state") == "stuck":
+            return {"state": "stuck", "text": f"The worker stopped answering ({self.worker_stuck()}). It is restarted on its own "
+                                               "within a few minutes; Wake up now does it at once.", "link": ""}
         if out["sending_paused"]:
             return {"state": "stuck", "text": f"All sending is paused ({out['sending_paused']}). Press Resume sending.", "link": ""}
         quiet = usage.get("quiet_hours") or {}
@@ -1370,8 +1377,11 @@ class Workspace:
             if "harvey is paused" in low or "usage limit reached" in low or "not sending" in low:
                 text = line.split(" - ", 2)[-1] if " - " in line else line
                 text = text.split("INFO:")[-1].split("ERROR:")[-1].strip()
-                if "usage limit" in low:
+                if "usage limit" in low and "/day" in low:
                     return {"state": "stuck", "text": f"The AI spend cap stopped the worker until tomorrow: {text[:160]} Raise the cap on the profile.", "link": "/profile"}
+                if "usage limit" in low:
+                    return {"state": "stuck", "text": f"The AI provider says the plan's usage or credit is used up; the worker checks again every hour: "
+                                                       f"{text[:160]} Add credit with the provider, then press Wake up now.", "link": "/apikey"}
                 if "paused" in low and "harvey is paused" in low:
                     return {"state": "stuck", "text": f"The AI provider is refusing calls: {text[:200]}", "link": "/apikey"}
                 if "quiet hours" in low or "sleeping" in low:
@@ -1381,7 +1391,13 @@ class Workspace:
                 break
         a = out["allowance"]
         if a.get("reached"):
-            return {"state": "stuck", "text": a["text"] + (" Switch off warm-up or raise the daily maximum on the profile." if a.get("warming") else " Raise the daily maximum on the profile."), "link": "/profile#sending"}
+            # The day's count starts again at midnight UTC: say when, so a
+            # full day does not read as a worker that went to sleep for good.
+            from datetime import datetime, timedelta, timezone
+            now = datetime.now(timezone.utc)
+            left = int(((now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) - now).total_seconds())
+            when = f" Sending starts again at 00:00 UTC, in {left // 3600}h {(left % 3600) // 60}m."
+            return {"state": "stuck", "text": a["text"] + when + (" Switch off warm-up or raise the daily maximum on the profile." if a.get("warming") else " Raise the daily maximum on the profile."), "link": "/profile#sending"}
         review = ""
         if out["outbox_pending"]:
             review = (f" {out['outbox_pending']} wait for your approval in the Outbox." if email.get("require_approval") else
@@ -1697,11 +1713,15 @@ class Workspace:
                 self.sync_main_registry()
             from bb import campaigns as campaigns_mod
             campaigns_mod.backfill_suppressed(self.user_root)   # every earlier opt-out holds here too
+            campaigns_mod.backfill_answered(self.user_root)     # and what was answered is not answered again
         except Exception as e:
             logger.warning("Could not set the shared limit for %s: %s", self.sending_address(), e)
         if pid := self.worker_running():
             return True, f"Already running (pid {pid})."
         self.ensure()
+        from harvey import wake
+        for leftover in (wake.WAKE_FILE, wake.BEAT_FILE):    # the previous process's, not this one's
+            (self.data_dir / leftover).unlink(missing_ok=True)
         try:
             with open(self.log_file, "a") as log:
                 proc = subprocess.Popen(
@@ -1717,7 +1737,8 @@ class Workspace:
         self._stamp_version(self.pid_file)
         return True, f"Started (pid {proc.pid})."
 
-    async def stop_worker(self, reason: str = "Stop pressed on the dashboard") -> tuple[bool, str]:
+    async def stop_worker(self, reason: str = "Stop pressed on the dashboard",
+                          grace: float = STOP_GRACE_SECONDS) -> tuple[bool, str]:
         self.autostart_file.unlink(missing_ok=True)
         pid = self.worker_running()
         if not pid:
@@ -1727,7 +1748,7 @@ class Workspace:
         self._note_in_log(f"BB is stopping the worker: {reason}.")
         try:
             os.kill(pid, signal.SIGTERM)
-            for _ in range(int(STOP_GRACE_SECONDS / 0.25)):   # a worker mid-send finishes the email first
+            for _ in range(max(1, int(grace / 0.25))):   # a worker mid-send finishes the email first
                 await asyncio.sleep(0.25)
                 if _process_gone(pid):
                     break
@@ -2007,10 +2028,52 @@ class Workspace:
     def mail_worker_running(self) -> int | None:
         try:
             pid = int(self.mail_pid_file.read_text().strip())
-            os.kill(pid, 0)
-            return pid
         except (OSError, ValueError):
             return None
+        # A zombie, or a number reused by another program after a reboot,
+        # is not the mail worker (and Stop must never signal that program).
+        if _process_gone(pid) or not _is_harvey_process(pid):
+            self.mail_pid_file.unlink(missing_ok=True)
+            return None
+        return pid
+
+    def mail_worker_stuck(self) -> str:
+        """Why the running mail worker looks frozen, or "": its process is
+        there but it has not touched its heartbeat for five minutes."""
+        from harvey import wake
+        if not self.mail_worker_running():
+            return ""
+        try:
+            age = time.time() - int((self.user_data_dir / "mailworker.heartbeat").read_text().strip())
+            started = self.mail_pid_file.stat().st_mtime
+        except (OSError, ValueError):
+            return ""
+        if age < wake.STALE_SECONDS or time.time() - started < wake.STALE_SECONDS:
+            return ""
+        return f"nothing from it for {int(age // 60)} minutes although its process is still there"
+
+    async def restart_mail_if_stuck(self, seen: dict) -> str:
+        """The site's watch for the mail worker: frozen on two looks in a row → restarted."""
+        key = "mail:" + str(self.user_root)
+        why = "" if self.user.get("disabled") else self.mail_worker_stuck()
+        if not why:
+            seen.pop(key, None)
+            return ""
+        if key not in seen:
+            seen[key] = time.time()
+            return ""
+        seen.pop(key, None)
+        return (await self.restart_mail_worker(why))[1]
+
+    async def restart_mail_worker(self, why: str = "Restart pressed") -> tuple[bool, str]:
+        try:
+            with open(self.mail_log_file, "a") as log:
+                log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} bb INFO Restarting the mail worker: {why}.\n")
+        except OSError:
+            pass
+        await self.stop_mail_worker()
+        ok, detail = self.start_mail_worker()
+        return ok, (f"The mail worker was restarted ({why}). {detail}" if ok else detail)
 
     def mail_worker_alive(self) -> bool:
         """Running and heartbeating within the last minute."""
@@ -2182,6 +2245,139 @@ class Workspace:
         ok, detail = self.start_worker()
         return f"The worker had stopped on its own and was started again ({detail})." if ok else ""
 
+    # ── waking a sleeping worker, and one that stopped answering ──
+
+    def worker_beat(self) -> dict | None:
+        """The running worker's last beat (what it is doing, until when),
+        or None: not running, or started on code that writes none."""
+        from harvey import wake
+        pid = self.worker_running()
+        beat = wake.read_beat(self.data_dir) if pid else None
+        if not beat or int(beat.get("pid") or 0) != pid:
+            return None                       # left over from an earlier process
+        return beat
+
+    def worker_stuck(self) -> str:
+        """Why the running worker looks frozen, or "": its process is alive
+        but it has written no beat for five minutes (something blocked it)."""
+        from harvey import wake
+        beat = self.worker_beat()
+        if not beat:
+            return ""
+        if beat["age"] < wake.STALE_SECONDS:
+            # Beating, but one cycle that never ends (a step waiting on
+            # something that will not answer) is stuck too.
+            busy = time.time() - float(beat.get("since") or time.time())
+            if beat.get("state") == "working" and busy > STUCK_CYCLE_SECONDS:
+                return f"one cycle has been running for {int(busy // 60)} minutes"
+            return ""
+        try:
+            started = self.pid_file.stat().st_mtime
+        except OSError:
+            started = 0.0
+        if time.time() - started < wake.STALE_SECONDS:
+            return ""
+        return f"nothing from it for {int(beat['age'] // 60)} minutes although its process is still there"
+
+    def worker_doing(self) -> dict:
+        """For the dashboard: {state, text} of the running worker, e.g. a
+        sleep with the time left, or {} when there is nothing to say."""
+        beat = self.worker_beat()
+        if not beat:
+            return {}
+        if self.worker_stuck():
+            return {"state": "stuck", "text": "Not answering: it is restarted on its own within a few minutes, or press Wake up now."}
+        state, left = beat.get("state") or "", max(0, int(float(beat.get("until") or 0) - time.time()))
+        when = (f"{left} seconds" if left < 90 else f"{round(left / 60)} minutes" if left < 5400
+                else f"{left // 3600}h {(left % 3600) // 60}m")
+        until = float(beat.get("until") or 0)
+        if state == "sleeping":
+            return {"state": "sleeping", "until": until, "text": f"Sleeping: the next cycle starts in {when}."}
+        if state == "quiet":
+            return {"state": "quiet", "until": until, "text": f"Quiet hours: it starts again in {when}."}
+        if state == "paused":
+            return {"state": "paused", "until": until,
+                    "text": f"Waiting {when} before it checks again: {beat.get('detail') or 'see the activity below'}."}
+        if state == "backoff":
+            return {"state": "backoff", "until": until, "text": f"Recovering from an error: it tries again in {when}."}
+        if state == "working":
+            return {"state": "working", "text": "Working on a cycle now."}
+        return {}
+
+    async def wake_worker(self, by: str = "the dashboard") -> tuple[bool, str]:
+        """Wake up now: the running worker ends whatever sleep it is in and
+        runs a cycle (a busy one goes straight on to the next instead of
+        sleeping). One that does not answer is restarted; one that is not
+        running is started (unless it was paused for edits)."""
+        from harvey import wake
+        if self.worker_paused():
+            return False, "The worker is paused for edits: press Resume to start it again."
+        pid = self.worker_running()
+        if not pid:
+            ok, detail = self.start_worker()
+            if ok:
+                self.paused_file.unlink(missing_ok=True)
+                return True, f"It was not running, so it was started. {detail}"
+            return False, detail
+        wake.request_wake(self.data_dir, by)
+        for _ in range(int(WAKE_WAIT_SECONDS / 0.25)):
+            await asyncio.sleep(0.25)
+            if not wake.wake_pending(self.data_dir):
+                break
+        else:
+            beat = self.worker_beat()
+            if beat and beat["age"] < WAKE_BUSY_SECONDS:
+                # It beat a moment ago: a slow step (a shared file another
+                # process is writing, a long call) holds it. The wake waits for it.
+                return True, ("It is busy with a slow step right now. The wake is waiting for it and it carries on "
+                              "the moment that step is done; press again in a minute if nothing changes.")
+            return await self.restart_stuck_worker(f"it did not answer Wake up now within {WAKE_WAIT_SECONDS} seconds")
+        beat = self.worker_beat() or {}
+        woke_from, until = beat.get("woken_from") or "", float(beat.get("woken_until") or 0)
+        if woke_from == "quiet":
+            left = max(0, int(until - time.time()))
+            return True, (f"It is awake, but it is quiet hours for another {left // 3600}h {(left % 3600) // 60}m, so nothing "
+                          "is sent until then. Untick \"Only send during these hours\" on the profile to send around the clock.")
+        if woke_from == "paused":
+            return True, f"It is checking again now. Last time it was waiting because: {beat.get('woken_detail') or 'see the activity'}."
+        if woke_from == "working":
+            return True, "It is in the middle of a cycle; when that is done it goes straight on to the next one instead of sleeping."
+        return True, "Woken up: it is running a cycle now."
+
+    async def restart_stuck_worker(self, why: str) -> tuple[bool, str]:
+        """End a worker that stopped answering and start it again."""
+        self._note_in_log(f"The worker stopped answering ({why}). Restarting it; nothing is lost.")
+        pid = self.worker_running()
+        if pid and hasattr(signal, "SIGUSR2"):
+            # Where it was stuck, every thread's stack, into its own log
+            # (harvey.main registers this): the cause can be read later.
+            try:
+                os.kill(pid, signal.SIGUSR2)
+                await asyncio.sleep(0.5)
+            except (ProcessLookupError, PermissionError):
+                pass
+        await self.stop_worker(f"it stopped answering ({why})", grace=STUCK_GRACE_SECONDS)
+        ok, detail = self.start_worker()
+        if ok:
+            self.paused_file.unlink(missing_ok=True)
+            return True, f"It was not answering ({why}), so it was restarted. {detail}"
+        return False, f"It was not answering ({why}) and could not be started again: {detail}"
+
+    async def restart_if_stuck(self, seen: dict) -> str:
+        """The site's watch: a worker found frozen on two checks in a row is
+        restarted. ``seen`` remembers the first check between calls."""
+        key = str(self.root)
+        why = "" if self.user.get("disabled") else self.worker_stuck()
+        if not why:
+            seen.pop(key, None)
+            return ""
+        if key not in seen:
+            seen[key] = time.time()
+            return ""
+        seen.pop(key, None)
+        ok, detail = await self.restart_stuck_worker(why)
+        return detail
+
     def recent_activity(self, limit: int = 30) -> list[dict]:
         """The worker log as a readable feed: newest first, routine chatter
         left out, repeats folded together. Each entry: when, agent, kind,
@@ -2205,8 +2401,10 @@ _LOG_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}):\d{2}(?:,\d+)?\s+(?:
 _NOISE = (
     "checking pipeline state", "checking for replies", "checking for campaigns", "no new replies",
     "no draft campaigns", "no new prospects", "no active campaigns", "decision:", "running ", "crafting email",
-    "harvey is online", "always be closing", "database initialized", "goodbye", "=====", "heartbeat",
-    "idle cycle", "analyst:", "sleeping", "email channel disabled",
+    "harvey is online", "always be closing", "database initialized", "goodbye", "=====", "independently of the heartbeat",
+    "idle cycle", "analyst:", "cycle complete. sleeping for", "email channel disabled",
+    # (Only the routine sleep line is left out: an error in the heartbeat, a
+    # timed-out cycle or an hour's wait on the AI limit stay in the feed.)
 )
 _AGENT_RE = re.compile(r"^(Sender|Writer|Handler|Scout|Analyst|Harvey|BB)\s*:\s*", re.I)
 
@@ -2221,7 +2419,7 @@ def classify_activity(text: str, level: str = "INFO") -> str:
         return "sent"
     if "queued" in low or "wrote" in low or "found names" in low or "sorted" in low or "personali" in low:
         return "wrote"
-    if "stopping" in low or "started over" in low or "paused" in low or "resum" in low or "stopped" in low:
+    if "stopping" in low or "started over" in low or "paused" in low or "resum" in low or "stopped" in low or "woken up" in low:
         return "control"
     return "info"
 

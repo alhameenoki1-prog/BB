@@ -252,13 +252,20 @@ class Handler:
 
         fresh = enquiry.fresh_text(reply_text)          # their words, not the history quoted below them
         text_lower = fresh.lower()
-        answered_by = self._answered_elsewhere((reply_meta or {}).get("message_id", ""))
+        answered_by = await self._answered_elsewhere((reply_meta or {}).get("message_id", ""))
         if answered_by:
             # Another campaign on this account (a reply campaign, while this
             # one was stopped) already answered this message: a second answer
             # would be a duplicate. Their no still holds here.
             if any(p in text_lower for p in OPT_OUT_PATTERNS) or enquiry.is_opt_out(fresh):
                 await self.state.update_prospect_status(prospect.id, "opted_out")
+            elif self.inquiry and enquiry.is_soft_no(fresh):
+                # Their no already got its closing note from the other campaign:
+                # the conversation is over here too, so a second no gets nothing.
+                await self.state.update_prospect_status(prospect.id, "lost")
+                for convo in await self.state.get_conversations_by_status("open"):
+                    if convo.prospect_id == prospect.id:
+                        await self.state.update_conversation(convo.id, status="closed", stage="closed_lost")
             logger.info(f"Handler: {lead_email}'s message was already answered by another campaign on this account; no second reply.")
             await self.state.log_action(action_type="answered_elsewhere", agent="handler",
                                         details={"prospect_email": lead_email, "by": answered_by,
@@ -330,7 +337,7 @@ class Handler:
             # Honor opt-outs ALWAYS. No reply, no future contact.
             await self.state.update_conversation(convo.id, status="closed", stage="closed_lost")
             await self.state.update_prospect_status(prospect.id, "opted_out")
-            self._suppress_everywhere(lead_email, "unsubscribed")
+            await self._suppress_everywhere(lead_email, "unsubscribed")
             await self.state.log_action(
                 action_type="opt_out",
                 agent="handler",
@@ -347,7 +354,7 @@ class Handler:
             await self.state.update_conversation(convo.id, status="needs_human")
             if hard_escalation:
                 await self.state.update_prospect_status(prospect.id, "opted_out")
-                self._suppress_everywhere(lead_email, "hostile or legal reply")
+                await self._suppress_everywhere(lead_email, "hostile or legal reply")
             await self.state.log_action(
                 action_type="escalation",
                 agent="handler",
@@ -485,7 +492,7 @@ class Handler:
                     await self._handle_bounce(msg)
                 elif msg.body.strip():
                     known = await self.state.get_prospect_by_email(msg.from_email)
-                    if known is not None and known.source == "inbox" and self._reply_campaign_runs():
+                    if known is not None and known.source == "inbox" and await self._reply_campaign_runs():
                         # They only wrote in; the reply campaign on this account answers them.
                         logger.info(f"Handler: inbox: a reply campaign answers {msg.from_email} on this account; no reply here.")
                     elif self.inbox_autoreply and (known is None or known.source == "inbox"):
@@ -580,46 +587,36 @@ class Handler:
             self._ledger_info = ledger_mod.from_env()
         return self._ledger_info
 
-    def _reply_campaign_runs(self) -> bool:
+    async def _reply_campaign_runs(self) -> bool:
         led, account, _, _ = self._ledger()
         if led is None:
             return False
         try:
-            return led.has_feature(account, "reply")
+            return await asyncio.to_thread(led.has_feature, account, "reply")
         except Exception as e:
             logger.debug(f"Handler: ledger read failed: {e}")
             return False
 
-    def _answered_elsewhere(self, message_id: str) -> str:
+    async def _answered_elsewhere(self, message_id: str) -> str:
         """Who else answered this inbound message (a reply campaign on the
         account while this campaign was stopped), or ""."""
         led, _, campaign, _ = self._ledger()
         if led is None or not message_id:
             return ""
         try:
-            by = led.answered_by(message_id)
+            by = await asyncio.to_thread(led.answered_by, message_id)
         except Exception as e:
             logger.debug(f"Handler: ledger read failed: {e}")
             return ""
         return by if by and by != campaign else ""
 
-    def _note_answered(self, message_id: str):
-        """This campaign answers this message: no other campaign does."""
-        led, account, campaign, _ = self._ledger()
-        if led is None or not message_id:
-            return
-        try:
-            led.mark_answered(account, campaign, [message_id])
-        except Exception as e:
-            logger.debug(f"Handler: ledger write failed: {e}")
-
-    def _suppress_everywhere(self, email: str, reason: str):
+    async def _suppress_everywhere(self, email: str, reason: str):
         """An opt-out here holds for every campaign of this user."""
         led, _, campaign, _ = self._ledger()
         if led is None:
             return
         try:
-            led.suppress(email, reason, campaign)
+            await asyncio.to_thread(led.suppress, email, reason, campaign)
         except Exception as e:
             logger.warning(f"Handler: could not add {email} to the shared suppression list: {e}")
 
@@ -666,15 +663,15 @@ class Handler:
         led, account, _, _ = self._ledger()
         if led is not None:
             try:
-                if led.has_feature(account, "reply"):
+                if await asyncio.to_thread(led.has_feature, account, "reply"):
                     # A reply campaign runs on this account: answering mail
                     # from people outside this campaign's list is its job.
                     logger.info(f"Handler: inbox: a reply campaign answers {sender} on this account; no reply here.")
                     return False
-                if led.is_suppressed(sender):
+                if await asyncio.to_thread(led.is_suppressed, sender):
                     logger.info(f"Handler: inbox: {sender} asked not to be contacted; no reply.")
                     return False
-                if self._answered_elsewhere(msg.message_id):
+                if await self._answered_elsewhere(msg.message_id):
                     logger.info(f"Handler: inbox: another campaign on this account already answered {sender}; no reply.")
                     return False
             except Exception as e:

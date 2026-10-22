@@ -106,6 +106,21 @@ def _retryable_smtp_error(e: Exception) -> bool:
     return classify_smtp_error(e)["retryable"]
 
 
+
+_IMAP_POOL = None
+
+
+def _imap_pool():
+    """IMAP reads run on threads of their own. A slow server can keep a
+    read going well past the moment the worker gave up waiting on it; in
+    the shared pool those threads would crowd out the name lookups every
+    send and every model call needs. Here they can only hold each other up."""
+    global _IMAP_POOL
+    if _IMAP_POOL is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _IMAP_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="imap")
+    return _IMAP_POOL
+
 class SmtpImapProvider(MailProvider):
     name = "smtp"
 
@@ -187,7 +202,7 @@ class SmtpImapProvider(MailProvider):
             return []
         loop = asyncio.get_event_loop()
         try:
-            return await loop.run_in_executor(None, self._fetch_unseen, limit)
+            return await loop.run_in_executor(_imap_pool(), self._fetch_unseen, limit)
         except Exception as e:
             logger.error(f"IMAP fetch failed: {e}")
             raise MailReadError(f"could not read the inbox at {self.imap_host}: {str(e)[:160]}") from e
@@ -314,7 +329,7 @@ class SmtpImapProvider(MailProvider):
     async def get_unanswered(self, days: int = 30, limit: int = 100) -> list[InboundMessage]:
         loop = asyncio.get_event_loop()
         try:
-            return await loop.run_in_executor(None, self._fetch_unanswered, days, limit)
+            return await loop.run_in_executor(_imap_pool(), self._fetch_unanswered, days, limit)
         except Exception as e:
             logger.error(f"IMAP backlog scan failed: {e}")
             return []
@@ -446,7 +461,7 @@ class SmtpImapProvider(MailProvider):
                     pass
 
         try:
-            await loop.run_in_executor(None, _imap_check)
+            await loop.run_in_executor(_imap_pool(), _imap_check)
         except Exception as e:
             return False, f"SMTP OK but IMAP login failed: {str(e)[:200]}"
         return True, f"SMTP + IMAP connected as {self.smtp_user}"

@@ -129,8 +129,31 @@ def cmd_serve(args):
         raise SystemExit(1)
     for line in startup_report(settings, accounts):
         print(line)
+    note = keep_mac_awake()
+    if note:
+        print(note)
     uvicorn.run(create_app(), host=settings.host, port=port, proxy_headers=True,
                 forwarded_allow_ips=settings.trusted_proxies)
+
+
+def keep_mac_awake(pid: int | None = None, platform: str | None = None) -> str:
+    """On a Mac, keep it from idling to sleep for as long as this site runs
+    (caffeinate -i, tied to this process). A Mac that dozes off stops every
+    worker in the middle of its sleep, which looks like a worker that never
+    wakes. The login service already does this; a site started by hand now
+    does too. Returns a line for the startup report, or ""."""
+    import subprocess as _sp
+    platform = platform or sys.platform
+    caffeinate = Path("/usr/bin/caffeinate")
+    if platform != "darwin" or not caffeinate.exists() or os.environ.get("BB_ALLOW_SLEEP"):
+        return ""
+    try:
+        _sp.Popen([str(caffeinate), "-i", "-w", str(pid or os.getpid())], stdin=_sp.DEVNULL,
+                  stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, start_new_session=True)
+    except OSError:
+        return ""
+    return ("Keeping this Mac awake while the site runs (it still sleeps if the lid is closed; "
+            "set BB_ALLOW_SLEEP=1 to let it sleep).")
 
 
 def cmd_restart(args):

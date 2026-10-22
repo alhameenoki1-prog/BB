@@ -218,7 +218,7 @@
   <main>
     {% if summary %}
     <div class="live" id="live" aria-live="polite">
-      <span class="pill"><i class="dot {{ '' if summary.worker_running else 'off' }}" data-k="dot"></i><span data-k="worker">{{ 'Working' if summary.worker_running else ('Paused for edits' if summary.worker_paused else 'Worker stopped') }}{{ ' · sending paused' if summary.sending_paused else '' }}</span></span>
+      <span class="pill"><i class="dot {{ '' if summary.worker_running else 'off' }}" data-k="dot"></i><span data-k="worker">{% set wd = (summary.worker_doing or {}).state %}{{ ({'sleeping': 'Sleeping', 'quiet': 'Quiet hours', 'paused': 'Waiting', 'backoff': 'Recovering', 'stuck': 'Not answering'}[wd] if wd in ('sleeping', 'quiet', 'paused', 'backoff', 'stuck') else 'Working') if summary.worker_running else ('Paused for edits' if summary.worker_paused else 'Worker stopped') }}{{ ' · sending paused' if summary.sending_paused else '' }}</span></span>
       <span class="pill">{{ icon('chat', 14) }}<b data-k="replies">{{ summary.replies }}</b> replies</span>
       <span class="pill">{{ icon('send', 14) }}<b data-k="sent">{{ summary.sent }}</b> sent · <b data-k="sent_today">{{ summary.sent_today }}</b> today</span>
       <span class="pill">{{ icon('clock', 14) }}<b data-k="not_sent">{{ summary.not_sent }}</b> waiting</span>
@@ -233,12 +233,37 @@
           const s = await r.json();
           document.querySelectorAll('#live [data-k]').forEach(el => {
             const k = el.dataset.k;
-            if (k === 'worker') el.textContent = (s.worker_running ? 'Working' : (s.worker_paused ? 'Paused for edits' : 'Worker stopped')) + (s.sending_paused ? ' · sending paused' : '');
+            const doingState = (s.worker_doing || {}).state;
+            const running = {sleeping: 'Sleeping', quiet: 'Quiet hours', paused: 'Waiting', backoff: 'Recovering', stuck: 'Not answering'}[doingState] || 'Working';
+            if (k === 'worker') el.textContent = (s.worker_running ? running : (s.worker_paused ? 'Paused for edits' : 'Worker stopped')) + (s.sending_paused ? ' · sending paused' : '');
             else if (k === 'dot') el.classList.toggle('off', !s.worker_running);
             else if (k in s) el.textContent = s[k];
           });
+          // The dashboard's worker line and sending card follow along.
+          const doing = document.getElementById('worker-doing-text');
+          if (doing) {
+            const d = s.worker_doing || {};
+            doing.textContent = d.text || '';
+            doing.dataset.state = d.state || '';
+            doing.dataset.until = d.until || '';
+            doing.style.color = d.state === 'stuck' ? 'var(--bad)' : '';
+            document.getElementById('worker-doing').style.display = (d.text && s.worker_running) ? '' : 'none';
+          }
+          const sending = document.getElementById('sending-status-text');
+          if (sending && s.sending && s.sending.text) sending.textContent = s.sending.text;
         } catch (e) {}
       }, 30000);
+      // A countdown between two looks, so "next cycle in 40 seconds" stays true.
+      setInterval(() => {
+        const el = document.getElementById('worker-doing-text');
+        const until = el && parseFloat(el.dataset.until || '0');
+        if (!el || !until || !['sleeping', 'quiet', 'paused', 'backoff'].includes(el.dataset.state)) return;
+        const left = Math.max(0, Math.round(until - Date.now() / 1000));
+        const when = left < 90 ? left + ' seconds' : left < 5400 ? Math.round(left / 60) + ' minutes'
+          : Math.floor(left / 3600) + 'h ' + Math.floor((left % 3600) / 60) + 'm';
+        el.textContent = el.textContent.replace(/in \d+ (seconds|minutes)|in \d+h \d+m|Waiting \d+ (seconds|minutes)|Waiting \d+h \d+m/,
+          m => (m.startsWith('Waiting') ? 'Waiting ' : 'in ') + when);
+      }, 1000);
     </script>
     {% endif %}
     {% block content %}{% endblock %}

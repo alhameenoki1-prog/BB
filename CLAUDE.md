@@ -127,7 +127,13 @@ mail DB, mail worker and alerts stay per user), reply campaigns
 per-user ledger `harvey/ledger.py` (`data/sendlog.db`) that splits each
 account's daily limit (`service.account_daily_limit`) and holds opt-outs
 for every campaign. Accounts can be added in bulk (`/mail/accounts/bulk`,
-`/mail/accounts/graph/bulk`).
+`/mail/accounts/graph/bulk`). **Wake up now** (`/worker/wake`,
+`/campaigns/outreach/<id>/wake`; `Workspace.wake_worker`) reaches a
+running worker through `data/worker.wake`; the worker's `harvey/wake.py`
+beat (`data/worker.beat`, every 10 s) feeds `Workspace.worker_doing` and
+the site's stuck-worker restart (`restart_if_stuck`, `restart_mail_if_stuck`
+in `keep_workers_alive`). Every worker sleep goes through `wake.sleep`
+(wall clock, wakeable); don't add a bare `asyncio.sleep` wait to the loops.
 The **mail command center** (`bb/mail/`, pages under `/mail`) is the newer
 multi-mailbox side: `db.py` (per-user `data/mail.db`, WAL), `crypto.py`
 (sealed credentials), `jobs.py` (SQLite queue, retries, dead-letter),

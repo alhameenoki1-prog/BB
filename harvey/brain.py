@@ -39,6 +39,9 @@ from harvey.paths import HOME_SKILLS_DIR, PROMPTS_DIR, SKILLS_DIR
 DEFAULT_TIMEOUT_SECONDS = 300  # a single model call should never hang forever
 DEFAULT_MAX_RETRIES = 2  # retries on transient failures (429, 5xx, network)
 RETRY_BASE_DELAY = 5.0  # seconds; doubles per attempt
+# A rate limit's Retry-After is honoured up to this: a provider asking for an
+# hour would otherwise hold the whole cycle (and the replies in it) that long.
+MAX_RETRY_AFTER_SECONDS = 60.0
 
 # ── Claude via the Anthropic API ──
 
@@ -278,7 +281,7 @@ class Brain:
         """Why calls are currently being skipped ("" when they aren't)."""
         if self.unavailable:
             return self.unavailable
-        if time.monotonic() < self._usage_limited_until:
+        if time.time() < self._usage_limited_until:
             return f"{self.provider_label} usage limit reached for this plan"
         return ""
 
@@ -307,7 +310,7 @@ class Brain:
         await self._expire_usage_pause()
         if self.unavailable:
             unchanged = self.codex.fingerprint() == self._unavailable_fingerprint
-            recent = time.monotonic() - self._unavailable_at < PROVIDER_RECHECK_SECONDS
+            recent = time.time() - self._unavailable_at < PROVIDER_RECHECK_SECONDS
             if unchanged and recent:
                 return self.unavailable
         try:
@@ -335,7 +338,7 @@ class Brain:
             if (stored.get("status") == "paused" and stored.get("kind") == "usage_limit"
                     and isinstance(until, (int, float)) and until > time.time()):
                 # Still inside a usage-limit pause recorded before a restart.
-                self._usage_limited_until = time.monotonic() + (until - time.time())
+                self._usage_limited_until = float(until)
                 self._usage_pause_recorded = True
             elif stored.get("status") == "paused":
                 await self._mark_available()
@@ -354,7 +357,7 @@ class Brain:
             return self.unavailable
         if self.unavailable:
             unchanged = self._fingerprint() == self._unavailable_fingerprint
-            recent = time.monotonic() - self._unavailable_at < PROVIDER_RECHECK_SECONDS
+            recent = time.time() - self._unavailable_at < PROVIDER_RECHECK_SECONDS
             if unchanged and recent:
                 return self.unavailable
             await self._mark_available()
@@ -375,14 +378,37 @@ class Brain:
         until = stored.get("until")
         if (stored.get("status") == "paused" and stored.get("kind") == "usage_limit"
                 and isinstance(until, (int, float)) and until > time.time()):
-            self._usage_limited_until = time.monotonic() + (until - time.time())
+            self._usage_limited_until = float(until)
             self._usage_pause_recorded = True
         elif stored.get("status") == "paused":
             await self._mark_available()
 
+    async def recheck(self):
+        """Someone pressed Wake up now: a provider problem is tested again
+        on the next call instead of after the half-hour wait, and a usage
+        pause is read again from what was stored (it still holds if its
+        time has not come)."""
+        if self.unavailable:
+            self._unavailable_at = 0.0
+            self._unavailable_fingerprint = None
+        if self._usage_limited_until > time.time():
+            # Out of credit or quota an hour ago: perhaps topped up since. The
+            # next call says; if it is still out, the hour's pause starts again.
+            self._usage_limited_until = 0.0
+            self._usage_pause_recorded = False
+            await self._record_status("ok", "")
+            logger.info(f"{self.provider_label}: trying again now (woken up by hand) instead of waiting out the hour.")
+        invalidate = getattr(getattr(self, "quota", None), "invalidate", None)
+        if callable(invalidate):
+            try:
+                invalidate()          # a plan's quota is read afresh too
+            except Exception:
+                pass
+        await self._expire_usage_pause()
+
     async def _start_usage_pause(self):
-        self._usage_limited_until = time.monotonic() + USAGE_LIMIT_PAUSE_SECONDS
         until = time.time() + USAGE_LIMIT_PAUSE_SECONDS
+        self._usage_limited_until = until
         resume = time.strftime("%H:%M UTC", time.gmtime(until))
         await self._record_status(
             "paused",
@@ -393,7 +419,7 @@ class Brain:
 
     async def _expire_usage_pause(self):
         """Record recovery once a usage-limit pause has run out."""
-        if self._usage_pause_recorded and time.monotonic() >= self._usage_limited_until:
+        if self._usage_pause_recorded and time.time() >= self._usage_limited_until:
             self._usage_pause_recorded = False
             if not self.unavailable:
                 logger.info(f"{self.provider_label} usage-limit pause is over; resuming.")
@@ -402,7 +428,7 @@ class Brain:
     async def _mark_unavailable(self, error):
         first = not self.unavailable or self.unavailable != str(error)
         self.unavailable = str(error)
-        self._unavailable_at = time.monotonic()
+        self._unavailable_at = time.time()
         self._unavailable_fingerprint = self._fingerprint()
         if first:
             await self._record_status("paused", self.unavailable,
@@ -510,7 +536,7 @@ class Brain:
         retry_after = 0.0
         for attempt in range(max_retries + 1):
             if attempt > 0:
-                delay = max(RETRY_BASE_DELAY * (2 ** (attempt - 1)), retry_after)
+                delay = max(RETRY_BASE_DELAY * (2 ** (attempt - 1)), min(retry_after, MAX_RETRY_AFTER_SECONDS))
                 logger.info(f"Retrying LLM call in {delay:.0f}s (attempt {attempt + 1}/{max_retries + 1})...")
                 await asyncio.sleep(delay)
                 retry_after = 0.0
@@ -636,7 +662,7 @@ class Brain:
         retry_after = 0.0
         for attempt in range(max_retries + 1):
             if attempt > 0:
-                delay = max(RETRY_BASE_DELAY * (2 ** (attempt - 1)), retry_after)
+                delay = max(RETRY_BASE_DELAY * (2 ** (attempt - 1)), min(retry_after, MAX_RETRY_AFTER_SECONDS))
                 logger.info(
                     f"Retrying Claude call in {delay:.0f}s "
                     f"(attempt {attempt + 1}/{max_retries + 1})..."
@@ -928,7 +954,7 @@ class Brain:
         work; when those can't be read, the call counter.
         """
         await self._expire_usage_pause()
-        if time.monotonic() < self._usage_limited_until:
+        if time.time() < self._usage_limited_until:
             # The provider said it is out of usage or credit: an unreadable
             # quota must not be mistaken for room to spend.
             logger.info(f"{self.paused_reason}; waiting for it to reset.")

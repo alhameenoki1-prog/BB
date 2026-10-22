@@ -81,9 +81,22 @@ def _lookup_domain_sync(domain: str) -> tuple[str, str | None]:
         return "error", None
 
 
+_DNS_POOL = None
+
+
+def _dns_pool():
+    """The list check's lookups on threads of their own, so a burst of them
+    never queues the name lookups a send or a model call is waiting on."""
+    global _DNS_POOL
+    if _DNS_POOL is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _DNS_POOL = ThreadPoolExecutor(max_workers=LOOKUP_CONCURRENCY, thread_name_prefix="listcheck-dns")
+    return _DNS_POOL
+
+
 async def lookup_domain(domain: str) -> tuple[str, str | None]:
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _lookup_domain_sync, domain)
+    return await loop.run_in_executor(_dns_pool(), _lookup_domain_sync, domain)
 
 
 LOOKUP_CONCURRENCY = 16    # DNS lookups in flight at once

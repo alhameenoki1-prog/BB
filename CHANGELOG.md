@@ -9,6 +9,20 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Wake up now, and a worker that is never stuck for long.** The
+  dashboard and each running outreach row on the Campaigns page have a
+  *Wake up now* button: the worker ends whatever sleep it is in and runs
+  a cycle at once (a provider pause is tried again, quiet hours are kept
+  and said so; one that does not answer is restarted, one not running is
+  started). The worker writes what it is doing to `data/worker.beat`
+  every ten seconds (`harvey/wake.py`), so the page says "Sleeping: the
+  next cycle starts in 40 seconds", "Quiet hours…", "Waiting…" or "Not
+  answering" and keeps it current; a worker whose beat stops for five
+  minutes, or whose cycle runs 45 minutes, is restarted by the site
+  after a stack dump into its log, and reported if that does not help.
+  The mail command center's worker gets the same watch and a Restart
+  button.
+
 - **Several campaigns at once, on several accounts.** A Campaigns page
   shows every outreach campaign, reply campaign, mailbox scan and reply
   run with its account, progress and its use of the account's daily
@@ -79,6 +93,39 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **The worker that slept "forever".** Every sleep in the worker (the
+  heartbeat, the send loop, quiet hours, the AI provider's waits, error
+  back-off) now ends by the wall clock and not only by a timer that stops
+  while a Mac sleeps, and the AI provider's own pauses are kept in wall
+  time; `python -m bb` keeps a Mac from idling to sleep while it runs
+  (`BB_ALLOW_SLEEP=1` to allow it); the login service runs at normal
+  priority (`ProcessType: Interactive`); a provider's Retry-After is
+  honoured up to a minute; the shared ledger is read off the worker's
+  main thread, and IMAP reads and the list check's lookups have thread
+  pools of their own, so neither can hold up the rest; the activity feed
+  shows the errors, retries and AI waits it used to hide; a provider's
+  credit pause says an hour, not "tomorrow"; a full day's limit says when
+  sending starts again. The mail worker is no longer taken to be running
+  when its process number belongs to something else.
+- **Second look at the campaigns fixes.** Two reviews of the previous
+  round found that the opt-out back-fill copied whole "Never auto-reply
+  to" lists (now only real opt-outs; what it copied is taken back out,
+  and taking an address off a list lifts it for good); the cap split
+  could leave two runs holding each other's part (finished runs' and
+  hand-sent mail are now taken out first, and review-mode runs keep their
+  part); an out-of-office counted as a no; a no that asks for something
+  got silence; a reply marked messages it never saw as answered; a
+  person's Send on an edited follow-up was refused; a paused campaign
+  kept its part of the limit all night; a scan could follow up a
+  conversation that had moved on; a finished scan was finished again.
+  Also: a draft approved on Review checks whether another campaign
+  answered the same message, a restarted outreach campaign closes a no
+  the reply campaign already answered, a stale follow-up gives way to
+  reply runs and the command bar too, a closing note an outreach campaign
+  sent from a mailbox that keeps no Sent copy is still known, answers
+  sent before the shared record existed are filled in, and an account
+  that needs signing in again says so instead of "still syncing". See
+  `tests/test_requirements_gaps.py` and `tests/test_wake.py`.
 - **Campaigns side by side: the gaps the requirements check found.** The
   command center's own daily cap is now split between the reply
   campaign, scans and reply runs on an account like the account's limit
@@ -90,7 +137,7 @@ minor versions can still change behaviour.
   while the reply campaign answered its leads skips those messages when
   it starts again and cancels its own queued reply to them. Every opt-out
   recorded before the shared list existed, by any campaign (removed ones
-  included) or on any account's excluded list, is copied into it
+  included) or by the command center, is copied into it
   (`campaigns.backfill_suppressed`, on every campaign start and every ten
   minutes in the mail worker). Someone who says no again after the
   closing note gets nothing more. A scan's follow-up still waiting when

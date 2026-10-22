@@ -17,6 +17,7 @@ def test_launchd_and_systemd_files(tmp_path):
     text = path.read_text()
     assert "<string>-m</string>" in text and "<string>bb</string>" in text and "/venv/bin/python" in text
     assert "<key>KeepAlive</key>" in text and "<key>RunAtLoad</key>" in text and str(root) in text
+    assert "<key>ProcessType</key>" in text and "<string>Interactive</string>" in text   # not throttled as a background job
     assert str(tmp_path / "data" / "site.log") in text and "<key>PATH</key>" in text and "/opt/homebrew/bin" in text
     assert any("starts at login" in n for n in notes) and any("sleeping" in n for n in notes)
     path, notes = service.install(root, tmp_path / "data", python="/venv/bin/python", system="Linux", home=home, load=False)

@@ -4,7 +4,8 @@ import asyncio
 import logging
 import signal
 import sys
-from datetime import datetime, time, timedelta
+import time as _time
+from datetime import datetime, time, timedelta, timezone
 
 import pytz
 
@@ -70,6 +71,9 @@ async def _mail_pass(handler, sender, brain, config, max_calls: int) -> str:
     except Exception:
         within = True
     if not within:
+        if getattr(brain, "paused_reason", ""):
+            # The provider said it is out of credit or quota: an hour's pause, not a day's.
+            return f"{brain.paused_reason}; replies wait until it resets (it is checked again every hour), so sending waits too"
         return "the daily AI spend cap is reached; replies wait for tomorrow, so sending waits too"
     async with _mail_lock:
         read = await asyncio.wait_for(handler.run(backlog=False), timeout=CYCLE_TIMEOUT_SECONDS)
@@ -107,10 +111,9 @@ async def _send_loop(handler, sender, brain, config, stop_event: asyncio.Event, 
             logger.error("Sender: a send pass timed out; trying again next time.")
         except Exception as e:
             logger.error(f"Sender: send pass failed: {e}")
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=every)
-        except asyncio.TimeoutError:
-            pass
+        from harvey import wake
+        if await wake.sleep(every, stop_event, "send", show=False) == "stop":
+            break
 
 
 def in_quiet_hours(config: HarveyConfig) -> bool:
@@ -265,16 +268,16 @@ async def _run_agents(tasks: list) -> dict:
     return outcomes
 
 
-async def _interruptible_sleep(seconds: float, stop_event: asyncio.Event) -> bool:
-    """Sleep up to `seconds`, waking immediately on shutdown.
+async def _interruptible_sleep(seconds: float, stop_event: asyncio.Event, state: str = "sleeping",
+                               detail: str = "") -> bool:
+    """Sleep up to `seconds`, waking at once on shutdown or when someone
+    presses Wake up now (harvey/wake.py), and by the wall clock, so a
+    machine that slept in between does not stretch it.
 
     Returns True if a shutdown was requested during the sleep.
     """
-    try:
-        await asyncio.wait_for(stop_event.wait(), timeout=seconds)
-        return True
-    except asyncio.TimeoutError:
-        return False
+    from harvey import wake
+    return await wake.sleep(seconds, stop_event, "heartbeat", state=state, detail=detail) == "stop"
 
 
 # Why the loop ended, for the last log line: set by the signal handler
@@ -338,11 +341,18 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
     send_task = None
     if sender.is_native and send_every > 0:
         send_task = asyncio.create_task(_send_loop(handler, sender, brain, config, stop_event, send_every, max_calls, state))
+    # The beat: what the worker is doing, for the dashboard, and how a press
+    # of Wake up now reaches it (harvey/wake.py).
+    from harvey import wake
+    wake.set_state("working")
+    beat_task = asyncio.create_task(wake.beat_loop(stop_event))
 
     try:
         await _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sender, handler, analyst,
                                 interval, max_calls, consecutive_errors, send_task is not None)
     finally:
+        beat_task.cancel()
+        wake.stop_beat()
         if send_task is not None:
             # The loop ends on its own after the current pass (stop_event is
             # set); give it time to finish an email in flight before cancelling.
@@ -356,22 +366,37 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
                     pass
 
 
-def _ledger_checkin(sender):
+async def _ledger_checkin(sender, state=None):
     """Tell the account's shared ledger this campaign is still working on
     it. Sends check in by themselves; a night of quiet hours (longer than
     the ledger's six hours) would otherwise read as a stopped campaign, and
-    the others would take its share before it wakes."""
+    the others would take its share before it wakes. Only a membership that
+    is still active is extended, and not while this campaign's sending is
+    paused or standing down after a spam block: one that cannot send in
+    the morning must not hold a part of the limit all night."""
     led = getattr(sender, "ledger", None)
     if led is None:
         return
     try:
-        led.join(sender.ledger_account, sender.ledger_campaign, "outreach", sender.ledger_label)
+        if state is not None:
+            from harvey.agents.sender import COOLOFF_KEY, KILL_SWITCH_KEY
+            if await state.get_setting(KILL_SWITCH_KEY):
+                return
+            until = await state.get_setting(COOLOFF_KEY)
+            if until:
+                try:
+                    if datetime.fromisoformat(until) > datetime.now(timezone.utc).replace(tzinfo=None):
+                        return
+                except ValueError:
+                    pass
+        await asyncio.to_thread(led.refresh, sender.ledger_account, sender.ledger_campaign)
     except Exception as e:
         logger.debug(f"ledger check-in failed: {e}")
 
 
 async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sender, handler, analyst,
                             interval, max_calls, consecutive_errors, has_send_loop):
+    last_wake_seen = 0.0
     while not stop_event.is_set():
         try:
             # 1. Check quiet hours
@@ -389,14 +414,31 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
                 # bounds the worst case to QUIET_HOURS_POLL_SECONDS instead
                 # of however long the missed timer would have run.
                 shutting_down = False
+                from harvey import wake
+                wake.set_state("quiet", _time.time() + sleep_for)
                 while in_quiet_hours(config):
-                    _ledger_checkin(sender)   # still a campaign on the account: its share waits for the morning
-                    if await _interruptible_sleep(QUIET_HOURS_POLL_SECONDS, stop_event):
+                    await _ledger_checkin(sender, state)   # still a campaign on the account: its share waits for the morning
+                    how = await wake.sleep(QUIET_HOURS_POLL_SECONDS, stop_event, "heartbeat", show=False)
+                    if how == "stop":
                         shutting_down = True
                         break
+                    if how == "wake" and in_quiet_hours(config):
+                        logger.info("Woken up during quiet hours: nothing is sent until they end "
+                                    f"({config.usage.quiet_hours.end} {config.usage.quiet_hours.timezone}).")
                 if shutting_down:
                     break
+                wake.set_state("working")
                 continue
+
+            # Woken up by hand since the last look: a provider problem or a
+            # usage pause is checked again now, not after its own wait.
+            from harvey import wake
+            if wake.last_woken() > last_wake_seen:
+                last_wake_seen = wake.last_woken()
+                try:
+                    await brain.recheck()
+                except Exception as e:
+                    logger.debug(f"brain re-check after a wake failed: {e}")
 
             # 2. Is the brain usable at all? (Codex: CLI version, isolation,
             # login, account and model checked without a prompt.) If not, do nothing
@@ -408,7 +450,7 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
                     f"Harvey is paused: {problem} Nothing was sent or changed. "
                     f"Re-checking in {config.usage.heartbeat_interval_minutes} minutes."
                 )
-                if await _interruptible_sleep(interval, stop_event):
+                if await _interruptible_sleep(interval, stop_event, "paused", str(problem)[:200]):
                     break
                 continue
 
@@ -421,11 +463,16 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
                 cap = (f"${config.usage.max_daily_cost_usd:.2f}/day"
                        if brain.provider == "claude" and config.usage.max_daily_cost_usd
                        else f"{config.usage.max_daily_claude_percent}% of quota")
-                logger.info(
-                    f"{brain.provider_label} usage limit reached "
-                    f"({cap} or {max_calls} calls). Sleeping 1h, then re-checking."
-                )
-                if await _interruptible_sleep(3600, stop_event):
+                if brain.paused_reason:
+                    # The provider is out of credit or quota (not the daily cap).
+                    logger.info(f"{brain.paused_reason}. Sleeping 1h, then re-checking (Wake up now checks at once).")
+                else:
+                    logger.info(
+                        f"{brain.provider_label} usage limit reached "
+                        f"({cap} or {max_calls} calls). Sleeping 1h, then re-checking."
+                    )
+                await _ledger_checkin(sender, state)   # still this account's campaign: its part waits for the reset
+                if await _interruptible_sleep(3600, stop_event, "paused", f"the AI usage limit ({cap}) is reached"):
                     break
                 continue
 
@@ -557,7 +604,7 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
                 exc_info=True,
             )
             logger.info(f"Recovering... sleeping {backoff}s before retry.")
-            if await _interruptible_sleep(backoff, stop_event):
+            if await _interruptible_sleep(backoff, stop_event, "backoff", str(e)[:200]):
                 break
 
     reason = _stop_reason["text"] or (
@@ -622,6 +669,15 @@ async def _run_with_signals():
         _stop_reason["text"] = f"{sig_name}, {source}"
         logger.info(f"Received {sig_name} ({source}). Finishing current work, then stopping...")
         stop_event.set()
+
+    # When the site finds this worker stuck it asks, before restarting it,
+    # where every thread was (written to the log): the cause can be read later.
+    if hasattr(signal, "SIGUSR2"):
+        try:
+            import faulthandler
+            faulthandler.register(signal.SIGUSR2, all_threads=True)
+        except Exception:
+            pass
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:

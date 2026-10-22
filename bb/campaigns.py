@@ -103,6 +103,15 @@ def outreach_owner(user_root: Path, account: str, email: str) -> dict | None:
     email = (email or "").strip().lower()
     if not email:
         return None
+    # Someone who only wrote in to an outreach campaign's inbox is answered
+    # by the reply campaign on the account while one runs (the campaign
+    # itself then steps back), and by the outreach campaign otherwise.
+    try:
+        from harvey.ledger import Ledger
+        reply_campaign = Ledger(ledger_path(user_root)).has_feature(account, "reply")
+    except Exception:
+        reply_campaign = False
+    only_leads = " AND COALESCE(source, '') != 'inbox'" if reply_campaign else ""
     for row in on_account(user_root, account):
         if not answering(user_root, row["id"]):
             continue
@@ -114,10 +123,7 @@ def outreach_owner(user_root: Path, account: str, email: str) -> dict | None:
         except sqlite3.Error:
             continue
         try:
-            # Someone who only wrote in to the inbox is not on the lead list:
-            # with a reply campaign on the account, answering them is its job.
-            hit = con.execute("SELECT 1 FROM prospects WHERE lower(email) = ? AND COALESCE(source, '') != 'inbox' "
-                              "LIMIT 1", (email,)).fetchone()
+            hit = con.execute(f"SELECT 1 FROM prospects WHERE lower(email) = ?{only_leads} LIMIT 1", (email,)).fetchone()
         except sqlite3.Error:
             hit = None
         finally:
@@ -159,11 +165,13 @@ def _campaign_dbs(user_root: Path) -> list[Path]:
 
 def backfill_suppressed(user_root: Path) -> int:
     """Put every opt-out this user already has into the shared list, so
-    each campaign honours them: people marked opted out in any campaign,
-    and the addresses on any account's excluded list. Opt-outs from before
-    the shared list existed (or from a campaign since removed) would
-    otherwise reach only the campaign that recorded them. Returns how
-    many addresses it looked at."""
+    each campaign honours them: people marked opted out in any campaign
+    (removed ones included), and people the command center recorded as
+    asking not to be contacted. Only real opt-outs: an address someone
+    typed into an account's "Never auto-reply to" list (a boss, a client)
+    is not one, and is never copied. Opt-outs from before the shared list
+    existed would otherwise reach only the campaign that recorded them.
+    Returns how many addresses it found."""
     from harvey.ledger import Ledger
     user_root = Path(user_root)
     found: dict[str, str] = {}
@@ -184,24 +192,80 @@ def backfill_suppressed(user_root: Path) -> int:
         try:
             con = sqlite3.connect(f"file:{mail_db}?mode=ro", uri=True, timeout=5)
             try:
-                for (raw,) in con.execute("SELECT settings_json FROM mailboxes"):
-                    try:
-                        excluded = (json.loads(raw or "{}") or {}).get("excluded") or []
-                    except (TypeError, ValueError):
-                        continue
-                    for x in excluded if isinstance(excluded, list) else []:
-                        x = str(x or "").strip().lower()
-                        if "@" in x and not x.startswith("@"):
-                            found.setdefault(x, "on an account's excluded list")
+                # Threads the command center put away because they asked
+                # (bb/mail/runs.suppress), and its own record of each one.
+                for (email,) in con.execute(
+                        "SELECT DISTINCT lower(m.from_email) FROM threads t JOIN messages m ON m.thread_id = t.id "
+                        "WHERE t.state = 'dismissed' AND t.state_reason = 'they asked not to be contacted' "
+                        "AND m.direction = 'inbound' AND m.from_email LIKE '%@%'"):
+                    found.setdefault(email.strip(), "asked not to be contacted")
+                for (text,) in con.execute("SELECT text FROM activity WHERE text LIKE '% asked not to be contacted: on the excluded list%'"):
+                    email = (text or "").split(" ", 1)[0].strip().lower()
+                    if "@" in email:
+                        found.setdefault(email, "asked not to be contacted")
             finally:
                 con.close()
         except sqlite3.Error:
             pass
+    led = Ledger(ledger_path(user_root))
+    # The first version of this copied whole "Never auto-reply to" lists;
+    # those rows are taken back out (real opt-outs are added again below).
+    led.forget(source="backfill", reason="on an account's excluded list")
     if not found:
         return 0
-    led = Ledger(ledger_path(user_root))
     already = led.suppressed_among(list(found))
     for email, reason in found.items():
         if email not in already:
             led.suppress(email, reason, "backfill")
     return len(found)
+
+
+def backfill_answered(user_root: Path, days: int = 30) -> int:
+    """Record the messages already answered before the shared record of
+    answers existed (or while it was not written), from the last ``days``
+    days: the command center's sent replies and every campaign's sent
+    replies. A campaign that starts again then never answers one of them a
+    second time. Returns how many it recorded."""
+    from harvey.ledger import Ledger
+    user_root = Path(user_root)
+    since = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - days * 86400))
+    marks: list[tuple[str, str, str]] = []           # (account, campaign, message id)
+    mail_db = user_root / "data" / "mail.db"
+    if mail_db.exists():
+        try:
+            con = sqlite3.connect(f"file:{mail_db}?mode=ro", uri=True, timeout=5)
+            try:
+                for account, run_id, mid in con.execute(
+                        "SELECT lower(b.address), d.run_id, d.in_reply_to FROM drafts d JOIN mailboxes b ON b.id = d.mailbox_id "
+                        "WHERE d.status = 'sent' AND d.kind = 'reply' AND d.in_reply_to != '' AND d.sent_at >= ?", (since,)):
+                    marks.append((account, run_id or "manual", mid))
+            finally:
+                con.close()
+        except sqlite3.Error:
+            pass
+    accounts = {r["id"]: (r.get("account") or "") for r in load(user_root)}
+    for cid, account in accounts.items():
+        db = campaign_root(user_root, cid) / "data" / "harvey.db"
+        if not account or not db.exists():
+            continue
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        except sqlite3.Error:
+            continue
+        try:
+            for (mid,) in con.execute("SELECT in_reply_to FROM outbox WHERE status = 'sent' AND kind IN ('reply', 'inbox_reply') "
+                                      "AND in_reply_to != '' AND COALESCE(sent_at, '') >= ?", (since,)):
+                marks.append((account, cid, mid))
+        except sqlite3.Error:
+            pass
+        finally:
+            con.close()
+    if not marks:
+        return 0
+    led = Ledger(ledger_path(user_root))
+    by_who: dict[tuple[str, str], list[str]] = {}
+    for account, campaign, mid in marks:
+        by_who.setdefault((account, campaign), []).append(mid)
+    for (account, campaign), ids in by_who.items():
+        led.mark_answered(account, campaign, ids)     # the first answer recorded stays the one that counts
+    return len(marks)

@@ -10,6 +10,7 @@ import contextvars
 import os
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -226,16 +227,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         async def keep_workers_alive():
             # Every two minutes: any worker that should be running and is not
-            # comes back, whether or not anyone is looking at the dashboard.
+            # comes back, and one whose process is there but has stopped
+            # answering (no beat for five minutes, on two checks in a row) is
+            # restarted, whether or not anyone is looking at the dashboard.
             await restart_old_code()
+            stuck_seen: dict = {}
+            last = time.time()
             while True:
                 await asyncio.sleep(120)
+                # The whole machine slept (a Mac's lid closed): the workers'
+                # beats are old for that reason alone. Look again next round.
+                woke_from_sleep = time.time() - last > 300
+                last = time.time()
                 try:
                     for ws in all_workspaces(settings, accounts):
                         for one in ws.all_campaigns():
                             if one.revive_worker():
                                 logger.info("Revived worker for %s (%s)", ws.user["email"], one.campaign_name())
-                        ws.revive_mail_worker()
+                            elif woke_from_sleep:
+                                stuck_seen.clear()
+                            else:
+                                note = await one.restart_if_stuck(stuck_seen)
+                                if note:
+                                    logger.warning("Worker for %s (%s): %s", ws.user["email"], one.campaign_name(), note)
+                        if not ws.revive_mail_worker() and not woke_from_sleep:
+                            note = await ws.restart_mail_if_stuck(stuck_seen)
+                            if note:
+                                logger.warning("Mail worker for %s: %s", ws.user["email"], note)
                 except Exception as e:
                     logger.warning("worker check failed: %s", e)
 
@@ -429,6 +447,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ok, detail = ws.resume_worker()
         elif action == "reset":
             ok, detail = await ws.reset_data()
+        elif action == "wake":
+            ok, detail = await ws.wake_worker("Wake up now on the dashboard")
         else:
             raise HTTPException(status_code=404)
         return _redirect("/", msg=detail if ok else "", error="" if ok else detail)

@@ -27,6 +27,10 @@ class AnsweredElsewhere(SendRefused):
     """Another campaign on the account already answered this message."""
 
 
+class StaleFollowUp(SendRefused):
+    """A scan's follow-up, and they wrote again after it was written."""
+
+
 def profile_root(env: dict) -> str:
     """Where the goal, brief and reply files come from: the campaign the
     run writes for (HARVEY_PROFILE_HOME), else the user's main profile."""
@@ -51,6 +55,20 @@ async def env_for_draft(db: MailDB, env: dict, draft: dict, mailbox: dict | None
     if not pid or pid == campaigns_mod.MAIN:
         return env
     return {**env, "HARVEY_PROFILE_HOME": str(campaigns_mod.profile_root(root, pid))}
+
+
+def _campaign_name(env: dict, campaign: str) -> str:
+    """A campaign id from the ledger, in words."""
+    root = (env or {}).get("HARVEY_HOME") or ""
+    if root and campaign:
+        from bb import campaigns as campaigns_mod
+        try:
+            row = campaigns_mod.get(root, campaign)
+        except Exception:
+            row = None
+        if row:
+            return row.get("name") or ("the main campaign" if campaign == campaigns_mod.MAIN else campaign)
+    return "a reply run" if campaign else "another campaign"
 
 
 def _today_utc() -> str:
@@ -131,11 +149,12 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
                              (draft["thread_id"], draft["created_at"]))
         if later:
             raise SendRefused("the thread was answered after this draft was written; sending it would be a second reply")
-    if draft.get("run_id") and draft.get("thread_id") and draft.get("created_at"):
+    if not pressed and draft.get("run_id") and draft.get("thread_id") and draft.get("created_at"):
+        # (A person who pressed Send saw the thread as it is now: theirs to send.)
         scan = await db.one("SELECT 1 FROM reply_runs WHERE id = ? AND kind = 'reconnect'", (draft["run_id"],))
         if scan and await db.one("SELECT 1 FROM messages WHERE thread_id = ? AND direction = 'inbound' AND sent_at > ? LIMIT 1",
                                  (draft["thread_id"], draft["created_at"])):
-            raise SendRefused("they wrote again after this follow-up was written; sending it would ignore what they said")
+            raise StaleFollowUp("they wrote again after this follow-up was written; sending it would ignore what they said")
     import json
     to = json.loads(draft.get("to_json") or "[]")
     if not to:
@@ -161,11 +180,17 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     if led is not None:
         run = await db.one("SELECT * FROM reply_runs WHERE id = ?", (draft.get("run_id") or "",)) if draft.get("run_id") else None
         led.set_limit(mailbox["address"], service.account_daily_limit(mailbox, service.open_creds(secret, mailbox)))
-        if (not pressed and draft.get("kind", "reply") == "reply" and draft.get("in_reply_to")
+        # A reply a run wrote (approved on Review or sent on its own) checks
+        # whether another campaign answered the same message meanwhile: on a
+        # mailbox that keeps no copy of what an outreach campaign sends, the
+        # thread here would never show that answer. (A reply a person wrote
+        # from scratch is theirs to send.)
+        if ((not pressed or draft.get("run_id")) and draft.get("kind", "reply") == "reply" and draft.get("in_reply_to")
                 and (run or {}).get("kind") != "reconnect"):    # a scan writes a new note, it answers nothing
             by = led.answered_by(draft["in_reply_to"])
             if by and by not in ((run or {}).get("id"), "manual"):
-                raise AnsweredElsewhere("another campaign on this account already answered this message")
+                raise AnsweredElsewhere(f"another campaign on this account ({_campaign_name(env, by)}) already answered "
+                                        "this message; sending this too would be a second answer")
         if run and not pressed and run["status"] in ("queued", "running"):
             slot, pic = led.reserve(mailbox["address"], run["id"], FEATURES.get(run.get("kind") or "reply", "reply-run"),
                                     run_label(run, mailbox["address"]), kind=draft.get("kind") or "reply")
@@ -199,8 +224,10 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
         # The messages this reply answers: an outreach campaign that reads
         # them later (it was stopped while they came in) leaves them be.
         try:
+            # (Only what was there when it was written: a message that came in
+            # after it is still waiting for an answer.)
             rows = await db.query("SELECT message_id FROM messages WHERE thread_id = ? AND direction = 'inbound' "
-                                "AND message_id != ''", (draft["thread_id"],))
+                                  "AND message_id != '' AND sent_at <= ?", (draft["thread_id"], draft.get("created_at") or now_iso()))
             led.mark_answered(mailbox["address"], (run or {}).get("id") or "manual",
                               [r["message_id"] for r in rows] + [draft.get("in_reply_to") or ""])
         except Exception:

@@ -324,6 +324,8 @@ def register_campaign_routes(app, settings, current_user, base_workspace, render
             ws.paused_file.unlink(missing_ok=True)
             ok, detail = await ws.stop_worker(f"Stop pressed for {name} on the Campaigns page")
             detail = "Stopped. Its leads, emails and replies are kept; Start picks up where it left off." if ok else detail
+        elif action == "wake":
+            ok, detail = await ws.wake_worker(f"Wake up now for {name} on the Campaigns page")
         elif action == "open":
             base.select(ws.campaign_id)
             return _redirect("/")

@@ -8,6 +8,7 @@
     <p class="lead">{% if done == 5 %}Your worker is researching, writing and sending one email per person, and watching for replies.{% else %}{{ 5 - done }} step{{ 's' if 5 - done != 1 else '' }} left before your first email goes out.{% endif %}</p></div>
   <div class="actions">
     {% if summary.worker_running %}
+      <form class="inline" method="post" action="/worker/wake" title="Ends the worker's sleep so it works now; a worker that does not answer is restarted"><button type="submit">{{ icon('play', 15) }} Wake up now</button></form>
       <form class="inline" method="post" action="/worker/pause"><button class="secondary" type="submit">{{ icon('pause', 15) }} Pause for edits</button></form>
       <form class="inline" method="post" action="/worker/stop"><button class="secondary" type="submit">{{ icon('stop', 15) }} Stop worker</button></form>
     {% elif summary.worker_paused %}
@@ -17,6 +18,7 @@
     {% endif %}
   </div>
 </div>
+{% if summary.worker_running %}<p class="small muted" id="worker-doing" style="margin:-6px 0 12px{{ '' if summary.worker_doing else ';display:none' }}"><b>Worker:</b> <span id="worker-doing-text" data-state="{{ summary.worker_doing.state or '' }}" data-until="{{ summary.worker_doing.until or '' }}"{% if summary.worker_doing.state == 'stuck' %} style="color:var(--bad)"{% endif %}>{{ summary.worker_doing.text }}</span></p>{% endif %}
 {% for p in problems %}<div class="card flat" style="border-color:var(--bad);color:var(--bad)">Server setup: {{ p }}</div>{% endfor %}
 {% if reconnect %}<div class="card flat" style="border-color:var(--bad)"><b style="color:var(--bad)">Your mailbox needs reconnecting.</b> <span class="small">{{ reconnect }}</span> <a href="/mailbox" class="button small" style="margin-left:8px">Reconnect on the Mailbox page</a></div>
 {% elif health and health.alert %}<div class="card flat" style="border-color:var(--bad);color:var(--bad)"><b>Mailbox:</b> {{ health.alert }} <a href="/mailbox">Mailbox page</a></div>{% endif %}
@@ -74,7 +76,7 @@
       {% if summary.sending_paused %}<p class="tiny" style="margin-top:8px">Reason: {{ summary.sending_paused }}</p>{% endif %}
       {% if summary.sending %}
       <div class="card flat" id="sending-status" style="margin-top:12px;{{ 'border-color:var(--warn)' if summary.sending.state == 'stuck' else ('border-color:var(--good)' if summary.sending.state == 'sending' else '') }}">
-        <b>{{ {'sending': 'Sending now.', 'waiting': 'Nothing to send yet.', 'stuck': 'Not sending.'}[summary.sending.state] }}</b> {{ summary.sending.text }}{% if summary.sending.link %} <a href="{{ summary.sending.link }}">Open</a>{% endif %}
+        <b>{{ {'sending': 'Sending now.', 'waiting': 'Nothing to send yet.', 'stuck': 'Not sending.'}[summary.sending.state] }}</b> <span id="sending-status-text">{{ summary.sending.text }}</span>{% if summary.sending.link %} <a href="{{ summary.sending.link }}">Open</a>{% endif %}
       </div>
       {% endif %}
       <details style="margin-top:16px">
