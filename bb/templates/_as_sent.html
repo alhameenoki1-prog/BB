@@ -1,0 +1,15 @@
+{# How an email looks when it goes out: every link on the words that name
+   it, the greeting and the signature. It follows the editor when there is
+   one (data-source = the textarea's id, data-preview-url = where to ask). #}
+{% from "_icons.html" import icon %}
+{% macro as_sent(doc, preview_url='', source='', plain=False) %}
+<div class="as-sent" data-preview-url="{{ preview_url }}" data-source="{{ source }}">
+  <div class="tiny muted as-sent-head">{{ icon('mail', 13) }} How it looks when sent{% if preview_url and not plain %} <span class="as-sent-note">(follows your edits; the links can be clicked to check them)</span>{% endif %}</div>
+  {% if plain %}
+  <p class="tiny muted" style="margin:4px 0 0">A first email goes as plain text (it lands in the inbox more often), so a web address in it shows as written. Follow-ups and replies carry each link on its words. The switch is on the profile, under sending.</p>
+  {% else %}
+  <iframe class="as-sent-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"
+          title="How the email looks when sent" srcdoc="{{ doc }}"></iframe>
+  {% endif %}
+</div>
+{% endmacro %}

@@ -28,9 +28,12 @@ def test_links_keep_the_sentence_and_never_break_the_markup():
     assert "See <a href" in body_to_html("See <https://docs.example/brief> for the rest.", L)
     assert '">the project brief</a>?' in body_to_html("Did you get a chance to open https://docs.example/brief?", L)
     assert 'href="https://en.wikipedia.org/wiki/Rebar_(steel)"' in body_to_html("See https://en.wikipedia.org/wiki/Rebar_(steel) now.", {})
-    # A sentence ending in a colon keeps its words; a short name becomes the link.
+    # A sentence ending in a colon keeps its words, and the document it names is the link.
     long_line = body_to_html("We need 40 t of B500B by 3 March; the spec, with grades and dates: https://docs.example/rebar", {})
-    assert "We need 40 t of B500B by 3 March; the spec, with grades and dates: <a" in long_line
+    assert ('We need 40 t of B500B by 3 March; <a href="https://docs.example/rebar" style="color:#0a60c2">the spec</a>, '
+            "with grades and dates.") in long_line
+    # One that names nothing keeps the address's own link after it.
+    assert "Pick any slot that suits you here: <a" in body_to_html("Pick any slot that suits you here: https://cal.example/jane", {})
     assert ">View the project brief</a>" in body_to_html("Project brief: https://docs.example/brief", L)
     assert ">View the project brief</a>" in body_to_html("Pricing: 2026: https://docs.example/brief", L)
     assert ">this link</a>." in body_to_html("Grab a time at https://cal.example/jane.", {})

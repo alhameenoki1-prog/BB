@@ -9,6 +9,12 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **How it looks when sent.** The draft editors (a thread's reply, the
+  Review page and the Outbox) show the email exactly as it goes out,
+  greeting, links on their words and signature included, in a sandboxed
+  frame that follows your edits as you type (`/mail/drafts/<id>/preview`,
+  `/outbox/<id>/preview`, `Workspace.as_sent`, `bb/templates/_as_sent.html`).
+
 - **Wake up now, and a worker that is never stuck for long.** The
   dashboard and each running outreach row on the Campaigns page have a
   *Wake up now* button: the worker ends whatever sleep it is in and runs
@@ -93,6 +99,16 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **The brief's link goes into the sentence.** A draft that put the
+  brief's address on a line of its own after "here's the project brief
+  with the full scope…" went out with the address on its own line (as
+  "View the full scope"). Now the words that name the document become
+  the link and the address's line is gone (`mail_provider._fold_links`,
+  `_doc_phrase`): the phrase after "here's", "attached", "see" or "in",
+  else the link's name from the profile, else the last document named;
+  "Here's the project brief: <address>" works the same way. Someone
+  else's document ("your proposal") is never linked, and a sentence that
+  names nothing keeps the separate "View …" line.
 - **The worker that slept "forever".** Every sleep in the worker (the
   heartbeat, the send loop, quiet hours, the AI provider's waits, error
   back-off) now ends by the wall clock and not only by a timer that stops

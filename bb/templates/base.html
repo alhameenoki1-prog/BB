@@ -272,6 +272,42 @@
 {% else %}
 {% block auth %}{% endblock %}
 {% endif %}
+<script>
+  // "How it looks when sent": the frame fits its email, and follows the
+  // editor it belongs to (asked again half a second after typing stops).
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.as-sent').forEach(box => {
+      const frame = box.querySelector('iframe');
+      if (!frame) return;
+      const fit = () => { try { frame.style.height = Math.min(900, frame.contentDocument.documentElement.scrollHeight + 4) + 'px'; } catch (e) {} };
+      frame.addEventListener('load', fit); fit();
+      const source = box.dataset.source && document.getElementById(box.dataset.source);
+      if (!source || !box.dataset.previewUrl) return;
+      let timer, asked = 0;
+      source.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+          const mine = ++asked;
+          try {
+            const url = new URL(box.dataset.previewUrl, location.href);
+            const form = source.closest('form');
+            const c = form && new URL(form.getAttribute('action') || location.pathname, location.href).searchParams.get('c');
+            if (c && !url.searchParams.has('c')) url.searchParams.set('c', c);
+            const data = new FormData(); data.append('body', source.value);
+            const r = await fetch(url, {method: 'POST', body: data, credentials: 'same-origin'});
+            if (!r.ok || mine !== asked) return;
+            const j = await r.json();
+            if (j.doc) frame.srcdoc = j.doc;
+          } catch (e) {}
+        }, 500);
+      });
+    });
+  });
+</script>
+<style>
+  .as-sent { margin-top: 12px; }
+  .as-sent-frame { width: 100%; min-height: 120px; border: 1px solid var(--line); border-radius: var(--r-sm); background: #fff; margin-top: 6px; }
+</style>
 {% if msg or error %}
 <div class="toasts">
   {% if msg %}<div class="toast ok">{{ icon('check', 16) }}<span>{{ msg }}</span><button onclick="this.parentNode.remove()" aria-label="Dismiss">{{ icon('x', 14) }}</button></div>{% endif %}

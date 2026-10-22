@@ -40,7 +40,7 @@ STALE_SECONDS = 300.0     # a beat this old, with the process alive, is a stuck 
 # wake once: set when the wake file is found, taken by that sleeper.
 _pending: dict[str, bool] = {}
 _SLEEPERS = ("heartbeat", "send")
-_state: dict = {"state": "starting", "until": 0.0, "detail": "", "since": time.time()}
+_state: dict = {"state": "starting", "until": 0.0, "detail": "", "since": time.time(), "since_steady": time.monotonic()}
 _woken_at = {"t": 0.0, "by": "", "from": "", "until": 0.0, "detail": ""}
 _folder: dict = {"path": None}   # set by beat_loop: until then (a test, a one-off command) no beat is written
 
@@ -85,7 +85,7 @@ def read_beat(folder: Path) -> dict | None:
 def set_state(state: str, until: float = 0.0, detail: str = ""):
     """What the worker is doing now, for the beat (written at once)."""
     if state != _state.get("state") or until != _state.get("until") or detail != _state.get("detail"):
-        _state.update(state=state, until=float(until or 0), detail=detail, since=time.time())
+        _state.update(state=state, until=float(until or 0), detail=detail, since=time.time(), since_steady=time.monotonic())
         _write_beat()
 
 
@@ -99,6 +99,8 @@ def _write_beat(folder: Path | None = None):
         tmp = folder / (BEAT_FILE + ".tmp")
         tmp.write_text(json.dumps({"at": time.time(), "pid": os.getpid(), "state": _state["state"],
                                    "until": _state["until"], "detail": _state["detail"], "since": _state["since"],
+                                   # how long in this state, counting only time the machine was awake
+                                   "busy_for": max(0.0, time.monotonic() - float(_state.get("since_steady") or time.monotonic())),
                                    "woken_at": _woken_at["t"], "woken_by": _woken_at["by"],
                                    # what it was doing when the wake came, for the site's answer
                                    "woken_from": _woken_at["from"], "woken_until": _woken_at["until"],
@@ -180,6 +182,9 @@ async def sleep(seconds: float, stop_event: asyncio.Event, who: str = "heartbeat
     if _pending.pop(who, False):
         return "wake"                    # a wake that came during the last cycle
     deadline = time.time() + max(0.0, float(seconds))
+    # The event loop's own clock as well: the wall clock covers a machine
+    # that slept (its monotonic clock stops), this one a wall clock set back.
+    steady_deadline = time.monotonic() + max(0.0, float(seconds))
     if show:
         set_state(state, deadline, detail)
     try:
@@ -188,7 +193,7 @@ async def sleep(seconds: float, stop_event: asyncio.Event, who: str = "heartbeat
                 return "stop"
             if _pending.pop(who, False):
                 return "wake"
-            left = deadline - time.time()
+            left = min(deadline - time.time(), steady_deadline - time.monotonic())
             if left <= 0:
                 return "time"
             try:

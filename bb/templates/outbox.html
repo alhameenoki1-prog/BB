@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
+{% from "_as_sent.html" import as_sent %}
 {% block title %}Outbox{% endblock %}
 {% block content %}
 <div class="page-head">
@@ -27,7 +28,12 @@
     </div>
   </div>
   <p style="margin:10px 0 8px"><b>{{ it.subject }}</b></p>
+  {% if it.as_sent and it.as_sent.html %}
+  {{ as_sent(it.as_sent.doc, '/outbox/' ~ it.id ~ '/preview', 'outbox-body-' ~ it.id) }}
+  {% else %}
   <div class="email">{{ it.body }}</div>
+  {% if it.as_sent and it.as_sent.plain %}{{ as_sent('', '', '', True) }}{% endif %}
+  {% endif %}
   {% if it.error %}<p class="small" style="color:var(--bad);margin-top:8px">{{ it.error }}</p>{% endif %}
   {% if status in ('pending_review', 'approved') %}
   <div class="actions" style="margin-top:12px">
@@ -46,7 +52,7 @@
     <form method="post" action="/outbox/{{ it.id }}/edit" style="margin-top:12px">
       <label>Or edit it yourself</label>
       <input name="subject" value="{{ it.subject }}" maxlength="200">
-      <textarea name="body" rows="9">{{ it.body }}</textarea>
+      <textarea name="body" rows="9" id="outbox-body-{{ it.id }}">{{ it.body }}</textarea>
       <div class="actions"><button class="small" type="submit">Save</button>{% if status == 'pending_review' %}<button class="small secondary" type="submit" name="approve" value="1">Save and approve</button>{% endif %}</div>
     </form>
   </div>

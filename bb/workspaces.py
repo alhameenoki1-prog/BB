@@ -210,6 +210,29 @@ STYLES = {
 }
 MAIL_PROVIDERS = ("gmail", "smtp", "microsoft", "microsoft_app")
 STOP_GRACE_SECONDS = 30   # how long a worker gets to finish after SIGTERM before SIGKILL
+_LIFECYCLE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _lifecycle_lock(key: str) -> asyncio.Lock:
+    """One stop-and-start at a time for one worker: two restarts pressed
+    together (or the site's watch and a button) must not start two."""
+    key = f"{id(asyncio.get_running_loop())}:{key}"     # (a lock belongs to one event loop)
+    lock = _LIFECYCLE_LOCKS.get(key)
+    if lock is None:
+        if len(_LIFECYCLE_LOCKS) > 4096:
+            _LIFECYCLE_LOCKS.clear()
+        lock = _LIFECYCLE_LOCKS[key] = asyncio.Lock()
+    return lock
+
+
+def _unlink_if_pid(path: Path, pid: int):
+    """Clear a pid file only while it still names the process that was
+    stopped: a worker started meanwhile keeps its record."""
+    try:
+        if int(path.read_text().strip()) == pid:
+            path.unlink(missing_ok=True)
+    except (OSError, ValueError):
+        path.unlink(missing_ok=True)
 WAKE_WAIT_SECONDS = 15    # how long Wake up now waits for the worker to answer before restarting it
 STUCK_GRACE_SECONDS = 5   # a frozen worker cannot finish anything: it is ended sooner
 STUCK_CYCLE_SECONDS = 45 * 60   # one cycle is cut off after 20 minutes at most; one running this long is stuck
@@ -1237,6 +1260,36 @@ class Workspace:
                   "sector_messages", "personalize_each")
     PERSONA_BRIEF_KEYS = ("name", "role", "company", "tone")
 
+    def as_sent(self, item: dict, body: str | None = None) -> dict:
+        """How an Outbox email goes out, for the page to show: {html} with
+        every link on the words that name it and the signature, or {plain:
+        True} for a first email sent as plain text (nothing to click there:
+        the address shows as written)."""
+        import html as _html
+        cfg = self.config() or {}
+        if not cfg:
+            return {"html": "", "plain": False}
+        try:
+            from harvey.config import HarveyConfig
+            from harvey.integrations.mail_provider import booking_url, render_parts
+            model = HarveyConfig(**cfg)
+            plain = (bool(getattr(model.channels.email, "plain_first_email", True))
+                     and (item.get("kind") or "sequence") == "sequence" and int(item.get("step") or 1) == 1)
+            if plain:
+                return {"html": "", "plain": True}
+            outreach = model.outreach.model_copy(update={"signature_image": ""})    # shown from this site below
+            text = item.get("body") or "" if body is None else body
+            html = render_parts(text, outreach, booking=booking_url(model))[1]
+        except Exception as e:
+            logger.debug("as_sent failed: %s", e)
+            return {"html": "", "plain": False}
+        if not html:
+            return {"html": "", "plain": False}
+        logo = '<img src="/signature/image" alt="" style="max-width:320px;height:auto;display:block;margin-top:6px">' \
+            if self.signature_image() else ""
+        html = html.replace(_html.escape("{{logo}}"), logo).replace("{{logo}}", logo)
+        return {"html": html, "plain": False}
+
     def writing_brief(self) -> str:
         """A fingerprint of everything in harvey.yaml that decides what an
         email says ("" before the profile exists). Read through the config
@@ -1758,7 +1811,7 @@ class Workspace:
                 _process_gone(pid)
         except (ProcessLookupError, PermissionError):
             pass
-        self.pid_file.unlink(missing_ok=True)
+        _unlink_if_pid(self.pid_file, pid)
         # Only now, with the last send pass over, does its share go back: a
         # send in flight would otherwise sign it up again.
         self._leave_ledger()
@@ -2071,8 +2124,9 @@ class Workspace:
                 log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} bb INFO Restarting the mail worker: {why}.\n")
         except OSError:
             pass
-        await self.stop_mail_worker()
-        ok, detail = self.start_mail_worker()
+        async with _lifecycle_lock("mail:" + str(self.user_root)):
+            await self.stop_mail_worker()
+            ok, detail = self.start_mail_worker()
         return ok, (f"The mail worker was restarted ({why}). {detail}" if ok else detail)
 
     def mail_worker_alive(self) -> bool:
@@ -2126,7 +2180,7 @@ class Workspace:
                 os.kill(pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
-        self.mail_pid_file.unlink(missing_ok=True)
+        _unlink_if_pid(self.mail_pid_file, pid)
         return True, "Stopped."
 
     def mail_brain_env(self) -> dict:
@@ -2170,8 +2224,9 @@ class Workspace:
         restarted after a save. Returns True when that happened."""
         if not self.worker_running():
             return False
-        await self.stop_worker(f"restarting to apply {reason}")
-        ok, _ = self.start_worker()
+        async with _lifecycle_lock(str(self.root)):
+            await self.stop_worker(f"restarting to apply {reason}")
+            ok, _ = self.start_worker()
         return ok
 
     async def reset_data(self) -> tuple[bool, str]:
@@ -2267,7 +2322,8 @@ class Workspace:
         if beat["age"] < wake.STALE_SECONDS:
             # Beating, but one cycle that never ends (a step waiting on
             # something that will not answer) is stuck too.
-            busy = time.time() - float(beat.get("since") or time.time())
+            # (Time the machine was awake: a cycle a closed lid paused is not stuck.)
+            busy = float(beat["busy_for"]) if "busy_for" in beat else time.time() - float(beat.get("since") or time.time())
             if beat.get("state") == "working" and busy > STUCK_CYCLE_SECONDS:
                 return f"one cycle has been running for {int(busy // 60)} minutes"
             return ""
@@ -2319,6 +2375,9 @@ class Workspace:
                 self.paused_file.unlink(missing_ok=True)
                 return True, f"It was not running, so it was started. {detail}"
             return False, detail
+        stuck = self.worker_stuck()
+        if stuck:
+            return await self.restart_stuck_worker(stuck, pid_seen=pid)    # what the page promised: at once
         wake.request_wake(self.data_dir, by)
         for _ in range(int(WAKE_WAIT_SECONDS / 0.25)):
             await asyncio.sleep(0.25)
@@ -2331,7 +2390,7 @@ class Workspace:
                 # process is writing, a long call) holds it. The wake waits for it.
                 return True, ("It is busy with a slow step right now. The wake is waiting for it and it carries on "
                               "the moment that step is done; press again in a minute if nothing changes.")
-            return await self.restart_stuck_worker(f"it did not answer Wake up now within {WAKE_WAIT_SECONDS} seconds")
+            return await self.restart_stuck_worker(f"it did not answer Wake up now within {WAKE_WAIT_SECONDS} seconds", pid_seen=pid)
         beat = self.worker_beat() or {}
         woke_from, until = beat.get("woken_from") or "", float(beat.get("woken_until") or 0)
         if woke_from == "quiet":
@@ -2344,8 +2403,16 @@ class Workspace:
             return True, "It is in the middle of a cycle; when that is done it goes straight on to the next one instead of sleeping."
         return True, "Woken up: it is running a cycle now."
 
-    async def restart_stuck_worker(self, why: str) -> tuple[bool, str]:
-        """End a worker that stopped answering and start it again."""
+    async def restart_stuck_worker(self, why: str, pid_seen: int | None = None) -> tuple[bool, str]:
+        """End a worker that stopped answering and start it again. With
+        ``pid_seen``, only that process: one already replaced is left be."""
+        async with _lifecycle_lock(str(self.root)):
+            pid = self.worker_running()
+            if pid_seen is not None and pid != pid_seen:
+                return True, "It was restarted a moment ago." if pid else "It had already stopped."
+            return await self._restart_stuck(why)
+
+    async def _restart_stuck(self, why: str) -> tuple[bool, str]:
         self._note_in_log(f"The worker stopped answering ({why}). Restarting it; nothing is lost.")
         pid = self.worker_running()
         if pid and hasattr(signal, "SIGUSR2"):
@@ -2375,7 +2442,7 @@ class Workspace:
             seen[key] = time.time()
             return ""
         seen.pop(key, None)
-        ok, detail = await self.restart_stuck_worker(why)
+        ok, detail = await self.restart_stuck_worker(why, pid_seen=self.worker_running())
         return detail
 
     def recent_activity(self, limit: int = 30) -> list[dict]:

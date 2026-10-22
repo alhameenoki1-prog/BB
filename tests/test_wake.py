@@ -217,7 +217,7 @@ async def test_a_frozen_worker_is_found_and_restarted_on_the_second_look(client,
     _beat(ws, 4242, age=900)
     restarted = []
 
-    async def fake_restart(self, why):
+    async def fake_restart(self, why, **_kw):
         restarted.append(why)
         return True, "restarted"
     monkeypatch.setattr(Workspace, "restart_stuck_worker", fake_restart)
@@ -256,7 +256,7 @@ async def test_a_busy_worker_keeps_the_wake_instead_of_being_restarted(client, m
     _beat(ws, 4242, age=5, state="working")                          # it beat five seconds ago
     restarted = []
 
-    async def fake_restart(self, why):
+    async def fake_restart(self, why, **_kw):
         restarted.append(why)
         return True, "restarted"
     monkeypatch.setattr(Workspace, "restart_stuck_worker", fake_restart)
@@ -345,3 +345,108 @@ def test_the_pill_says_what_the_worker_is_doing(client, monkeypatch):
     page = client.get("/").text
     assert 'data-k="worker">Quiet hours' in page and "Quiet hours: it starts again in" in page
     assert client.get("/api/summary").json()["worker_doing"]["state"] == "quiet"
+
+
+@pytest.mark.asyncio
+async def test_a_wall_clock_set_back_does_not_stretch_a_sleep(monkeypatch):
+    stop = asyncio.Event()
+    real = time.time
+    monkeypatch.setattr(wake.time, "time", lambda: real() - 3600)       # set back an hour at once
+    t0 = time.monotonic()
+    assert await wake.sleep(0.3, stop) == "time" and time.monotonic() - t0 < 3
+
+
+@pytest.mark.asyncio
+async def test_a_send_cut_off_while_its_slot_is_taken_gives_it_back(tmp_path, monkeypatch):
+    """The shared file was busy; the pass was cut off meanwhile: the slot
+    goes back and the email is queued again, not left 'sending'."""
+    import threading
+    from harvey.ledger import Ledger
+    from harvey.state import StateManager
+    from tests.test_outbox_native import FakeProvider, make_sender, seed_prospect
+    monkeypatch.setenv("HARVEY_LEDGER", str(tmp_path / "sendlog.db"))
+    monkeypatch.setenv("HARVEY_LEDGER_ACCOUNT", "harvey@x.co")
+    monkeypatch.setenv("HARVEY_LEDGER_CAMPAIGN", "c-1")
+    sm = StateManager(str(tmp_path / "h.db")); await sm.init_db()
+    sender = make_sender(sm, FakeProvider(), require_approval=False)
+    led = sender.ledger
+    release = threading.Event()
+    real_reserve = Ledger.reserve
+
+    def slow_reserve(self, *a, **k):
+        release.wait(5)                                   # another process holds the file
+        return real_reserve(self, *a, **k)
+    monkeypatch.setattr(Ledger, "reserve", slow_reserve)
+    pid = await seed_prospect(sm, email="jo@acme.com")
+    now = "2026-01-01T00:00:00"
+    iid = await sm.add_outbox_item(prospect_id=pid, to_email="jo@acme.com", subject="s", body="b", send_at=now,
+                                   status="approved", kind="reply")
+    item = await sm.get_outbox_item(iid)
+    task = asyncio.create_task(sender._send_one(item, await sm.get_prospect(pid), ""))
+    await asyncio.sleep(0.3)
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.5)
+    assert (await sm.get_outbox_item(iid))["status"] == "approved"
+    assert led.used_by("c-1") == 0                        # the slot went back
+
+
+
+@pytest.mark.asyncio
+async def test_two_restarts_at_once_leave_one_worker(client, monkeypatch):
+    """Wake up now pressed twice on a worker that does not answer, or a
+    press and the site's own watch together: one restart, one worker."""
+    ws = _ws(client)
+    running = {"pid": 4242}
+    started = []
+    monkeypatch.setattr(Workspace, "worker_running", lambda self: running["pid"])
+
+    async def slow_stop(self, reason="", grace=30):
+        await asyncio.sleep(0.2)
+        running["pid"] = None
+        return True, "Stopped."
+
+    def start(self):
+        started.append(1)
+        running["pid"] = 5000 + len(started)
+        return True, f"Started (pid {running['pid']})."
+    monkeypatch.setattr(Workspace, "stop_worker", slow_stop)
+    monkeypatch.setattr(Workspace, "start_worker", start)
+    out = await asyncio.gather(ws.restart_stuck_worker("a", pid_seen=4242), ws.restart_stuck_worker("b", pid_seen=4242))
+    assert len(started) == 1 and running["pid"] == 5001
+    assert any("restarted a moment ago" in msg for _, msg in out)
+
+
+def test_a_stop_clears_only_its_own_record(tmp_path):
+    from bb.workspaces import _unlink_if_pid
+    f = tmp_path / "harvey.pid"
+    f.write_text("5001")                       # a new worker started meanwhile
+    _unlink_if_pid(f, 4242)
+    assert f.read_text() == "5001"
+    _unlink_if_pid(f, 5001)
+    assert not f.exists()
+
+
+def test_a_cycle_a_closed_lid_paused_is_not_stuck(client, monkeypatch):
+    ws = _ws(client)
+    monkeypatch.setattr(Workspace, "worker_running", lambda self: 4242)
+    # Eight hours by the wall clock, ten minutes of it awake.
+    _beat(ws, 4242, age=5, state="working", since=time.time() - 8 * 3600, busy_for=600)
+    assert ws.worker_stuck() == ""
+
+
+@pytest.mark.asyncio
+async def test_wake_up_now_restarts_a_cycle_that_hangs(client, monkeypatch):
+    ws = _ws(client)
+    monkeypatch.setattr(Workspace, "worker_running", lambda self: 4242)
+    _beat(ws, 4242, age=5, state="working", since=time.time() - 3 * 3600, busy_for=3 * 3600)
+    restarted = []
+
+    async def fake_restart(self, why, **kw):
+        restarted.append((why, kw))
+        return True, "restarted"
+    monkeypatch.setattr(Workspace, "restart_stuck_worker", fake_restart)
+    ok, msg = await ws.wake_worker()
+    assert msg == "restarted" and "one cycle has been running" in restarted[0][0] and restarted[0][1]["pid_seen"] == 4242

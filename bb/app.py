@@ -1040,7 +1040,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if status not in ("pending_review", "approved", "sent", "failed", "bounced", "rejected"):
             status = "pending_review"
         ws = workspace_for(user)
-        return await render(request, "outbox.html", user, items=await ws.outbox(status), status=status)
+        from bb.mail.sending import preview_document
+        items = await ws.outbox(status)
+        for it in items:
+            # What the recipient sees: every link on the words that name it.
+            shown = ws.as_sent(it)
+            it["as_sent"] = {**shown, "doc": preview_document(shown.get("html") or "")}
+        return await render(request, "outbox.html", user, items=items, status=status)
 
     @app.post("/outbox/rewrite-unsent")
     async def outbox_rewrite_unsent(user: dict = Depends(current_user)):
@@ -1065,6 +1071,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         item = await state.get_outbox_item(item_id)
         if not item:
             raise HTTPException(status_code=404)
+        if action == "preview":
+            from bb.mail.sending import preview_document
+            form = dict(await request.form())
+            shown = ws.as_sent(item, str(form.get("body", "") or ""))
+            return JSONResponse({"doc": preview_document(shown.get("html") or ""), "plain": shown.get("plain", False)})
         back = f"/outbox?status={item['status'] if item['status'] in ('pending_review', 'approved') else 'pending_review'}"
         if action == "approve":
             await state.approve_outbox(item_id)

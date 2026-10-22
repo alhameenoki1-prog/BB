@@ -471,7 +471,12 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
                         f"{brain.provider_label} usage limit reached "
                         f"({cap} or {max_calls} calls). Sleeping 1h, then re-checking."
                     )
-                await _ledger_checkin(sender, state)   # still this account's campaign: its part waits for the reset
+                if brain.paused_reason:
+                    # The provider's own hour-long pause (credit, quota): this
+                    # campaign is back within the hour, so its part waits for it.
+                    # (Not the daily spend cap: that holds until tomorrow, and
+                    # a part held all day would only slow the others.)
+                    await _ledger_checkin(sender, state)
                 if await _interruptible_sleep(3600, stop_event, "paused", f"the AI usage limit ({cap}) is reached"):
                     break
                 continue

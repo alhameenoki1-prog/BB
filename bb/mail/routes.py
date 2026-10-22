@@ -3,11 +3,12 @@ the scope selector, Gmail OAuth for mailboxes, and the live event stream."""
 
 import asyncio
 import json
+import logging
 import re
 import secrets
 
 from fastapi import Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
 from bb import gmail_oauth, microsoft_oauth
@@ -17,6 +18,8 @@ from bb.mail import scope as scope_mod
 from bb.mail.models import COLORS, MailboxSettings
 from bb.mail.providers import AuthError, TransientError
 from bb.mail_autoconfig import guess_settings
+
+logger = logging.getLogger("bb.mail.routes")
 
 GMAIL_STATE_COOKIE = "bb_mail_gmail_state"
 BULK_LIMIT = 50
@@ -607,8 +610,11 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                 draft["to"] = json.loads(draft.get("to_json") or "[]"); draft["qa"] = json.loads(draft.get("qa_json") or "{}")
         in_flight = await c["db"].query("SELECT * FROM drafts WHERE thread_id = ? AND status IN ('approved', 'failed') ORDER BY updated_at DESC LIMIT 3", (thread_id,))
         box_ready = service.ready_to_send(box) if box else (False, "")
+        draft_preview = ""
+        if draft:
+            draft_preview = await _preview_doc(c, draft, draft.get("body") or "")
         return await render(request, "mail_thread.html", user, **page_ctx(c), thread=t, box=box, messages=messages,
-                            draft=draft, in_flight=in_flight, box_ready=box_ready)
+                            draft=draft, in_flight=in_flight, box_ready=box_ready, draft_preview=draft_preview)
 
     @app.post("/mail/threads/{thread_id}/snooze")
     @app.post("/mail/threads/{thread_id}/dismiss")
@@ -638,6 +644,24 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
     def _brain(ws):
         from bb.mail.brain import MailBrain
         return MailBrain(ws.mail_brain_env())
+
+    async def _preview_doc(c, draft: dict, body: str) -> str:
+        """The draft as it would go out (links on their words), as a page for the preview frame."""
+        from bb.mail.sending import preview_document, preview_html
+        try:
+            return preview_document(await preview_html(c["db"], {"HARVEY_HOME": str(c["ws"].user_root)}, draft, body))
+        except Exception as e:
+            logger.debug("preview failed: %s", e)
+            return ""
+
+    @app.post("/mail/drafts/{draft_id}/preview")
+    async def mail_draft_preview(request: Request, draft_id: str, user: dict = Depends(current_user)):
+        c = await ctx(user)
+        d = await _draft_row(c["db"], draft_id)
+        if not d:
+            raise HTTPException(404)
+        form = dict(await request.form())
+        return JSONResponse({"doc": await _preview_doc(c, d, str(form.get("body", "") or ""))})
 
     async def _draft_row(db, draft_id: str) -> dict | None:
         d = await db.one("SELECT * FROM drafts WHERE id = ?", (draft_id,))
@@ -736,6 +760,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             r["to"] = json.loads(r.get("to_json") or "[]")
             r["qa"] = json.loads(r.get("qa_json") or "{}")
             r["box"] = boxes.get(r["mailbox_id"])
+            r["preview"] = await _preview_doc(c, r, r.get("body") or "")
         recent = await c["db"].query(
             f"SELECT d.*, t.subject AS thread_subject FROM drafts d LEFT JOIN threads t ON t.id = d.thread_id "
             f"WHERE d.mailbox_id IN ({marks}) AND d.status IN ('sent', 'dry_run', 'approved', 'failed') ORDER BY d.updated_at DESC LIMIT 30", ids)

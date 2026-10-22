@@ -779,6 +779,20 @@ link, once per conversation, matched to their sector. The Inbox
 auto-reply and the mail command center read the same rows, so a reply
 run told "send the scope link when they ask" sends the right one.
 
+**The link sits on the words.** In the email the recipient gets, the
+link is on the words that name the document: in "here's the project
+brief with the full scope of what we need", *the project brief* is the
+link, and the address itself does not appear. (An address after a
+sentence that names nothing goes on a line of its own as "View the
+project brief".) The draft editors, on a thread, on Review and in the
+Outbox, show the address where it goes, and under it **How it looks when
+sent**: the email exactly as it goes out, greeting, links and signature
+included, following your edits as you type; its links can be clicked to
+check them. The plain-text copy that travels with every email keeps the
+address, since plain text has nothing else to click, and a first email
+sent as plain text (the profile's recommendation) shows addresses as
+written; follow-ups and replies carry the links on their words.
+
 A need nobody could repeat back ("start working with your team") is
 refused when you save, with the reason. Every draft is also checked for
 campaign phrasing ("our team has a current need", "how you usually

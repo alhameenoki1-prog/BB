@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
+{% from "_as_sent.html" import as_sent %}
 {% block title %}{{ thread.subject }}{% endblock %}
 {% block content %}
 <div class="page-head"><div><div class="eyebrow">Mail · thread{% if box %} · <span class="acct acct-{{ box.settings_model.color }}">{{ box.address }}</span>{% endif %}</div><h1 style="font-size:22px">{{ thread.subject or '(no subject)' }}</h1>
@@ -35,8 +36,9 @@
       <div><label>Reply-To <span class="muted" style="font-weight:400">(where their answer lands)</span></label><input type="email" name="reply_to" value="{{ draft.reply_to }}" placeholder="blank = {{ box.address if box else 'this mailbox' }}"></div>
     </div>
     <label>Reply</label>
-    <textarea name="body" rows="9">{{ draft.body }}</textarea>
-    <div class="hint">The greeting, your signature and the project link are added when it is sent, whatever is written here.</div>
+    <textarea name="body" rows="9" id="draft-body-{{ draft.id }}">{{ draft.body }}</textarea>
+    <div class="hint">The greeting, your signature and the project link are added when it is sent, whatever is written here. A web address on its own line goes out as a link on the words that name it ("here's the project brief"), never as the bare address.</div>
+    {{ as_sent(draft_preview, '/mail/drafts/' ~ draft.id ~ '/preview', 'draft-body-' ~ draft.id) }}
     <div class="actions" style="margin-top:12px">
       <button type="submit" {{ '' if box_ready[0] else 'disabled title="' ~ box_ready[1] ~ '"' }}>{{ icon('send', 15) }} Send</button>
       <button type="submit" name="dry_run" value="1" class="secondary">Dry run</button>

@@ -11,6 +11,7 @@ Native flow:
 """
 
 import asyncio
+import threading
 import logging
 import random
 import re
@@ -1020,17 +1021,33 @@ class Sender:
             send_kwargs["plain"] = True
         slot = None
         if self.ledger is not None:
-            taking = asyncio.ensure_future(asyncio.to_thread(
-                self.ledger.reserve, self.ledger_account, self.ledger_campaign, "outreach",
-                self.ledger_label, kind=item.get("kind") or "sequence"))
+            # The slot is taken on a thread (the shared file can be busy for
+            # seconds). If this pass is cut off meanwhile, the slot goes back
+            # (the thread gives it back itself when it sees that, or the
+            # callback does) and the email returns to the queue untouched.
+            gave_up = threading.Event()
+            ledger, kind = self.ledger, item.get("kind") or "sequence"
+
+            def _take():
+                got, picture = ledger.reserve(self.ledger_account, self.ledger_campaign, "outreach", self.ledger_label, kind=kind)
+                if got and gave_up.is_set():
+                    ledger.release(got)
+                    return None, picture
+                return got, picture
+            taking = asyncio.ensure_future(asyncio.to_thread(_take))
             try:
                 slot, pic = await asyncio.shield(taking)
             except asyncio.CancelledError:
-                # Cut off while the slot was being taken: it goes back once taken.
-                def _give_back(f, _ledger=self.ledger):
+                gave_up.set()
+
+                def _give_back(f, _ledger=ledger):
                     if not f.cancelled() and f.exception() is None and f.result()[0]:
                         _ledger.release(f.result()[0])
                 taking.add_done_callback(_give_back)
+                try:
+                    await asyncio.shield(self.state.update_outbox_item(item["id"], status="approved"))
+                except Exception:
+                    pass        # the stale-send sweep puts it back later in any case
                 raise
             except Exception as e:
                 slot, pic = None, {"reason": f"the shared send ledger could not be read ({e})"}

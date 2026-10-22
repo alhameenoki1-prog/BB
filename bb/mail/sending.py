@@ -71,6 +71,29 @@ def _campaign_name(env: dict, campaign: str) -> str:
     return "a reply run" if campaign else "another campaign"
 
 
+def preview_document(html: str) -> str:
+    """A whole page around an email's HTML for the editors' preview frame:
+    links open in a new tab, and nothing in it can reach the page."""
+    if not html:
+        return ""
+    return ('<!doctype html><html><head><meta charset="utf-8"><base target="_blank">'
+            '<style>body{margin:14px 16px;background:#fff}a{cursor:pointer}</style></head><body>' + html + "</body></html>")
+
+
+async def preview_html(db: MailDB, env: dict, draft: dict, body: str) -> str:
+    """The HTML of this draft exactly as it would go out now (greeting,
+    links on their words, signature), for the editor's preview."""
+    import json as _json
+    mailbox = await db.mailbox(draft["mailbox_id"])
+    if not mailbox:
+        return ""
+    env = await env_for_draft(db, env, draft, mailbox)
+    settings = service.settings_of(mailbox)
+    to = _json.loads(draft.get("to_json") or "[]")
+    name = (to[0].get("name") if to else "") or ""
+    return finalize(body or "", settings, greeting_name=name, link_labels=_link_labels(env))[1]
+
+
 def _today_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
