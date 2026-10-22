@@ -832,6 +832,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if action == "reject":
             await state.update_outbox_item(item_id, status="rejected", error="rejected in the web app")
             return _redirect(back, msg="It will not be sent.")
+        if action in ("edit", "rewrite") and item["status"] not in ("pending_review", "approved"):
+            return _redirect(back, msg="Only a queued or held email can be changed; this one has already gone.")
         if action == "edit":
             form = await request.form()
             subject = str(form.get("subject") or "").strip()[:200]

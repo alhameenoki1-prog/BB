@@ -14,6 +14,7 @@ UNSEEN inbox messages and marks them seen after retrieval.
 """
 
 import asyncio
+import re
 import email
 import email.policy
 import imaplib
@@ -53,6 +54,16 @@ def imap_connect(host: str, port: int, timeout: int = 30) -> imaplib.IMAP4_SSL:
     return imaplib.IMAP4_SSL(host, port, timeout=timeout, ssl_context=ssl.create_default_context())
 
 
+# A 5xx at RCPT that is about the recipient (the address or its domain),
+# as opposed to one about us (relay denied, sender rejected, policy): only
+# the former marks the address invalid.
+RECIPIENT_REFUSAL_RE = re.compile(
+    r"5\.1\.[0-9]|5\.4\.1|5\.4\.4|recipient (address )?rejected|user unknown|unknown (user|recipient|address)|"
+    r"no such (user|recipient|mailbox|address)|does not exist|doesn't exist|mailbox (unavailable|not found|does not exist)|"
+    r"invalid (recipient|address|mailbox)|bad (recipient|destination)|recipient.{0,20}(not found|unavailable)|"
+    r"vadesecure\.com/outbound_error_codes/#_40[267]|oxsus\d*_40[267]|domain (is )?invalid|recipient'?s domain", re.I)
+
+
 def classify_smtp_error(e: Exception) -> dict:
     """What an SMTP failure means for the queue: {retryable, scope, auth_failed, daily_limit}.
     4xx and network trouble are temporary; a recipient-level 4xx (greylisting,
@@ -67,13 +78,13 @@ def classify_smtp_error(e: Exception) -> dict:
         return {**out, "retryable": True, "scope": "mailbox", "daily_limit": True}
     if isinstance(e, aiosmtplib.SMTPRecipientsRefused):
         codes = [getattr(r, "code", 0) for r in (getattr(e, "recipients", None) or [])]
-        if codes and all(c >= 500 for c in codes):
+        if codes and all(c >= 500 for c in codes) and RECIPIENT_REFUSAL_RE.search(text):
             # The address itself, for good: the same as a "no such address" bounce.
             return {**out, "retryable": False, "scope": "row", "bad_address": True}
         return {**out, "retryable": any(400 <= c < 500 for c in codes), "scope": "row"}
     if isinstance(e, aiosmtplib.SMTPRecipientRefused):
         code = getattr(e, "code", 0) or 0
-        if code >= 500:
+        if code >= 500 and RECIPIENT_REFUSAL_RE.search(text):
             return {**out, "retryable": False, "scope": "row", "bad_address": True}
         return {**out, "retryable": 400 <= code < 500, "scope": "row"}
     code = getattr(e, "code", None)

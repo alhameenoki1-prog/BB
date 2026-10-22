@@ -783,7 +783,13 @@ class Sender:
         new_body = str(result["body"]).strip()
         first_line = (body or "").strip().split("\n", 1)[0]
         if first_line and not new_body.startswith(first_line):
-            new_body = first_line + "\n\n" + new_body.split("\n\n", 1)[-1] if "\n\n" in new_body else first_line + "\n\n" + new_body
+            head = new_body.split("\n\n", 1)
+            # The model wrote its own greeting: swap it for the right one. It
+            # wrote none: put the greeting above what it wrote, losing nothing.
+            if len(head) == 2 and re.match(r"(?i)^(hi|hello|hey|dear|good (morning|afternoon|evening))\b.{0,60}$", head[0].strip()):
+                new_body = first_line + "\n\n" + head[1]
+            else:
+                new_body = first_line + "\n\n" + new_body
         return str(result.get("subject") or subject).strip()[:120], new_body
 
     async def _record_bad_address(self, item: dict, prospect, error: str) -> None:
@@ -819,6 +825,13 @@ class Sender:
             await self.state.log_action(action_type="bounce", agent="sender",
                                         details={"prospect": item["to_email"], "bounces": bounces, "reason": reason_text,
                                                  "at": "send"})
+            # The same bad-list switch the handler trips on bounces that travelled.
+            total_sent = await self.state.count_outbox_sent()
+            max_rate = getattr(self.config.channels.email, "max_bounce_rate", 0.05)
+            if max_rate > 0 and total_sent >= 50 and bounces / max(total_sent, 1) > max_rate:
+                reason = f"bounce rate {bounces}/{total_sent} exceeded {max_rate:.0%} — check list quality before resuming"
+                await self.state.set_setting(KILL_SWITCH_KEY, reason)
+                logger.error(f"Sender: KILL SWITCH ENGAGED — {reason}")
         except Exception:
             pass
 

@@ -46,18 +46,22 @@ def is_opt_out(message: dict) -> bool:
 
 
 async def suppress(db: MailDB, mailbox: dict, email: str, thread_id: str = "") -> None:
-    """Never write to ``email`` from this mailbox again: it joins the
-    settings' excluded list (which candidates, runs and sending all
-    honour) and its thread is dismissed."""
+    """Never write to ``email`` again, from any of this user's mailboxes:
+    it joins every mailbox's excluded list (which candidates, runs and
+    sending all honour), read fresh so nothing saved meanwhile is lost,
+    and its thread is dismissed."""
     email = (email or "").strip().lower()
     if not email:
         return
-    settings = dict(mailbox.get("settings") or {})
-    excluded = [str(x).lower() for x in (settings.get("excluded") or [])]
-    if email not in excluded:
+    for box in await db.mailboxes():
+        settings = dict(box.get("settings") or {})
+        excluded = [str(x).lower() for x in (settings.get("excluded") or [])]
+        if email in excluded:
+            continue
         settings["excluded"] = sorted(set(excluded) | {email})
-        await db.update_mailbox(mailbox["id"], settings=settings)
-        mailbox["settings"] = settings
+        await db.update_mailbox(box["id"], settings=settings)
+        if box["id"] == mailbox.get("id"):
+            mailbox["settings"] = settings
     if thread_id:
         await db.execute("UPDATE threads SET state = 'dismissed', state_reason = 'they asked not to be contacted', updated_at = ? WHERE id = ?",
                          (now_iso(), thread_id))
@@ -89,11 +93,15 @@ async def reconnect_candidates(db: MailDB, mailboxes: list[dict], months: int = 
     excluded and suppressed addresses, threads put away by hand, contacts
     a scan already followed up with, and threads where the brief's link
     has already gone out."""
+    from harvey import names
     from harvey.integrations.mail_provider import looks_automated
 
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30 * max(1, months))).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     own = {(m.get("address") or "").lower() for m in (all_mailboxes or mailboxes)}
-    own_domains = {a.rsplit("@", 1)[-1] for a in own if "@" in a}
+    # Colleagues share a company domain; a gmail.com mailbox shares nothing with other gmail.com people.
+    own_domains = {a.rsplit("@", 1)[-1] for a in own if "@" in a} - set(names.PUBLIC_DOMAINS)
+    excluded_everywhere = {str(x).lower() for m in (all_mailboxes or mailboxes)
+                           for x in ((m.get("settings") or {}).get("excluded") or [])}
     # Already followed up, in hand, or judged (a thread the model found
     # personal, or an address that asked to be left alone) is never asked
     # again; a skip for a passing reason (the daily cap) is.
@@ -101,7 +109,7 @@ async def reconnect_candidates(db: MailDB, mailboxes: list[dict], months: int = 
         "SELECT DISTINCT ri.contact FROM run_items ri JOIN reply_runs r ON r.id = ri.run_id "
         "WHERE r.kind = 'reconnect' AND ri.contact != '' AND (ri.status IN ('sent', 'needs_review', 'dry_run', 'queued', 'drafting') "
         "OR (ri.status = 'skipped' AND (ri.detail LIKE 'not suitable%' OR ri.detail LIKE '%asked not to be contacted%')))")}
-    out, seen = [], set()
+    pool = []
     for box in mailboxes:
         settings = service.settings_of(box)
         links = [l.lower() for l in [settings.project_link] if l]
@@ -114,8 +122,9 @@ async def reconnect_candidates(db: MailDB, mailboxes: list[dict], months: int = 
             "ORDER BY m.sent_at DESC, m.created_at DESC LIMIT 1) AS contact_email, "
             "(SELECT m.from_name FROM messages m WHERE m.thread_id = t.id AND m.direction = 'inbound' AND m.automated = 0 "
             "ORDER BY m.sent_at DESC, m.created_at DESC LIMIT 1) AS contact_name "
-            "FROM threads t WHERE t.mailbox_id = ? AND t.last_message_at >= ? AND t.state NOT IN ('dismissed', 'snoozed', 'no_reply_needed') "
-            "ORDER BY t.last_message_at DESC LIMIT 3000", (box["id"], cutoff))
+            "FROM threads t WHERE t.mailbox_id = ? AND t.last_message_at >= ? "
+            "AND t.state NOT IN ('dismissed', 'snoozed', 'no_reply_needed', 'needs_reply') "
+            "ORDER BY t.last_message_at DESC LIMIT 20000", (box["id"], cutoff))
         for t in rows:
             c = counts.get(t["id"]) or {}
             if not c.get("human_in") or not c.get("out_n"):
@@ -123,20 +132,25 @@ async def reconnect_candidates(db: MailDB, mailboxes: list[dict], months: int = 
             email = (t.get("contact_email") or "").lower()
             if not email or email in own or email.rsplit("@", 1)[-1] in own_domains:
                 continue
-            if looks_automated(email, t.get("subject", "")) or is_excluded(settings, email) or email in done_contacts:
+            if (looks_automated(email, t.get("subject", "")) or is_excluded(settings, email) or email in excluded_everywhere
+                    or email in done_contacts):
                 continue
-            if email in seen:
-                continue                      # one thread per contact per scan: the most recent
             if links:
                 sent_text = " ".join((r["body"] or "") for r in await db.query(
                     "SELECT body FROM messages WHERE thread_id = ? AND direction = 'outbound'", (t["id"],))).lower()
                 if any(l in sent_text for l in links):
                     continue                  # the link already went to them in this thread
-            seen.add(email)
             t["box"], t["contact"], t["contact_name"] = box, email, t.get("contact_name") or ""
             t["excluded"] = False
-            out.append(t)
-    out.sort(key=lambda t: t.get("last_message_at") or "", reverse=True)
+            pool.append(t)
+    # One thread per contact per scan, the most recent across every mailbox.
+    pool.sort(key=lambda t: t.get("last_message_at") or "", reverse=True)
+    out, seen = [], set()
+    for t in pool:
+        if t["contact"] in seen:
+            continue
+        seen.add(t["contact"])
+        out.append(t)
     return out
 
 
@@ -315,22 +329,48 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
         if not them:
             await mark(item, "skipped", "no message from them to answer")
             continue
-        if is_opt_out(them):
-            # A hard no: nothing is sent, now or ever. The address joins this
-            # mailbox's excluded list and the thread is put away.
-            await suppress(db, mailbox, them["from_email"], thread["id"])
-            await mark(item, "skipped", f"{them['from_email']} asked not to be contacted; added to the excluded list, nothing sent")
+        # A hard no anywhere in their side of the thread: nothing is sent,
+        # now or ever. The address joins the excluded lists and the thread
+        # is put away.
+        hard_no = next((m for m in messages if m["direction"] == "inbound" and is_opt_out(m)), None)
+        if hard_no:
+            await suppress(db, mailbox, hard_no["from_email"], thread["id"])
+            settings = service.settings_of(mailbox)        # the list just grew
+            await mark(item, "skipped", f"{hard_no['from_email']} asked not to be contacted; added to the excluded list, nothing sent")
             continue
+        if reconnect and item.get("contact"):
+            twin = await db.one(
+                "SELECT ri.id FROM run_items ri JOIN reply_runs r ON r.id = ri.run_id WHERE r.kind = 'reconnect' "
+                "AND ri.contact = ? AND ri.run_id != ? AND ri.status IN ('sent', 'needs_review', 'dry_run') LIMIT 1",
+                (item["contact"], run_id))
+            if twin:
+                await mark(item, "skipped", "already followed up with in another run")
+                continue
+        draft_scope = scope
+        if scope and scope.get("mode") == "inquiry":
+            # The prompt mentions the attached brief only when this very draft will carry it.
+            from bb.mail import scope as scope_mod
+            from bb.mail.sending import prior_replies
+            root = (env or {}).get("HARVEY_HOME") or ""
+            will_attach = bool(scope_mod.attachment_paths(root, scope, await prior_replies(db, thread["id"]))) if root else False
+            draft_scope = {**scope, "attach_now": will_attach}
         try:
             if reconnect:
-                result = await draft_reconnect(brain, settings, mailbox, thread, messages, scope=scope,
+                result = await draft_reconnect(brain, settings, mailbox, thread, messages, scope=draft_scope,
                                                instructions=run.get("instructions") or "")
                 if not result.get("suitable", True):
                     await mark(item, "skipped", f"not suitable: {result.get('why') or 'a personal or private thread'}")
                     continue
             else:
                 result = await draft_reply(brain, settings, mailbox, thread, messages, instructions=run.get("instructions") or "",
-                                           scope=scope)
+                                           scope=draft_scope)
+                if result.get("stance") == "opt_out":
+                    # The model read a no-contact the regex missed: nothing is sent, and they are suppressed.
+                    await suppress(db, mailbox, them["from_email"], thread["id"])
+                    settings = service.settings_of(mailbox)
+                    await mark(item, "skipped", f"{them['from_email']} asked not to be contacted (the model's reading); "
+                                                "added to the excluded list, nothing sent")
+                    continue
         except BrainError as e:
             await mark(item, "failed", f"drafting failed: {e}")
             continue

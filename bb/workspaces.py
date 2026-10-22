@@ -1195,8 +1195,11 @@ class Workspace:
             return {"state": "sending", "text": f"Sending: {out['outbox_scheduled']} emails are approved and leave at {pace}"
                                                  + (f" (held to this pace because {held})" if held else "") + f"; {out['sent_today']} went out today."
                                                  + review, "link": "/outbox" if review else ""}
-        if out["outbox_pending"]:
+        if out["outbox_pending"] and not out["waiting"]:
             return {"state": "waiting", "text": f"Everything else is sent or scheduled.{review} Rewrite, edit, approve or reject them there.",
+                    "link": "/outbox"}
+        if out["outbox_pending"]:
+            return {"state": "waiting", "text": f"Writing: {out['waiting']} recipients still need an email; the next batch is written this cycle.{review}",
                     "link": "/outbox"}
         if out["waiting"]:
             return {"state": "waiting", "text": f"Writing: {out['waiting']} recipients still need an email; the next batch is written this cycle and sends right after.", "link": ""}
@@ -1297,12 +1300,22 @@ class Workspace:
             await state.init_db()
         body = (item.get("body") or "").strip()
         greeting_line = body.split("\n", 1)[0] if body else ""
-        system = (f"You rewrite one email for {name}, who is the prospective customer or partner of the recipient "
-                  "(nothing is sold). Keep every fact, the greeting line exactly as it is, the sign-off and the same "
-                  "request; plain words a person would type, first person, contractions, no marketing vocabulary, no "
-                  "capitals, no exclamation marks, no links, no bullet points. The subject names the thing the email "
-                  "is about in the email's own words, 3 to 10 words, sentence case; never \"quick question\", "
-                  "\"opportunity\", \"proposal\", \"partnership\", \"following up\" or anything about the act of writing."
+        inquiry = (outreach.get("mode") or "inquiry") == "inquiry"
+        is_reply = (item.get("kind") or "sequence") == "reply"
+        if inquiry:
+            who = (f"You rewrite one email for {name}, who is the prospective customer or partner of the recipient "
+                   "(nothing is sold). ")
+        else:
+            who = (f"You rewrite one email for {name}, {persona.get('role') or ''} at {persona.get('company') or 'their company'}, "
+                   "who is writing to a prospective customer. ")
+        subject_rule = ("This is a reply in an existing thread: keep the subject exactly as it is. " if is_reply else
+                        "The subject names the thing the email is about in the email's own words, 3 to 10 words, sentence case; "
+                        "never \"quick question\", \"opportunity\", \"proposal\", \"partnership\", \"following up\" or anything "
+                        "about the act of writing.")
+        system = (who
+                  + "Keep every fact, the greeting line exactly as it is, the sign-off and the same request; plain words a "
+                    "person would type, first person, contractions, no marketing vocabulary, no capitals, no exclamation "
+                    "marks, no links, no bullet points. " + subject_rule
                   + (f"\n\nWHAT {name.upper()} NEEDS FROM THIS BUSINESS: {need}" if need else "")
                   + (f"\n\nCAMPAIGN GOAL, in {name}'s words (the email serves it): {goal}" if goal else "")
                   + "\n\nReturn ONLY JSON: {\"subject\": \"...\", \"body\": \"...\"}")
@@ -1315,18 +1328,24 @@ class Workspace:
         if greeting_line and not new_body.startswith(greeting_line):
             rest = new_body.split("\n\n", 1)[-1] if new_body.lower().startswith(("hi", "hello", "dear")) else new_body
             new_body = f"{greeting_line}\n\n{rest}"
-        new_body = enquiry.plain_signoff(new_body, first) if outreach.get("mode", "inquiry") == "inquiry" else new_body
+        new_body = enquiry.plain_signoff(new_body, first) if inquiry else new_body
         new_subject = str(data.get("subject") or item.get("subject") or "").strip()[:120]
         notes = []
-        if subject_risk(new_subject, new_body, need)[0] >= SUBJECT_REVIEW:
+        if is_reply:
+            new_subject = item.get("subject") or new_subject      # a reply stays in its thread
+        elif subject_risk(new_subject, new_body, need)[0] >= SUBJECT_REVIEW:
             plain = subject_from_need(need, new_body)
             if plain and subject_risk(plain, new_body, need)[0] < SUBJECT_REVIEW:
                 new_subject = plain
                 notes.append("the subject was replaced with a plain one from your need")
+            else:
+                notes.append("the subject still reads like a campaign (" + describe(subject_risk(new_subject, new_body, need)[1])
+                             + "), so it waits for your review")
         score, reasons = spam_risk(new_subject, new_body)
         fields = {"subject": new_subject, "body": new_body[:4000], "error": ""}
         if score >= REVIEW:
             notes.append("a spam filter would still flag " + describe(reasons) + ", so it waits for your review")
+        if any("waits for your review" in n for n in notes):
             fields["status"] = "pending_review"
         await state.update_outbox_item(item["id"], **fields)
         return {"subject": new_subject, "body": new_body, "note": ("; ".join(notes) + ".") if notes else "It passed the checks."}

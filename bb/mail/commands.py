@@ -150,8 +150,17 @@ class CommandCenter:
         them = next((m for m in reversed(messages) if m["direction"] == "inbound"), None)
         if not them:
             return {"error": "there is no message from them to answer"}
+        from bb.mail import runs as runs_mod
+        hard_no = next((m for m in messages if m["direction"] == "inbound" and runs_mod.is_opt_out(m)), None)
+        if hard_no:
+            await runs_mod.suppress(self.db, box, hard_no["from_email"], thread_id)
+            return {"error": f"{hard_no['from_email']} asked not to be contacted; nothing drafted, and the address is on the excluded list"}
         result = await draft_reply(self.brain, service.settings_of(box), box, t, messages, instructions=instructions or "",
                                    scope=self.scope)
+        if result.get("stance") == "opt_out":
+            await runs_mod.suppress(self.db, box, them["from_email"], thread_id)
+            return {"error": f"{them['from_email']} asked not to be contacted (the model's reading); nothing drafted, "
+                             "and the address is on the excluded list"}
         subject = t["subject"] if t["subject"].lower().startswith("re:") else f"Re: {t['subject']}"
         draft_id, now = new_id(), now_iso()
         await self.db.execute(

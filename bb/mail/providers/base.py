@@ -61,9 +61,11 @@ class MailAccount:
         raise NotImplementedError
 
     def build_mime(self, *, to, subject, body_text, body_html, in_reply_to="", references="",
-                   reply_to="", from_name=""):
+                   reply_to="", from_name="", attachments=None):
+        import mimetypes
         from email.message import EmailMessage
         from email.utils import make_msgid
+        from pathlib import Path
 
         msg = EmailMessage()
         msg["From"] = f"{from_name} <{self.address}>" if from_name else self.address
@@ -78,4 +80,11 @@ class MailAccount:
         msg.set_content(body_text)
         if body_html:
             msg.add_alternative(body_html, subtype="html")
+        for path in attachments or []:
+            p = Path(path)
+            if not p.is_file():
+                continue
+            ctype, _enc = mimetypes.guess_type(p.name)
+            maintype, subtype = (ctype or "application/octet-stream").split("/", 1)
+            msg.add_attachment(p.read_bytes(), maintype=maintype, subtype=subtype, filename=p.name)
         return msg

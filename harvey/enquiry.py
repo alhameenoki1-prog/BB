@@ -302,28 +302,76 @@ def wants_details(text: str) -> bool:
 # interested, booked up, not what we do) gets one closing note that
 # leaves the brief with them and asks nothing, then silence.
 _OPT_OUT_CUES = re.compile(
-    r"\b(unsubscribe|opt[- ]?out|remove (me|us)|take (me|us) off|stop (emailing|contacting|sending|writing)|"
-    r"do(n't| not) (contact|email|write to) (me|us)( again)?|never (contact|email) (me|us)|delete my (data|info|information)|"
-    r"(this is|it's|its|you're|you are) spam|spam(ming)?( me| us)?|scam(mer)?|phishing|report(ed|ing)? (you|this)|harass(ing|ment)?|"
-    r"lawyer|attorney|legal action|lawsuit|cease and desist|blacklist|gdpr|f+u+c+k|shit|piss off|get lost|go away|leave (me|us) alone|"
-    r"how (did|do) you get (my|this) (email|address)\?? ?(stop|remove|unsubscribe))\b", re.I)
+    r"\b(unsubscribe|opt[- ]?out|remove (me|us|my (name|address|email))|take (me|us) off|"
+    r"stop (emailing|contacting|sending|writing|messaging)( (me|us))?|"
+    r"(do(n't| not)|never|please (don't|do not)) (contact|email|write to|message) (me|us)( again| any ?more)?|"
+    r"delete my (data|info|information|details)|"
+    r"(this|that|it|your (email|message|mail)) (is|was|looks like|reads like) spam|spam(ming)? (me|us)|stop spamming|"
+    r"(report(ed|ing)?|flag(ged|ging)?|mark(ed|ing)?) (you|this|it|your (email|message|mail)|your address)( as)?( spam| phishing)?|"
+    r"(this|it|that)('s| is) (clearly |obviously |a )?scam\b|what a scam|scam (email|mail|message|artist)|you('re| are) (a )?scammers?\b|phishing (attempt|email|scam)|"
+    r"harass(ing|ment)|(my|our) (lawyer|attorney|solicitor|legal team)( will| is| has)|(contact|hear from|speak to|have|get|ask) (my|our) (lawyer|attorney|solicitor)|"
+    r"legal action|lawsuit|cease and desist|blacklist(ed|ing)? you|f+u+c+k|bullshit|piss off|get lost|sod off|"
+    r"leave (me|us) (alone|be)|not (welcome|wanted) here|"
+    r"how did you (get|obtain|find) (my|this|our) (email|address|details)\b.{0,80}\b(stop|remove|unsubscribe|delete|don't|do not))\b"
+    r"|please stop[.!]*\s*$|^\s*stop[.!]*\s*$", re.I | re.S)
 _SOFT_NO_CUES = re.compile(
-    r"\b(not interested|no thanks|no thank you|not (able|in a position) to take|can(not|'t) take (this|it|that|on)|"
-    r"(we|i)('re| are|'m| am) not (taking|accepting|looking|able|in a position)|not for us|not something we (do|offer|handle)|"
-    r"(we|i) (don't|do not) (do|offer|handle|take)|wrong (company|number|address|person to ask)|(fully )?booked( up| out)?|"
-    r"at capacity|no capacity|too busy|not (right now|at the moment|at this time|this year|a fit|a good fit)|"
-    r"(have to|will|'ll|going to) (pass|decline)|(we|i) (must|will have to) pass|maybe (later|next year)|"
-    r"(don't|do not) (have|take) (the )?(capacity|bandwidth|room)|not taking (on )?(new|any) (work|clients|projects|jobs))\b", re.I)
+    r"\b(not interested|no thanks|no thank you|thanks,? but no|"
+    r"(we|i)('re| are|'m| am)? ?(not|un)able to (take|do|help|quote|supply|commit|accommodate|assist|fit)|"
+    r"can(not|'t) (take (this|it|that|on)|help (with )?(this|that|you)|accommodate|commit|fit (this|it|you) in)|"
+    r"(we|i)('re| are|'m| am) not (taking|accepting|looking)( on)? (new|any|more|additional)? ?(work|clients|projects|jobs|business|orders)|"
+    r"not (for|something) (us|we (do|offer|handle))|(we|i) (don't|do not) (do|offer|handle|take on) (that|this|these|those|it|them|that (kind|sort|type)|such)|"
+    r"(fully|completely) booked|booked (up|out|solid)|(we're|we are|i'm|i am) booked (through|until|till|for the|out|up)|"
+    r"(at|no|without) (full )?capacity|(we're|we are|i'm|i am) (far )?too busy|(don't|do not) have (the )?(capacity|bandwidth|resources|room)|"
+    r"not (right now|at the moment|at this time|this year|this quarter|a (good )?fit|the right fit)|"
+    r"(we|i)('ll| will| must| have to| am going to|'re going to| are going to) (have to )?pass(?! (it|this|that|your|the|these|those) (on|along|to|over))|"
+    r"(we|i)('ll| will| must| have to) (have to )?decline|respectfully decline|"
+    r"wrong (company|number|address|person to ask|department)|"
+    r"not taking (on )?(new|any) (work|clients|projects|jobs))\b", re.I)
+_QUOTE_START_RE = re.compile(
+    r"(?im)^\s*(>|On .{3,160}wrote:\s*$|-{2,}\s*(original|forwarded) message\s*-{2,}|from:\s.+$|sent from my\b|"
+    r"le .{3,120} a écrit\s*:|am .{3,120} schrieb)")
+
+
+def fresh_text(text: str) -> str:
+    """The part of a reply they wrote themselves: everything above the
+    quoted history, a forwarded block or a phone signature. The quoted
+    part holds our own words (our need, our signature) and must never be
+    read as theirs."""
+    lines = (text or "").split("\n")
+    out = []
+    for ln in lines:
+        if _QUOTE_START_RE.match(ln):
+            break
+        out.append(ln)
+    kept = "\n".join(out).strip()
+    return kept if kept else (text or "").strip()
+
+
+def strip_questions(body: str) -> str:
+    """A closing note asks nothing: every sentence ending in a question
+    mark goes, within its paragraph; a paragraph left empty goes too. The
+    scope marker line and the URL lines are left alone."""
+    out = []
+    for para in (body or "").split("\n\n"):
+        lines = para.split("\n")
+        keep_lines = [ln for ln in lines if SCOPE_MARKER_RE.search(ln) or _URL_RE.search(ln)]
+        prose = " ".join(ln.strip() for ln in lines if ln not in keep_lines).strip()
+        kept = re.sub(r"[^.!?]*\?(\s+|$)", "", prose).strip()
+        block = "\n".join(([kept] if kept else []) + keep_lines)
+        if block:
+            out.append(block)
+    return "\n\n".join(out).strip()
 
 
 def is_opt_out(text: str) -> bool:
-    """A hard no: never contact them again, send nothing."""
-    return bool(_OPT_OUT_CUES.search(text or ""))
+    """A hard no: never contact them again, send nothing. Judged on what
+    they wrote, never on the history quoted under it."""
+    return bool(_OPT_OUT_CUES.search(fresh_text(text)))
 
 
 def is_soft_no(text: str) -> bool:
     """A polite no that still gets the one closing note."""
-    return bool(_SOFT_NO_CUES.search(text or ""))
+    return bool(_SOFT_NO_CUES.search(fresh_text(text)))
 
 
 def is_decline(text: str) -> bool:

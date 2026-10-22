@@ -176,7 +176,10 @@ def subject_from_need(need: str, body: str = "", limit: int = 60) -> str:
     if not source:
         first = re.split(r"(?<=[.!?])\s", (body or "").strip().split("\n\n", 1)[-1].strip(), 1)[0]
         source = re.sub(r"^(hi|hello|dear)\b[^\n]*\n+", "", first, flags=re.I).strip()
-    clause = re.split(r"[.;:!?]|\s[-–—]\s|,\s(?=(?:and|but|so|which|where|when|with|delivered|start|drawings)\b)", source, 1)[0].strip()
+    # Abbreviations and decimals are not sentence ends.
+    source = re.sub(r"\b(Dr|Mr|Mrs|Ms|Mx|St|No|Co|Inc|Ltd|Jr|Sr|vs|approx|etc|Ave|Rd|Blvd)\.", lambda m: m.group(1) + "\x00", source)
+    clause = re.split(r"[;:!?]|\.(?=\s|$)(?!\d)|\s[-–—]\s|,\s(?=(?:and|but|so|which|where|when|with|delivered|start|drawings)\b)", source, 1)[0].strip()
+    clause = clause.replace("\x00", ".")
     clause = re.sub(r"^(i|we)('d| would| need| want| am| are|'m|'re)?\s+(like\s+)?(to\s+)?(find|need|want|buy|hire|get|looking for|after)?\s*", "",
                     clause, flags=re.I).strip() or clause
     clause = re.sub(r"\s+", " ", clause).strip(" ,-")

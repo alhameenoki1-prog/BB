@@ -15,7 +15,7 @@
 </div>
 {% if status == 'bounced' %}<p class="muted small" style="margin:-8px 0 14px">Emails the receiving server sent back. Each one says why in the receiving server's words and what to do about it. A few "no such address" bounces are normal; several "unsolicited" or "too fast" ones mean slow down and fix the domain's DNS on the Mailbox page.</p>{% endif %}
 {% if not items %}
-  <div class="card"><div class="empty">{{ icon('send') }}<div>Nothing here.{% if status == 'pending_review' %} Emails the spam check could not fix on its own wait here for you (or every email, if approval is on in your profile). Nothing else waits on them: the rest keeps sending.{% endif %}</div></div></div>
+  <div class="card"><div class="empty">{{ icon('send') }}<div>Nothing here.{% if status == 'pending_review' %} Emails the checks could not fix on their own wait here for you (or every email, if approval is on in your profile). Rewrite them with an instruction, edit them by hand, approve or reject; nothing else waits on them, the rest keeps sending.{% endif %}</div></div></div>
 {% endif %}
 {% for it in items %}
 <div class="card">

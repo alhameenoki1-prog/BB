@@ -7,6 +7,49 @@ minor versions can still change behaviour.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Review fixes, third round.** A no is now judged on what they wrote,
+  never on the history quoted under it (our own need or signature). The
+  hard-no cues no longer fire on ordinary words: "your email went to my
+  spam folder", "I thought it was a scam at first", "our attorney handles
+  leases", "we go away in August"; and the soft-no cues no longer fire on
+  "I've booked you in", "I'll pass this on to Mark", "I'm not able to
+  open the link", "maybe later this week". A legal threat in their own
+  words still suppresses them; an escalation the classifier chose (or a
+  model that answered nothing) only waits for a human. Someone already
+  opted out, or already closed after a no, gets nothing more, whatever
+  they send. An objection that is a condition ("the budget first") is
+  answered and stays open; only a real soft no gets the closing note,
+  whose questions are removed before the link goes in so the lead-in
+  survives. The pre-send rewrite keeps the substance when the model
+  leaves out the greeting. Only a refusal about the recipient (5.1.x,
+  5.4.1, "user unknown", a Vade 402/406/407) marks an address invalid at
+  send time; a refusal about us (relay denied, sender rejected) does not,
+  and a send-time refusal counts toward the bounce-rate switch. A
+  first-email subject the writer cannot fix is held rather than sent;
+  follow-ups keep the first email's subject; a variant's subject is
+  rebuilt from its own body; abbreviations and decimals survive the
+  subject builder; housekeeping notes never reach the offer-mode writer;
+  the stall alert ignores the sender's own pauses (the daily allowance,
+  approval, a paused provider). The Outbox's edit and Rewrite act only on
+  queued or held emails, a reply keeps its "Re:" subject, offer-mode
+  emails are rewritten as offers, and the note says when a subject still
+  fails. In the command center the brief is really attached now (the
+  providers ignored the files; the mail worker never had the workspace
+  path), the first reply after our own cold email carries it (the cold
+  email synced from Sent is not a prior reply), file names are names and
+  never paths, the prompt mentions the attachment only when this draft
+  carries it, and a hard no is caught across the whole thread, by the
+  model's own reading as a second net, in the command bar too; it
+  suppresses the address for every mailbox of the user, read fresh.
+  Follow-up candidates treat other gmail.com people as contacts rather
+  than colleagues, leave threads that need a reply to the reply runs,
+  pick each contact's most recent thread across mailboxes, and skip a
+  contact another run already followed up with; the follow-up draft is
+  judged on the thread itself, not on months-old cues, and the overlap
+  check only applies when their side gave it words to stand on.
+
 ### Changed
 
 - **The pipeline does not wait its turn.** Writing now runs every cycle

@@ -188,6 +188,17 @@ class GraphAccount(MailAccount):
                 draft = await self._call("PATCH", f"{self._me}/messages/{draft['id']}", json=patch) or draft
         if draft is None:
             draft = await self._call("POST", f"{self._me}/messages", json=patch)
+        for path in attachments or []:
+            # A file attachment on the draft before it is sent (Graph takes up
+            # to 3 MB this way, which is what a brief is).
+            import base64 as _b64
+            from pathlib import Path as _Path
+            p = _Path(path)
+            if not p.is_file():
+                continue
+            await self._call("POST", f"{self._me}/messages/{draft['id']}/attachments",
+                             json={"@odata.type": "#microsoft.graph.fileAttachment", "name": p.name,
+                                   "contentBytes": _b64.b64encode(p.read_bytes()).decode()})
         await self._call("POST", f"{self._me}/messages/{draft['id']}/send", json=None)
         message_id = draft.get("internetMessageId") or make_msgid(domain=self.address.split("@")[-1])
         return message_id, "", draft.get("conversationId") or ""

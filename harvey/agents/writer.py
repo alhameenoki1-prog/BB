@@ -855,6 +855,10 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
         subject = self._fix_subject(subject, body, need["need"])
         if not subject or not body:
             return None
+        from harvey.spamcheck import SUBJECT_REVIEW, describe, subject_risk
+        s_score, s_reasons = subject_risk(subject, body, need["need"])
+        if s_score >= SUBJECT_REVIEW:
+            spam_reasons = list(spam_reasons) + ["subject: " + describe(s_reasons)]   # held, never sent as is
         return {"subject": subject[:120], "body": body[:2000], "spam_reasons": spam_reasons}
 
     async def _write_sequence(self, prospects: list) -> list[EmailStep]:
@@ -870,8 +874,8 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
             prospect_summary = "\n".join(
                 f"- {p.full_name() or 'name unknown'}, {p.title or 'title unknown'} at "
                 f"{names.company_display_name(p.company, (p.email or '').rsplit('@', 1)[-1]) or 'a company'}"
-                + (f" | Notes: {p.personalization_notes}" if p.personalization_notes else "")
-                for p in prospects[:5]  # Show sample for context
+                + (f" | Notes: {enquiry.clean_notes(p.personalization_notes)}" if enquiry.clean_notes(p.personalization_notes) else "")
+                for p in prospects[:5]  # Show sample for context (housekeeping lines never reach the model)
             )
 
         prompt = self._base_prompt(sector=(prospects[0].industry or "") if prospects else "")
@@ -935,12 +939,11 @@ Return ONLY a JSON array (no markdown fences, no commentary):
                 body = _scrub(str(fixed.get("body") or steps[0].body), self._forbidden_terms(prospects))
                 steps[0].body = _plain_signoff(body, self._persona_first) if self.inquiry else body
             seq_need = self._need(prospects[0].industry or "")["need"] if self.inquiry else ""
-            for st in steps:
-                # Every step's subject names the thing; a follow-up that fails
-                # keeps the first email's subject so the thread stays one thread.
-                fixed_subject = self._fix_subject(st.subject, st.body, seq_need)
-                st.subject = fixed_subject if (st is steps[0] or fixed_subject != st.subject and fixed_subject) else st.subject
-                if st is not steps[0] and st.subject != fixed_subject:
+            steps[0].subject = self._fix_subject(steps[0].subject, steps[0].body, seq_need)
+            for st in steps[1:]:
+                # A follow-up whose subject fails the check keeps the first
+                # email's subject, so the thread stays one thread.
+                if self._fix_subject(st.subject, st.body, seq_need) != st.subject:
                     st.subject = steps[0].subject
             if self.inquiry:
                 leaked = self._copied(f"{steps[0].subject} {steps[0].body}", prospects)
@@ -1040,6 +1043,9 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             score, _why = self._risk({"subject": subject, "body": body}, need)
             if score >= 4:
                 continue
+            # A failing variant subject is rebuilt from its own body first, so
+            # the wordings keep different subjects; the need is the last resort.
+            subject = self._fix_subject(subject, body, "")
             subject = self._fix_subject(subject, body, need)
             subjects.append(subject[:120])
             bodies.append(body[:2000])

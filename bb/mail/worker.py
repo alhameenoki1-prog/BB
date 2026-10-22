@@ -166,6 +166,7 @@ def main(argv=None):
         print("BB_SECRET_KEY is required")
         return 2
     env = {k: v for k, v in os.environ.items() if k.startswith(("GMAIL_", "M365_"))}
+    env["HARVEY_HOME"] = str(root)       # the workspace: the profile's reply files live under it
     worker = Worker(root, secret, env)
 
     async def run():

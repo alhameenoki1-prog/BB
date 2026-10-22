@@ -137,6 +137,8 @@ def attached_files(scope: dict | None) -> list[str]:
     """The files the sender wants with replies, when a policy sends them."""
     if not scope or scope.get("mode") != "inquiry" or (scope.get("attach_on") or "first_reply") == "never":
         return []
+    if scope.get("attach_now") is False:
+        return []                 # this draft will not carry the file: say nothing about it
     return list(scope.get("attachments") or [])
 
 
@@ -149,8 +151,15 @@ def attachment_paths(root, scope: dict | None, prior_outbound: int) -> list[str]
     policy = (scope or {}).get("attach_on") or "first_reply"
     if policy == "first_reply" and prior_outbound > 0:
         return []
-    folder = Path(root) / "attachments"
-    return [str(folder / n) for n in names if (folder / n).is_file()]
+    folder = (Path(root) / "attachments").resolve()
+    out = []
+    for n in names:
+        if not n or "/" in n or "\\" in n or n.startswith(".") or ".." in n:
+            continue              # a name, never a path
+        path = (folder / n).resolve()
+        if path.parent == folder and path.is_file():
+            out.append(str(path))
+    return out
 
 
 _NUMBERED = re.compile(r"\[\s*scope\s+link\s*(\d+)\s*\]", re.I)

@@ -91,7 +91,8 @@ class ImapAccount(MailAccount):
         import aiosmtplib
 
         msg = self.build_mime(to=to, subject=subject, body_text=body_text, body_html=body_html,
-                              in_reply_to=in_reply_to, references=references, reply_to=reply_to, from_name=from_name)
+                              in_reply_to=in_reply_to, references=references, reply_to=reply_to, from_name=from_name,
+                              attachments=attachments)
         c = self.creds
         port = int(c.get("smtp_port") or 587)
         try:

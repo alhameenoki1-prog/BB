@@ -114,8 +114,9 @@ async def _stall_alert(state, now: datetime) -> str:
     cooloff = _parse(await state.get_setting("sender_cooloff_until"))
     if cooloff and cooloff > now:
         return ""
-    skip = await state.get_setting("sender_skip_reason") or ""
-    if "quiet" in skip.lower() or "warm" in skip.lower() or "daily" in skip.lower() or "cap" in skip.lower():
+    skip = (await state.get_setting("sender_skip_reason") or "").lower()
+    if any(w in skip for w in ("quiet", "warm", "daily", "cap", "limit", "allowance", "maximum", "stands down",
+                               "paused", "replies", "unread", "provider", "budget", "approval")):
         return ""
     reason = f" The sender's last reason: {skip}." if skip else ""
     return (f"Nothing has been delivered since {_when(last_sent) if last_sent else 'the worker started'} although "

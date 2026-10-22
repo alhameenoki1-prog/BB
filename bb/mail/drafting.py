@@ -89,8 +89,11 @@ async def draft_reply(brain: MailBrain, settings: MailboxSettings, mailbox: dict
               f"as that person.\nPERSONA: {settings.persona_notes.strip() or 'a straightforward professional'}\n\n"
               + QUALITY_STANDARD + scope_mod.context_block(scope)
               + "\n\nReturn ONLY JSON: {\"body\": \"...\", \"confidence\": \"high\"|\"medium\"|\"low\", "
-                "\"confidence_reason\": \"...\"}. Confidence is low when their ask is unclear, when answering needs "
-                "a fact or decision you do not have (money, dates, legal, commitments), or when a person should look first.")
+                "\"confidence_reason\": \"...\", \"stance\": \"interested\"|\"question\"|\"soft_no\"|\"opt_out\"|\"other\"}. "
+                "Confidence is low when their ask is unclear, when answering needs "
+                "a fact or decision you do not have (money, dates, legal, commitments), or when a person should look first. "
+                "stance is what THEIR last message is: opt_out when they ask not to be contacted, call it spam, or are "
+                "hostile (then the body does not matter: nothing will be sent); soft_no when they decline politely.")
     from harvey import enquiry as _enq
     their_text = them.get("body_text") or them.get("body") or them.get("snippet") or ""
     closing = bool(scope and scope.get("mode") == "inquiry" and _enq.is_soft_no(their_text) and not _enq.is_opt_out(their_text))
@@ -103,7 +106,7 @@ async def draft_reply(brain: MailBrain, settings: MailboxSettings, mailbox: dict
                "the rules say. No question, no ask, no next step, no \"if anything changes\". Under 60 words.\n\n" if closing else
                "Write the reply to the last message from THEM. Match their register and language. Answer what they "
                "actually asked. Under 160 words unless they asked for more."))
-    result = {"body": "", "confidence": "low", "confidence_reason": "", "qa": {}, "attempts": 0, "scope_link": ""}
+    result = {"body": "", "confidence": "low", "confidence_reason": "", "qa": {}, "attempts": 0, "scope_link": "", "stance": ""}
     outbound = [m.get("body_text") or m.get("body") or m.get("snippet") or "" for m in messages if m.get("direction") == "outbound"]
     thread_text = " ".join((m.get("body_text") or m.get("body") or m.get("snippet") or "") for m in messages)
     for attempt in (1, 2):
@@ -111,6 +114,11 @@ async def draft_reply(brain: MailBrain, settings: MailboxSettings, mailbox: dict
         data = await brain.complete_json(system, user)
         if not isinstance(data, dict):
             raise BrainError("The model did not return a draft.")
+        stance = str(data.get("stance") or "").strip().lower()
+        result["stance"] = stance if stance in ("interested", "question", "soft_no", "opt_out", "other") else ""
+        if result["stance"] == "opt_out":
+            result.update(body="", confidence="low", confidence_reason="they asked not to be contacted", qa={"ok": False, "reasons": ["opt-out"]})
+            return result
         body = str(data.get("body") or "").strip()
         body = strip_greeting_and_signoff(body, settings.display_name)
         if scope and scope.get("mode") == "inquiry":
@@ -190,14 +198,19 @@ async def draft_reconnect(brain: MailBrain, settings: MailboxSettings, mailbox: 
             return result
         body = strip_greeting_and_signoff(str(data.get("body") or "").strip(), settings.display_name)
         if scope and scope.get("mode") == "inquiry":
-            body, result["scope_link"] = scope_mod.apply_scope_link(body, scope, outbound, inbound_text=inbound_text,
+            # The link always goes in a follow-up (a hard no in the thread was
+            # ruled out before drafting); months-old cues in the history are
+            # not read as an answer to this message.
+            body, result["scope_link"] = scope_mod.apply_scope_link(body, scope, outbound, inbound_text="",
                                                                      thread_text=thread_text, always=True)
         qa = qa_check("Re: " + thread.get("subject", ""), body, allowed_links=[result["scope_link"]] if result["scope_link"] else None)
         confidence = str(data.get("confidence") or "medium").lower()
         reason = str(data.get("confidence_reason") or "")[:300]
         # The bridge must stand on the thread: a body that shares nothing with
-        # what they wrote is a template, whatever the model says.
-        if inbound_text and not (_topic_words(body) & _topic_words(inbound_text)):
+        # what they wrote is a template, whatever the model says (judged only
+        # when their side gave it something to stand on).
+        theirs = _topic_words(inbound_text)
+        if theirs and not (_topic_words(body) & theirs):
             qa = {**qa, "ok": False, "reasons": qa.get("reasons", []) + ["does not pick up anything from the thread"]}
         result.update(body=body, confidence=confidence, confidence_reason=reason, qa=qa)
         if qa["ok"]:
@@ -233,6 +246,10 @@ async def draft_new(brain: MailBrain, settings: MailboxSettings, mailbox: dict, 
             body, result["scope_link"] = scope_mod.apply_scope_link(body, scope, [], inbound_text=instruction, always=False)
         subject = re.sub(r"(?i)^\s*(re|fwd?)\s*:\s*", "", str(data.get("subject") or "").strip())[:120]
         qa = qa_check(subject, body, allowed_links=[result["scope_link"]] if result["scope_link"] else None)
+        from harvey.spamcheck import SUBJECT_REVIEW, subject_risk
+        s_score, s_reasons = subject_risk(subject, body)
+        if s_score >= SUBJECT_REVIEW:
+            qa = {**qa, "ok": False, "reasons": qa.get("reasons", []) + ["subject: " + "; ".join(s_reasons)]}
         result.update(subject=subject, body=body, confidence=str(data.get("confidence") or "medium").lower(),
                       confidence_reason=str(data.get("confidence_reason") or "")[:300], qa=qa)
         if qa["ok"]:

@@ -47,12 +47,22 @@ async def _reply_attachments(db: MailDB, env: dict, draft: dict) -> list[str]:
         return []
     from bb.mail import scope as scope_mod
     scope = scope_mod.load(root)
-    prior = 0
-    if draft.get("thread_id"):
-        row = await db.one("SELECT COUNT(*) AS n FROM messages WHERE thread_id = ? AND direction = 'outbound'",
-                           (draft["thread_id"],))
-        prior = int((row or {}).get("n") or 0)
+    prior = await prior_replies(db, draft.get("thread_id") or "", exclude_draft=draft.get("id") or "")
     return scope_mod.attachment_paths(root, scope, prior)
+
+
+async def prior_replies(db: MailDB, thread_id: str, exclude_draft: str = "") -> int:
+    """How many replies the command center itself has already sent in this
+    thread. The cold email that started the thread (synced from Sent) is
+    not one: the first reply after it still carries the brief."""
+    if not thread_id:
+        return 0
+    row = await db.one("SELECT COUNT(*) AS n FROM drafts WHERE thread_id = ? AND status = 'sent' AND id != ?",
+                       (thread_id, exclude_draft))
+    sent_drafts = int((row or {}).get("n") or 0)
+    row = await db.one("SELECT COUNT(*) AS n FROM messages WHERE thread_id = ? AND direction = 'outbound' AND sent_by = 'ai'",
+                       (thread_id,))
+    return max(sent_drafts, int((row or {}).get("n") or 0))
 
 
 async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run: bool = False) -> dict:
