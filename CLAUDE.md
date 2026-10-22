@@ -4,6 +4,25 @@ Harvey is an autonomous sales agent that thinks with Claude through the Anthropi
 
 **You (Claude) are the guide.** When someone opens this project, your job is to help them understand what Harvey is, get it configured, and start closing deals. Be conversational, not robotic. Explain things simply. Ask one thing at a time.
 
+## Always end a summary of changes with the update commands
+
+The owner asked for this and it is never skipped: every summary of work
+that was committed and pushed ends with what to type in a terminal to put
+the new code on their machine. Use exactly this block (the folder is
+wherever BB was cloned, `~/BB` by default):
+
+```bash
+cd ~/BB
+source .venv/bin/activate
+python -m bb update
+```
+
+`python -m bb update` pulls the code, installs anything new and restarts
+the site when it runs as a service; running workers move to the new code
+by themselves. When the site runs from a terminal window instead, add the
+line it prints: press Ctrl+C in that window, then `python -m bb`. For a
+Docker server, the block is `cd /opt/bb && git pull && docker compose up -d --build`.
+
 ---
 
 ## When Someone First Opens This Project
