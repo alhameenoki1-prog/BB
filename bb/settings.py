@@ -42,6 +42,17 @@ class Settings:
         self.ms_client_id = get("MS_CLIENT_ID").strip()
         self.ms_client_secret = get("MS_CLIENT_SECRET").strip()
         self.ms_tenant = get("MS_TENANT", "common").strip() or "common"
+        # The mailbox that sends users their mailbox alerts: any SMTP account
+        # the operator owns, never a user's own mailbox (it may be the very
+        # thing that stopped working).
+        self.alert_smtp_host = get("BB_ALERT_SMTP_HOST").strip()
+        try:
+            self.alert_smtp_port = int(get("BB_ALERT_SMTP_PORT", "587") or 587)
+        except ValueError:
+            self.alert_smtp_port = 587
+        self.alert_smtp_username = get("BB_ALERT_SMTP_USERNAME").strip()
+        self.alert_smtp_password = get("BB_ALERT_SMTP_PASSWORD")
+        self.alert_from = get("BB_ALERT_FROM").strip() or self.alert_smtp_username
         self.default_model = get("BB_DEFAULT_MODEL").strip()
         self.default_daily_cost_usd = float(get("BB_DEFAULT_DAILY_COST_USD", "5") or 5)
         self.session_days = int(get("BB_SESSION_DAYS", "14") or 14)
@@ -89,6 +100,10 @@ class Settings:
                 pass
         self._secret = existing
         return existing
+
+    @property
+    def alert_email_ready(self) -> bool:
+        return bool(self.alert_smtp_host and self.alert_from)
 
     def worker_env(self) -> dict:
         return {k: self.env[k] for k in WORKER_ENV_KEYS if self.env.get(k)}

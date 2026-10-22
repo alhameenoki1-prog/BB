@@ -217,7 +217,7 @@ class CommandCenter:
         run = await runs.create_run(self.db, boxes, args["thread_ids"], mode=args["mode"], reply_to=args.get("reply_to", ""),
                                     instructions=args.get("instructions", ""), created_by=self.user_email)
         if not run:
-            raise BrainError("Nothing in that list still needs a reply.")
+            raise BrainError("Nothing in that list still needs a reply (or it is already in a run that has not finished).")
         if self.on_worker_needed:
             self.on_worker_needed()
         return run

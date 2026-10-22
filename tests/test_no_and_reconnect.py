@@ -256,6 +256,10 @@ def test_the_follow_up_run_has_its_own_form_and_page(mail_client, monkeypatch):
     run = asyncio.run(db.one("SELECT * FROM reply_runs WHERE id = ?", (run_id,)))
     assert run["kind"] == "reconnect" and run["months"] == 6 and run["total"] == 3
     assert "follow-up · review" in client.get("/mail/runs").text
+    # A second scan while this one is still going opens this one.
+    r = client.post("/mail/runs/reconnect", data={"mode": "review", "months": "6"})
+    assert r.headers["location"].startswith(f"/mail/runs/{run_id}") and "still%20going" in r.headers["location"]
     # Nothing left to follow up with once a run holds every contact.
+    asyncio.run(db.execute("UPDATE reply_runs SET status = 'done' WHERE id = ?", (run_id,)))
     r = client.post("/mail/runs/reconnect", data={"mode": "review", "months": "6"})
     assert "No%20past%20conversations" in r.headers["location"]

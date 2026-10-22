@@ -380,7 +380,7 @@ class Writer:
         if drafted:
             logger.info(
                 f"Writer: drafted {drafted} personalized first email(s) "
-                f"({'awaiting approval' if require_approval else 'approved'})."
+                f"({'waiting for review' if require_approval else 'approved'})."
             )
 
     def _ask_block(self) -> str:

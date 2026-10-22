@@ -991,6 +991,16 @@ class StateManager:
             )
             await db.commit()
 
+    async def outbox_slots(self, campaign_id: str) -> set[tuple[str, int]]:
+        """(prospect_id, step) pairs a campaign already has in the outbox,
+        whatever their status: the slots the unique index keeps."""
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT prospect_id, step FROM outbox WHERE campaign_id = ? AND kind = 'sequence'",
+                (campaign_id,),
+            ) as cur:
+                return {(r[0], int(r[1])) for r in await cur.fetchall()}
+
     async def claim_outbox_item(self, item_id: str) -> bool:
         """Move one approved row to 'sending'. False when someone else got
         it first (or it is no longer approved): never send a row twice."""

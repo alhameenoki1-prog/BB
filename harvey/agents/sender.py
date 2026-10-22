@@ -28,6 +28,12 @@ from harvey.state import StateManager
 
 logger = logging.getLogger("harvey.sender")
 
+# Merge fields a template may carry; a template rewrite must keep exactly these.
+_MERGE_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+# A template whose rewrite still fails for a copy gets at most this many
+# per-copy rewrites in one staging pass; the rest wait under Needs review.
+PER_COPY_REWRITES = 3
+
 # Max sends drained per heartbeat cycle — spreads volume through the day
 # instead of bursting the daily cap in one minute.
 MAX_SENDS_PER_CYCLE = 8
@@ -456,6 +462,16 @@ class Sender:
         skipped = 0
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         seen_emails: set[str] = set()
+        # Slots already filled (a personal first email the writer drafted):
+        # the template copy for them would be thrown away, so it is neither
+        # rendered nor checked, and costs no model call.
+        try:
+            taken = await self.state.outbox_slots(campaign.id)
+        except Exception:
+            taken = set()
+        # One rewrite per template wording, shared by every copy of it (a
+        # campaign of one person is simply its own copy).
+        fit_cache: dict | None = {} if len(campaign.prospect_ids) > 1 else None
 
         for prospect_id in campaign.prospect_ids:
             prospect = await self.state.get_prospect(prospect_id)
@@ -475,6 +491,8 @@ class Sender:
             for step in campaign.sequence:
                 cumulative_days += max(0, step.delay_days)
                 send_at = now + timedelta(days=cumulative_days)
+                if (prospect.id, int(step.step)) in taken:
+                    continue
                 # A stable pick among the wordings the writer produced, so a
                 # segment does not send one identical body a hundred times.
                 raw_subject, raw_body = step.variant(prospect.id)
@@ -486,7 +504,9 @@ class Sender:
                     # operator's own words are theirs to send. What fails is
                     # rewritten here first, and only what still fails waits
                     # for a person, without holding anything else up.
-                    subject, body, reasons = await self._fit_for_sending(subject, body, prospect, campaign, step)
+                    subject, body, reasons = await self._fit_for_sending(
+                        subject, body, prospect, campaign, step,
+                        template=(raw_subject, raw_body) if fit_cache is not None else None, cache=fit_cache)
                     if reasons:
                         status = "pending_review"
                         note = ("Needs review: even after a rewrite a spam filter would likely flag "
@@ -718,12 +738,19 @@ class Sender:
         logger.info("Sender: the cool-off after a spam block is over; sending resumes at the configured pace.")
         return False
 
-    async def _fit_for_sending(self, subject: str, body: str, prospect, campaign, step) -> tuple[str, str, list[str]]:
+    async def _fit_for_sending(self, subject: str, body: str, prospect, campaign, step, *,
+                               template: tuple[str, str] | None = None, cache: dict | None = None) -> tuple[str, str, list[str]]:
         """The pre-send check and its own fix. The subject must be the
         thing the email is about and the whole must pass the spam check;
         what fails is rewritten once by the model (the goal and the rules
         in front of it) and checked again. Returns (subject, body, reasons
-        still standing)."""
+        still standing).
+
+        With ``template`` (the unrendered wording) and a ``cache`` shared
+        across one staging pass, the fix is made once to the template and
+        every copy of it reuses that, instead of one model call per
+        recipient; a copy the shared fix does not cure gets its own rewrite,
+        a few per template at most."""
         from harvey.spamcheck import SUBJECT_REVIEW, subject_from_need, subject_risk
         need = ""
         try:
@@ -741,6 +768,27 @@ class Sender:
             plain = subject_from_need(need, body)
             if plain and subject_risk(plain, body, need)[0] < SUBJECT_REVIEW:
                 return plain, body, []
+        if template is not None and cache is not None:
+            key = (campaign.id, int(step.step), template[0], template[1])
+            if key not in cache:
+                cache[key] = await self._rewrite_template_for_filter(template[0], template[1], reasons + s_reasons, need)
+                if cache[key]:
+                    logger.info(f"Sender: email {step.step} of '{campaign.name}' read like spam to a filter; "
+                                "rewritten once for every copy.")
+            fixed = cache[key]
+            if fixed:
+                t_subject = self._render(fixed[0], prospect)
+                t_body = self._render(fixed[1], prospect, body=True)
+                cured = self._passes(t_subject, t_body, need)
+                if cured:
+                    return cured[0], cured[1], []
+            budget_key = ("per_copy", key)
+            if cache.get(budget_key, 0) >= PER_COPY_REWRITES:
+                if fixed:
+                    t_reasons = spam_risk(t_subject, t_body)[1] + subject_risk(t_subject, t_body, need)[1]
+                    return t_subject, t_body, t_reasons
+                return subject, body, reasons + s_reasons
+            cache[budget_key] = cache.get(budget_key, 0) + 1
         rewritten = await self._rewrite_for_filter(subject, body, reasons + s_reasons, prospect, need)
         if rewritten:
             new_subject, new_body = rewritten
@@ -754,6 +802,56 @@ class Sender:
                 return new_subject, new_body, []
             return new_subject, new_body, reasons2 + s_reasons2
         return subject, body, reasons + s_reasons
+
+    @staticmethod
+    def _passes(subject: str, body: str, need: str) -> tuple[str, str] | None:
+        """(subject, body) when the pair passes both checks, the subject
+        swapped for a plain one from the need if only it fails; else None."""
+        from harvey.spamcheck import SUBJECT_REVIEW, subject_from_need, subject_risk
+        if spam_risk(subject, body)[0] >= SPAM_REVIEW:
+            return None
+        if subject_risk(subject, body, need)[0] < SUBJECT_REVIEW:
+            return subject, body
+        plain = subject_from_need(need, body)
+        if plain and subject_risk(plain, body, need)[0] < SUBJECT_REVIEW:
+            return plain, body
+        return None
+
+    async def _rewrite_template_for_filter(self, subject: str, body: str, reasons: list[str], need: str) -> tuple[str, str] | None:
+        """One model pass over a segment's shared wording (merge fields and
+        all) so every copy of it passes. None when the model fails or does
+        not keep the merge fields exactly."""
+        outreach = getattr(self.config, "outreach", None)
+        goal = (getattr(outreach, "goal", "") or "").strip()
+        bare = names.strip_greeting(body)
+        fields = set(_MERGE_RE.findall(subject + "\n" + bare))
+        prompt = (
+            f"This email template is about to be sent by {self.config.persona.name} to many people, and a spam "
+            f"filter would likely flag it: {describe(reasons)}.\n\nRewrite it so it passes, keeping every fact, the "
+            "sign-off and the same request. Keep every merge field such as {{first_name}} or {{company}} exactly "
+            "as written, add no new ones, and write no greeting line (one is added per person). Plain words a "
+            "person would type; no marketing vocabulary, no capitals, no exclamation marks, no links. The subject "
+            "names the thing the email is about, in the email's own words, 3 to 10 words, sentence case; never "
+            "\"quick question\", \"opportunity\", \"proposal\", \"partnership\", \"following up\" or anything about "
+            "the act of writing.\n"
+            + (f"\nTHE NEED THIS EMAIL IS ABOUT: {need}\n" if need else "")
+            + (f"\nCAMPAIGN GOAL (the email serves this): {goal}\n" if goal else "")
+            + f"\nSUBJECT: {subject}\n\nBODY:\n{bare}\n\n"
+            'Return ONLY JSON: {"subject": "...", "body": "..."}'
+        )
+        try:
+            result = await self.brain.think_json(prompt, session_id="harvey-sender", agent="sender", task="fit_template")
+        except Exception as e:
+            logger.debug(f"Sender: template rewrite failed: {e}")
+            return None
+        if not isinstance(result, dict) or not str(result.get("body") or "").strip():
+            return None
+        new_subject = str(result.get("subject") or subject).strip()[:120]
+        new_body = names.strip_greeting(str(result["body"]).strip())
+        if set(_MERGE_RE.findall(new_subject + "\n" + new_body)) != fields:
+            logger.info("Sender: the template rewrite changed its merge fields; each copy is checked on its own instead.")
+            return None
+        return new_subject, new_body
 
     async def _rewrite_for_filter(self, subject: str, body: str, reasons: list[str], prospect, need: str) -> tuple[str, str] | None:
         """One model pass to fix a rendered email a filter would junk,

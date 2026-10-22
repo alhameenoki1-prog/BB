@@ -21,6 +21,32 @@ RECONNECT_DEFAULT_MONTHS = 6
 PACE_SECONDS = (20, 60)   # a random pause between two sends from one mailbox
 
 
+# One run is created at a time per mail database: a double click (or the
+# command bar and the page at once) must not put the same threads or
+# contacts into two runs. The web site is one process, so a lock per
+# database file is enough; the worker's processing-time twin check is the
+# second line of defence.
+_CREATE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _create_lock(db: MailDB) -> asyncio.Lock:
+    key = str(getattr(db, "path", id(db)))
+    lock = _CREATE_LOCKS.get(key)
+    if lock is None:
+        lock = _CREATE_LOCKS[key] = asyncio.Lock()
+    return lock
+
+
+async def active_reconnect_run(db: MailDB, mailbox_ids: list[str] | None = None) -> dict | None:
+    """A follow-up run still queued or running (over any of these
+    mailboxes, when given), or None."""
+    for run in await db.query("SELECT * FROM reply_runs WHERE kind = 'reconnect' AND status IN ('queued', 'running') "
+                              "ORDER BY created_at DESC"):
+        if mailbox_ids is None or set(json.loads(run.get("mailbox_ids_json") or "[]")) & set(mailbox_ids):
+            return run
+    return None
+
+
 def pace() -> float:
     override = os.environ.get("BB_MAIL_PACE_SECONDS")
     if override is not None:
@@ -162,6 +188,16 @@ async def create_reconnect_run(db: MailDB, mailboxes: list[dict], months: int = 
     if mode not in MODES:
         mode = "review"
     months = months if months in RECONNECT_MONTHS else RECONNECT_DEFAULT_MONTHS
+    async with _create_lock(db):
+        busy = await active_reconnect_run(db, [m["id"] for m in mailboxes])
+        if busy:
+            # One follow-up scan at a time: a second would race the first
+            # for the same contacts.
+            return {"busy": busy["id"]}
+        return await _insert_reconnect_run(db, mailboxes, months, mode, instructions, created_by, all_mailboxes)
+
+
+async def _insert_reconnect_run(db, mailboxes, months, mode, instructions, created_by, all_mailboxes) -> dict:
     cands = await reconnect_candidates(db, mailboxes, months, all_mailboxes=all_mailboxes)
     if not cands:
         return {}
@@ -190,10 +226,20 @@ async def create_run(db: MailDB, mailboxes: list[dict], thread_ids: list[str], m
     run row with ``per_mailbox`` counts; a run with no items is not created."""
     if mode not in MODES:
         mode = "review"
+    async with _create_lock(db):
+        return await _insert_run(db, mailboxes, thread_ids, mode, reply_to, instructions, created_by)
+
+
+async def _insert_run(db, mailboxes, thread_ids, mode, reply_to, instructions, created_by) -> dict:
     boxes = {m["id"]: m for m in mailboxes}
     marks = ",".join("?" for _ in thread_ids) or "''"
     rows = await db.query(f"SELECT id, mailbox_id, last_from FROM threads WHERE id IN ({marks}) AND state = 'needs_reply'", thread_ids)
-    rows = [r for r in rows if r["mailbox_id"] in boxes]
+    # A thread already waiting in another run that has not finished is left
+    # to that run (a double submit would otherwise draft it twice).
+    taken = {r["thread_id"] for r in await db.query(
+        "SELECT ri.thread_id FROM run_items ri JOIN reply_runs r ON r.id = ri.run_id "
+        "WHERE r.status IN ('queued', 'running') AND ri.status IN ('queued', 'drafting')")}
+    rows = [r for r in rows if r["mailbox_id"] in boxes and r["id"] not in taken]
     if not rows:
         return {}
     run_id, now = new_id(), now_iso()

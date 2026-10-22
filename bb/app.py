@@ -237,8 +237,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     logger.warning("worker check failed: %s", e)
 
         keeper = asyncio.create_task(keep_workers_alive())
+        # Mailbox problems reach the user by email or webhook, not only on the pages.
+        from bb import alerts as alerts_mod
+        alerter = asyncio.create_task(alerts_mod.loop(settings, accounts))
         yield
         keeper.cancel()
+        alerter.cancel()
         await tunnel.stop()
         if tunnel.pid and tunnel.mode == "quick" and tunnel.url:
             # The link stays up on purpose so a restart keeps it. Someone
@@ -432,6 +436,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Multi-select fields (sector pickers) keep every chosen value.
         for key in {k for k in raw.keys() if k.startswith(("sm_sectors_", "sn_sectors_"))}:
             form[key] = raw.getlist(key)
+        before = ws.writing_brief()
         try:
             ws.write_profile(form)
         except ValidationError as e:
@@ -443,9 +448,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as e:
             return await render(request, "profile.html", user,
                                 **_profile_ctx(ws, _form_view(ws, form)), error=str(e))
-        restarted = await ws.restart_worker_if_running("the new profile")
+        rewritten = ""
+        if before and ws.writing_brief() != before and str(form.get("rewrite_scheduled", "")).lower() in ("1", "on", "true", "yes"):
+            # The goal, the request or the wording rules changed: emails
+            # written before the change and not sent yet are written again.
+            done, restarted = await ws.rewrite_unsent_now("written again under the new campaign goal and brief")
+            if done["cancelled"] or done["prospects"]:
+                rewritten = (f" {done['cancelled']} unsent email(s) to {done['prospects']} recipient(s) will be written again "
+                             "under the new goal; follow-ups to people already emailed keep the wording of their thread.")
+        else:
+            restarted = await ws.restart_worker_if_running("the new profile")
         warning = ws.template_warning()
-        msg = "Profile saved. The worker was restarted with the new settings." if restarted else "Profile saved."
+        msg = ("Profile saved. The worker was restarted with the new settings." if restarted else "Profile saved.") + rewritten
         if warning:
             return _redirect("/profile", msg=msg, error=warning)
         return _redirect("/profile", msg=msg)
@@ -520,6 +534,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             microsoft_connected=ws.microsoft_connected(), ms_account=ws.microsoft_account(),
                             ms_redirect_uri=microsoft_oauth.redirect_uri(settings),
                             reconnect=ws.needs_reconnect(health),
+                            alerts=ws.alert_settings(), alert_state=ws.alert_state(),
+                            alert_email_ready=settings.alert_email_ready,
                             smtp={**smtp, "smtp_password": "", "imap_password": ""},
                             smtp_configured=ws.smtp_configured(),
                             smtp_masked=ws.mask(smtp["smtp_password"]),
@@ -527,6 +543,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             m365_masked=ws.mask(m365["m365_client_secret"]),
                             sending=sending, report=report, health=health,
                             redirect_uri=gmail_oauth.redirect_uri(settings))
+
+    @app.post("/mailbox/alerts")
+    async def mailbox_alerts_save(request: Request, user: dict = Depends(current_user)):
+        from bb import alerts as alerts_mod
+        ws = workspace_for(user)
+        form = dict(await request.form())
+        webhook = str(form.get("alert_webhook", "") or "").strip()
+        problem = await asyncio.to_thread(alerts_mod.webhook_problem, webhook) if webhook else ""
+        if problem:
+            return _redirect("/mailbox", error=f"Alerts not saved: {problem}")
+        try:
+            ws.save_alert_settings(email=str(form.get("alert_email", "") or ""),
+                                   email_on=bool(form.get("alert_email_on")), webhook=webhook)
+        except ValueError as e:
+            return _redirect("/mailbox", error=f"Alerts not saved: {e}")
+        return _redirect("/mailbox", msg="Alert settings saved. Send a test alert to see it arrive.")
+
+    @app.post("/mailbox/alerts/test")
+    async def mailbox_alerts_test(user: dict = Depends(current_user)):
+        from bb import alerts as alerts_mod
+        ws = workspace_for(user)
+        reached, problems = await alerts_mod.deliver(
+            settings, ws, "Test alert from BB",
+            "This is how you will hear that your mailbox stopped sending or needs signing in again. Nothing is wrong now.",
+            ok=True)
+        if not reached and not problems:
+            return _redirect("/mailbox", error="Nothing is switched on: add an alert address or a webhook first.")
+        return _redirect("/mailbox", msg=("Test alert sent to " + " and ".join(reached) + ".") if reached else "",
+                         error="; ".join(problems))
 
     @app.post("/mailbox/m365")
     async def mailbox_m365_save(request: Request, user: dict = Depends(current_user)):
@@ -875,10 +920,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/outbox/rewrite-unsent")
     async def outbox_rewrite_unsent(user: dict = Depends(current_user)):
         ws = workspace_for(user)
-        done = await ws.rewrite_unsent()
-        restarted = await ws.restart_worker_if_running("the rewritten emails")
+        done, restarted = await ws.rewrite_unsent_now()
         return _redirect("/", msg=f"Cancelled {done['cancelled']} unsent email(s); {done['prospects']} recipient(s) will be "
-                                  f"written to again with the current brief." + (f" {restarted}" if restarted else ""))
+                                  f"written to again with the current brief."
+                                  + (" The worker was restarted." if restarted else ""))
 
     @app.post("/outbox/approve-all")
     async def outbox_approve_all(user: dict = Depends(current_user)):

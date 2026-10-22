@@ -351,6 +351,10 @@ class Handler:
                 # The one closing note: thanks, the brief left with them, nothing asked.
                 await self._queue_native_reply(response, prospect, convo, reply_meta or {}, intent)
                 logger.info(f"Handler: {lead_email} said no; one closing note with the brief goes out, then nothing more.")
+            elif response and reply_uuid:
+                # Instantly (legacy) sends straight away: the same one note.
+                if await self._send_instantly_reply(reply_uuid, response, convo, lead_email, intent):
+                    logger.info(f"Handler: {lead_email} said no; the closing note with the brief went out, then nothing more.")
             await self.state.update_conversation(convo.id, status="closed", stage="closed_lost")
             await self.state.update_prospect_status(prospect.id, "lost")
             logger.info(f"Handler: {lead_email} not interested. Closing. One no is enough.")
@@ -394,25 +398,34 @@ class Handler:
                 await self.state.update_prospect_status(prospect.id, "lost")
                 logger.info(f"Handler: {lead_email} said no; the closing note is the last email they get.")
         elif reply_uuid:
-            result = await self.instantly.send_reply(reply_uuid, response)
-            if result is not None:
-                # Add our response to conversation
-                convo.thread.append(Message(sender="harvey", content=response))
-                await self.state.update_conversation(
-                    convo.id,
-                    thread_json=convo.thread_json(),
-                )
-                logger.info(f"Handler: Replied to {lead_email}")
+            await self._send_instantly_reply(reply_uuid, response, convo, lead_email, intent)
+            if self.inquiry and intent == "objection" and enquiry.is_soft_no(fresh):
+                # The same rule as the native path: a soft no gets the one
+                # closing note and the conversation ends there.
+                await self.state.update_conversation(convo.id, status="closed", stage="closed_lost")
+                await self.state.update_prospect_status(prospect.id, "lost")
+                logger.info(f"Handler: {lead_email} said no; the closing note is the last email they get.")
 
-                await self.state.log_action(
-                    action_type="reply",
-                    agent="handler",
-                    details={
-                        "prospect_email": lead_email,
-                        "intent": intent,
-                        "response_preview": response[:100],
-                    },
-                )
+    async def _send_instantly_reply(self, reply_uuid: str, response: str, convo, lead_email: str, intent: str) -> bool:
+        """Answer through Instantly (legacy) and record it on the thread.
+        Returns True when Instantly took it."""
+        result = await self.instantly.send_reply(reply_uuid, response)
+        if result is None:
+            logger.warning(f"Handler: Instantly did not take the reply to {lead_email}.")
+            return False
+        convo.thread.append(Message(sender="harvey", content=response))
+        await self.state.update_conversation(convo.id, thread_json=convo.thread_json())
+        logger.info(f"Handler: Replied to {lead_email}")
+        await self.state.log_action(
+            action_type="reply",
+            agent="handler",
+            details={
+                "prospect_email": lead_email,
+                "intent": intent,
+                "response_preview": response[:100],
+            },
+        )
+        return True
 
     # ── Native provider path (Gmail / SMTP) ──
 
@@ -533,8 +546,8 @@ class Handler:
         outreach = getattr(self.config, "outreach", None)
         if not outreach:
             return False
-        if outreach.reply_attachments and outreach.attach_on != "never":
-            return True
+        if outreach.reply_attachments and outreach.attach_on != "never" and self.is_native:
+            return True      # Instantly (legacy) sends no files: only a link counts there
         try:
             return bool(enquiry.need_for(outreach, getattr(prospect, "industry", "") or "")["url"])
         except Exception:

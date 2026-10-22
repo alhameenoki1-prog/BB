@@ -98,7 +98,7 @@
         <span><i style="background:var(--accent-2)"></i>{{ summary.sent }} sent</span>
         <span><i style="background:var(--good)"></i>{{ summary.replied }} replied</span>
       </div>
-      <p class="tiny" style="margin-top:10px">{{ summary.outbox_pending }} awaiting approval · {{ summary.outbox_scheduled }} scheduled · {{ summary.outbox_failed + summary.outbox_rejected }} failed or rejected · <a href="/replies">read replies</a></p>
+      <p class="tiny" style="margin-top:10px">{{ summary.outbox_pending }} need{{ 's' if summary.outbox_pending == 1 else '' }} review · {{ summary.outbox_scheduled }} scheduled · {{ summary.outbox_failed + summary.outbox_rejected }} failed or rejected · <a href="/replies">read replies</a></p>
       {% if summary.allowance %}
       <div class="card flat" style="margin-top:10px;{{ 'border-color:var(--warn)' if summary.allowance.reached else '' }}">
         <b>{{ 'Paused until tomorrow.' if summary.allowance.reached else 'Today\'s limit.' }}</b> {{ summary.allowance.text }}

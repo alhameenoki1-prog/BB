@@ -9,6 +9,24 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Mailbox alerts by email and on the phone.** The site checks every
+  workspace every five minutes (`bb/alerts.py`) and sends each new
+  mailbox problem once, again a day later if it is still there, and a
+  "working again" note when it clears: by email through the site's own
+  alert mailbox (`BB_ALERT_SMTP_HOST/PORT/USERNAME/PASSWORD`,
+  `BB_ALERT_FROM`) and to a webhook the user sets on the Mailbox page
+  (ntfy for a phone notification, Slack, Discord or any JSON endpoint;
+  public https addresses only). The worker's failed login or stalled
+  delivery counts, and so does a command-center mailbox that needs
+  reconnecting. *Send a test alert* checks the channels.
+- **A changed goal reaches the scheduled emails.** Saving the profile
+  with a new goal, request, ask, style, greeting, needs or template sets
+  aside the unsent first emails of people not written to yet and the
+  worker writes them again under the new brief (the box under the goal,
+  on by default). People already emailed keep their thread's follow-ups;
+  the same rule now applies to the dashboard's "Rewrite the unsent
+  emails", and both stop the worker around the reset so a writer in the
+  middle of a batch cannot stage old words after it.
 - **Sign in with Microsoft, and Reconnect.** The Mailbox page and the
   command center's Accounts page take an Outlook, Hotmail or Microsoft
   365 mailbox with one click through the site's own Entra app
@@ -35,6 +53,25 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **One run at a time over the same threads.** Two submits of the
+  follow-up scan (a double click, or the page and the command bar) no
+  longer start two runs over the same contacts: a run still going over
+  those accounts is opened instead. A reply run leaves out threads
+  already waiting in another unfinished run.
+- **The Instantly path closes a no too.** A soft no answered through
+  Instantly gets the one closing note with the brief's link and the
+  conversation ends, as on Gmail, SMTP and Microsoft; a file-only brief
+  is not promised there, since Instantly sends no attachments.
+- **A failing segment template costs one model call.** When a segment's
+  shared wording would be junked by a filter, the sender rewrites the
+  template once (merge fields kept) and every copy reuses it, instead of
+  one rewrite per recipient; a copy the shared fix does not cure gets its
+  own rewrite, three per template at most, and the rest wait under Needs
+  review. The template copy for someone whose personal first email
+  already holds the slot is no longer rendered or checked at all.
+- **"Needs review", everywhere.** The CLI dashboard, `harvey outbox` and
+  the web dashboard's summary say "needs review" for what is held, the
+  same as the Outbox.
 - **Review fixes, third round.** A no is now judged on what they wrote,
   never on the history quoted under it (our own need or signature). The
   hard-no cues no longer fire on ordinary words: "your email went to my

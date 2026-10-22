@@ -679,7 +679,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         run = await runs_mod.create_run(c["db"], boxes, thread_ids, mode=mode, reply_to=reply_to,
                                         instructions=str(form.get("instructions", "") or ""), created_by=user.get("email", ""))
         if not run:
-            return _redirect("/mail/runs", error="None of those threads still needs a reply.")
+            return _redirect("/mail/runs", error="None of those threads still needs a reply (or they are already in a run "
+                                                 "that has not finished).")
         if not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
         return _redirect(f"/mail/runs/{run['id']}", msg=f"Run started: {run['total']} threads across {len(run['per_mailbox'])} account(s).")
@@ -707,6 +708,9 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         run = await runs_mod.create_reconnect_run(c["db"], boxes, months=months, mode=mode,
                                                   instructions=str(form.get("instructions", "") or ""),
                                                   created_by=user.get("email", ""), all_mailboxes=c["mailboxes"])
+        if run.get("busy"):
+            return _redirect(f"/mail/runs/{run['busy']}", error="A follow-up run over these accounts is still going. "
+                                                                "It has to finish (or be cancelled) before another starts.")
         if not run:
             return _redirect("/mail/runs", error=f"No past conversations from the last {months} months to follow up with "
                                                  "(two-way threads with people who are not colleagues, automated senders or already followed up).")

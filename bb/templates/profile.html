@@ -182,6 +182,8 @@
   <h2>What this campaign is for</h2>
   <p class="muted small">Say in plain words what every email should achieve and how it should end. Every first email, follow-up, rewrite and reply is written to this, in the sender's own words each time; it outranks the examples the writer learns from.</p>
   <textarea name="campaign_goal" placeholder="e.g. The goal of the first email is to get permission to send the project brief. Every first email ends with an open question offering it, something like: want me to send over the project brief so you have the full scope before we talk? Replies answer what they asked and always get the brief to them, attached or linked.">{{ profile.campaign_goal }}</textarea>
+  <input type="hidden" name="rewrite_scheduled_form" value="1">
+  <label class="check" style="margin-top:10px"><input type="checkbox" name="rewrite_scheduled" value="1" {{ 'checked' if (profile.rewrite_scheduled if profile.rewrite_scheduled_form else True) else '' }}> When the goal, the request or the writing changes, write the emails that have not gone out yet again <span class="muted">(people already emailed keep their thread's follow-ups)</span></label>
 </div>
 <div class="card">
   <h2>Sending</h2>

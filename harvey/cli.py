@@ -445,7 +445,7 @@ def cmd_outbox(args):
 
         pending = await state.get_outbox(status="pending_review", limit=50)
         approved = (await state.get_outbox(status="sending", limit=10)) + (await state.get_outbox(status="approved", limit=10))
-        print(f"\n  Outbox — {len(pending)} awaiting approval, "
+        print(f"\n  Outbox — {len(pending)} waiting for review, "
               f"{len(approved)}+ approved/scheduled")
         print("  " + "=" * 60)
         for item in pending:

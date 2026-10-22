@@ -220,7 +220,20 @@ GMAIL_CLIENT_SECRET=...
 
 Optional: `REOON_API_KEY` / `ZEROBOUNCE_API_KEY` (email verification for
 workers that prospect on their own), `BB_DEFAULT_DAILY_COST_USD`,
-`BB_DEFAULT_MODEL`. `ANTHROPIC_API_KEY` is not used by the web app's
+`BB_DEFAULT_MODEL`, and the mailbox that emails users their mailbox
+alerts (any SMTP account you own, not a user's own mailbox, which may be
+the thing that stopped):
+
+```
+BB_ALERT_SMTP_HOST=smtp.example.com
+BB_ALERT_SMTP_PORT=587                 # 465 for TLS
+BB_ALERT_SMTP_USERNAME=alerts@example.com
+BB_ALERT_SMTP_PASSWORD=...
+BB_ALERT_FROM=alerts@example.com       # defaults to the username
+```
+
+Without it, alerts still reach users through a webhook they set (ntfy,
+Slack, Discord). `ANTHROPIC_API_KEY` is not used by the web app's
 workers; users bring their own provider and key.
 
 ## 3. Run
@@ -535,6 +548,12 @@ replies, threaded under the last message. If an account's history was
 fetched for fewer days than the window, the page says so; connect it
 with a longer history to see older threads.
 
+One follow-up run goes at a time over the same accounts: pressing the
+button twice, or again while one is still going, opens the run already
+under way instead of starting a second over the same contacts. Reply
+runs work the same way per thread: a thread already waiting in a run
+that has not finished is not put into another.
+
 ### Replies carry the project brief
 
 In an inquiry workspace the command center's replies deliver the brief
@@ -705,6 +724,17 @@ draft and reply run, and every Rewrite from the Outbox. The model is told
 to serve it in its own words each time, never to copy its wording, and
 that it outranks the shape of the worked examples.
 
+Changing the goal (or the request, the ask, the style, the greeting, the
+needs per kind of business, your own template) also reaches the emails
+already scheduled: with the box under the goal ticked, which it is by
+default, saving the profile stops the worker for a moment, sets aside
+every unsent first email (and the follow-ups queued behind it) to people
+who have not had an email from you yet, puts them back in line, and the
+worker writes them again under the new goal. People already emailed keep
+the follow-ups of their thread, since a fresh opening in the middle of a
+conversation would read wrong. Changes that do not shape the words (the
+speed, the daily cap, quiet hours, the mailbox) touch nothing queued.
+
 ## Inbox auto-reply
 
 In inquiry mode the auto-reply already knows the full-scope documents from
@@ -800,6 +830,23 @@ in red and the worker log repeats until it clears. The Mailbox page's
 "Is it still sending?" card shows the last check, its result and the
 last email delivered. The alert clears on its own once a check passes
 and mail leaves again.
+
+**Alerts away from the site.** Nobody watches the dashboard at three in
+the morning, so the site checks every workspace every five minutes and
+sends each new problem to the user once: by email through the site's
+alert mailbox (`BB_ALERT_SMTP_*` above) and, if they set one, to a
+webhook. The Mailbox page's *Tell me when it stops* card holds both: the
+address (the login email by default) and a webhook URL. For a phone
+notification the user installs the free ntfy app, subscribes to a topic
+name only they know, and pastes `https://ntfy.sh/<that name>`; a Slack or
+Discord incoming-webhook URL works too, and anything else gets a JSON
+POST. Only https addresses on the public internet are accepted. A
+problem still there a day later is sent again; when it clears, one
+"working again" note follows. The worker's mailbox counts while the
+worker runs or is meant to (an alert left by a worker the user stopped
+is not sent), and so does a command-center mailbox that needs
+reconnecting. *Send a test alert* shows straight away whether the
+channels work.
 
 ## Operations
 

@@ -253,6 +253,9 @@ class Workspace:
         self.microsoft_token_file = self.data_dir / "m365_token.json"
         self.microsoft_account_file = self.data_dir / "microsoft_account.json"
         self.secrets_file = self.data_dir / "secrets.json"
+        # Where mailbox alerts go (bb.alerts) and what was already said.
+        self.alerts_file = self.data_dir / "alerts.json"
+        self.alerts_state_file = self.data_dir / "alerts_state.json"
         self.mailbox_file = self.data_dir / "mailbox.json"
         self.attachments_dir = self.root / "attachments"
         self.signature_dir = self.root / "signature"
@@ -1032,6 +1035,38 @@ class Workspace:
             except FileNotFoundError:
                 pass
 
+    def alert_settings(self) -> dict:
+        """{email, email_on, webhook}: email defaults to the login address."""
+        try:
+            data = json.loads(self.alerts_file.read_text())
+            data = data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            data = {}
+        return {"email": str(data.get("email") or self.user.get("email") or "").strip().lower(),
+                "email_on": bool(data.get("email_on", True)),
+                "webhook": str(data.get("webhook") or "").strip()}
+
+    def save_alert_settings(self, *, email: str, email_on: bool, webhook: str):
+        email = (email or "").strip().lower()
+        if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            raise ValueError("That alert address does not look like an email address.")
+        self.ensure()
+        self.alerts_file.write_text(json.dumps({"email": email, "email_on": bool(email_on),
+                                                "webhook": (webhook or "").strip()[:500]}))
+
+    def alert_state(self) -> dict:
+        try:
+            data = json.loads(self.alerts_state_file.read_text())
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save_alert_state(self, state: dict):
+        self.ensure()
+        tmp = self.alerts_state_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state))
+        tmp.replace(self.alerts_state_file)
+
     def needs_reconnect(self, health: dict | None = None) -> str:
         """Why the connected mailbox must be reconnected, or "": the health
         check or the sender found the sign-in refused."""
@@ -1146,24 +1181,57 @@ class Workspace:
             "AND status IN ('pending_review', 'approved') LIMIT 400")
         return sum(1 for r in rows if vague_risk(r["subject"] or "", strip_greeting(r["body"] or ""))[0] >= REVIEW)
 
-    async def rewrite_unsent(self) -> dict:
-        """Cancel every unsent first email and follow-up, put their people
-        back in line to be written to, and retire the campaigns they came
-        from, so the worker writes them again with the current brief.
-        Nothing already sent is touched."""
+    # What shapes the words of an email: a change here makes every email
+    # written before it stale. Speed, caps, the mailbox and the like do not.
+    BRIEF_KEYS = ("mode", "intent", "goal", "sender_line", "sector_needs", "style", "ask", "ask_detail", "greeting",
+                  "use_template", "template_subject", "template_body", "sector_messages", "personalize_each")
+
+    def writing_brief(self) -> str:
+        """A fingerprint of everything in harvey.yaml that decides what an
+        email says ("" before the profile exists)."""
+        cfg = self.config() or {}
+        if not cfg:
+            return ""
+        outreach = cfg.get("outreach") or {}
+        return json.dumps({"outreach": {k: outreach.get(k) for k in self.BRIEF_KEYS},
+                           "product": cfg.get("product") or {}}, sort_keys=True, default=str)
+
+    async def rewrite_unsent_now(self, note: str = "rewritten with the new brief") -> tuple[dict, bool]:
+        """rewrite_unsent with the worker stopped around it, so a writer in
+        the middle of a batch cannot stage old words after the reset.
+        Returns (counts, whether the worker was started again)."""
+        was_running = bool(self.worker_running())
+        if was_running:
+            await self.stop_worker("rewriting the unsent emails")
+        try:
+            done = await self.rewrite_unsent(note)
+        finally:
+            restarted = self.start_worker()[0] if was_running else False
+        return done, restarted
+
+    async def rewrite_unsent(self, note: str = "rewritten with the new brief") -> dict:
+        """Cancel every unsent first email (and the follow-ups behind it)
+        of people not written to yet, put them back in line to be written
+        to, and retire the campaigns they came from, so the worker writes
+        them again with the current brief. Nothing already sent is touched,
+        and someone who already has an email from us keeps the follow-ups of
+        that thread: a new opening line in the middle of a conversation
+        would read wrong."""
         out = {"cancelled": 0, "prospects": 0, "campaigns": 0}
         if not await self._table_exists("outbox"):
             return out
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+        started = "SELECT prospect_id FROM outbox WHERE status IN ('sent', 'sending') AND prospect_id != ''"
         async with aiosqlite.connect(str(self.db_path), timeout=10) as db:
             cur = await db.execute(
-                "UPDATE outbox SET status = 'cancelled', error = 'rewritten with the new brief', updated_at = ? "
-                "WHERE kind = 'sequence' AND status IN ('pending_review', 'approved')", (now,))
+                "UPDATE outbox SET status = 'cancelled', error = ?, updated_at = ? "
+                f"WHERE kind = 'sequence' AND status IN ('pending_review', 'approved') AND prospect_id NOT IN ({started})",
+                (note[:200], now))
             out["cancelled"] = cur.rowcount
             cur = await db.execute(
                 "UPDATE prospects SET status = 'new', updated_at = ? WHERE status = 'queued' "
-                "AND id NOT IN (SELECT prospect_id FROM outbox WHERE status = 'sent')", (now,))
+                f"AND id NOT IN ({started})", (now,))
             out["prospects"] = cur.rowcount
             cur = await db.execute(
                 "UPDATE campaigns SET status = 'failed' WHERE status IN ('draft', 'active', 'writing')")

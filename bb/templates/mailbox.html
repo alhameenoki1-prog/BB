@@ -46,7 +46,7 @@
 </div>
 {% endif %}
 {% if health %}
-<div class="card" {% if health.alert %}style="border-color:var(--bad)"{% endif %}>
+<div class="card" id="health" {% if health.alert %}style="border-color:var(--bad)"{% endif %}>
   <h2>Is it still sending?</h2>
   {% if health.alert %}<p style="color:var(--bad)"><b>{{ health.alert }}</b></p>{% endif %}
   <p class="small muted">The worker logs in to the mailbox every 30 minutes, the way <code>harvey status --check</code> does, and watches whether approved emails actually leave. A failed login, or nothing delivered for an hour and a half while emails are due, turns this card and the dashboard red and is written to the worker log.</p>
@@ -56,6 +56,26 @@
   </tbody></table>
 </div>
 {% endif %}
+
+<div class="card" id="alerts">
+  <h2>Tell me when it stops <span class="tiny" style="font-weight:400">alerts away from this site</span></h2>
+  <p class="muted small">When the login check fails, a sign-in is refused or nothing has been delivered for an hour and a half while emails are due, you hear about it here and on the dashboard, and also by email and/or on your phone. Each problem is sent once, again a day later if it is still there, and a short note follows when it clears.</p>
+  <form method="post" action="/mailbox/alerts">
+    <div class="row">
+      <div><label class="check" style="margin-bottom:6px"><input type="checkbox" name="alert_email_on" value="1" {{ 'checked' if alerts.email_on else '' }}> Email me at</label>
+        <input type="email" name="alert_email" value="{{ alerts.email }}" placeholder="you@example.com">
+        {% if not alert_email_ready %}<div class="hint">The site has no alert email server yet, so only the webhook below can reach you.{% if user.role == 'admin' %} Admin: set <code>BB_ALERT_SMTP_HOST</code>, <code>BB_ALERT_SMTP_PORT</code>, <code>BB_ALERT_SMTP_USERNAME</code>, <code>BB_ALERT_SMTP_PASSWORD</code> and <code>BB_ALERT_FROM</code> (any mailbox you own, not a user's).{% endif %}</div>{% endif %}</div>
+      <div><label>Phone or chat webhook (optional)</label><input type="url" name="alert_webhook" value="{{ alerts.webhook }}" placeholder="https://ntfy.sh/your-private-topic">
+        <div class="hint">For a phone notification: install the free <a href="https://ntfy.sh" target="_blank" rel="noopener">ntfy</a> app, subscribe to a topic name only you know (say <code>bb-{{ user.id[:6] }}-alerts</code>) and paste <code>https://ntfy.sh/</code> plus that name. A Slack or Discord incoming-webhook address works too.</div></div>
+    </div>
+    <div class="actions" style="margin-top:12px">
+      <button type="submit">{{ icon('check', 15) }} Save alerts</button>
+    </div>
+  </form>
+  <form class="inline" method="post" action="/mailbox/alerts/test" style="margin-top:8px"><button class="secondary small" type="submit">Send a test alert</button></form>
+  {% if alert_state.last_sent_at %}<p class="tiny" style="margin-top:8px">Last alert sent {{ alert_state.last_sent_at[:16].replace('T', ' ') }} UTC.</p>{% endif %}
+  {% if alert_state.last_problem %}<p class="tiny" style="margin-top:4px;color:var(--bad)">The last alert could not be delivered: {{ alert_state.last_problem }}</p>{% endif %}
+</div>
 
 <div class="two">
 {% if gmail_available %}  <div class="card">

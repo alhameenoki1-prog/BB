@@ -225,7 +225,7 @@ function renderFigures(stats) {
     row('Contacts', stats.prospects || 0) +
     row('Signals on', stats.signals_confirmed || 0) +
     row('Not yet read', stats.unprofiled || 0) +
-    row('Awaiting approval', stats.outbox_pending || 0) +
+    row('Needs review', stats.outbox_pending || 0) +
     row('Scheduled', stats.outbox_approved || 0) +
     row('Live conversations', stats.open_conversations || 0) +
   '</div>';
