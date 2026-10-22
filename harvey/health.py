@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("harvey.health")
@@ -24,6 +25,7 @@ CHECK_TIMEOUT_SECONDS = 60
 CHECK_AT_KEY = "mailbox_check_at"
 CHECK_OK_KEY = "mailbox_check_ok"
 CHECK_ERROR_KEY = "mailbox_check_error"
+CHECK_AUTH_KEY = "mailbox_check_auth"     # "1" when the failure was the mailbox refusing the sign-in
 LAST_SENT_KEY = "mailbox_last_sent_at"
 ALERT_KEY = "mailbox_alert"
 ALERT_SINCE_KEY = "mailbox_alert_since"
@@ -31,6 +33,34 @@ ALERT_SINCE_KEY = "mailbox_alert_since"
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+# A check from before this process started describes an older connection
+# (a reconnect restarts the worker): the first pass checks again at once.
+_PROCESS_START = datetime.now(timezone.utc).replace(tzinfo=None)
+
+# The mailbox refused the sign-in itself (Reconnect helps), as opposed to
+# the server being unreachable or busy (waiting helps).
+_AUTH_RE = re.compile(
+    r"\b535\b|5\.7\.(8|3|139)\b|authentication (failed|unsuccessful|credentials invalid)|username and password not accepted|"
+    r"invalid credentials|AUTHENTICATIONFAILED|LOGIN failed|invalid_grant|invalid_client|unauthorized_client|"
+    r"interaction_required|consent_required|AADSTS(70000|7000215|7000222|50173|700082|50076|50079)\b|"
+    r"rejected \((400|401)\)|refused the login|not authori[sz]ed yet|Graph 401|sign-in refused|Token refresh or profile fetch failed",
+    re.I)
+_NETWORK_RE = re.compile(
+    r"Errno|timed out|timeout|Connect call failed|could not (reach|connect)|Name or service not known|"
+    r"Temporary failure|Connection (refused|reset|closed)|rejected \(5\d\d\)|Graph 5\d\d|no answer from",
+    re.I)
+
+
+def is_auth_failure(message: str, provider=None) -> bool:
+    """Did the mailbox refuse the sign-in (so the user must reconnect)?
+    Gmail's provider remembers the refusal itself; for the others the
+    error text tells a refusal from an outage."""
+    message = message or ""
+    if "Token refresh or profile fetch failed" in message and provider is not None:
+        return getattr(provider, "_last_status", 0) in (400, 401, 403)
+    return bool(_AUTH_RE.search(message)) and not _NETWORK_RE.search(message)
 
 
 def _parse(value: str | None) -> datetime | None:
@@ -59,7 +89,7 @@ async def run_check(state, provider, config, *, quiet: bool = False, force: bool
     ok_setting = await state.get_setting(CHECK_OK_KEY)
     error = await state.get_setting(CHECK_ERROR_KEY) or ""
     ok = ok_setting != "0"
-    if force or last_check is None or now - last_check >= timedelta(minutes=CHECK_EVERY_MINUTES):
+    if force or last_check is None or last_check < _PROCESS_START or now - last_check >= timedelta(minutes=CHECK_EVERY_MINUTES):
         try:
             ok, msg = await asyncio.wait_for(test(), timeout=CHECK_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
@@ -70,6 +100,7 @@ async def run_check(state, provider, config, *, quiet: bool = False, force: bool
         await state.set_setting(CHECK_AT_KEY, now.isoformat())
         await state.set_setting(CHECK_OK_KEY, "1" if ok else "0")
         await state.set_setting(CHECK_ERROR_KEY, error)
+        await state.set_setting(CHECK_AUTH_KEY, "1" if (not ok and is_auth_failure(error, provider)) else "0")
         last_check = now
     out.update(ok=ok, checked_at=last_check.isoformat() if last_check else "", error=error)
 

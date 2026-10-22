@@ -112,3 +112,14 @@ def profile_for_account(user_root: Path, account: str) -> str:
     outreach campaign on that account, else the main one."""
     rows = on_account(user_root, account)
     return rows[0]["id"] if rows else MAIN
+
+
+def profile_root(user_root: Path, campaign_id: str) -> Path:
+    """Where a run's goal, brief and reply files live: that campaign's
+    folder while it exists with a profile in it, else the user's main one
+    (a run outlives a campaign that was removed)."""
+    user_root = Path(user_root)
+    if not campaign_id or campaign_id == MAIN or not valid_id(campaign_id) or not get(user_root, campaign_id):
+        return user_root
+    root = campaign_root(user_root, campaign_id)
+    return root if (root / "harvey.yaml").exists() else user_root

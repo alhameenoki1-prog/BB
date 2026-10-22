@@ -22,7 +22,9 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger("harvey.mail")
 
-NATIVE_PROVIDERS = ("gmail", "smtp", "microsoft")
+# Every provider get_mail_provider can build: Harvey reads and sends through
+# these itself (outbox, stop-on-reply, bounces). Anything else is Instantly.
+NATIVE_PROVIDERS = ("gmail", "smtp", "microsoft", "microsoft_app")
 
 
 class MailReadError(Exception):
@@ -302,29 +304,74 @@ def strip_links(text: str) -> str:
     return "\n".join(out).strip()
 
 
-_BARE_URL_LINE_RE = re.compile(r"^\s*(?:(?P<label>[^\n:]{1,80}):\s*)?(?P<url>https?://\S+?)\s*$", re.I)
-_INLINE_URL_RE = re.compile(r"(?<![\w\"'=])(https?://[^\s<>\"')\]]+)")
+# A line that is only a link, or "label: link" (the label may hold colons).
+_BARE_URL_LINE_RE = re.compile(r"^\s*(?:(?P<label>.{1,80}):\s+)?(?P<url>(?:https?://|www\.)\S+)\s*$", re.I)
+# A web address inside a sentence (matched on the raw text, escaped after).
+_INLINE_URL_RE = re.compile(r"(?<![\w@/.\-])((?:https?://|www\.)[^\s<>\"'\]]+)", re.I)
+# Words a sentence starts with but a link's name does not.
+_SENTENCE_START = {"here", "this", "that", "it", "i", "we", "you", "please", "see", "check", "find", "grab", "pick",
+                   "book", "click", "open", "read", "download", "there", "attached", "below", "above", "just", "feel"}
+_PREPOSITIONS = {"at", "on", "via", "from", "in", "through", "with", "under", "to", "into", "using"}
 
 
-def link_text(url: str, labels: dict | None = None, line_label: str = "", inline: bool = False) -> str:
+def _split_url(token: str) -> tuple[str, str]:
+    """(the address, the punctuation after it that belongs to the sentence):
+    a final '.', ',', ';', ':', '!' or '?' is the sentence's, and so is a
+    ')' that closes nothing inside the address."""
+    url, tail = token, ""
+    while url and (url[-1] in ".,;:!?" or (url[-1] == ")" and url.count("(") < url.count(")"))):
+        tail = url[-1] + tail
+        url = url[:-1]
+    return url, tail
+
+
+def _href(url: str) -> str:
+    return url if url.lower().startswith(("http://", "https://")) else "https://" + url
+
+
+def _norm_url(url: str) -> str:
+    return _href(url).rstrip("/").lower()
+
+
+def _looks_like_label(prefix: str) -> bool:
+    """"Project brief" or "The Towson scope" names a link; "Pick any slot
+    that suits you here" is a sentence, whose words must stay."""
+    words = prefix.split()
+    return (0 < len(words) <= 5 and not any(c in prefix for c in ";,.!?")
+            and words[0].lower().strip("'\"") not in _SENTENCE_START)
+
+
+def link_text(url: str, labels: dict | None = None, line_label: str = "", inline: bool = False, before: str = "") -> str:
     """What a recipient clicks: "View the Towson brief" on a line of its
-    own; inside a sentence, the document's name or "here"."""
-    label = (labels or {}).get(url.rstrip("/").lower(), "") or line_label.strip()
+    own; inside a sentence, the document's name, else "here" (or "this
+    link" after a preposition: "a time at this link")."""
+    label = (labels or {}).get(_norm_url(url), "") or line_label.strip()
     if label:
         label = label.strip().rstrip(".:")
         if inline or label.lower().startswith(("view", "open", "see", "read")):
             return label
         return f"View {label}"
-    return "here" if inline else "View here"
+    if not inline:
+        return "View here"
+    last = (before.strip().split() or [""])[-1].lower().strip("(\"'")
+    return "this link" if last in _PREPOSITIONS else "here"
+
+
+def _anchor(url: str, text: str, bold: bool = False) -> str:
+    import html as _html
+    weight = ";font-weight:600" if bold else ""
+    return f'<a href="{_html.escape(_href(url), quote=True)}" style="color:#0a60c2{weight}">{_html.escape(text)}</a>'
 
 
 def body_to_html(body: str, labels: dict | None = None) -> str:
-    """The HTML paragraphs for a plain body. A line that is only a URL (or
-    "label: URL") becomes a link the recipient clicks, never a raw address;
-    a URL inside a sentence becomes a link on its own text."""
+    """The HTML paragraphs for a plain body. A line that is only a link (or
+    "label: link") becomes a link the recipient clicks, never a raw address;
+    a sentence that ends in a colon keeps its words and only the address
+    becomes the link; an address inside a sentence becomes a link on the
+    document's name, with the sentence's own punctuation kept outside it."""
     import html as _html
 
-    labels = {k.rstrip("/").lower(): v for k, v in (labels or {}).items() if k}
+    labels = {_norm_url(k): v for k, v in (labels or {}).items() if k}
     out = []
     for para in (body or "").strip().split("\n\n"):
         if not para.strip():
@@ -333,20 +380,33 @@ def body_to_html(body: str, labels: dict | None = None) -> str:
         for ln in para.split("\n"):
             m = _BARE_URL_LINE_RE.match(ln)
             if m:
-                url = m.group("url").rstrip(".,;")
-                text = link_text(url, labels, m.group("label") or "")
-                lines.append(f'<a href="{_html.escape(url, quote=True)}" style="color:#0a60c2;font-weight:600">{_html.escape(text)}</a>')
+                url, tail = _split_url(m.group("url"))
+                prefix = (m.group("label") or "").strip()
+                known = labels.get(_norm_url(url), "")
+                if not prefix or (known and prefix.lower().rstrip(".:") == known.lower().rstrip(".:")) or _looks_like_label(prefix):
+                    lines.append(_anchor(url, link_text(url, labels, prefix), bold=True) + _html.escape(tail))
+                else:
+                    lines.append(_html.escape(prefix) + ": " + _anchor(url, link_text(url, labels), bold=True) + _html.escape(tail))
                 continue
-            escaped = _html.escape(ln)
-            escaped = _INLINE_URL_RE.sub(
-                lambda mm: f'<a href="{mm.group(1).rstrip(".,;")}" style="color:#0a60c2">{_html.escape(link_text(_html.unescape(mm.group(1).rstrip(".,;")), labels, inline=True))}</a>'
-                           + mm.group(1)[len(mm.group(1).rstrip(".,;")):], escaped)
-            lines.append(escaped)
+            pieces, pos = [], 0
+            for mm in _INLINE_URL_RE.finditer(ln):
+                url, tail = _split_url(mm.group(1))
+                if not url or "." not in url.split("//", 1)[-1]:
+                    continue
+                start, end = mm.start(), mm.end()
+                if not tail and start > pos and ln[start - 1] == "<" and ln[end:end + 1] == ">":
+                    start, end = start - 1, end + 1          # <https://…>: the brackets were only a wrapper
+                pieces.append(_html.escape(ln[pos:start]))
+                pieces.append(_anchor(url, link_text(url, labels, inline=True, before=ln[:start])))
+                pieces.append(_html.escape(tail))
+                pos = end
+            pieces.append(_html.escape(ln[pos:]))
+            lines.append("".join(pieces))
         out.append("<p style=\"margin:0 0 14px\">" + "<br>".join(lines) + "</p>")
     return "".join(out)
 
 
-def link_labels(outreach) -> dict:
+def link_labels(outreach, booking_url: str = "") -> dict:
     """URL → what to call it, from everything the profile names: the scope
     links, the inbox documents, the booking link."""
     labels = {}
@@ -360,10 +420,20 @@ def link_labels(outreach) -> dict:
         url, label = getattr(link, "url", ""), getattr(link, "label", "")
         if url:
             labels.setdefault(url, label or "the document")
+    if booking_url:
+        labels.setdefault(booking_url, "a time in my calendar")
     return labels
 
 
-def render_parts(body: str, outreach, plain: bool = False) -> tuple[str, str, object]:
+def booking_url(config) -> str:
+    """The calendar link the profile offers (product.offer.booking_url), or ""."""
+    try:
+        return str(config.product.offer.booking_url or "").strip()
+    except AttributeError:
+        return ""
+
+
+def render_parts(body: str, outreach, plain: bool = False, booking: str = "") -> tuple[str, str, object]:
     """(plain_text, html_or_empty, signature_image_path_or_None) for one
     outgoing email: the model-written plain body plus the operator's
     signature. HTML is produced only when a signature (or image) exists,
@@ -391,7 +461,7 @@ def render_parts(body: str, outreach, plain: bool = False) -> tuple[str, str, ob
     # Every web address in the HTML part is a link on its own words
     # ("View the Towson brief"); the text part keeps the address, since
     # plain text has nothing else to click.
-    html_body = body_to_html(body, link_labels(outreach))
+    html_body = body_to_html(body, link_labels(outreach, booking))
     img_tag = ('<img src="cid:signature-image" alt="" '
                'style="max-width:320px;height:auto;display:block;margin-top:6px">'
                if image_path is not None else "")
@@ -409,12 +479,12 @@ def render_parts(body: str, outreach, plain: bool = False) -> tuple[str, str, ob
     return plain_text, html, image_path
 
 
-def set_body(msg, body: str, outreach, plain: bool = False) -> None:
+def set_body(msg, body: str, outreach, plain: bool = False, booking: str = "") -> None:
     """Put the body (and signature) on an EmailMessage: text only, or
     text + HTML alternative with the signature image embedded inline."""
     import mimetypes
 
-    plain, html, image_path = render_parts(body, outreach, plain=plain)
+    plain, html, image_path = render_parts(body, outreach, plain=plain, booking=booking)
     msg.set_content(plain)
     if html:
         msg.add_alternative(html, subtype="html")

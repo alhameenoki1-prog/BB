@@ -177,8 +177,12 @@ class Ledger:
         total = self._used(con, account, since)
         mine = self._used(con, account, since, campaign)
         n = len(others) + 1
-        share = max(1, limit // n) if limit else 0
-        held = 0 if priority or not limit else sum(max(0, share - self._used(con, account, since, m["campaign"])) for m in others)
+        # An equal part each; a limit too small to give everyone one has no
+        # parts at all (first come, first served), rather than parts that
+        # add up to more than the limit and block everyone.
+        share = limit // n if limit else 0
+        held = 0 if priority or not limit or not share else \
+            sum(max(0, share - self._used(con, account, since, m["campaign"])) for m in others)
         if not limit:
             room = 10 ** 9            # no limit known: nothing to split
         else:
@@ -256,7 +260,7 @@ class Ledger:
             row = con.execute("SELECT daily FROM limits WHERE account = ?", (account,)).fetchone()
             limit = int(row[0]) if row else 0
             members = self.members(account, t, con=con)
-            share = max(1, limit // max(1, len(members))) if limit else 0
+            share = limit // max(1, len(members)) if limit else 0
             return {"limit": limit, "total": self._used(con, account, since), "share": share,
                     "members": [{**m, "used": self._used(con, account, since, m["campaign"])} for m in members]}
         finally:

@@ -101,7 +101,8 @@ async def connect_imap(db: MailDB, secret: str, *, address: str, smtp: dict, env
     sealed = crypto.seal_json(secret, creds)
     if existing:
         await db.update_mailbox(existing["id"], creds=sealed, provider="imap", mode="limited",
-                                status="ok", status_detail=note, last_checked_at=now_iso(), enabled=1)
+                                status="ok", status_detail=note, last_checked_at=now_iso(), enabled=1,
+                                **_fresh_sync(existing, "imap"))
         await db.log("connected", f"Reconnected {address} (limited mode).", existing["id"])
         return existing["id"], note
     mid = await db.add_mailbox(address=address, provider="imap", creds=sealed, mode="limited",
@@ -122,7 +123,8 @@ async def connect_gmail(db: MailDB, secret: str, *, address: str, refresh_token:
     note = await account_for(probe, creds, env).test()
     if existing:
         await db.update_mailbox(existing["id"], creds=sealed, provider="gmail", mode="full",
-                                status="ok", status_detail=note, last_checked_at=now_iso(), enabled=1)
+                                status="ok", status_detail=note, last_checked_at=now_iso(), enabled=1,
+                                **_fresh_sync(existing, "gmail"))
         await db.log("connected", f"Reconnected {address} through Google.", existing["id"])
         return existing["id"], note
     mid = await db.add_mailbox(address=address, provider="gmail", creds=sealed, mode="full",
@@ -148,7 +150,8 @@ async def connect_microsoft(db: MailDB, secret: str, *, address: str, refresh_to
     existing = await db.mailbox_by_address(address)
     if existing:
         await db.update_mailbox(existing["id"], creds=sealed, provider="graph", mode="full",
-                                status="ok", status_detail=note, last_checked_at=now_iso(), enabled=1)
+                                status="ok", status_detail=note, last_checked_at=now_iso(), enabled=1,
+                                **_fresh_sync(existing, "graph"))
         await db.log("connected", f"Reconnected {address} through Microsoft.", existing["id"])
         return existing["id"], note
     mid = await db.add_mailbox(address=address, provider="graph", creds=sealed, mode="full",
@@ -176,6 +179,13 @@ async def persist_creds(db: MailDB, secret: str, mailbox: dict, account) -> bool
     return True
 
 
+def _fresh_sync(existing: dict, provider: str) -> dict:
+    """A mailbox connected again through another kind of connection (a
+    password one now signed in with Microsoft, say) starts its mirror over:
+    the old provider's sync state means nothing to the new one."""
+    return {"sync": {}} if (existing.get("provider") or "") != provider else {}
+
+
 def _next_color(mailboxes: list[dict]) -> str:
     from bb.mail.models import COLORS
     used = {(m.get("settings") or {}).get("color") for m in mailboxes}
@@ -201,7 +211,8 @@ async def connect_graph(db: MailDB, secret: str, *, address: str, tenant_id: str
     sealed = crypto.seal_json(secret, creds)
     if existing:
         await db.update_mailbox(existing["id"], creds=sealed, provider="graph", mode="full",
-                                status="ok", status_detail=note, last_checked_at=now_iso(), enabled=1)
+                                status="ok", status_detail=note, last_checked_at=now_iso(), enabled=1,
+                                **_fresh_sync(existing, "graph"))
         await db.log("connected", f"Reconnected {address} through Microsoft 365.", existing["id"])
         return existing["id"], note
     mid = await db.add_mailbox(address=address, provider="graph", creds=sealed, mode="full",

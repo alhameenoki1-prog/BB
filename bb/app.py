@@ -515,7 +515,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not ok:
             return _redirect("/apikey", error=detail)
         ws.save_llm(provider, key, model=model, base_url=base_url, workspace_id=workspace_id)
-        restarted = await ws.restart_worker_if_running("the new AI provider")
+        restarted = False
+        for one in ws.all_campaigns():      # one AI provider per user: every campaign's worker picks it up
+            restarted = await one.restart_worker_if_running("the new AI provider") or restarted
         await ws.restart_mail_worker_if_running()
         return _redirect("/apikey", msg=f"{preset['label']} saved and verified ({model or 'default model'})."
                          + (" The worker was restarted to use it." if restarted else ""))
@@ -523,10 +525,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/apikey/remove")
     async def apikey_remove(user: dict = Depends(current_user)):
         ws = workspace_for(user)
-        if ws.worker_running():
-            await ws.stop_worker("the AI provider was removed")
+        for one in ws.all_campaigns():      # no campaign keeps using a key that was removed
+            if one.worker_running():
+                await one.stop_worker("the AI provider was removed")
+        await ws.stop_mail_worker()
         ws.clear_llm()
-        return _redirect("/apikey", msg="AI provider removed. The worker was stopped.")
+        return _redirect("/apikey", msg="AI provider removed. Every campaign's worker and the background mail worker were stopped.")
 
     # ── mailbox: Gmail (OAuth) or the mailbox's own SMTP/IMAP ──
 
@@ -614,6 +618,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/mailbox", error=f"Not saved: {detail}")
         ws.save_secrets(**m365)
         ws.set_mail_provider("microsoft_app")
+        ws.clear_mailbox_problem()
         ws.rewrite_config()
         await ws.restart_worker_if_running("the new mailbox settings")
         return _redirect("/mailbox", msg=f"Microsoft 365 saved. {detail}")
@@ -674,10 +679,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace_for(user)
         if not ws.is_main:
             return _redirect("/mailbox", error=f"{ws.campaign_name()} sends from an account on the Accounts page; change it below.")
+        ready = {"gmail": ws.gmail_connected(), "smtp": ws.smtp_configured(), "microsoft": ws.microsoft_connected(),
+                 "microsoft_app": ws.m365_configured()}
+        if provider in ready and not ready[provider]:
+            needs = {"gmail": "Connect Gmail first (below).", "smtp": "Save your mailbox's SMTP settings first (below).",
+                     "microsoft": "Sign in with Microsoft first (below).", "microsoft_app": "Save the Microsoft 365 app settings first (below)."}
+            return _redirect("/mailbox", error=f"Nothing changed: that mailbox is not connected. {needs[provider]}")
         try:
             ws.set_mail_provider(provider)
         except ValueError as e:
             return _redirect("/mailbox", error=str(e))
+        ws.clear_mailbox_problem()
         ws.rewrite_config()
         await ws.restart_worker_if_running("the new mailbox settings")
         label = {"gmail": "Gmail", "microsoft": "your Microsoft account", "microsoft_app": "the Microsoft 365 app"
@@ -707,6 +719,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/mailbox", error=f"Not saved: {detail}")
         ws.save_secrets(**smtp)
         ws.set_mail_provider("smtp")
+        ws.clear_mailbox_problem()
         ws.rewrite_config()
         await ws.restart_worker_if_running("the new mailbox settings")
         return _redirect("/mailbox", msg=f"Mailbox saved. {detail}")
@@ -736,6 +749,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/mailbox", error=f"Could not sign in: {detail}.{hint} {note}")
         ws.save_secrets(**smtp)
         ws.set_mail_provider("smtp")
+        ws.clear_mailbox_problem()
         ws.rewrite_config()
         await ws.restart_worker_if_running("the new mailbox settings")
         return _redirect("/mailbox", msg=f"Signed in to {email}. {detail}")
@@ -821,6 +835,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/mailbox", error=str(e))
         gmail_oauth.save_token(ws, data, email)
         ws.set_mail_provider("gmail")
+        ws.clear_mailbox_problem()
         ws.rewrite_config()  # the persona sends from the connected mailbox
         await ws.restart_worker_if_running("the new mailbox settings")
         response = _redirect("/mailbox", msg=f"Gmail connected as {email}.")
@@ -830,13 +845,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/gmail/disconnect")
     async def gmail_disconnect(user: dict = Depends(current_user)):
         ws = workspace_for(user)
-        if ws.worker_running() and ws.mail_provider() == "gmail":
+        was = ws.mail_provider()
+        if ws.worker_running() and was == "gmail":
             await ws.stop_worker("Gmail was disconnected")
         ws.disconnect_gmail()
-        if ws.microsoft_connected():
-            ws.set_mail_provider("microsoft")
-        elif ws.smtp_configured():
-            ws.set_mail_provider("smtp")
+        if was == "gmail":      # only the mailbox in use needs a replacement
+            if ws.microsoft_connected():
+                ws.set_mail_provider("microsoft")
+            elif ws.smtp_configured():
+                ws.set_mail_provider("smtp")
         ws.rewrite_config()
         await ws.restart_worker_if_running("the new mailbox settings")
         return _redirect("/mailbox", msg="Gmail disconnected.")
@@ -882,6 +899,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/mailbox", error="Microsoft did not say which mailbox this is. Try again.")
         microsoft_oauth.save_token(ws, data, email)
         ws.set_mail_provider("microsoft")
+        ws.clear_mailbox_problem()
         ws.rewrite_config()  # the persona sends from the connected mailbox
         await ws.restart_worker_if_running("the new mailbox settings")
         response = _redirect("/mailbox", msg=f"Microsoft connected as {email}.")
@@ -891,13 +909,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/microsoft/disconnect")
     async def microsoft_disconnect(user: dict = Depends(current_user)):
         ws = workspace_for(user)
-        if ws.worker_running() and ws.mail_provider() == "microsoft":
+        was = ws.mail_provider()
+        if ws.worker_running() and was == "microsoft":
             await ws.stop_worker("the Microsoft account was disconnected")
         ws.disconnect_microsoft()
-        if ws.gmail_connected():
-            ws.set_mail_provider("gmail")
-        elif ws.smtp_configured():
-            ws.set_mail_provider("smtp")
+        if was == "microsoft":  # only the mailbox in use needs a replacement
+            if ws.gmail_connected():
+                ws.set_mail_provider("gmail")
+            elif ws.smtp_configured():
+                ws.set_mail_provider("smtp")
         ws.rewrite_config()
         await ws.restart_worker_if_running("the new mailbox settings")
         return _redirect("/mailbox", msg="Microsoft account disconnected.")
@@ -1091,9 +1111,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return _redirect("/admin/users", error="You can't disable your own account.")
             accounts.set_disabled(user_id, True)
             ws = Workspace(settings, target)
-            if ws.worker_running():
-                await ws.stop_worker("the account was disabled by the admin")
-            return _redirect("/admin/users", msg=f"Disabled {target['email']} and stopped their worker.")
+            for one in ws.all_campaigns():  # every campaign of theirs, and the mail worker
+                if one.worker_running():
+                    await one.stop_worker("the account was disabled by the admin")
+            await ws.stop_mail_worker()
+            return _redirect("/admin/users", msg=f"Disabled {target['email']} and stopped all their workers.")
         if action == "enable":
             accounts.set_disabled(user_id, False)
             return _redirect("/admin/users", msg=f"Enabled {target['email']}.")

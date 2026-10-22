@@ -49,13 +49,14 @@ async def test_each_problem_is_sent_once_reminded_daily_and_cleared(tmp_path, mo
     sent = []
 
     async def fake_current(_ws):
-        return dict(now["alerts"])
+        return {"alerts": dict(now["alerts"]), "kinds": {k: now.get("kind", "login") for k in now["alerts"]},
+                "watched": {"mailbox", "mail:*"}, "mailboxes": {"abc"}}
 
     async def fake_deliver(_settings, _ws, title, text, ok=False):
         sent.append((title, text, ok))
         return (["email to jane@example.com"], [])
 
-    monkeypatch.setattr(alerts, "current_alerts", fake_current)
+    monkeypatch.setattr(alerts, "observe", fake_current)
     monkeypatch.setattr(alerts, "deliver", fake_deliver)
     assert await alerts.check_workspace(settings, ws, T0) == ["mailbox: email to jane@example.com"]
     assert sent[-1][0] == "Your mailbox needs attention" and "535" in sent[-1][1] and not sent[-1][2]
@@ -102,7 +103,8 @@ async def test_what_counts_as_a_problem(tmp_path, monkeypatch):
     assert list(got) == ["mailbox"] and "Nothing has been delivered" in got["mailbox"] and "Reconnect" not in got["mailbox"]
 
     async def refused(self):
-        return {"alert": "The mailbox check failed: SMTP server refused the login (535).", "error": "refused the login"}
+        return {"alert": "The mailbox check failed: SMTP server refused the login (535).", "ok": False, "auth": "1",
+                "error": "SMTP login failed: (535, '5.7.8 Username and Password not accepted')"}
 
     monkeypatch.setattr(Workspace, "mailbox_health", refused)
     assert "press Reconnect" in (await alerts.current_alerts(ws))["mailbox"]
@@ -160,7 +162,9 @@ async def test_delivery_by_email_and_by_webhook(tmp_path, monkeypatch):
     assert "http://testserver/mailbox#health" in msg.get_content()
     assert kw["hostname"] == "smtp.alerts.example" and kw["port"] == 587 and kw["start_tls"]
     url, kw = posts[0]
-    assert url == "https://ntfy.sh/bb-jane" and kw["content"] == b"535 refused" and kw["headers"]["Priority"] == "high"
+    # Sent to the address that was checked, with the name kept for TLS and the Host header.
+    assert url == "https://104.18.1.1/bb-jane" and kw["headers"]["Host"] == "ntfy.sh" and kw["extensions"] == {"sni_hostname": "ntfy.sh"}
+    assert kw["content"] == b"535 refused" and kw["headers"]["Priority"] == "high"
     # Slack and Discord get their own shapes; anything else plain JSON.
     assert "text" in alerts._webhook_request("https://hooks.slack.com/services/x", "T", "x", "l", False, "a")["json"]
     assert "content" in alerts._webhook_request("https://discord.com/api/webhooks/1/x", "T", "x", "l", False, "a")["json"]
@@ -197,3 +201,53 @@ def test_alert_settings_on_the_mailbox_page(tmp_path, monkeypatch):
         monkeypatch.setattr(alerts, "deliver", fake_deliver)
         r = client.post("/mailbox/alerts/test")
         assert "Test%20alert%20sent%20to%20the%20webhook" in r.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_pausing_is_not_a_recovery_and_a_new_kind_is_news(tmp_path, monkeypatch):
+    settings, ws = _ws(tmp_path)
+    obs = {"alerts": {"mailbox": "Nothing delivered since 01:00."}, "kinds": {"mailbox": "stall"}, "watched": {"mailbox"}, "mailboxes": set()}
+    sent = []
+
+    async def fake_observe(_ws):
+        return obs
+
+    async def fake_deliver(_settings, _ws, title, text, ok=False):
+        sent.append(title)
+        return (["the webhook"], [])
+
+    monkeypatch.setattr(alerts, "observe", fake_observe)
+    monkeypatch.setattr(alerts, "deliver", fake_deliver)
+    await alerts.check_workspace(settings, ws, T0)
+    # The sign-in is refused an hour later: a different problem, sent now.
+    obs["alerts"] = {"mailbox": "The check failed: 535. The mailbox needs signing in again."}
+    obs["kinds"] = {"mailbox": "reconnect"}
+    await alerts.check_workspace(settings, ws, T0 + timedelta(hours=1))
+    assert sent == ["Your mailbox needs attention", "Your mailbox needs attention"]
+    # The worker is paused: not watched, so no "working again".
+    obs.update(alerts={}, kinds={}, watched=set())
+    await alerts.check_workspace(settings, ws, T0 + timedelta(hours=2))
+    assert len(sent) == 2 and "mailbox" in ws.alert_state()["incidents"]
+    # Watched again and clear, but the note cannot go: kept and tried again.
+    obs["watched"] = {"mailbox"}
+
+    async def failing(_settings, _ws, title, text, ok=False):
+        return ([], ["the webhook answered 503"])
+
+    monkeypatch.setattr(alerts, "deliver", failing)
+    await alerts.check_workspace(settings, ws, T0 + timedelta(hours=3))
+    assert ws.alert_state()["incidents"]["mailbox"]["clearing"] and "503" in ws.alert_state()["last_problem"]
+    monkeypatch.setattr(alerts, "deliver", fake_deliver)
+    await alerts.check_workspace(settings, ws, T0 + timedelta(hours=3, minutes=5))
+    assert sent[-1] == "Your mailbox is working again" and ws.alert_state()["incidents"] == {}
+
+
+def test_webhook_addresses_that_hide_a_private_one(monkeypatch):
+    table = {"ntfy.sh": ["159.203.148.75"], "nat64.example": ["64:ff9b::a9fe:a9fe"], "mapped.example": ["::ffff:10.0.0.1"],
+             "xn--fa-hia.de": ["10.9.9.9"], "sixtofour.example": ["2002:c0a8:0101::1"]}
+    monkeypatch.setattr(alerts, "_addresses", lambda host, port: table[host])
+    assert alerts.webhook_problem("https://ntfy.sh/x") == ""
+    for url in ("https://nat64.example/x", "https://mapped.example/x", "https://faß.de/x", "https://sixtofour.example/x"):
+        assert "private network" in alerts.webhook_problem(url), url        # checked as httpx will send it
+    assert "hidden character" in alerts.webhook_problem("https://ntfy.sh/bb\talerts")
+    assert "not a valid" in alerts.webhook_problem("https://ntfy.sh:99999/x")

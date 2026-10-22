@@ -96,8 +96,12 @@ class ImapAccount(MailAccount):
         c = self.creds
         port = int(c.get("smtp_port") or 587)
         try:
-            await aiosmtplib.send(msg, hostname=c["smtp_host"], port=port, username=c["username"],
-                                  password=c["password"], start_tls=(port == 587), use_tls=(port == 465), timeout=40)
+            # Implicit TLS on 465/2465, STARTTLS required on 587/2587, and
+            # whenever offered on any other port: never a password in clear.
+            use_tls = port in (465, 2465)
+            await aiosmtplib.send(msg, hostname=c["smtp_host"], port=port, username=c["username"], password=c["password"],
+                                  start_tls=False if use_tls else (True if port in (587, 2587) else None),
+                                  use_tls=use_tls, timeout=40)
         except aiosmtplib.SMTPAuthenticationError as e:
             raise AuthError(f"SMTP sign-in refused: {str(e)[:160]}") from e
         except (aiosmtplib.SMTPException, OSError) as e:

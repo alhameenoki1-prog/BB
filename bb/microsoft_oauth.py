@@ -89,8 +89,11 @@ async def exchange_code(settings, code: str, redirect: str = "") -> dict:
     }
     if settings.ms_client_secret:
         data["client_secret"] = settings.ms_client_secret
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(authority(settings) + "/oauth2/v2.0/token", data=data)
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(authority(settings) + "/oauth2/v2.0/token", data=data)
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Microsoft could not be reached: {e}") from e
     if resp.status_code != 200:
         raise RuntimeError(f"Microsoft rejected the sign-in ({resp.status_code}): {_why(resp)}")
     out = resp.json()
@@ -106,16 +109,22 @@ async def refresh_access_token(settings, refresh_token: str) -> dict:
     data = {"client_id": settings.ms_client_id, "grant_type": "refresh_token", "refresh_token": refresh_token, "scope": SCOPE}
     if settings.ms_client_secret:
         data["client_secret"] = settings.ms_client_secret
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(authority(settings) + "/oauth2/v2.0/token", data=data)
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(authority(settings) + "/oauth2/v2.0/token", data=data)
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Microsoft could not be reached: {e}") from e
     if resp.status_code != 200:
         raise RuntimeError(f"Microsoft no longer accepts this sign-in ({resp.status_code}): {_why(resp)}. Reconnect the mailbox.")
     return resp.json()
 
 
 async def account_email(access_token: str) -> str:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(GRAPH + "/me", headers={"Authorization": f"Bearer {access_token}"})
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(GRAPH + "/me", headers={"Authorization": f"Bearer {access_token}"})
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Microsoft could not be reached: {e}") from e
     if resp.status_code != 200:
         raise RuntimeError(f"Could not read the Microsoft profile ({resp.status_code}).")
     me = resp.json()

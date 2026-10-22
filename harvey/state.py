@@ -991,6 +991,16 @@ class StateManager:
             )
             await db.commit()
 
+    async def sequence_step_status(self, campaign_id: str, prospect_id: str, step: int) -> str | None:
+        """The status of one step of a prospect's sequence, or None."""
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT status FROM outbox WHERE campaign_id = ? AND prospect_id = ? AND step = ? AND kind = 'sequence' LIMIT 1",
+                (campaign_id, prospect_id, int(step)),
+            ) as cur:
+                row = await cur.fetchone()
+                return row[0] if row else None
+
     async def outbox_slots(self, campaign_id: str) -> set[tuple[str, int]]:
         """(prospect_id, step) pairs a campaign already has in the outbox,
         whatever their status: the slots the unique index keeps."""

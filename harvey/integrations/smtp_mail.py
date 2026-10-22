@@ -30,6 +30,7 @@ from harvey import paths
 from harvey.integrations.mail_provider import (
     add_deliverability_headers,
     attach_files,
+    booking_url,
     set_body,
     InboundMessage,
     MailProvider,
@@ -146,7 +147,7 @@ class SmtpImapProvider(MailProvider):
             msg["In-Reply-To"] = in_reply_to
             msg["References"] = in_reply_to
         add_deliverability_headers(msg, persona.email or self.smtp_user, self.config)
-        set_body(msg, body, getattr(self.config, "outreach", None), plain=plain)
+        set_body(msg, body, getattr(self.config, "outreach", None), plain=plain, booking=booking_url(self.config))
         attach_files(msg, attachments)
 
         try:

@@ -173,11 +173,31 @@ def test_needs_reconnect_reads_only_sign_in_failures(tmp_path):
     settings = _settings(tmp_path, **MS)
     acc = Accounts(settings.accounts_db); acc.create_user(USER["email"], USER["password"])
     ws = Workspace(settings, acc.get_by_email(USER["email"])).ensure()
-    assert ws.needs_reconnect({"alert": "", "error": ""}) == ""
-    assert ws.needs_reconnect({"alert": "Nothing delivered for 2 hours while 5 emails are due", "error": ""}) == ""
-    assert "refused" in ws.needs_reconnect({"alert": "", "error": "SMTP server refused the login (535 5.7.8)"})
-    assert "invalid_grant" in ws.needs_reconnect({"error": "Google no longer accepts this sign-in: invalid_grant"})
-    assert ws.needs_reconnect({"error": "token refresh rejected (400): expired. Re-run 'harvey microsoft auth'."})
+    assert ws.needs_reconnect({"ok": True, "alert": "", "error": ""}) == ""
+    assert ws.needs_reconnect({"ok": True, "alert": "Nothing delivered for 2 hours while 5 emails are due", "error": ""}) == ""
+    # The check recorded a refused sign-in.
+    assert "535" in ws.needs_reconnect({"ok": False, "auth": "1", "error": "SMTP login failed: (535, 'Username and Password not accepted')"})
+    # A worker from before the flag existed: the text decides, and only a real refusal counts.
+    assert ws.needs_reconnect({"ok": False, "error": "token refresh rejected (400): AADSTS70000 invalid_grant"})
+    assert ws.needs_reconnect({"ok": False, "error": "token request rejected (401): invalid_client AADSTS7000222 secret expired"})
+    assert not ws.needs_reconnect({"ok": False, "error": "token refresh failed: [Errno -3] Temporary failure in name resolution"})
+    assert not ws.needs_reconnect({"ok": False, "error": "token refresh rejected (503): service unavailable. Re-run 'harvey microsoft auth'."})
+    assert not ws.needs_reconnect({"ok": False, "error": "SMTP login failed: Error connecting to smtp.x.com: Connect call failed"})
+    # An outage recorded as such is never a reconnect, whatever the words.
+    assert not ws.needs_reconnect({"ok": False, "auth": "0", "error": "token refresh rejected (400): invalid_grant"})
+
+
+def test_the_health_check_tells_a_refusal_from_an_outage():
+    from harvey import health
+
+    class Gmailish:
+        _last_status = 401
+
+    assert health.is_auth_failure("Token refresh or profile fetch failed", Gmailish())
+    Gmailish._last_status = 0
+    assert not health.is_auth_failure("Token refresh or profile fetch failed", Gmailish())
+    assert health.is_auth_failure("SMTP login failed: (535, b'5.7.8 Username and Password not accepted')")
+    assert not health.is_auth_failure("SMTP login failed: timed out")
 
 
 # ── the Graph adapter, signed in as the person ──

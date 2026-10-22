@@ -66,21 +66,21 @@ class Handlers:
             await self.db.log("review", f"Held a reply to {draft['to_json'][:60]}: {e}", draft["mailbox_id"], draft_id=draft["id"])
             return {"status": "held", "reason": str(e)}
 
-    async def _run_env(self, run: dict | None) -> tuple[dict, dict | None]:
-        """The env and the profile (goal, brief, files) a run writes with:
-        the campaign it belongs to, else the user's main profile. Read
-        fresh each time: the profile may have changed since the worker
-        started."""
+    async def _run_env(self, run: dict | None, mailbox: dict | None = None) -> tuple[dict, dict | None]:
+        """The env and the profile (goal, brief, files) a run writes with on
+        this account: the campaign the run was given, else the outreach
+        campaign that sends from the account, else the user's main profile.
+        Read fresh each time: the profile may have changed since the worker
+        started, and a campaign may have been removed."""
         from bb import campaigns as campaigns_mod
         from bb.mail import scope as scope_mod
         env, root = self.env, self.root
-        pid = (run or {}).get("profile_id") or ""
-        if pid and self.root:
-            try:
-                root = campaigns_mod.campaign_root(self.root, pid)
-                env = {**self.env, "HARVEY_PROFILE_HOME": str(root)}
-            except ValueError:
-                root = self.root
+        if self.root:
+            pid = (run or {}).get("profile_id") or ""
+            if not pid or (pid != campaigns_mod.MAIN and not campaigns_mod.get(self.root, pid)):
+                pid = campaigns_mod.profile_for_account(self.root, (mailbox or {}).get("address") or "")
+            root = campaigns_mod.profile_root(self.root, pid)
+            env = {**self.env, "HARVEY_PROFILE_HOME": str(root)}
         return env, (scope_mod.load(root) if root else None)
 
     async def reply_run(self, job: dict):
@@ -90,7 +90,7 @@ class Handlers:
         if not brain.configured:
             raise RuntimeError("no AI provider is configured for this account (AI provider page)")
         run = await self.db.one("SELECT * FROM reply_runs WHERE id = ?", (job["payload"].get("run_id", ""),))
-        env, scope = await self._run_env(run)
+        env, scope = await self._run_env(run, await self.db.mailbox(job["mailbox_id"]))
         return await runs.process_mailbox(self.db, self.secret, env, brain, self.jobs, job["id"],
                                           job["payload"].get("run_id", ""), job["mailbox_id"], scope=scope)
 
@@ -111,7 +111,7 @@ class Handlers:
             brain = MailBrain(os.environ)
             if not brain.configured:
                 raise RuntimeError("no AI provider is configured for this account (AI provider page)")
-            env, scope = await self._run_env(run)
+            env, scope = await self._run_env(run, mailbox)
             led = runs.ledger_for(env)
             if led is not None and run["mode"] != "dry_run":
                 led.join(mailbox["address"], run_id, "reply", runs.run_label(run, mailbox["address"]))
@@ -156,7 +156,7 @@ class Worker:
             result = await self.handlers.run(job)
             await self.jobs.complete(job["id"], **(result or {}))
         except asyncio.CancelledError:
-            await self.jobs.fail(job["id"], "worker stopped")
+            await asyncio.shield(self.jobs.release(job["id"], "worker stopped"))
             raise
         except Exception as e:
             status = await self.jobs.fail(job["id"], f"{type(e).__name__}: {str(e)[:300]}")
@@ -164,6 +164,9 @@ class Worker:
             if status == "dead":
                 await self.db.log("warning", f"A background task ({job['kind'].replace('_', ' ')}) failed "
                                              "repeatedly and is waiting on the Jobs page.", job["mailbox_id"])
+                if job["kind"] in ("reply_run", "reply_campaign"):
+                    from bb.mail import runs
+                    await runs.job_died(self.db, job["payload"].get("run_id", ""), job["mailbox_id"], f"{type(e).__name__}: {e}")
         finally:
             self.busy.discard(key)
 
@@ -180,6 +183,8 @@ class Worker:
                 try:
                     await service.schedule_checks(self.db, self.jobs)
                     await service.schedule_syncs(self.db, self.jobs)
+                    from bb.mail import runs
+                    await runs.reconcile(self.db, self.jobs)
                     await self.jobs.prune()
                 except Exception as e:
                     logger.warning("scheduling failed: %s", e)
@@ -219,7 +224,8 @@ def main(argv=None):
     if not secret:
         print("BB_SECRET_KEY is required")
         return 2
-    env = {k: v for k, v in os.environ.items() if k.startswith(("GMAIL_", "M365_"))}
+    # The site's OAuth clients: Google, Microsoft sign-in (MS_*) and the admin app (M365_*).
+    env = {k: v for k, v in os.environ.items() if k.startswith(("GMAIL_", "M365_", "MS_"))}
     env["HARVEY_HOME"] = str(root)       # the workspace: the profile's reply files live under it
     worker = Worker(root, secret, env)
 

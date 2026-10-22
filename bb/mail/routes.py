@@ -209,6 +209,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             return _redirect("/mail/accounts", error=f"Could not connect: {e}")
         except ValueError as e:
             return _redirect("/mail/accounts", error=str(e))
+        await c["ws"].main().account_changed(mid)
         if not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
         return _redirect(f"/mail/accounts/{mid}", msg=f"Connected {email} through Microsoft 365. {detail} "
@@ -243,7 +244,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                         return email, False, note
                 smtp["smtp_password"] = password
                 try:
-                    await service.connect_imap(c["db"], settings.secret_key(), address=email, smtp=smtp, env=settings.worker_env())
+                    mid, _ = await service.connect_imap(c["db"], settings.secret_key(), address=email, smtp=smtp, env=settings.worker_env())
+                    await c["ws"].main().account_changed(mid)
                     return email, True, ""
                 except AuthError as e:
                     hint = " (an app password is needed)" if any(h in smtp["smtp_host"] for h in ("gmail", "yahoo", "me.com")) else ""
@@ -274,9 +276,10 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         ok, bad = [], []
         for email in dict.fromkeys(addresses):
             try:
-                await service.connect_graph(c["db"], settings.secret_key(), address=email, tenant_id=str(form.get("tenant_id", "") or ""),
+                mid, _ = await service.connect_graph(c["db"], settings.secret_key(), address=email, tenant_id=str(form.get("tenant_id", "") or ""),
                                             client_id=str(form.get("client_id", "") or ""),
                                             client_secret=str(form.get("client_secret", "") or ""), env=settings.worker_env())
+                await c["ws"].main().account_changed(mid)
                 ok.append(email)
             except (AuthError, TransientError, ValueError) as e:
                 bad.append(f"{email}: {str(e)[:140]}")
@@ -315,6 +318,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             return _redirect("/mail/accounts", error=f"Could not connect: {e}. ({note})")
         except ValueError as e:
             return _redirect("/mail/accounts", error=str(e))
+        await c["ws"].main().account_changed(mid)
         if not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
         return _redirect(f"/mail/accounts/{mid}", msg=f"Connected {email} (limited mode). {detail} "
@@ -357,7 +361,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             return _redirect(f"/mail/accounts/{mailbox_id}", error=str(first["msg"]).replace("Value error, ", ""))
         await c["db"].update_mailbox(mailbox_id, settings=new.model_dump())
         try:   # campaigns on this account share the new limit at once
-            c["ws"].ledger().set_limit(m["address"], service.account_daily_limit({**m, "settings": new.model_dump()}))
+            c["ws"].ledger().set_limit(m["address"], service.account_daily_limit({**m, "settings": new.model_dump()},
+                                                                                 service.open_creds(settings.secret_key(), m)))
         except Exception:
             pass
         ok, why = new.ready_to_send()
@@ -382,6 +387,10 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         if not m:
             raise HTTPException(404)
         await c["db"].remove_mailbox(mailbox_id)
+        await c["ws"].main().account_changed(mailbox_id, "removed")
+        from bb.mail import runs as runs_mod
+        from bb.mail.jobs import Jobs
+        await runs_mod.reconcile(c["db"], Jobs(c["db"]))      # runs that were working on it finish or move on
         await c["db"].log("info", f"Removed {m['address']}.")
         return _redirect("/mail/accounts", msg=f"Removed {m['address']}.")
 
@@ -392,7 +401,9 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         if not m:
             raise HTTPException(404)
         await c["db"].update_mailbox(mailbox_id, enabled=0 if m["enabled"] else 1)
-        return _redirect(f"/mail/accounts/{mailbox_id}", msg="Disabled." if m["enabled"] else "Enabled.")
+        touched = await c["ws"].main().account_changed(mailbox_id, "disabled" if m["enabled"] else "reconnected")
+        note = (f" The outreach campaign on it ({', '.join(touched)}) was stopped." if touched and m["enabled"] else "")
+        return _redirect(f"/mail/accounts/{mailbox_id}", msg=("Disabled." if m["enabled"] else "Enabled.") + note)
 
     # ── Gmail OAuth for mailboxes ──
 
@@ -427,6 +438,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                                                       refresh_token=data["refresh_token"], env=settings.worker_env())
         except (AuthError, TransientError, KeyError, RuntimeError) as e:
             return _redirect("/mail/accounts", error=f"Google sign-in failed: {e}")
+        await c["ws"].main().account_changed(mid)
         if not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
         response = _redirect(f"/mail/accounts/{mid}", msg=f"Connected {email} through Google. {detail}")
@@ -467,6 +479,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                                                           refresh_token=data["refresh_token"], env=settings.worker_env())
         except (AuthError, TransientError, KeyError, RuntimeError, ValueError) as e:
             return _redirect("/mail/accounts", error=f"Microsoft sign-in failed: {e}")
+        await c["ws"].main().account_changed(mid)
         if not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
         response = _redirect(f"/mail/accounts/{mid}", msg=f"Connected {email} through Microsoft. {detail}")
@@ -827,12 +840,24 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             boxes = [m for m in boxes if m["ready"]]
             if not boxes:
                 return _redirect("/mail/runs", error="None of the accounts can send yet: " + "; ".join(not_ready))
-        run = await runs_mod.create_reconnect_run(c["db"], boxes, months=months, mode=mode,
-                                                  instructions=str(form.get("instructions", "") or ""),
-                                                  created_by=user.get("email", ""), all_mailboxes=c["mailboxes"])
+        results = await runs_mod.create_reconnect_runs(c["db"], boxes, months=months, mode=mode,
+                                                       instructions=str(form.get("instructions", "") or ""),
+                                                       created_by=user.get("email", ""), all_mailboxes=c["mailboxes"])
+        started = [r for r in results if r.get("id")]
+        if len(results) > 1:
+            if started and not c["ws"].mail_worker_running():
+                c["ws"].start_mail_worker()
+            notes = [f"{r['address']}: " + ("a scan is already going" if r.get("busy") else "no past conversations to continue")
+                     for r in results if not r.get("id")]
+            return _redirect("/campaigns", msg=(f"Started {len(started)} follow-up run{'s' if len(started) != 1 else ''}, one per account: "
+                                                + ", ".join(r["address"] for r in started) + ".") if started else "",
+                             error="; ".join(notes))
+        run = results[0] if results and (results[0].get("id") or results[0].get("busy")) else {}
         if run.get("busy"):
-            return _redirect(f"/mail/runs/{run['busy']}", error="A follow-up run over these accounts is still going. "
-                                                                "It has to finish (or be cancelled) before another starts.")
+            busy = await c["db"].one("SELECT status FROM reply_runs WHERE id = ?", (run["busy"],))
+            what = ("is paused: resume it or cancel it" if (busy or {}).get("status") == "paused"
+                    else "is still going: it has to finish (or be cancelled)")
+            return _redirect(f"/mail/runs/{run['busy']}", error=f"A follow-up run over these accounts {what} before another starts.")
         if not run:
             return _redirect("/mail/runs", error=f"No past conversations from the last {months} months to follow up with "
                                                  "(two-way threads with people who are not colleagues, automated senders or already followed up).")
@@ -877,9 +902,26 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
     async def mail_run_cancel(run_id: str, user: dict = Depends(current_user)):
         from bb.mail import runs as runs_mod
         c = await ctx(user)
-        ok = await runs_mod.cancel_run(c["db"], run_id)
+        ok = await runs_mod.cancel_run(c["db"], run_id, {"HARVEY_HOME": str(c["ws"].user_root)})
         return _redirect(f"/mail/runs/{run_id}", msg="Cancelled; threads not yet drafted are skipped." if ok else "",
                          error="" if ok else "That run is already finished.")
+
+    @app.post("/mail/runs/{run_id}/pause")
+    async def mail_run_pause(run_id: str, user: dict = Depends(current_user)):
+        from bb.mail import runs as runs_mod
+        c = await ctx(user)
+        ok = await runs_mod.pause_run(c["db"], run_id, {"HARVEY_HOME": str(c["ws"].user_root)})
+        return _redirect(f"/mail/runs/{run_id}", msg="Paused; nothing more is drafted or sent until you resume it." if ok else "",
+                         error="" if ok else "Only a run that is going can be paused.")
+
+    @app.post("/mail/runs/{run_id}/resume")
+    async def mail_run_resume(run_id: str, user: dict = Depends(current_user)):
+        from bb.mail import runs as runs_mod
+        c = await ctx(user)
+        ok = await runs_mod.resume_run(c["db"], run_id)
+        if ok and not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        return _redirect(f"/mail/runs/{run_id}", msg="Resumed." if ok else "", error="" if ok else "Only a paused run can be resumed.")
 
     # ── audit log ──
 

@@ -1089,19 +1089,43 @@ class Workspace:
         tmp.replace(self.alerts_state_file)
 
     def needs_reconnect(self, health: dict | None = None) -> str:
-        """Why the connected mailbox must be reconnected, or "": the health
-        check or the sender found the sign-in refused."""
-        texts = [(health or {}).get("alert", ""), (health or {}).get("error", "")]
+        """Why the connected mailbox must be signed in again, or "": the
+        health check recorded that the mailbox refused the sign-in (not
+        that it was unreachable), or the sender was refused the login."""
+        from harvey import health as health_mod
+        health = health or {}
+        if not health.get("ok", True):
+            flag = health.get("auth", "")
+            if flag == "1" or (flag == "" and health_mod.is_auth_failure(health.get("error", ""))):
+                return health.get("alert") or health.get("error") or "the mailbox refused the sign-in"
         try:
-            texts.append(self._skip_reason_sync())
+            skip = self._skip_reason_sync()
         except Exception:
-            pass
-        low = " ".join(t or "" for t in texts).lower()
-        if any(w in low for w in ("refused the login", "login failed", "sign-in", "no longer accepts", "reconnect",
-                                  "authentication failed", "invalid_grant", "not authorized", "535 ",
-                                  "refresh rejected", "refresh failed", "re-run 'harvey")):
-            return next((t for t in texts if t), "the mailbox refused the sign-in")
+            skip = ""
+        if skip.startswith("the mailbox refused the login"):
+            return skip
         return ""
+
+    def clear_mailbox_problem(self):
+        """A mailbox was just connected or signed in again: the old login
+        failure and alert no longer describe it (the worker checks again
+        when it starts)."""
+        import sqlite3
+        from harvey import health as health_mod
+        if not self.db_path.exists():
+            return
+        try:
+            con = sqlite3.connect(str(self.db_path), timeout=10)
+            try:
+                con.execute("DELETE FROM settings WHERE key IN (?, ?, ?, ?, ?)",
+                            (health_mod.CHECK_OK_KEY, health_mod.CHECK_ERROR_KEY, health_mod.CHECK_AUTH_KEY,
+                             health_mod.ALERT_KEY, health_mod.ALERT_SINCE_KEY))
+                con.execute("DELETE FROM settings WHERE key = 'sender_skip_reason' AND value LIKE 'the mailbox refused the login%'")
+                con.commit()
+            finally:
+                con.close()
+        except sqlite3.Error as e:
+            logger.debug("could not clear the old mailbox problem: %s", e)
 
     def _skip_reason_sync(self) -> str:
         import sqlite3
@@ -1205,17 +1229,29 @@ class Workspace:
     # What shapes the words of an email: a change here makes every email
     # written before it stale. Speed, caps, the mailbox and the like do not.
     BRIEF_KEYS = ("mode", "intent", "goal", "sender_line", "sector_needs", "style", "ask", "ask_detail", "greeting",
-                  "use_template", "template_subject", "template_body", "sector_messages", "personalize_each")
+                  "use_template", "template_subject", "template_body", "template_followup_1", "template_followup_2",
+                  "sector_messages", "personalize_each")
+    PERSONA_BRIEF_KEYS = ("name", "role", "company", "tone")
 
     def writing_brief(self) -> str:
         """A fingerprint of everything in harvey.yaml that decides what an
-        email says ("" before the profile exists)."""
+        email says ("" before the profile exists). Read through the config
+        model, so a key an older file lacks counts as its default and a save
+        that changes nothing about the words changes nothing here."""
         cfg = self.config() or {}
         if not cfg:
             return ""
-        outreach = cfg.get("outreach") or {}
-        return json.dumps({"outreach": {k: outreach.get(k) for k in self.BRIEF_KEYS},
-                           "product": cfg.get("product") or {}}, sort_keys=True, default=str)
+        try:
+            from harvey.config import HarveyConfig
+            model = HarveyConfig(**cfg)
+            outreach = model.outreach.model_dump(include=set(self.BRIEF_KEYS))
+            product = model.product.model_dump()
+            persona = model.persona.model_dump(include=set(self.PERSONA_BRIEF_KEYS))
+        except Exception:
+            outreach = {k: (cfg.get("outreach") or {}).get(k) for k in self.BRIEF_KEYS}
+            product = cfg.get("product") or {}
+            persona = {k: (cfg.get("persona") or {}).get(k) for k in self.PERSONA_BRIEF_KEYS}
+        return json.dumps({"outreach": outreach, "product": product, "persona": persona}, sort_keys=True, default=str)
 
     async def rewrite_unsent_now(self, note: str = "rewritten with the new brief") -> tuple[dict, bool]:
         """rewrite_unsent with the worker stopped around it, so a writer in
@@ -1243,16 +1279,23 @@ class Workspace:
             return out
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-        started = "SELECT prospect_id FROM outbox WHERE status IN ('sent', 'sending') AND prospect_id != ''"
+        # Already written to: sent, being sent, or a send cut off that may
+        # have left. Their thread goes on as it was.
+        started = ("SELECT prospect_id FROM outbox WHERE prospect_id != '' AND (status IN ('sent', 'sending') "
+                   "OR (status = 'failed' AND error LIKE 'the worker stopped while this was being sent%'))")
+        # Held by the domain guard (a sister address bounced as nonexistent):
+        # a person decides on these, and a rewrite must not slip past that.
+        held = "SELECT prospect_id FROM outbox WHERE status = 'pending_review' AND error LIKE 'Held:%'"
         async with aiosqlite.connect(str(self.db_path), timeout=10) as db:
             cur = await db.execute(
                 "UPDATE outbox SET status = 'cancelled', error = ?, updated_at = ? "
-                f"WHERE kind = 'sequence' AND status IN ('pending_review', 'approved') AND prospect_id NOT IN ({started})",
+                f"WHERE kind = 'sequence' AND status IN ('pending_review', 'approved') AND prospect_id NOT IN ({started}) "
+                f"AND prospect_id NOT IN ({held})",
                 (note[:200], now))
             out["cancelled"] = cur.rowcount
             cur = await db.execute(
                 "UPDATE prospects SET status = 'new', updated_at = ? WHERE status = 'queued' "
-                f"AND id NOT IN ({started})", (now,))
+                f"AND id NOT IN ({started}) AND id NOT IN ({held})", (now,))
             out["prospects"] = cur.rowcount
             cur = await db.execute(
                 "UPDATE campaigns SET status = 'failed' WHERE status IN ('draft', 'active', 'writing')")
@@ -1513,13 +1556,14 @@ class Workspace:
         if not await self._table_exists("settings"):
             return {}
         from harvey import health
-        rows = await self._query("SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?, ?, ?)",
+        rows = await self._query("SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?, ?, ?, ?)",
                                  (health.CHECK_AT_KEY, health.CHECK_OK_KEY, health.CHECK_ERROR_KEY,
-                                  health.LAST_SENT_KEY, health.ALERT_KEY, health.ALERT_SINCE_KEY))
+                                  health.LAST_SENT_KEY, health.ALERT_KEY, health.ALERT_SINCE_KEY, health.CHECK_AUTH_KEY))
         got = {r["key"]: r["value"] or "" for r in rows}
         return {"ok": got.get(health.CHECK_OK_KEY) != "0", "checked_at": got.get(health.CHECK_AT_KEY, ""),
                 "error": got.get(health.CHECK_ERROR_KEY, ""), "last_sent_at": got.get(health.LAST_SENT_KEY, ""),
-                "alert": got.get(health.ALERT_KEY, ""), "alert_since": got.get(health.ALERT_SINCE_KEY, "")}
+                "alert": got.get(health.ALERT_KEY, ""), "alert_since": got.get(health.ALERT_SINCE_KEY, ""),
+                "auth": got.get(health.CHECK_AUTH_KEY, "")}
 
     async def outbox(self, status: str = "pending_review", limit: int = 200) -> list[dict]:
         if not await self._table_exists("outbox"):
@@ -1666,10 +1710,10 @@ class Workspace:
 
     async def stop_worker(self, reason: str = "Stop pressed on the dashboard") -> tuple[bool, str]:
         self.autostart_file.unlink(missing_ok=True)
-        self._leave_ledger()             # its share of the account goes back to the others
         pid = self.worker_running()
         if not pid:
             self.pid_file.unlink(missing_ok=True)
+            self._leave_ledger()         # its share of the account goes back to the others
             return True, "Not running."
         self._note_in_log(f"BB is stopping the worker: {reason}.")
         try:
@@ -1685,6 +1729,9 @@ class Workspace:
         except (ProcessLookupError, PermissionError):
             pass
         self.pid_file.unlink(missing_ok=True)
+        # Only now, with the last send pass over, does its share go back: a
+        # send in flight would otherwise sign it up again.
+        self._leave_ledger()
         return True, "Stopped."
 
     def wants_autostart(self) -> bool:
@@ -1833,6 +1880,7 @@ class Workspace:
             return f"{address} has no usable sign-in; reconnect it on the Accounts page"
         self.binding_file.write_text(json.dumps({"mailbox_id": box["id"], "address": address, "stamp": stamp,
                                                  "at": int(time.time())}))
+        self.clear_mailbox_problem()     # a new or renewed sign-in: the old failure is history
         return ""
 
     def account_daily_limit(self) -> int:
@@ -1879,6 +1927,25 @@ class Workspace:
         except Exception:
             suppressed = set()
         return taken, suppressed
+
+    async def account_changed(self, mailbox_id: str, how: str = "reconnected") -> list[str]:
+        """An account on the Accounts page was signed in again, disabled or
+        removed: the outreach campaign bound to it follows at once. A new
+        sign-in is copied in and its worker restarted with it; a disabled or
+        removed account stops the campaign's worker. Returns its names."""
+        touched = []
+        for camp in self.main().campaign_workspaces():
+            if camp.campaign_row().get("mailbox_id") != mailbox_id:
+                continue
+            touched.append(camp.campaign_name())
+            if how in ("disabled", "removed"):
+                if camp.worker_running():
+                    await camp.stop_worker(f"its account was {how} on the Accounts page")
+                continue
+            camp.binding_file.unlink(missing_ok=True)
+            if not camp.bind_account():
+                await camp.restart_worker_if_running("the account's new sign-in")
+        return touched
 
     def _leave_ledger(self):
         try:

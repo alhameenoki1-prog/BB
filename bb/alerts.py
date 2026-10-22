@@ -22,9 +22,9 @@ import socket
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
-from urllib.parse import urlparse
 
 import httpx
+from urllib.parse import urlparse
 
 logger = logging.getLogger("bb.alerts")
 
@@ -47,48 +47,64 @@ def _parse(value: str) -> datetime | None:
 
 # ── what is wrong right now ──
 
-def _mail_reconnects(ws) -> dict[str, str]:
-    """Command-center mailboxes that need signing in again (read straight
-    from the user's mail.db; nothing is created when there is none)."""
+def _mail_reconnects(ws) -> tuple[dict[str, str], set[str]]:
+    """Command-center mailboxes that need signing in again, and the ids of
+    every mailbox there is (read straight from the user's mail.db; nothing
+    is created when there is none)."""
     path = ws.mail_db_path
     if not path.exists():
-        return {}
+        return {}, set()
     try:
         con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
     except sqlite3.Error:
-        return {}
+        return {}, set()
     try:
-        rows = con.execute("SELECT id, address, status_detail FROM mailboxes WHERE status = 'reconnect' AND enabled = 1").fetchall()
+        rows = con.execute("SELECT id, address, status, status_detail, enabled FROM mailboxes").fetchall()
     except sqlite3.Error:
         rows = []
     finally:
         con.close()
-    return {f"mail:{mid}": f"{address} needs reconnecting in the mail command center: {(detail or 'the sign-in was refused')[:240]}"
-            for mid, address, detail in rows}
+    alerts = {f"mail:{mid}": f"{address} needs reconnecting in the mail command center: {(detail or 'the sign-in was refused')[:240]}"
+              for mid, address, status, detail, enabled in rows if status == "reconnect" and enabled}
+    return alerts, {r[0] for r in rows}
 
 
-async def current_alerts(ws) -> dict[str, str]:
-    """{key: plain sentence} for every problem the user should hear about.
-    The worker's mailbox counts only while the worker runs or is meant to
-    (an alert left behind by a worker the user stopped is history)."""
-    out: dict[str, str] = {}
+async def observe(ws) -> dict:
+    """What is wrong now and what is being watched at all:
+    {alerts: {key: sentence}, kinds: {key: kind}, watched: {keys}, mailboxes: {ids}}.
+    A worker the user stopped or paused is not watched: its last alert is
+    neither news nor cleared (Resume picks it up again)."""
+    alerts: dict[str, str] = {}
+    kinds: dict[str, str] = {}
+    watched: set[str] = set()
     campaigns = ws.all_campaigns() if hasattr(ws, "all_campaigns") else [ws]
     for one in campaigns:
+        main = getattr(one, "is_main", True)
+        key = "mailbox" if main else f"campaign:{one.campaign_id}"
         if not (one.worker_running() or one.wants_autostart()):
             continue
+        watched.add(key)
         try:
             health = await one.mailbox_health()
         except Exception:
             health = {}
         if health.get("alert"):
             reconnect = one.needs_reconnect(health)
-            where = "" if getattr(one, "is_main", True) else f"{one.campaign_name()} ({one.sending_address()}): "
-            key = "mailbox" if getattr(one, "is_main", True) else f"campaign:{one.campaign_id}"
-            out[key] = where + health["alert"] + (" The mailbox needs signing in again: open the Mailbox page and press "
-                                                  "Reconnect." if reconnect else "")
+            where = "" if main else f"{one.campaign_name()} ({one.sending_address()}): "
+            alerts[key] = where + health["alert"] + (" The mailbox needs signing in again: open the Mailbox page and press "
+                                                     "Reconnect." if reconnect else "")
+            kinds[key] = "reconnect" if reconnect else ("login" if not health.get("ok", True) else "stall")
+    mail_alerts, mailboxes = _mail_reconnects(ws)
     if ws.mail_worker_running() or ws.mail_autostart_file.exists():
-        out.update(_mail_reconnects(ws))
-    return out
+        watched.add("mail:*")
+        alerts.update(mail_alerts)
+        kinds.update({k: "reconnect" for k in mail_alerts})
+    return {"alerts": alerts, "kinds": kinds, "watched": watched, "mailboxes": mailboxes}
+
+
+async def current_alerts(ws) -> dict[str, str]:
+    """{key: plain sentence} for every problem the user should hear about."""
+    return (await observe(ws))["alerts"]
 
 
 # ── where it goes ──
@@ -97,28 +113,66 @@ def _addresses(host: str, port: int) -> list[str]:
     return [info[4][0] for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)]
 
 
-def webhook_problem(url: str) -> str:
-    """Why this webhook address cannot be used, or "". Only https, and only
-    hosts on the public internet: the site must not be made to post into
-    its own network."""
-    url = (url or "").strip()
-    if not url:
-        return ""
-    u = urlparse(url)
-    if u.scheme != "https" or not u.hostname:
-        return "The webhook address must start with https://"
+_NAT64 = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("64:ff9b:1::/48"), ipaddress.ip_network("::/96"))
+
+
+def _public(ip) -> bool:
+    """On the public internet, including the IPv4 address an IPv6 one
+    carries (mapped, 6to4, NAT64): none of them may lead inside."""
+    if not ip.is_global:
+        return False
+    if ip.version == 6:
+        if ip.teredo:
+            return False
+        inner = ip.ipv4_mapped or ip.sixtofour
+        if inner is None and any(ip in net for net in _NAT64):
+            inner = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        if inner is not None and not inner.is_global:
+            return False
+    return True
+
+
+def _resolve(url: str) -> tuple[str, str, str]:
+    """(problem or "", the host as it is sent, the checked address to
+    connect to). The host is IDNA-encoded the way httpx encodes it, and the
+    request then goes to the one address that was checked, so a name that
+    answers differently the second time cannot lead inside."""
+    raw = (url or "").strip()
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        return "The webhook address has a hidden character in it (a tab or a line break); paste it again.", "", ""
     try:
-        addresses = _addresses(u.hostname, u.port or 443)
-    except (socket.gaierror, UnicodeError, OSError):
-        return f"{u.hostname} could not be found."
+        u = httpx.URL(raw)
+        host = u.raw_host.decode("ascii")
+        port = u.port or 443
+    except Exception:
+        return "That webhook address is not a valid web address.", "", ""
+    if u.scheme != "https" or not host:
+        return "The webhook address must start with https://", "", ""
+    if not 0 < port <= 65535:
+        return "That webhook address is not a valid web address.", "", ""
+    try:
+        addresses = _addresses(host.strip("[]"), port)
+    except (OSError, UnicodeError, ValueError):
+        return f"{host} could not be found.", "", ""
+    if not addresses:
+        return f"{host} could not be found.", "", ""
     for a in addresses:
         try:
             ip = ipaddress.ip_address(a.split("%", 1)[0])
         except ValueError:
-            return f"{u.hostname} resolves to an address that cannot be checked."
-        if not ip.is_global:
-            return f"{u.hostname} points inside a private network, which is not allowed."
-    return ""
+            return f"{host} resolves to an address that cannot be checked.", "", ""
+        if not _public(ip):
+            return f"{host} points inside a private network, which is not allowed.", "", ""
+    return "", host, addresses[0].split("%", 1)[0]
+
+
+def webhook_problem(url: str) -> str:
+    """Why this webhook address cannot be used, or "". Only https, and only
+    hosts on the public internet: the site must not be made to post into
+    its own network."""
+    if not (url or "").strip():
+        return ""
+    return _resolve(url)[0]
 
 
 def _webhook_request(url: str, title: str, text: str, link: str, ok: bool, account: str) -> dict:
@@ -135,14 +189,18 @@ def _webhook_request(url: str, title: str, text: str, link: str, ok: bool, accou
 
 
 async def _send_webhook(url: str, title: str, text: str, link: str, ok: bool, account: str) -> str:
-    problem = await asyncio.to_thread(webhook_problem, url)
+    problem, host, address = await asyncio.to_thread(_resolve, url)
     if problem:
         return problem
     try:
+        u = httpx.URL(url.strip())
+        target = u.copy_with(host=address)
+        req = _webhook_request(url, title, text, link, ok, account)
+        headers = {**req.pop("headers", {}), "Host": host if u.port in (None, 443) else f"{host}:{u.port}"}
         async with httpx.AsyncClient(timeout=WEBHOOK_TIMEOUT, follow_redirects=False) as client:
-            r = await client.post(url, **_webhook_request(url, title, text, link, ok, account))
-    except httpx.HTTPError as e:
-        return f"the webhook could not be reached: {e}"
+            r = await client.post(str(target), headers=headers, extensions={"sni_hostname": host}, **req)
+    except Exception:
+        return "the webhook could not be reached"
     if r.status_code >= 400:
         return f"the webhook answered {r.status_code}"
     return ""
@@ -158,12 +216,17 @@ async def _send_email(settings, to: str, title: str, text: str, link: str) -> st
     msg.set_content(f"{text}\n\nOpen the Mailbox page: {link}\n\n"
                     f"You get this because mailbox alerts are on for {to}. Turn them off on the Mailbox page.")
     port = settings.alert_smtp_port
+    # Implicit TLS on 465/2465, STARTTLS required on 587/2587, and on any
+    # other port STARTTLS whenever the server offers it: a password never
+    # crosses in clear text because of the port number.
+    use_tls = port in (465, 2465)
+    start_tls = False if use_tls else (True if port in (587, 2587) else None)
     try:
         await aiosmtplib.send(msg, hostname=settings.alert_smtp_host, port=port,
                               username=settings.alert_smtp_username or None, password=settings.alert_smtp_password or None,
-                              start_tls=(port == 587), use_tls=(port == 465), timeout=30)
-    except (aiosmtplib.SMTPException, OSError) as e:
-        return f"the alert email could not be sent: {str(e)[:160]}"
+                              start_tls=start_tls, use_tls=use_tls, timeout=30)
+    except Exception as e:
+        return f"the alert email could not be sent: {type(e).__name__}"
     return ""
 
 
@@ -175,14 +238,25 @@ async def deliver(settings, ws, title: str, text: str, ok: bool = False) -> tupl
     reached, problems = [], []
     if prefs["email_on"] and prefs["email"]:
         if settings.alert_email_ready:
-            why = await _send_email(settings, prefs["email"], title, text, link)
+            try:
+                why = await _send_email(settings, prefs["email"], title, text, link)
+            except Exception as e:   # one channel's failure never undoes the other's delivery
+                why = f"the alert email could not be sent: {type(e).__name__}"
             (problems.append(why) if why else reached.append(f"email to {prefs['email']}"))
         else:
             problems.append("the site has no alert email server set up (BB_ALERT_SMTP_HOST)")
     if prefs["webhook"]:
-        why = await _send_webhook(prefs["webhook"], title, text, link, ok, ws.user.get("email", ""))
+        try:
+            why = await _send_webhook(prefs["webhook"], title, text, link, ok, ws.user.get("email", ""))
+        except Exception:
+            why = "the webhook could not be reached"
         (problems.append(why) if why else reached.append("the webhook"))
     return reached, problems
+
+
+def _real(problems: list[str]) -> list[str]:
+    """Problems with a channel that is set up (not "nothing set up")."""
+    return [p for p in problems if not p.startswith("the site has no")]
 
 
 # ── once per problem ──
@@ -193,10 +267,18 @@ async def check_workspace(settings, ws, now: datetime | None = None) -> list[str
     now = now or _now()
     state = ws.alert_state()
     incidents: dict = state.setdefault("incidents", {})
-    active = await current_alerts(ws)
+    obs = await observe(ws)
+    active, kinds, watched = obs["alerts"], obs.get("kinds", {}), obs.get("watched", set())
     sent: list[str] = []
     for key, text in active.items():
-        inc = incidents.setdefault(key, {"since": now.isoformat(), "notified_at": "", "reminders": 0})
+        kind = kinds.get(key, "")
+        inc = incidents.get(key)
+        if inc is None or inc.get("clearing"):
+            inc = incidents[key] = {"since": now.isoformat(), "notified_at": "", "reminders": 0, "kind": kind}
+        elif inc.get("kind", kind) != kind:
+            # A different problem on the same mailbox (a stall that became a
+            # refused sign-in): news now, not in a day.
+            inc.update(kind=kind, notified_at="", reminders=0)
         inc["text"] = text
         last = _parse(inc.get("notified_at", ""))
         if last and now - last < timedelta(hours=REMIND_HOURS):
@@ -209,18 +291,29 @@ async def check_workspace(settings, ws, now: datetime | None = None) -> list[str
             inc["notified_at"] = now.isoformat()
             inc["reminders"] = int(inc.get("reminders", 0)) + (1 if again else 0)
             sent.append(f"{key}: {', '.join(reached)}")
-        for p in problems:
-            if not p.startswith("the site has no"):   # a channel never set up is not a failure
-                logger.warning("Alert for %s not delivered: %s", ws.user.get("email"), p)
-        state["last_problem"] = "; ".join(p for p in problems if not p.startswith("the site has no"))[:300]
+        for p in _real(problems):   # a channel never set up is not a failure
+            logger.warning("Alert for %s not delivered: %s", ws.user.get("email"), p)
+        state["last_problem"] = "; ".join(_real(problems))[:300]
     for key in [k for k in incidents if k not in active]:
-        inc = incidents.pop(key)
-        if inc.get("notified_at"):
-            reached, _ = await deliver(settings, ws, "The mailbox is connected again" if key.startswith("mail:")
-                                       else "Your mailbox is working again",
-                                       "The problem we wrote to you about has cleared: " + (inc.get("text") or "")[:300], ok=True)
+        inc = incidents[key]
+        if key.startswith("mail:") and key[5:] not in obs.get("mailboxes", set()):
+            incidents.pop(key)                 # the account was removed: nothing to report
+            continue
+        if ("mail:*" if key.startswith("mail:") else key) not in watched:
+            continue                           # not being watched (paused or stopped): neither news nor cleared
+        if not inc.get("notified_at"):
+            incidents.pop(key)                 # never sent, so no "working again" either
+            continue
+        reached, problems = await deliver(settings, ws, "The mailbox is connected again" if key.startswith("mail:")
+                                          else "Your mailbox is working again",
+                                          "The problem we wrote to you about has cleared: " + (inc.get("text") or "")[:300], ok=True)
+        if reached or not _real(problems):
+            incidents.pop(key)
             if reached:
                 sent.append(f"{key} cleared: {', '.join(reached)}")
+        else:
+            inc["clearing"] = True             # tried again on the next pass
+            state["last_problem"] = "; ".join(_real(problems))[:300]
     if sent:
         state["last_sent_at"] = now.isoformat()
         state["last_sent"] = sent[-1][:300]

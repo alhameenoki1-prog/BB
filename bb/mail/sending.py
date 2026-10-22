@@ -29,21 +29,24 @@ def profile_root(env: dict) -> str:
     return (env or {}).get("HARVEY_PROFILE_HOME") or (env or {}).get("HARVEY_HOME") or ""
 
 
-async def env_for_draft(db: MailDB, env: dict, draft: dict) -> dict:
-    """The worker's env with the profile of the run this draft came from."""
-    run_id = draft.get("run_id") or ""
+async def env_for_draft(db: MailDB, env: dict, draft: dict, mailbox: dict | None = None) -> dict:
+    """The worker's env with the profile this draft was written with: the
+    run's campaign, else (a draft from the thread page or Compose) the
+    outreach campaign on the sending account, else the main profile. The
+    same profile then supplies the files and link names at send time."""
     root = (env or {}).get("HARVEY_HOME") or ""
-    if not run_id or not root:
-        return env
-    run = await db.one("SELECT profile_id FROM reply_runs WHERE id = ?", (run_id,))
-    pid = (run or {}).get("profile_id") or ""
-    if not pid:
+    if not root:
         return env
     from bb import campaigns as campaigns_mod
-    try:
-        return {**env, "HARVEY_PROFILE_HOME": str(campaigns_mod.campaign_root(root, pid))}
-    except ValueError:
+    pid = ""
+    if draft.get("run_id"):
+        run = await db.one("SELECT profile_id FROM reply_runs WHERE id = ?", (draft["run_id"],))
+        pid = (run or {}).get("profile_id") or ""
+    if not pid and mailbox:
+        pid = campaigns_mod.profile_for_account(root, mailbox.get("address") or "")
+    if not pid or pid == campaigns_mod.MAIN:
         return env
+    return {**env, "HARVEY_PROFILE_HOME": str(campaigns_mod.profile_root(root, pid))}
 
 
 def _today_utc() -> str:
@@ -109,7 +112,7 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     mailbox = await db.mailbox(draft["mailbox_id"])
     if not mailbox:
         raise SendRefused("the mailbox no longer exists")
-    env = await env_for_draft(db, env, draft)
+    env = await env_for_draft(db, env, draft, mailbox)
     settings = service.settings_of(mailbox)
     ok, why = service.ready_to_send(mailbox)
     if not ok:
@@ -143,7 +146,7 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     led, slot = ledger_for(env), None
     if led is not None:
         run = await db.one("SELECT * FROM reply_runs WHERE id = ?", (draft.get("run_id") or "",)) if draft.get("run_id") else None
-        led.set_limit(mailbox["address"], service.account_daily_limit(mailbox))
+        led.set_limit(mailbox["address"], service.account_daily_limit(mailbox, service.open_creds(secret, mailbox)))
         if run:
             slot, pic = led.reserve(mailbox["address"], run["id"], FEATURES.get(run.get("kind") or "reply", "reply-run"),
                                     run_label(run, mailbox["address"]), kind=draft.get("kind") or "reply")

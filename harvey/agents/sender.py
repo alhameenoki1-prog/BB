@@ -436,8 +436,7 @@ class Sender:
             "personalization": prospect.personalization_notes,
         }
         for key, value in replacements.items():
-            text = text.replace("{{" + key + "}}", value or "")
-            text = text.replace("{{ " + key + " }}", value or "")
+            text = re.sub(r"\{\{\s*" + key + r"\s*\}\}", lambda _m, v=(value or ""): v, text)
         text = text.strip()
         if body:
             outreach = getattr(self.config, "outreach", None)
@@ -665,6 +664,17 @@ class Sender:
                     await self.state.update_prospect_status(prospect.id, "opted_out")
                 continue
 
+            # A follow-up goes only after its first email did: one held for
+            # review waits with it, one rejected or failed takes it along.
+            if item["kind"] == "sequence" and int(item.get("step") or 1) > 1 and item.get("campaign_id"):
+                first = await self.state.sequence_step_status(item["campaign_id"], item["prospect_id"], 1)
+                if first in ("pending_review", "approved", "sending"):
+                    continue
+                if first in ("rejected", "cancelled", "failed"):
+                    await self.state.update_outbox_item(
+                        item["id"], status="cancelled", error="the first email of this sequence never went out")
+                    continue
+
             # Stop-on-reply / opt-out: never continue a sequence after contact.
             if item["kind"] == "sequence" and prospect.status in STOP_STATUSES:
                 await self.state.update_outbox_item(
@@ -837,7 +847,10 @@ class Sender:
     def _passes(subject: str, body: str, need: str) -> tuple[str, str] | None:
         """(subject, body) when the pair passes both checks, the subject
         swapped for a plain one from the need if only it fails; else None."""
+        from harvey.gate import MERGE_TAG_RE
         from harvey.spamcheck import SUBJECT_REVIEW, subject_from_need, subject_risk
+        if MERGE_TAG_RE.search(subject + " " + body):
+            return None        # a field nobody filled in would be refused at the gate
         if spam_risk(subject, body)[0] >= SPAM_REVIEW:
             return None
         if subject_risk(subject, body, need)[0] < SUBJECT_REVIEW:
@@ -876,8 +889,9 @@ class Sender:
             return None
         if not isinstance(result, dict) or not str(result.get("body") or "").strip():
             return None
-        new_subject = str(result.get("subject") or subject).strip()[:120]
-        new_body = names.strip_greeting(str(result["body"]).strip())
+        # One spelling for every merge field ({{ company }} → {{company}}), the one _render fills.
+        new_subject = _MERGE_RE.sub(lambda m: "{{" + m.group(1) + "}}", str(result.get("subject") or subject).strip()[:120])
+        new_body = _MERGE_RE.sub(lambda m: "{{" + m.group(1) + "}}", names.strip_greeting(str(result["body"]).strip()))
         if set(_MERGE_RE.findall(new_subject + "\n" + new_body)) != fields:
             logger.info("Sender: the template rewrite changed its merge fields; each copy is checked on its own instead.")
             return None

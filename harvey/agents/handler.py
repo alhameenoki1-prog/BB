@@ -357,6 +357,9 @@ class Handler:
                 # Instantly (legacy) sends straight away: the same one note.
                 if await self._send_instantly_reply(reply_uuid, response, convo, lead_email, intent):
                     logger.info(f"Handler: {lead_email} said no; the closing note with the brief went out, then nothing more.")
+                else:
+                    await self._note_not_sent(convo, lead_email, intent, response)
+                    return
             await self.state.update_conversation(convo.id, status="closed", stage="closed_lost")
             await self.state.update_prospect_status(prospect.id, "lost")
             logger.info(f"Handler: {lead_email} not interested. Closing. One no is enough.")
@@ -400,13 +403,24 @@ class Handler:
                 await self.state.update_prospect_status(prospect.id, "lost")
                 logger.info(f"Handler: {lead_email} said no; the closing note is the last email they get.")
         elif reply_uuid:
-            await self._send_instantly_reply(reply_uuid, response, convo, lead_email, intent)
+            if not await self._send_instantly_reply(reply_uuid, response, convo, lead_email, intent):
+                await self._note_not_sent(convo, lead_email, intent, response)
+                return
             if self.inquiry and intent == "objection" and enquiry.is_soft_no(fresh):
                 # The same rule as the native path: a soft no gets the one
                 # closing note and the conversation ends there.
                 await self.state.update_conversation(convo.id, status="closed", stage="closed_lost")
                 await self.state.update_prospect_status(prospect.id, "lost")
                 logger.info(f"Handler: {lead_email} said no; the closing note is the last email they get.")
+
+    async def _note_not_sent(self, convo, lead_email: str, intent: str, response: str):
+        """Instantly would not take the answer: a person sends it. The
+        conversation waits for them with the draft kept in the log, instead
+        of closing on a note that never left."""
+        await self.state.update_conversation(convo.id, status="needs_human")
+        await self.state.log_action(action_type="reply_failed", agent="handler",
+                                    details={"prospect_email": lead_email, "intent": intent, "draft": response[:4000]})
+        logger.warning(f"Handler: the answer to {lead_email} could not be sent through Instantly; it waits for a person.")
 
     async def _send_instantly_reply(self, reply_uuid: str, response: str, convo, lead_email: str, intent: str) -> bool:
         """Answer through Instantly (legacy) and record it on the thread.
@@ -901,6 +915,8 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
         outreach = getattr(self.config, "outreach", None)
         if not outreach or not outreach.reply_attachments or outreach.attach_on == "never":
             return []
+        if not self.is_native:
+            return []      # Instantly (legacy) sends no files, so no reply may promise one
         if outreach.attach_on == "every_reply":
             return list(outreach.reply_attachments)
         prior = await self.state.count_outbox_for_conversation(convo.id, kind="reply")

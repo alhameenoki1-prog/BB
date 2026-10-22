@@ -43,6 +43,7 @@ from harvey.integrations.mail_provider import (
     MailProvider,
     SendResult,
     looks_like_bounce,
+    booking_url,
     render_parts,
 )
 
@@ -245,7 +246,7 @@ class MicrosoftProvider(MailProvider):
         replies are matched on it). A reply is drafted with createReply on
         the prospect's message, which sets In-Reply-To/References."""
         plain, html, image_path = render_parts(
-            body, getattr(self.config, "outreach", None), plain=plain)
+            body, getattr(self.config, "outreach", None), plain=plain, booking=booking_url(self.config))
         content = {
             "subject": subject,
             "body": ({"contentType": "HTML", "content": html} if html

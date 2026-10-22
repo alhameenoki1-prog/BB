@@ -223,7 +223,11 @@ async def test_blocked_verdict_is_remembered_for_later_steps(state):
     await sender._drain_due()
 
     assert provider.sent == []
-    assert len(await state.get_outbox(status="failed")) == 2
+    # The blocked first email failed; the follow-up behind it never goes
+    # (its first email never went out), and the check was asked only once.
+    assert len(await state.get_outbox(status="failed")) == 1
+    cancelled = await state.get_outbox(status="cancelled")
+    assert len(cancelled) == 1 and "first email of this sequence never went out" in cancelled[0]["error"]
     assert len(calls) == 1
 
 

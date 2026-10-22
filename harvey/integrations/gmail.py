@@ -33,6 +33,7 @@ from harvey.integrations.mail_provider import (
     add_deliverability_headers,
     attach_files,
     looks_like_bounce,
+    booking_url,
     set_body,
 )
 
@@ -166,7 +167,7 @@ class GmailProvider(MailProvider):
             msg["In-Reply-To"] = in_reply_to
             msg["References"] = in_reply_to
         add_deliverability_headers(msg, persona.email, self.config)
-        set_body(msg, body, getattr(self.config, "outreach", None), plain=plain)
+        set_body(msg, body, getattr(self.config, "outreach", None), plain=plain, booking=booking_url(self.config))
         attach_files(msg, attachments)
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()

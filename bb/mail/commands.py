@@ -189,8 +189,16 @@ class CommandCenter:
         else:
             rows = [t for t in await runs.candidates(self.db, boxes) if not t["excluded"]]
         rows = [r for r in rows if r["mailbox_id"] in {m["id"] for m in boxes}]
+        taken = await runs.threads_in_live_runs(self.db)
+        in_runs = sum(1 for r in rows if r["id"] in taken)
+        rows = [r for r in rows if r["id"] not in taken]
         if not rows:
-            return {"error": "nothing needs a reply in those accounts"}
+            return {"error": "nothing needs a reply in those accounts"
+                    + (f" that is not already in a run ({in_runs} are waiting in one)" if in_runs else "")}
+        if in_runs:
+            instructions_note = f" ({in_runs} more are already waiting in another run and are left to it)"
+        else:
+            instructions_note = ""
         per = {}
         for r in rows:
             per[r["mailbox_id"]] = per.get(r["mailbox_id"], 0) + 1
@@ -204,7 +212,7 @@ class CommandCenter:
                 return {"error": "these accounts cannot send yet (no signature or project link): " + ", ".join(cannot)}
             return self._propose("start_reply_run", args,
                                  f"Reply to {len(rows)} thread{'s' if len(rows) != 1 else ''} and send the confident ones: "
-                                 + ", ".join(f"{b['threads']} from {b['account']}" for b in breakdown)
+                                 + ", ".join(f"{b['threads']} from {b['account']}" for b in breakdown) + instructions_note
                                  + (f". Instructions: {instructions}" if instructions else "") + (f". Reply-To {reply_to}" if reply_to else ""),
                                  breakdown)
         run = await self._do_start_reply_run(args)

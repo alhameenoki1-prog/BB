@@ -143,6 +143,10 @@ class Writer:
         self.state = state
         self.config = config
         self.env = env
+        # When this writer's brief was read: a sequence committed earlier (by
+        # a worker still finishing its last call on the old brief, say) is
+        # never reused, however late it was saved.
+        self._loaded_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     @property
     def is_native(self) -> bool:
@@ -320,7 +324,7 @@ class Writer:
             created = campaign.created_at
             if created.tzinfo is not None:
                 created = created.astimezone(timezone.utc).replace(tzinfo=None)
-            return created >= mtime
+            return created >= max(mtime, getattr(self, "_loaded_at", mtime))
         except Exception:
             return False   # cannot tell: write fresh rather than reuse stale words
 

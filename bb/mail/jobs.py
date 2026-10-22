@@ -108,6 +108,14 @@ class Jobs:
             (error[:600], _iso(now + timedelta(seconds=wait)), _iso(now), job_id))
         return "queued"
 
+    async def release(self, job_id: str, note: str = "worker stopped") -> None:
+        """Put a job back without counting the try: the worker stopped (a
+        restart, a new AI key), not the job. It runs again when the worker
+        is back."""
+        await self.db.execute(
+            "UPDATE jobs SET status = 'queued', locked_at = NULL, attempts = MAX(0, attempts - 1), last_error = ?, "
+            "updated_at = ? WHERE id = ? AND status = 'running'", (note[:600], now_iso(), job_id))
+
     async def retry(self, job_id: str) -> bool:
         now = now_iso()
         n = await self.db.execute(
