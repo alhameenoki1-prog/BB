@@ -459,9 +459,13 @@ goal and brief of the outreach campaign on that account, or one you
 pick), the soft no and hard no rules included. It looks for new mail
 every two minutes, can also take what is already waiting from the last
 few days, and runs until stopped. A lead of an outreach campaign on the
-same account is left to that campaign, which answers its own leads, and
-while a reply campaign runs on an account the outreach campaign there
-leaves mail from people outside its list to it.
+same account is left to that campaign while it runs (or is paused for
+edits), which answers its own leads; a stopped outreach campaign's leads
+are answered by the reply campaign. While a reply campaign runs on an
+account, the outreach campaign there leaves mail from people outside its
+list to it. A conversation whose reply waits on Review is never drafted
+again by anything else, and a reply whose thread was answered after it
+was written is not sent.
 
 **Mailbox scans, one per account.** The follow-up scan of past
 conversations starts one run per account, each paused or stopped on its
@@ -912,8 +916,10 @@ problem still there a day later is sent again; when it clears, one
 "working again" note follows. The worker's mailbox counts while the
 worker runs or is meant to (an alert left by a worker the user stopped
 is not sent), and so does a command-center mailbox that needs
-reconnecting. *Send a test alert* shows straight away whether the
-channels work.
+reconnecting. A different problem on the same mailbox (a stall that
+becomes a refused sign-in) is sent at once; pausing or stopping a worker
+is neither a new problem nor a recovery. *Send a test alert* shows
+straight away whether the channels work.
 
 ## Operations
 

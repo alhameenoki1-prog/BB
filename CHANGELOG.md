@@ -79,6 +79,23 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **Review fixes, fourth round.** Two adversarial reviews (61 findings,
+  all reproduced) and their completeness and requirements checks. The
+  main ones: signed-in Microsoft mailboxes could not sync or send from the
+  mail worker; the Microsoft 365 admin app was never treated as a real
+  mailbox (replies unread, nothing staged); Reconnect now shows only for a
+  sign-in the mailbox refused and clears once it connects again; a webhook
+  alert goes to the very address that was checked; pausing a worker is no
+  longer reported as a recovery; a reply campaign takes a conversation up
+  again after its draft is dealt with and never answers a thread whose
+  reply waits on Review; Pause and Stop hold an email even mid-draft; a
+  run whose task died or whose account was removed finishes instead of
+  blocking the account; a follow-up waits for its first email; the forms
+  of a page act on the campaign that page showed; Disable, a new AI key
+  and an account signed in again reach every campaign; a sending relay is
+  never held to a made-up limit; links keep the sentence's own words and
+  punctuation. See `tests/test_review_round4.py` and
+  `tests/test_review_round4b.py`.
 - **One run at a time over the same threads.** Two submits of the
   follow-up scan (a double click, or the page and the command bar) no
   longer start two runs over the same contacts: a run still going over
