@@ -79,6 +79,26 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **Campaigns side by side: the gaps the requirements check found.** The
+  command center's own daily cap is now split between the reply
+  campaign, scans and reply runs on an account like the account's limit
+  (`runs.cap_room`), so a scan cannot use it all and stop the replies.
+  People who only wrote in to an outreach campaign's inbox are answered
+  by the reply campaign on the account, not left to nobody. A message one
+  campaign answered is never answered again by another (the ledger's
+  `answered` table, by Message-ID): an outreach campaign that was stopped
+  while the reply campaign answered its leads skips those messages when
+  it starts again and cancels its own queued reply to them. Every opt-out
+  recorded before the shared list existed, by any campaign (removed ones
+  included) or on any account's excluded list, is copied into it
+  (`campaigns.backfill_suppressed`, on every campaign start and every ten
+  minutes in the mail worker). Someone who says no again after the
+  closing note gets nothing more. A scan's follow-up still waiting when
+  they write back gives way to a reply, and is never sent after their
+  message. An outreach campaign in quiet hours keeps its part of the
+  account's limit through the night. A scan on an account still on its
+  first sync says so instead of "no past conversations". See
+  `tests/test_requirements_gaps.py`.
 - **Review fixes, fourth round.** Two adversarial reviews (61 findings,
   all reproduced) and their completeness and requirements checks. The
   main ones: signed-in Microsoft mailboxes could not sync or send from the

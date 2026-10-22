@@ -463,13 +463,20 @@ same account is left to that campaign while it runs (or is paused for
 edits), which answers its own leads; a stopped outreach campaign's leads
 are answered by the reply campaign. While a reply campaign runs on an
 account, the outreach campaign there leaves mail from people outside its
-list to it. A conversation whose reply waits on Review is never drafted
-again by anything else, and a reply whose thread was answered after it
-was written is not sent.
+list to it, and people who only wrote in to that campaign's inbox are
+the reply campaign's too. A conversation whose reply waits on Review is
+never drafted again by anything else, a reply whose thread was answered
+after it was written is not sent, and a message one campaign answered is
+never answered by another (a stopped outreach campaign that starts again
+skips what the reply campaign answered meanwhile). Someone who says no
+gets one closing note; saying no again gets nothing more.
 
 **Mailbox scans, one per account.** The follow-up scan of past
 conversations starts one run per account, each paused or stopped on its
-own; leads of an outreach campaign on that account are left out.
+own; leads of an outreach campaign on that account are left out. A
+follow-up the scan wrote that still waits when they write back gives way:
+their message is answered as a reply instead. An account added a moment
+ago reads its past mail first; a scan started before that says so.
 
 **Independent.** Each campaign and run has its own lane in the
 background worker, so a reply campaign and a scan on the same account go
@@ -482,7 +489,8 @@ limit* set on its page under Accounts, or by default a little under what
 its provider allows (gmail.com 450, Google Workspace 1,800, outlook.com
 250, Microsoft 365 9,000, other mailboxes 300). Each feature's own caps
 still apply inside it: an outreach campaign's daily maximum on its
-profile, the command center's daily cap for replies and scans. Every campaign working on the account is
+profile, the command center's daily cap for replies and scans (split
+between the runs on the account the same way). Every campaign working on the account is
 guaranteed an equal part of it and may send beyond its part only from
 what no other campaign there still has a claim on, so a quiet reply
 campaign keeps room for the replies that come in later while a busy
@@ -492,7 +500,10 @@ Pausing or stopping a campaign gives its part back at once. A send a
 person presses is held only to the account's own limit. Each user's
 `data/sendlog.db` is the ledger every worker reads before it sends; the
 same file holds the addresses that asked any campaign never to be
-contacted, which every campaign then skips.
+contacted, which every campaign then skips (opt-outs recorded before it
+existed, and full addresses on any account's excluded list, are copied
+in), and which messages have been answered. An outreach campaign in
+quiet hours keeps its part through the night.
 
 ## The mail command center (`/mail`)
 

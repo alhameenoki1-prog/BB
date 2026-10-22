@@ -250,10 +250,23 @@ class Handler:
         except Exception as e:
             logger.debug(f"Handler: outbox cancel failed: {e}")
 
-        # 1. Classify intent. Hard keyword checks run FIRST and override
-        # the LLM — opt-outs and legal threats must never be missed.
         fresh = enquiry.fresh_text(reply_text)          # their words, not the history quoted below them
         text_lower = fresh.lower()
+        answered_by = self._answered_elsewhere((reply_meta or {}).get("message_id", ""))
+        if answered_by:
+            # Another campaign on this account (a reply campaign, while this
+            # one was stopped) already answered this message: a second answer
+            # would be a duplicate. Their no still holds here.
+            if any(p in text_lower for p in OPT_OUT_PATTERNS) or enquiry.is_opt_out(fresh):
+                await self.state.update_prospect_status(prospect.id, "opted_out")
+            logger.info(f"Handler: {lead_email}'s message was already answered by another campaign on this account; no second reply.")
+            await self.state.log_action(action_type="answered_elsewhere", agent="handler",
+                                        details={"prospect_email": lead_email, "by": answered_by,
+                                                 "reply_preview": reply_text[:200]})
+            return
+
+        # 1. Classify intent. Hard keyword checks run FIRST and override
+        # the LLM — opt-outs and legal threats must never be missed.
         hard_escalation = any(p in text_lower for p in ESCALATION_PATTERNS)
         if hard_escalation:
             intent = "escalate"          # a legal or compliance threat: a human looks, and they are suppressed
@@ -472,7 +485,10 @@ class Handler:
                     await self._handle_bounce(msg)
                 elif msg.body.strip():
                     known = await self.state.get_prospect_by_email(msg.from_email)
-                    if self.inbox_autoreply and (known is None or known.source == "inbox"):
+                    if known is not None and known.source == "inbox" and self._reply_campaign_runs():
+                        # They only wrote in; the reply campaign on this account answers them.
+                        logger.info(f"Handler: inbox: a reply campaign answers {msg.from_email} on this account; no reply here.")
+                    elif self.inbox_autoreply and (known is None or known.source == "inbox"):
                         await self._auto_reply_inbox(msg)
                     else:
                         await self._process_reply(
@@ -564,6 +580,39 @@ class Handler:
             self._ledger_info = ledger_mod.from_env()
         return self._ledger_info
 
+    def _reply_campaign_runs(self) -> bool:
+        led, account, _, _ = self._ledger()
+        if led is None:
+            return False
+        try:
+            return led.has_feature(account, "reply")
+        except Exception as e:
+            logger.debug(f"Handler: ledger read failed: {e}")
+            return False
+
+    def _answered_elsewhere(self, message_id: str) -> str:
+        """Who else answered this inbound message (a reply campaign on the
+        account while this campaign was stopped), or ""."""
+        led, _, campaign, _ = self._ledger()
+        if led is None or not message_id:
+            return ""
+        try:
+            by = led.answered_by(message_id)
+        except Exception as e:
+            logger.debug(f"Handler: ledger read failed: {e}")
+            return ""
+        return by if by and by != campaign else ""
+
+    def _note_answered(self, message_id: str):
+        """This campaign answers this message: no other campaign does."""
+        led, account, campaign, _ = self._ledger()
+        if led is None or not message_id:
+            return
+        try:
+            led.mark_answered(account, campaign, [message_id])
+        except Exception as e:
+            logger.debug(f"Handler: ledger write failed: {e}")
+
     def _suppress_everywhere(self, email: str, reason: str):
         """An opt-out here holds for every campaign of this user."""
         led, _, campaign, _ = self._ledger()
@@ -624,6 +673,9 @@ class Handler:
                     return False
                 if led.is_suppressed(sender):
                     logger.info(f"Handler: inbox: {sender} asked not to be contacted; no reply.")
+                    return False
+                if self._answered_elsewhere(msg.message_id):
+                    logger.info(f"Handler: inbox: another campaign on this account already answered {sender}; no reply.")
                     return False
             except Exception as e:
                 logger.debug(f"Handler: ledger read failed: {e}")

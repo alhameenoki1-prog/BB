@@ -1695,6 +1695,8 @@ class Workspace:
             self.ledger().set_limit(self.sending_address(), self.account_daily_limit())
             if self.is_main:
                 self.sync_main_registry()
+            from bb import campaigns as campaigns_mod
+            campaigns_mod.backfill_suppressed(self.user_root)   # every earlier opt-out holds here too
         except Exception as e:
             logger.warning("Could not set the shared limit for %s: %s", self.sending_address(), e)
         if pid := self.worker_running():

@@ -66,11 +66,22 @@ CREATE TABLE IF NOT EXISTS suppressed (
     source TEXT DEFAULT '',
     at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS answered (
+    message_id TEXT PRIMARY KEY,
+    account TEXT DEFAULT '',
+    campaign TEXT DEFAULT '',
+    at REAL NOT NULL
+);
 """
 
 
 def _key(account: str) -> str:
     return (account or "").strip().lower()
+
+
+def message_key(message_id: str) -> str:
+    """A Message-ID as both sides store it: no angle brackets, lower case."""
+    return (message_id or "").strip().strip("<>").strip().lower()
 
 
 class Ledger:
@@ -314,6 +325,36 @@ class Ledger:
                 marks = ",".join("?" for _ in chunk)
                 out |= {r[0] for r in con.execute(f"SELECT email FROM suppressed WHERE email IN ({marks})", chunk)}
             return out
+        finally:
+            con.close()
+
+    # ── who answered which message ──
+
+    def mark_answered(self, account: str, campaign: str, message_ids: list[str], now: float | None = None):
+        """These inbound messages have been answered (by ``campaign``), so
+        no other campaign answers them again, even one that was stopped
+        while they came in and reads them when it starts."""
+        keys = sorted({message_key(m) for m in message_ids or [] if message_key(m)})
+        if not keys:
+            return
+        con = self._con()
+        try:
+            t = self._now(now)
+            con.executemany("INSERT OR IGNORE INTO answered(message_id, account, campaign, at) VALUES (?, ?, ?, ?)",
+                            [(k, _key(account), campaign, t) for k in keys])
+            con.execute("DELETE FROM answered WHERE at < ?", (t - 365 * 86400,))
+        finally:
+            con.close()
+
+    def answered_by(self, message_id: str) -> str | None:
+        """The campaign that answered this inbound message, or None."""
+        key = message_key(message_id)
+        if not key:
+            return None
+        con = self._con()
+        try:
+            row = con.execute("SELECT campaign FROM answered WHERE message_id = ?", (key,)).fetchone()
+            return row[0] if row else None
         finally:
             con.close()
 

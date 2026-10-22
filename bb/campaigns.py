@@ -98,7 +98,7 @@ def answering(user_root: Path, campaign_id: str) -> bool:
 
 def outreach_owner(user_root: Path, account: str, email: str) -> dict | None:
     """The outreach campaign on ``account`` that has ``email`` on its lead
-    list and is answering its leads, or None. A stopped campaign's leads are
+    list (not just in its inbox) and is answering its leads, or None. A stopped campaign's leads are
     left to the reply campaign on the account, so nobody goes unanswered."""
     email = (email or "").strip().lower()
     if not email:
@@ -114,7 +114,10 @@ def outreach_owner(user_root: Path, account: str, email: str) -> dict | None:
         except sqlite3.Error:
             continue
         try:
-            hit = con.execute("SELECT 1 FROM prospects WHERE lower(email) = ? LIMIT 1", (email,)).fetchone()
+            # Someone who only wrote in to the inbox is not on the lead list:
+            # with a reply campaign on the account, answering them is its job.
+            hit = con.execute("SELECT 1 FROM prospects WHERE lower(email) = ? AND COALESCE(source, '') != 'inbox' "
+                              "LIMIT 1", (email,)).fetchone()
         except sqlite3.Error:
             hit = None
         finally:
@@ -140,3 +143,65 @@ def profile_root(user_root: Path, campaign_id: str) -> Path:
         return user_root
     root = campaign_root(user_root, campaign_id)
     return root if (root / "harvey.yaml").exists() else user_root
+
+
+def _campaign_dbs(user_root: Path) -> list[Path]:
+    """Every Harvey database of this user: the main one, each campaign's,
+    and those of campaigns that were removed (kept under .removed)."""
+    user_root = Path(user_root)
+    out = [user_root / "data" / "harvey.db"]
+    base = user_root / "campaigns"
+    for folder in (base, base / ".removed"):
+        if folder.is_dir():
+            out += [d / "data" / "harvey.db" for d in sorted(folder.iterdir()) if d.is_dir() and d.name != ".removed"]
+    return [p for p in out if p.exists()]
+
+
+def backfill_suppressed(user_root: Path) -> int:
+    """Put every opt-out this user already has into the shared list, so
+    each campaign honours them: people marked opted out in any campaign,
+    and the addresses on any account's excluded list. Opt-outs from before
+    the shared list existed (or from a campaign since removed) would
+    otherwise reach only the campaign that recorded them. Returns how
+    many addresses it looked at."""
+    from harvey.ledger import Ledger
+    user_root = Path(user_root)
+    found: dict[str, str] = {}
+    for db in _campaign_dbs(user_root):
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        except sqlite3.Error:
+            continue
+        try:
+            for (email,) in con.execute("SELECT lower(email) FROM prospects WHERE status = 'opted_out' AND email LIKE '%@%'"):
+                found.setdefault(email.strip(), "opted out in a campaign")
+        except sqlite3.Error:
+            pass
+        finally:
+            con.close()
+    mail_db = user_root / "data" / "mail.db"
+    if mail_db.exists():
+        try:
+            con = sqlite3.connect(f"file:{mail_db}?mode=ro", uri=True, timeout=5)
+            try:
+                for (raw,) in con.execute("SELECT settings_json FROM mailboxes"):
+                    try:
+                        excluded = (json.loads(raw or "{}") or {}).get("excluded") or []
+                    except (TypeError, ValueError):
+                        continue
+                    for x in excluded if isinstance(excluded, list) else []:
+                        x = str(x or "").strip().lower()
+                        if "@" in x and not x.startswith("@"):
+                            found.setdefault(x, "on an account's excluded list")
+            finally:
+                con.close()
+        except sqlite3.Error:
+            pass
+    if not found:
+        return 0
+    led = Ledger(ledger_path(user_root))
+    already = led.suppressed_among(list(found))
+    for email, reason in found.items():
+        if email not in already:
+            led.suppress(email, reason, "backfill")
+    return len(found)

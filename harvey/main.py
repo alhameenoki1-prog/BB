@@ -356,6 +356,20 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
                     pass
 
 
+def _ledger_checkin(sender):
+    """Tell the account's shared ledger this campaign is still working on
+    it. Sends check in by themselves; a night of quiet hours (longer than
+    the ledger's six hours) would otherwise read as a stopped campaign, and
+    the others would take its share before it wakes."""
+    led = getattr(sender, "ledger", None)
+    if led is None:
+        return
+    try:
+        led.join(sender.ledger_account, sender.ledger_campaign, "outreach", sender.ledger_label)
+    except Exception as e:
+        logger.debug(f"ledger check-in failed: {e}")
+
+
 async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sender, handler, analyst,
                             interval, max_calls, consecutive_errors, has_send_loop):
     while not stop_event.is_set():
@@ -376,6 +390,7 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
                 # of however long the missed timer would have run.
                 shutting_down = False
                 while in_quiet_hours(config):
+                    _ledger_checkin(sender)   # still a campaign on the account: its share waits for the morning
                     if await _interruptible_sleep(QUIET_HOURS_POLL_SECONDS, stop_event):
                         shutting_down = True
                         break

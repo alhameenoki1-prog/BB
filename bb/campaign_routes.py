@@ -222,7 +222,7 @@ def register_campaign_routes(app, settings, current_user, base_workspace, render
                 if res.get("busy"):
                     notes.append(f"{m['address']} already has a scan going")
                 elif not res.get("id"):
-                    notes.append(f"{m['address']}: no past conversations to continue in the last {months} months")
+                    notes.append(runs_mod.nobody_note(m, months))
                 else:
                     started.append(m["address"])
         if started and not base.mail_worker_running():

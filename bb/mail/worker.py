@@ -28,6 +28,7 @@ MAX_CONCURRENT = 16
 LONG_KINDS = ("reply_run", "reply_campaign")
 MAX_LONG = MAX_CONCURRENT - 4
 SCHEDULE_EVERY = 60.0
+BACKFILL_EVERY = 600       # seconds between copying every campaign's opt-outs into the shared list
 
 
 class Handlers:
@@ -183,7 +184,7 @@ class Worker:
     async def loop(self):
         await self.db.init()
         await self.db.log("info", "Background worker started.")
-        last_schedule = 0.0
+        last_schedule = last_backfill = 0.0
         while not self.stop.is_set():
             try:
                 self.heartbeat.write_text(str(int(time.time())))
@@ -199,6 +200,15 @@ class Worker:
                 except Exception as e:
                     logger.warning("scheduling failed: %s", e)
                 last_schedule = time.time()
+            if time.time() - last_backfill > BACKFILL_EVERY:
+                # Opt-outs recorded by any campaign (or before the shared
+                # list existed) hold for the replies and scans here too.
+                try:
+                    from bb import campaigns as campaigns_mod
+                    await asyncio.to_thread(campaigns_mod.backfill_suppressed, self.root)
+                except Exception as e:
+                    logger.warning("opt-out back-fill failed: %s", e)
+                last_backfill = time.time()
             started = 0
             while len(self.tasks) < MAX_CONCURRENT:
                 job = await self.jobs.claim(exclude_mailboxes=self.busy,

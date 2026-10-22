@@ -667,6 +667,17 @@ class Sender:
                 if prospect.status != "opted_out":
                     await self.state.update_prospect_status(prospect.id, "opted_out")
                 continue
+            if self.ledger is not None and item["kind"] != "sequence" and item.get("in_reply_to"):
+                try:
+                    by = self.ledger.answered_by(item["in_reply_to"])
+                except Exception:
+                    by = None
+                if by and by != self.ledger_campaign:
+                    # A reply campaign on this account answered that message
+                    # while this campaign was stopped: this would be a second answer.
+                    await self.state.update_outbox_item(
+                        item["id"], status="cancelled", error="already answered by another campaign on this account")
+                    continue
 
             # A follow-up goes only after its first email did: one held for
             # review waits with it, one rejected or failed takes it along.
@@ -1077,6 +1088,11 @@ class Sender:
         ))
         if prospect.status in ("new", "queued"):
             await self.state.update_prospect_status(prospect.id, "contacted")
+        if self.ledger is not None and item.get("kind") != "sequence" and item.get("in_reply_to"):
+            try:
+                self.ledger.mark_answered(self.ledger_account, self.ledger_campaign, [item["in_reply_to"]])
+            except Exception:
+                pass
         try:
             await self.state.set_setting(LAST_SENT_KEY, now_iso)   # the mailbox health check reads this
         except Exception:

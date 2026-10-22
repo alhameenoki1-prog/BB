@@ -262,4 +262,7 @@ def test_the_follow_up_run_has_its_own_form_and_page(mail_client, monkeypatch):
     # Nothing left to follow up with once a run holds every contact.
     asyncio.run(db.execute("UPDATE reply_runs SET status = 'done' WHERE id = ?", (run_id,)))
     r = client.post("/mail/runs/reconnect", data={"mode": "review", "months": "6"})
+    assert "still%20reading%20their%20past%20mail" in r.headers["location"]     # its first sync has not finished
+    asyncio.run(db.execute("UPDATE mailboxes SET sync_json = ? WHERE id = ?", (json.dumps({"backfill_done": True}), mid)))
+    r = client.post("/mail/runs/reconnect", data={"mode": "review", "months": "6"})
     assert "No%20past%20conversations" in r.headers["location"]

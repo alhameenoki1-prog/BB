@@ -871,7 +871,9 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         if len(results) > 1:
             if started and not c["ws"].mail_worker_running():
                 c["ws"].start_mail_worker()
-            notes = [f"{r['address']}: " + ("a scan is already going" if r.get("busy") else "no past conversations to continue")
+            by_id = {m["id"]: m for m in boxes}
+            notes = [(f"{r['address']}: a scan is already going" if r.get("busy")
+                      else runs_mod.nobody_note(by_id.get(r["mailbox_id"]) or {"address": r["address"]}, months))
                      for r in results if not r.get("id")]
             return _redirect("/campaigns", msg=(f"Started {len(started)} follow-up run{'s' if len(started) != 1 else ''}, one per account: "
                                                 + ", ".join(r["address"] for r in started) + ".") if started else "",
@@ -882,6 +884,9 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             what = ("is paused: resume it or cancel it" if (busy or {}).get("status") == "paused"
                     else "is still going: it has to finish (or be cancelled)")
             return _redirect(f"/mail/runs/{run['busy']}", error=f"A follow-up run over these accounts {what} before another starts.")
+        if not run and boxes and all(runs_mod.still_syncing(m) for m in boxes):
+            return _redirect("/mail/runs", error="These accounts are still reading their past mail (the first sync). "
+                                                 "Start the scan again once they show as synced.")
         if not run:
             return _redirect("/mail/runs", error=f"No past conversations from the last {months} months to follow up with "
                                                  "(two-way threads with people who are not colleagues, automated senders or already followed up).")
