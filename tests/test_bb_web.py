@@ -533,7 +533,7 @@ def test_mailbox_smtp_settings(client, monkeypatch):
                                              "smtp_password": "bad"})
     assert "Not%20saved" in bad.headers["location"] and not ws.smtp_configured()
     ok = client.post("/mailbox/smtp", data={"smtp_host": "smtp.example.com", "smtp_port": "465",
-                                            "smtp_username": "me@example.com", "smtp_password": "app-pass",
+                                            "smtp_username": "me@example.com", "smtp_password": "sekret-9f3q",
                                             "imap_host": "imap.example.com", "reply_to": "replies@example.com"})
     assert "Mailbox%20saved" in ok.headers["location"]
     assert ws.smtp_configured() and ws.mail_provider() == "smtp" and ws.sending_address() == "me@example.com"
@@ -541,7 +541,7 @@ def test_mailbox_smtp_settings(client, monkeypatch):
     cfg = yaml.safe_load(ws.config_file.read_text())
     assert cfg["channels"]["email"]["provider"] == "smtp" and cfg["persona"]["email"] == "me@example.com"
     page = client.get("/mailbox")
-    assert "me@example.com" in page.text and "app-pass" not in page.text
+    assert "me@example.com" in page.text and "sekret-9f3q" not in page.text
 
     # The worker gets the mailbox credentials, and only this user's.
     seen = {}
@@ -553,14 +553,14 @@ def test_mailbox_smtp_settings(client, monkeypatch):
     env = seen["env"]
     assert env["SMTP_HOST"] == "smtp.example.com" and env["SMTP_PORT"] == "465"
     assert env["IMAP_HOST"] == "imap.example.com" and env["IMAP_USERNAME"] == "me@example.com"
-    assert env["IMAP_PASSWORD"] == "app-pass" and env["ANTHROPIC_API_KEY"] == "sk-ant-user-key-2"
+    assert env["IMAP_PASSWORD"] == "sekret-9f3q" and env["ANTHROPIC_API_KEY"] == "sk-ant-user-key-2"
     assert env["SMTP_REPLY_TO"] == "replies@example.com"
     assert "replies@example.com" in client.get("/mailbox").text
 
     # A blank password on re-save keeps the stored one; removing clears it.
     client.post("/mailbox/smtp", data={"smtp_host": "smtp.example.com", "smtp_username": "me@example.com",
                                        "smtp_password": "", "smtp_port": "587"})
-    assert ws.smtp_settings()["smtp_password"] == "app-pass" and ws.smtp_settings()["smtp_port"] == "587"
+    assert ws.smtp_settings()["smtp_password"] == "sekret-9f3q" and ws.smtp_settings()["smtp_port"] == "587"
     assert "removed" in client.post("/mailbox/smtp/remove").headers["location"]
     assert not ws.smtp_configured()
 
