@@ -9,12 +9,15 @@ import asyncio
 import json
 import os
 import random
+from datetime import datetime, timedelta, timezone
 
 from bb.mail import service
 from bb.mail.db import MailDB, new_id, now_iso
 from bb.mail.jobs import Jobs
 
 MODES = ("review", "auto", "dry_run")
+RECONNECT_MONTHS = (3, 6, 12)
+RECONNECT_DEFAULT_MONTHS = 6
 PACE_SECONDS = (20, 60)   # a random pause between two sends from one mailbox
 
 
@@ -34,6 +37,34 @@ def is_excluded(settings, email: str) -> bool:
     return any(x == email or x == domain or (x.startswith(".") and domain.endswith(x)) for x in settings.excluded)
 
 
+def is_opt_out(message: dict) -> bool:
+    """Does this inbound message ask us to stop (unsubscribe, a complaint,
+    hostility, a legal threat)? Checked by code, never left to the model."""
+    from harvey import enquiry
+    text = f"{message.get('subject', '')}\n{message.get('body') or message.get('body_text') or message.get('snippet') or ''}"
+    return enquiry.is_opt_out(text)
+
+
+async def suppress(db: MailDB, mailbox: dict, email: str, thread_id: str = "") -> None:
+    """Never write to ``email`` from this mailbox again: it joins the
+    settings' excluded list (which candidates, runs and sending all
+    honour) and its thread is dismissed."""
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    settings = dict(mailbox.get("settings") or {})
+    excluded = [str(x).lower() for x in (settings.get("excluded") or [])]
+    if email not in excluded:
+        settings["excluded"] = sorted(set(excluded) | {email})
+        await db.update_mailbox(mailbox["id"], settings=settings)
+        mailbox["settings"] = settings
+    if thread_id:
+        await db.execute("UPDATE threads SET state = 'dismissed', state_reason = 'they asked not to be contacted', updated_at = ? WHERE id = ?",
+                         (now_iso(), thread_id))
+    await db.log("warning", f"{email} asked not to be contacted: on the excluded list for {mailbox['address']}; nothing is sent.",
+                 mailbox["id"], thread_id=thread_id)
+
+
 async def candidates(db: MailDB, mailboxes: list[dict]) -> list[dict]:
     """The threads a run could answer, newest first, with the mailbox and
     the reason they would be skipped (excluded sender) if any."""
@@ -47,6 +78,96 @@ async def candidates(db: MailDB, mailboxes: list[dict]) -> list[dict]:
             t["excluded"] = is_excluded(settings, t.get("last_from_email") or "")
             out.append(t)
     return out
+
+
+async def reconnect_candidates(db: MailDB, mailboxes: list[dict], months: int = RECONNECT_DEFAULT_MONTHS,
+                               all_mailboxes: list[dict] | None = None) -> list[dict]:
+    """Past conversations the project could follow on from: two-way threads
+    (they wrote by hand, we answered) from the last ``months`` months, one
+    per contact (the most recent), newest first. Left out: automated or
+    bulk senders, our own addresses and colleagues at our own domains,
+    excluded and suppressed addresses, threads put away by hand, contacts
+    a scan already followed up with, and threads where the brief's link
+    has already gone out."""
+    from harvey.integrations.mail_provider import looks_automated
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30 * max(1, months))).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    own = {(m.get("address") or "").lower() for m in (all_mailboxes or mailboxes)}
+    own_domains = {a.rsplit("@", 1)[-1] for a in own if "@" in a}
+    # Already followed up, in hand, or judged (a thread the model found
+    # personal, or an address that asked to be left alone) is never asked
+    # again; a skip for a passing reason (the daily cap) is.
+    done_contacts = {r["contact"] for r in await db.query(
+        "SELECT DISTINCT ri.contact FROM run_items ri JOIN reply_runs r ON r.id = ri.run_id "
+        "WHERE r.kind = 'reconnect' AND ri.contact != '' AND (ri.status IN ('sent', 'needs_review', 'dry_run', 'queued', 'drafting') "
+        "OR (ri.status = 'skipped' AND (ri.detail LIKE 'not suitable%' OR ri.detail LIKE '%asked not to be contacted%')))")}
+    out, seen = [], set()
+    for box in mailboxes:
+        settings = service.settings_of(box)
+        links = [l.lower() for l in [settings.project_link] if l]
+        counts = {r["thread_id"]: r for r in await db.query(
+            "SELECT thread_id, SUM(CASE WHEN direction = 'inbound' AND automated = 0 THEN 1 ELSE 0 END) AS human_in, "
+            "SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END) AS out_n FROM messages WHERE mailbox_id = ? GROUP BY thread_id",
+            (box["id"],))}
+        rows = await db.query(
+            "SELECT t.*, (SELECT m.from_email FROM messages m WHERE m.thread_id = t.id AND m.direction = 'inbound' AND m.automated = 0 "
+            "ORDER BY m.sent_at DESC, m.created_at DESC LIMIT 1) AS contact_email, "
+            "(SELECT m.from_name FROM messages m WHERE m.thread_id = t.id AND m.direction = 'inbound' AND m.automated = 0 "
+            "ORDER BY m.sent_at DESC, m.created_at DESC LIMIT 1) AS contact_name "
+            "FROM threads t WHERE t.mailbox_id = ? AND t.last_message_at >= ? AND t.state NOT IN ('dismissed', 'snoozed', 'no_reply_needed') "
+            "ORDER BY t.last_message_at DESC LIMIT 3000", (box["id"], cutoff))
+        for t in rows:
+            c = counts.get(t["id"]) or {}
+            if not c.get("human_in") or not c.get("out_n"):
+                continue                      # not a conversation: nobody answered, or nobody wrote by hand
+            email = (t.get("contact_email") or "").lower()
+            if not email or email in own or email.rsplit("@", 1)[-1] in own_domains:
+                continue
+            if looks_automated(email, t.get("subject", "")) or is_excluded(settings, email) or email in done_contacts:
+                continue
+            if email in seen:
+                continue                      # one thread per contact per scan: the most recent
+            if links:
+                sent_text = " ".join((r["body"] or "") for r in await db.query(
+                    "SELECT body FROM messages WHERE thread_id = ? AND direction = 'outbound'", (t["id"],))).lower()
+                if any(l in sent_text for l in links):
+                    continue                  # the link already went to them in this thread
+            seen.add(email)
+            t["box"], t["contact"], t["contact_name"] = box, email, t.get("contact_name") or ""
+            t["excluded"] = False
+            out.append(t)
+    out.sort(key=lambda t: t.get("last_message_at") or "", reverse=True)
+    return out
+
+
+async def create_reconnect_run(db: MailDB, mailboxes: list[dict], months: int = RECONNECT_DEFAULT_MONTHS, mode: str = "review",
+                               instructions: str = "", created_by: str = "", all_mailboxes: list[dict] | None = None) -> dict:
+    """A run over the past conversations of these mailboxes: one item per
+    contact, one job per mailbox. Returns the run row with per-mailbox
+    counts, or {} when there is nobody to follow up with."""
+    if mode not in MODES:
+        mode = "review"
+    months = months if months in RECONNECT_MONTHS else RECONNECT_DEFAULT_MONTHS
+    cands = await reconnect_candidates(db, mailboxes, months, all_mailboxes=all_mailboxes)
+    if not cands:
+        return {}
+    run_id, now = new_id(), now_iso()
+    involved = sorted({t["mailbox_id"] for t in cands})
+    await db.execute(
+        "INSERT INTO reply_runs(id, mailbox_ids_json, mode, reply_to, status, total, done, summary_json, instructions, created_by, "
+        "created_at, updated_at, kind, months) VALUES (?, ?, ?, '', 'queued', ?, 0, '{}', ?, ?, ?, ?, 'reconnect', ?)",
+        (run_id, json.dumps(involved), mode, len(cands), instructions.strip()[:2000], created_by, now, now, months))
+    per = {}
+    for t in cands:
+        await db.execute("INSERT INTO run_items(id, run_id, mailbox_id, thread_id, status, updated_at, contact) VALUES (?, ?, ?, ?, 'queued', ?, ?)",
+                         (new_id(), run_id, t["mailbox_id"], t["id"], now, t["contact"]))
+        per[t["mailbox_id"]] = per.get(t["mailbox_id"], 0) + 1
+    jobs = Jobs(db)
+    for mid in involved:
+        await jobs.enqueue("reply_run", mid, {"run_id": run_id}, max_attempts=3)
+    await db.log("info", f"Started a follow-up run over the last {months} months: {len(cands)} past conversation{'s' if len(cands) != 1 else ''} "
+                         f"across {len(involved)} account{'s' if len(involved) != 1 else ''} ({mode.replace('_', ' ')}).", run_id=run_id)
+    return {**(await db.one("SELECT * FROM reply_runs WHERE id = ?", (run_id,))), "per_mailbox": per}
 
 
 async def create_run(db: MailDB, mailboxes: list[dict], thread_ids: list[str], mode: str = "review",
@@ -123,7 +244,9 @@ async def _finish_if_done(db: MailDB, run_id: str):
             parts.append(f"{summary['skipped']} skipped")
         if summary["failed"]:
             parts.append(f"{summary['failed']} failed")
-        await db.log("info", "Reply run finished: " + (", ".join(parts) or "nothing to do") + ".", run_id=run_id)
+        full = await db.one("SELECT kind FROM reply_runs WHERE id = ?", (run_id,))
+        what = "Follow-up run" if (full or {}).get("kind") == "reconnect" else "Reply run"
+        await db.log("info", f"{what} finished: " + (", ".join(parts) or "nothing to do") + ".", run_id=run_id)
     else:
         await db.execute("UPDATE reply_runs SET done = ?, summary_json = ?, updated_at = ?, status = CASE WHEN status = 'queued' THEN 'running' ELSE status END WHERE id = ?",
                          (done, json.dumps(summary), now, run_id))
@@ -134,13 +257,14 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
     """The worker's job: every queued item of this run for this mailbox,
     in order. Drafts, routes by mode and confidence, sends with pacing."""
     from bb.mail.brain import BrainError
-    from bb.mail.drafting import draft_reply
+    from bb.mail.drafting import draft_reconnect, draft_reply
     from bb.mail.sending import SendRefused, send_draft, sent_today
 
     run = await db.one("SELECT * FROM reply_runs WHERE id = ?", (run_id,))
     mailbox = await db.mailbox(mailbox_id)
     if not run or not mailbox:
         return {"skipped": "run or mailbox gone"}
+    reconnect = (run.get("kind") or "reply") == "reconnect"
     settings = service.settings_of(mailbox)
     # An item left 'drafting' by a worker that died mid-draft is picked up again.
     await db.execute("UPDATE run_items SET status = 'queued', updated_at = ? WHERE run_id = ? AND mailbox_id = ? AND status = 'drafting'",
@@ -170,8 +294,11 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
             await mark(item, "skipped", "run cancelled")
             continue
         thread = await db.one("SELECT * FROM threads WHERE id = ?", (item["thread_id"],))
-        if not thread or thread["state"] != "needs_reply":
+        if not thread or (not reconnect and thread["state"] != "needs_reply"):
             await mark(item, "skipped", "already answered or no longer needs a reply")
+            continue
+        if reconnect and thread["state"] in ("dismissed", "snoozed"):
+            await mark(item, "skipped", "the thread was put away by hand")
             continue
         last_in = await db.one("SELECT from_email FROM messages WHERE thread_id = ? AND direction = 'inbound' "
                                "ORDER BY sent_at DESC, created_at DESC LIMIT 1", (thread["id"],))
@@ -184,13 +311,26 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
                 continue
         await db.execute("UPDATE run_items SET status = 'drafting', updated_at = ? WHERE id = ?", (now_iso(), item["id"]))
         messages = await db.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY sent_at, created_at", (thread["id"],))
-        them = next((m for m in reversed(messages) if m["direction"] == "inbound"), None)
+        them = next((m for m in reversed(messages) if m["direction"] == "inbound" and (not reconnect or not m.get("automated"))), None)
         if not them:
             await mark(item, "skipped", "no message from them to answer")
             continue
+        if is_opt_out(them):
+            # A hard no: nothing is sent, now or ever. The address joins this
+            # mailbox's excluded list and the thread is put away.
+            await suppress(db, mailbox, them["from_email"], thread["id"])
+            await mark(item, "skipped", f"{them['from_email']} asked not to be contacted; added to the excluded list, nothing sent")
+            continue
         try:
-            result = await draft_reply(brain, settings, mailbox, thread, messages, instructions=run.get("instructions") or "",
-                                       scope=scope)
+            if reconnect:
+                result = await draft_reconnect(brain, settings, mailbox, thread, messages, scope=scope,
+                                               instructions=run.get("instructions") or "")
+                if not result.get("suitable", True):
+                    await mark(item, "skipped", f"not suitable: {result.get('why') or 'a personal or private thread'}")
+                    continue
+            else:
+                result = await draft_reply(brain, settings, mailbox, thread, messages, instructions=run.get("instructions") or "",
+                                           scope=scope)
         except BrainError as e:
             await mark(item, "failed", f"drafting failed: {e}")
             continue
@@ -198,14 +338,19 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
             await mark(item, "failed", f"drafting failed: {type(e).__name__}: {str(e)[:200]}")
             continue
         subject = thread["subject"] if thread["subject"].lower().startswith("re:") else f"Re: {thread['subject']}"
+        # A reply answers their last message; a follow-up continues the thread
+        # from its last message, ours or theirs, so it threads in their client.
+        anchor = messages[-1] if reconnect and messages else them
+        references = " ".join(x for x in [anchor.get("references_text") or "", anchor.get("message_id") or ""] if x).strip() \
+            if reconnect else (them.get("references_text") or "")
         draft_id, now = new_id(), now_iso()
         await db.execute(
             "INSERT INTO drafts(id, mailbox_id, thread_id, run_id, kind, to_json, reply_to, subject, body, in_reply_to, references_text, "
             "status, qa_json, confidence, created_at, updated_at) VALUES (?, ?, ?, ?, 'reply', ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?)",
             (draft_id, mailbox_id, thread["id"], run_id, json.dumps([{"name": them["from_name"], "email": them["from_email"]}]),
-             run.get("reply_to") or settings.reply_to, subject[:200], result["body"], them.get("message_id") or "",
-             them.get("references_text") or "", json.dumps({**result["qa"], "attempts": result["attempts"],
-                                                            "confidence_reason": result["confidence_reason"]}),
+             run.get("reply_to") or settings.reply_to, subject[:200], result["body"], anchor.get("message_id") or "",
+             references, json.dumps({**result["qa"], "attempts": result["attempts"],
+                                     "confidence_reason": result["confidence_reason"]}),
              result["confidence"], now, now))
         confident = result["confidence"] == "high" and result["qa"].get("ok")
         if run["mode"] == "review" or (run["mode"] == "auto" and not confident):

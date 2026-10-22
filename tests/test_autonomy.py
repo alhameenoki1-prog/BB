@@ -153,6 +153,8 @@ class _RefusingProvider(FakeProvider):
 async def test_an_address_the_mail_server_refuses_is_handled_like_a_bounce(state):  # noqa: F811
     provider = _RefusingProvider()
     sender = make_sender(state, provider, require_approval=False)
+    had_lanes = hasattr(Cfg.channels.email, "send_concurrency")
+    Cfg.channels.email.send_concurrency = 1        # one lane, so the hold lands before the next send
     people = [("r0", "yejn6oig@ss1.xfourrich.com"), ("r1", "pat@ss1.xfourrich.com"), ("r2", "sam@fine.example")]
     for pid, e in people:
         await state.add_prospect(Prospect(id=pid, first_name="P", email=e, email_status="provided"))
@@ -160,7 +162,11 @@ async def test_an_address_the_mail_server_refuses_is_handled_like_a_bounce(state
                  sequence=[EmailStep(step=1, subject="Rebar, about 40 tons a month", body="{{first_name}} plain words about rebar " * 6),
                            EmailStep(step=2, subject="Rebar, about 40 tons a month", body="{{first_name}} following up on the rebar " * 6, delay_days=4)])
     c.id = await state.add_campaign(c)
-    await sender._run_native()
+    try:
+        await sender._run_native()
+    finally:
+        if not had_lanes:
+            del Cfg.channels.email.send_concurrency
     assert (await state.get_prospect("r0")).email_status == "invalid"
     failed = await state.get_outbox(status="failed")
     assert len(failed) == 1 and failed[0]["to_email"] == "yejn6oig@ss1.xfourrich.com"

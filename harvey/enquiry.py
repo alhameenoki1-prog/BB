@@ -296,18 +296,46 @@ def wants_details(text: str) -> bool:
     return bool(_DETAIL_CUES.search(text or ""))
 
 
-# A no, an opt-out or a complaint: the one kind of reply that never gets
-# the scope pushed at it (code-side, whatever the model wrote).
-_DECLINE_CUES = re.compile(
-    r"\b(not interested|no thanks|no thank you|unsubscribe|opt[- ]?out|remove me|take me off|stop (emailing|contacting|sending)|"
-    r"do(n't| not) (contact|email) (me|us)|never contact|not (able|in a position) to take|can(not|'t) take (this|it|that) on|"
-    r"(we|i)('re| are|'m| am) not (taking|accepting|looking)|not for us|not something we do|(we|i) (don't|do not) (do|offer|handle)|"
-    r"wrong (company|number|address|person to ask)|spam|report(ed|ing)? you|harass|lawyer|legal action|cease and desist)\b", re.I)
+# Two kinds of no. A HARD no (an opt-out, a complaint, hostility, a legal
+# threat) goes on the suppression list and gets nothing, ever: these are
+# the replies that get a domain blacklisted when ignored. A SOFT no (not
+# interested, booked up, not what we do) gets one closing note that
+# leaves the brief with them and asks nothing, then silence.
+_OPT_OUT_CUES = re.compile(
+    r"\b(unsubscribe|opt[- ]?out|remove (me|us)|take (me|us) off|stop (emailing|contacting|sending|writing)|"
+    r"do(n't| not) (contact|email|write to) (me|us)( again)?|never (contact|email) (me|us)|delete my (data|info|information)|"
+    r"(this is|it's|its|you're|you are) spam|spam(ming)?( me| us)?|scam(mer)?|phishing|report(ed|ing)? (you|this)|harass(ing|ment)?|"
+    r"lawyer|attorney|legal action|lawsuit|cease and desist|blacklist|gdpr|f+u+c+k|shit|piss off|get lost|go away|leave (me|us) alone|"
+    r"how (did|do) you get (my|this) (email|address)\?? ?(stop|remove|unsubscribe))\b", re.I)
+_SOFT_NO_CUES = re.compile(
+    r"\b(not interested|no thanks|no thank you|not (able|in a position) to take|can(not|'t) take (this|it|that|on)|"
+    r"(we|i)('re| are|'m| am) not (taking|accepting|looking|able|in a position)|not for us|not something we (do|offer|handle)|"
+    r"(we|i) (don't|do not) (do|offer|handle|take)|wrong (company|number|address|person to ask)|(fully )?booked( up| out)?|"
+    r"at capacity|no capacity|too busy|not (right now|at the moment|at this time|this year|a fit|a good fit)|"
+    r"(have to|will|'ll|going to) (pass|decline)|(we|i) (must|will have to) pass|maybe (later|next year)|"
+    r"(don't|do not) (have|take) (the )?(capacity|bandwidth|room)|not taking (on )?(new|any) (work|clients|projects|jobs))\b", re.I)
+
+
+def is_opt_out(text: str) -> bool:
+    """A hard no: never contact them again, send nothing."""
+    return bool(_OPT_OUT_CUES.search(text or ""))
+
+
+def is_soft_no(text: str) -> bool:
+    """A polite no that still gets the one closing note."""
+    return bool(_SOFT_NO_CUES.search(text or ""))
 
 
 def is_decline(text: str) -> bool:
-    """Did they say no, opt out, or complain?"""
-    return bool(_DECLINE_CUES.search(text or ""))
+    """Did they say no, in either way?"""
+    return is_opt_out(text) or is_soft_no(text)
+
+
+def closing_scope_sentence(label: str = "") -> str:
+    """The lead-in for the one closing note after a soft no: the brief is
+    left with them, nothing is asked."""
+    what = label.strip() or "the brief"
+    return f"No action needed on your side. I'll leave {what} with you in case it's ever relevant:"
 
 
 def already_shared(url: str, texts) -> bool:
@@ -347,7 +375,7 @@ def pick_scope_link(outreach, text: str = "") -> dict | None:
 
 
 def resolve_scope_marker(body: str, url: str, shared: bool, wants: bool = False, label: str = "",
-                         need: str = "") -> tuple[str, bool]:
+                         need: str = "", sentence: str = "") -> tuple[str, bool]:
     """Turn the model's ``[SCOPE LINK]`` marker into the link, once.
 
     - marker present, link known, not yet shared → the URL on its own line
@@ -373,7 +401,7 @@ def resolve_scope_marker(body: str, url: str, shared: bool, wants: bool = False,
                     out.append(stripped.rstrip(" :") + ":")
                 elif not prev or not (prev.rstrip().endswith(":") or _LEAD_IN_RE.search(prev)):
                     # No lead-in of the model's own: add the default one.
-                    out.append(scope_sentence(label, need))
+                    out.append(sentence or scope_sentence(label, need))
                 out.append(url)
                 included = True
             else:
@@ -390,7 +418,7 @@ def resolve_scope_marker(body: str, url: str, shared: bool, wants: bool = False,
         text = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
         return text, included
     if wants and url and not shared and url.lower() not in text.lower():
-        return f"{text}\n\n{scope_sentence(label, need)}\n{url}", True
+        return f"{text}\n\n{sentence or scope_sentence(label, need)}\n{url}", True
     return text, False
 
 

@@ -439,7 +439,12 @@ async def test_temporary_refusals_are_retried_later_not_buried(state):
     sender = make_sender(state, provider, require_approval=False)
     sender.config.channels.email.send_concurrency = 2
     sender.config.channels.email.send_jitter_seconds = 0
-    await sender._run_native()
+    try:
+        await sender._run_native()
+    finally:
+        # Cfg is a shared class: leave no lanes behind for the next test.
+        del sender.config.channels.email.send_concurrency
+        del sender.config.channels.email.send_jitter_seconds
     rows = await state.get_outbox(status="approved")
     retried = [r for r in rows if (r["error"] or "").startswith("retry 1/")]
     assert len(retried) >= 1 and all(r["send_at"] > _now_iso() for r in retried)   # pushed out, still approved

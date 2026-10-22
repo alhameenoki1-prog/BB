@@ -194,12 +194,13 @@ def apply_scope_link(body: str, scope: dict | None, outbound_texts, inbound_text
     url = link["url"] if link else ""
     shared = enquiry.already_shared(url, outbound_texts) if url else True
     text = _NUMBERED.sub("[SCOPE LINK]", body or "")
-    declined = enquiry.is_decline(inbound_text)
-    if declined:
-        # Whatever the model wrote, no link goes to someone who said no.
+    if enquiry.is_opt_out(inbound_text):
+        # Whatever the model wrote, nothing goes to someone who asked to be left alone.
         text, _ = enquiry.resolve_scope_marker(text, url, True)
         return text, ""
+    soft_no = enquiry.is_soft_no(inbound_text)
     out, included = enquiry.resolve_scope_marker(
-        text, url, shared, wants=bool(url) and (always or enquiry.wants_details(inbound_text)),
-        label=(link or {}).get("label", ""), need=(link or {}).get("need", ""))
+        text, url, shared, wants=bool(url) and (always or soft_no or enquiry.wants_details(inbound_text)),
+        label=(link or {}).get("label", ""), need=(link or {}).get("need", ""),
+        sentence=enquiry.closing_scope_sentence((link or {}).get("label", "")) if soft_no else "")
     return out, (url if included else "")

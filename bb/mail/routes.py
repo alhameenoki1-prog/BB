@@ -593,9 +593,20 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             r["summary"] = json.loads(r.get("summary_json") or "{}")
             r["boxes"] = [names[x] for x in json.loads(r.get("mailbox_ids_json") or "[]") if x in names]
         brain = _brain(c["ws"])
+        try:
+            months = int(request.query_params.get("months", runs_mod.RECONNECT_DEFAULT_MONTHS))
+        except ValueError:
+            months = runs_mod.RECONNECT_DEFAULT_MONTHS
+        if months not in runs_mod.RECONNECT_MONTHS:
+            months = runs_mod.RECONNECT_DEFAULT_MONTHS
+        reconnect = await runs_mod.reconnect_candidates(c["db"], boxes, months, all_mailboxes=c["mailboxes"])
+        backfill_days = min([int((m.get("settings") or {}).get("backfill_days", 365) or 0) or 10 ** 6 for m in boxes] or [10 ** 6])
         return await render(request, "mail_runs.html", user, **page_ctx(c), groups=groups, recent=recent,
                             total=sum(len(g["threads"]) for g in groups), mailbox=mailbox,
-                            brain_ok=brain.configured, brain_label=brain.label)
+                            brain_ok=brain.configured, brain_label=brain.label,
+                            reconnect=reconnect[:200], reconnect_total=len(reconnect), reconnect_months=months,
+                            reconnect_choices=runs_mod.RECONNECT_MONTHS,
+                            reconnect_window_short=backfill_days < 30 * months)
 
     @app.post("/mail/runs")
     async def mail_runs_create(request: Request, user: dict = Depends(current_user)):
@@ -626,6 +637,37 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         if not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
         return _redirect(f"/mail/runs/{run['id']}", msg=f"Run started: {run['total']} threads across {len(run['per_mailbox'])} account(s).")
+
+    @app.post("/mail/runs/reconnect")
+    async def mail_runs_reconnect(request: Request, user: dict = Depends(current_user)):
+        from bb.mail import runs as runs_mod
+        c = await ctx(user)
+        form = await request.form()
+        mode = str(form.get("mode", "review") or "review")
+        if mode not in runs_mod.MODES:
+            mode = "review"
+        try:
+            months = int(form.get("months", runs_mod.RECONNECT_DEFAULT_MONTHS))
+        except (TypeError, ValueError):
+            months = runs_mod.RECONNECT_DEFAULT_MONTHS
+        if not _brain(c["ws"]).configured:
+            return _redirect("/mail/runs", error="Set up an AI provider first; drafting needs a model.")
+        boxes = list(c["selected"])
+        if mode == "auto":
+            not_ready = [m["address"] for m in boxes if not m["ready"]]
+            boxes = [m for m in boxes if m["ready"]]
+            if not boxes:
+                return _redirect("/mail/runs", error="None of the accounts can send yet: " + "; ".join(not_ready))
+        run = await runs_mod.create_reconnect_run(c["db"], boxes, months=months, mode=mode,
+                                                  instructions=str(form.get("instructions", "") or ""),
+                                                  created_by=user.get("email", ""), all_mailboxes=c["mailboxes"])
+        if not run:
+            return _redirect("/mail/runs", error=f"No past conversations from the last {months} months to follow up with "
+                                                 "(two-way threads with people who are not colleagues, automated senders or already followed up).")
+        if not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        return _redirect(f"/mail/runs/{run['id']}", msg=f"Follow-up run started: {run['total']} past conversation(s) across "
+                                                       f"{len(run['per_mailbox'])} account(s).")
 
     async def _run_page_data(c, run_id):
         from bb.mail import runs as runs_mod

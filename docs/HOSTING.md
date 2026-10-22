@@ -426,6 +426,43 @@ being built in phases; sync, reply state, the composer and sending are in.
 - **AI provider**: the mail center uses the key and model chosen on the
   site's AI provider page, so it costs the user, never the site.
 
+### A no is answered once, an opt-out never
+
+Someone who says no politely ("not interested", "we're booked", "not
+what we do") gets one closing note: thanks for the straight answer,
+nothing to do on their side, and the brief left with them in case it is
+ever relevant (the link, and the file if the policy attaches one). No
+question, no ask, no follow-ups; the conversation closes. Someone who
+asks to be left alone ("unsubscribe", "remove me", "stop emailing",
+"this is spam"), is hostile, or threatens legal action gets nothing,
+ever: the worker marks them opted out (a legal threat is also flagged
+for you), the command center puts the address on that mailbox's
+excluded list and refuses to send to it, and a later upload cannot bring
+them back. These are detected by code, not by the model, because they
+are what gets a domain blacklisted when ignored.
+
+### Follow up with past contacts
+
+Below the reply threads on the Reply runs page, "Follow up with past
+contacts" scans the conversations you already had in the last 3, 6 or
+12 months and continues each one in its own thread. Only two-way threads
+with real people count (they wrote by hand, you answered); newsletters
+and notifications, colleagues at your own domains, excluded and
+suppressed addresses, threads you put away, contacts already followed up
+with, and threads where the brief's link already went out are left out.
+Each contact gets one message per scan, in their most recent thread. The
+follow-up is written from that thread, never from a template: it picks
+up the specific thing the exchange was about, bridges to the project the
+way that thread allows, carries the brief's link once and ends with at
+most one question. The model first judges whether the thread is one to
+continue at all; a personal or private exchange is skipped as "not
+suitable" and not asked again. A draft that shares nothing with the
+thread fails the check and is rewritten; what still cannot be bridged
+waits on Review, and the confident ones send paced and capped like
+replies, threaded under the last message. If an account's history was
+fetched for fewer days than the window, the page says so; connect it
+with a longer history to see older threads.
+
 ### Replies carry the project brief
 
 In an inquiry workspace the command center's replies deliver the brief

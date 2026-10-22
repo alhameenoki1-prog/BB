@@ -9,6 +9,38 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **A soft no still gets the brief, once.** "Not interested", "booked
+  up", "not what we do" now gets one closing note: thanks for the
+  straight answer, nothing to do on their side, and the brief left with
+  them "in case it's ever relevant" (the link introduced as exactly that,
+  the file attached per the policy), no question, no ask, no follow-ups;
+  the conversation closes and nothing else is written to them. The
+  command center's reply runs do the same. A HARD no is different and is
+  detected by code, never left to the model: unsubscribe, remove me, stop
+  emailing, "this is spam", hostility, a legal threat. Those get nothing,
+  ever: the worker marks the person opted out (a re-upload keeps that), a
+  legal or compliance threat is also flagged for a human, and in the
+  command center the address joins the mailbox's excluded list, the
+  thread is put away, and sending to it is refused.
+- **Follow up with past contacts.** The command center's Reply runs page
+  has a second run: scan the conversations you already had in the last
+  3, 6 or 12 months and continue each one in its own thread. Only
+  two-way threads with real people count (they wrote by hand, you
+  answered); automated and bulk senders, colleagues at your own domains,
+  excluded and suppressed addresses, threads put away by hand, contacts
+  already followed up with, and threads where the brief's link already
+  went out are left out, and each contact gets one message per scan (the
+  most recent thread). Each follow-up is written from that thread: it
+  picks up the specific thing it was about, bridges to the project the
+  way that thread allows, carries the brief's link once, and ends with at
+  most one question. The model first judges whether the thread is one to
+  continue at all; personal or private threads (family, a doctor, a bank,
+  HR, a receipt) are skipped as "not suitable" and never asked again. A
+  draft that shares nothing with the thread fails the check and is written
+  again; what still cannot be bridged waits on Review while the confident
+  ones send, paced and capped like replies, threaded under the last
+  message so it lands in the same conversation in their client.
+
 - **Sending without you in the loop.** Before an email is staged, the
   sender runs the spam check and a subject check on the rendered email;
   what fails is rewritten once by the model (with the campaign goal in

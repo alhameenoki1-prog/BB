@@ -238,12 +238,14 @@ class Handler:
         # 1. Classify intent. Hard keyword checks run FIRST and override
         # the LLM — opt-outs and legal threats must never be missed.
         text_lower = reply_text.lower()
-        if any(p in text_lower for p in OPT_OUT_PATTERNS):
-            intent = "unsubscribe"
-        elif any(p in text_lower for p in ESCALATION_PATTERNS):
-            intent = "escalate"
+        if any(p in text_lower for p in ESCALATION_PATTERNS):
+            intent = "escalate"          # a legal or compliance threat: a human looks, and they are suppressed
+        elif any(p in text_lower for p in OPT_OUT_PATTERNS) or enquiry.is_opt_out(reply_text):
+            intent = "unsubscribe"       # an opt-out, a complaint or hostility: suppressed, nothing sent
         else:
             intent = await self._classify_intent(reply_text, prospect)
+            if intent == "not_interested" and enquiry.is_opt_out(reply_text):
+                intent = "unsubscribe"
         logger.info(f"Handler: Intent for {lead_email}: {intent}")
 
         # 2. The conversation as it will be, in memory only. Nothing about
@@ -272,9 +274,12 @@ class Handler:
         old_stage = convo.stage
         convo.stage = self._determine_stage(intent, convo.stage, reply_text)
 
-        # 2b. Draft the reply now, while nothing is stored yet.
+        # 2b. Draft the reply now, while nothing is stored yet. In inquiry
+        # mode a soft no gets one closing note that leaves the brief with
+        # them (when there is a brief to leave), then nothing more.
         response = ""
-        if intent in AUTO_REPLY_INTENTS:
+        auto_intents = AUTO_REPLY_INTENTS | ({"not_interested"} if self.inquiry and self._has_brief(prospect) else set())
+        if intent in auto_intents:
             response = await self._generate_response(intent, reply_text, prospect, convo)
 
         # 2c. Store the conversation in one write.
@@ -304,8 +309,10 @@ class Handler:
             return
 
         if intent == "escalate":
-            # Angry / legal / compliance replies go to a human. Never auto-reply.
+            # Angry / legal / compliance replies go to a human. Never auto-reply,
+            # and never write to them again: suppressed like an opt-out.
             await self.state.update_conversation(convo.id, status="needs_human")
+            await self.state.update_prospect_status(prospect.id, "opted_out")
             await self.state.log_action(
                 action_type="escalation",
                 agent="handler",
@@ -320,6 +327,10 @@ class Handler:
             return
 
         if intent == "not_interested":
+            if response and self.is_native:
+                # The one closing note: thanks, the brief left with them, nothing asked.
+                await self._queue_native_reply(response, prospect, convo, reply_meta or {}, intent)
+                logger.info(f"Handler: {lead_email} said no; one closing note with the brief goes out, then nothing more.")
             await self.state.update_conversation(convo.id, status="closed", stage="closed_lost")
             await self.state.update_prospect_status(prospect.id, "lost")
             logger.info(f"Handler: {lead_email} not interested. Closing. One no is enough.")
@@ -356,6 +367,12 @@ class Handler:
             await self._queue_native_reply(
                 response, prospect, convo, reply_meta or {}, intent
             )
+            if self.inquiry and intent == "objection":
+                # A soft no answered with the closing note: the conversation is
+                # over and nothing else is written to them.
+                await self.state.update_conversation(convo.id, status="closed", stage="closed_lost")
+                await self.state.update_prospect_status(prospect.id, "lost")
+                logger.info(f"Handler: {lead_email} said no; the closing note is the last email they get.")
         elif reply_uuid:
             result = await self.instantly.send_reply(reply_uuid, response)
             if result is not None:
@@ -489,6 +506,19 @@ class Handler:
     def inbox_autoreply(self) -> bool:
         outreach = getattr(self.config, "outreach", None)
         return bool(getattr(outreach, "inbox_autoreply", False))
+
+    def _has_brief(self, prospect) -> bool:
+        """Is there something to leave with someone who said no: a scope
+        link for their sector, the general one, or a file sent with replies?"""
+        outreach = getattr(self.config, "outreach", None)
+        if not outreach:
+            return False
+        if outreach.reply_attachments and outreach.attach_on != "never":
+            return True
+        try:
+            return bool(enquiry.need_for(outreach, getattr(prospect, "industry", "") or "")["url"])
+        except Exception:
+            return False
 
     def _rewind(self, msg) -> None:
         """A reply that was read but not handled is read again next time:
@@ -975,8 +1005,14 @@ Respond with ONLY the category label, nothing else."""
                     parts.append(f"THE FULL SCOPE ({label}) has ALREADY been sent to them in this conversation. "
                                  "Do not send it again and do not write [SCOPE LINK]; refer to it as the brief they have.")
                 elif scope.get("wants") is False:
-                    parts.append(f"THE FULL SCOPE ({label}) is NOT for this reply: they have said no, or this is not "
-                                 "the moment. Do not write [SCOPE LINK] and do not mention the brief at all.")
+                    parts.append(f"THE FULL SCOPE ({label}) is NOT for this reply: they have asked not to be contacted, "
+                                 "or this is not the moment. Do not write [SCOPE LINK] and do not mention the brief at all.")
+                elif scope.get("closing"):
+                    parts.append(f"THE FULL SCOPE ({label}) goes with this closing note, once, so they have it if the "
+                                 "need ever comes back: one plain sentence that there is nothing to do on their side and "
+                                 f"that {persona.name.split()[0] if persona.name else 'I'} is leaving it with them in case it is ever "
+                                 "relevant, then [SCOPE LINK] alone on the next line (filled in for you; never write the "
+                                 "address). No question after it, no ask, no next step. This is the last email they get.")
                 else:
                     parts.append(f"THE FULL SCOPE of what {persona.name} needs is written up in {label}, and it has not "
                                  "gone to them yet. This reply introduces it, whatever they asked: one plain sentence "
@@ -1087,10 +1123,14 @@ Write a reply that:"""
 - Answers it plainly in the first sentence with the facts you have; says {first} will send what you do not have, never guesses
 - Shares the full scope if they asked for details or documents and it has not gone out yet
 - One question back at most, under 90 words""",
-                "objection": """
-- Accepts what they said in one line, without arguing, re-selling or proposing a smaller or later version
-- Asks once whether they know who could take it on, naming the job in a few words (the block, the tonnage, the money), and nothing else
-- Under 60 words""",
+                "objection": f"""
+- Is a CLOSING NOTE: they have said no. Thanks them in one line for the straight answer, without arguing, re-selling or proposing a smaller or later version
+- Says in one plain sentence that there is nothing to do on their side and that {first} is leaving the brief with them in case it is ever relevant, then [SCOPE LINK] alone on the next line if the rules above allow it
+- No question, no ask, no next step, no "if anything changes"; under 60 words""",
+                "not_interested": f"""
+- Is a CLOSING NOTE: they have said no. Thanks them in one line, without arguing or re-selling
+- Says in one plain sentence that there is nothing to do on their side and that {first} is leaving the brief with them in case it is ever relevant, then [SCOPE LINK] alone on the next line if the rules above allow it
+- No question, no ask, no next step; under 50 words""",
                 "wrong_person": """
 - Thanks them politely
 - Asks who the right person would be
@@ -1130,9 +1170,11 @@ Write a reply that:"""
                 sent_bodies += await self.state.outbox_bodies_for_conversation(convo.id)
             except Exception:
                 pass
+            closing = intent in ("objection", "not_interested")
             scope = {"url": need["url"], "label": need["label"],
                      "shared": enquiry.already_shared(need["url"], sent_bodies) if need["url"] else True,
-                     "wants": intent in ("interested", "question", "wrong_person")}
+                     "wants": intent in ("interested", "question", "wrong_person") or closing,
+                     "closing": closing}
         prompt += self._outreach_context(await self._reply_attachments(convo), prospect, scope)
         greeting_word = getattr(getattr(self.config, "outreach", None), "greeting", "") or "Hi"
         greeting = names.greeting_for(prospect.first_name, prospect.email, prospect.company, greeting_word)
@@ -1163,9 +1205,13 @@ Write a reply that:"""
             # carries it; a no, or an angry or legal message, gets none.
             wants = scope["wants"]
             main, signoff = enquiry.split_signoff(response, first)
-            # A marker in a reply to a no is dropped like one already sent.
+            # A marker in a reply that must not carry the link is dropped like one already sent;
+            # the closing note after a soft no introduces it as something left with them.
             main, included = enquiry.resolve_scope_marker(
-                main, scope["url"], scope["shared"] or not wants, wants=wants, label=scope["label"], need=need["need"])
+                main, scope["url"], scope["shared"] or not wants, wants=wants, label=scope["label"], need=need["need"],
+                sentence=enquiry.closing_scope_sentence(scope["label"]) if scope.get("closing") else "")
+            if scope.get("closing"):
+                main = re.sub(r"(?im)^.*\?\s*$\n?", "", main).rstrip()     # a closing note asks nothing
             response = main + (f"\n\n{signoff}" if signoff else "")
             if included:
                 logger.info(f"Handler: the full scope ({scope['label'] or scope['url']}) goes to {prospect.email}.")

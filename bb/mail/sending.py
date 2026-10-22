@@ -75,6 +75,9 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     if not to:
         raise SendRefused("no recipient")
     recipient = to[0]
+    from bb.mail.runs import is_excluded
+    if is_excluded(settings, recipient.get("email", "")):
+        raise SendRefused(f"{recipient.get('email')} is on {mailbox['address']}'s excluded list (they asked not to be contacted)")
     plain, html = finalize(draft["body"], settings, greeting_name=recipient.get("name") or "")
     reply_to = (draft.get("reply_to") or settings.reply_to or "").strip()
     if dry_run:

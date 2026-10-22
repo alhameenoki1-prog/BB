@@ -187,6 +187,13 @@ MIGRATIONS = [
     # v2 — reply runs carry their instructions
     """
     ALTER TABLE reply_runs ADD COLUMN instructions TEXT NOT NULL DEFAULT '';
+    """,
+    # v3 — reconnect runs (follow up on past conversations): the run's kind
+    # and window, and the contact each item is for (one per contact per scan)
+    """
+    ALTER TABLE reply_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply';
+    ALTER TABLE reply_runs ADD COLUMN months INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE run_items ADD COLUMN contact TEXT NOT NULL DEFAULT '';
     """
 ]
 

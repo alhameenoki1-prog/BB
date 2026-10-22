@@ -80,16 +80,22 @@ async def test_a_reply_run_draft_carries_the_scope_link_once():
     assert text.count("https://greystone.example") == 1
 
 
-def test_a_no_in_the_command_center_gets_an_answer_and_no_link():
+def test_a_soft_no_in_the_command_center_gets_the_brief_once_and_a_hard_no_gets_nothing():
     from bb.mail import scope as scope_mod
     from harvey import enquiry
 
-    assert enquiry.is_decline("Thanks, but we're not taking new work this year.")
-    assert enquiry.is_decline("Please remove me from your list") and not enquiry.is_decline("Sure, send the drawings over")
+    assert enquiry.is_soft_no("Thanks, but we're not taking new work this year.") and not enquiry.is_opt_out("Thanks, but we're not taking new work this year.")
+    assert enquiry.is_opt_out("Please remove me from your list") and not enquiry.is_decline("Sure, send the drawings over")
     scope = {"mode": "inquiry", "name": "Jane", "sender_line": "", "needs": [], "intent": "", "ask": "", "ask_detail": "",
              "instructions": "", "links": [{"url": "https://docs.example/brief", "label": "the brief", "need": "a builder", "sectors": []}]}
-    body, url = scope_mod.apply_scope_link("Understood, thanks for letting me know. It's all in the brief:\n[SCOPE LINK 1]",
+    # A soft no: the closing note leaves the brief with them, introduced as exactly that.
+    body, url = scope_mod.apply_scope_link("Understood, thanks for letting me know.\n[SCOPE LINK 1]",
                                            scope, [], inbound_text="We're not taking new work this year.")
+    assert url == "https://docs.example/brief" and body.count("https://docs.example/brief") == 1
+    assert "No action needed on your side. I'll leave the brief with you in case it's ever relevant:" in body
+    # A hard no: nothing, whatever the model wrote.
+    body, url = scope_mod.apply_scope_link("Understood. It's all in the brief:\n[SCOPE LINK 1]",
+                                           scope, [], inbound_text="Please remove me from your list.")
     assert url == "" and "docs.example" not in body and "[SCOPE LINK" not in body
     body, url = scope_mod.apply_scope_link("Gladly, the brief has the drawings and the schedule:\n[SCOPE LINK 1]",
                                            scope, [], inbound_text="Can you send the drawings?")

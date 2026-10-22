@@ -91,11 +91,18 @@ async def draft_reply(brain: MailBrain, settings: MailboxSettings, mailbox: dict
               + "\n\nReturn ONLY JSON: {\"body\": \"...\", \"confidence\": \"high\"|\"medium\"|\"low\", "
                 "\"confidence_reason\": \"...\"}. Confidence is low when their ask is unclear, when answering needs "
                 "a fact or decision you do not have (money, dates, legal, commitments), or when a person should look first.")
+    from harvey import enquiry as _enq
+    their_text = them.get("body_text") or them.get("body") or them.get("snippet") or ""
+    closing = bool(scope and scope.get("mode") == "inquiry" and _enq.is_soft_no(their_text) and not _enq.is_opt_out(their_text))
     user = (f"THREAD: \"{thread.get('subject', '')}\" with {them.get('from_name') or them.get('from_email', '')}\n\n"
             f"{_mail_turns(messages, me)}\n\n"
             + (f"INSTRUCTIONS FROM {settings.display_name or 'the sender'}: {instructions.strip()}\n\n" if instructions.strip() else "")
-            + "Write the reply to the last message from THEM. Match their register and language. Answer what they "
-              "actually asked. Under 160 words unless they asked for more.")
+            + ("THEY HAVE SAID NO. Write a CLOSING NOTE, not a reply that keeps the conversation going: thank them in one line "
+               "for the straight answer, say in one plain sentence that there is nothing to do on their side and that you are "
+               "leaving the brief with them in case it is ever relevant, then put the document marker alone on the next line as "
+               "the rules say. No question, no ask, no next step, no \"if anything changes\". Under 60 words.\n\n" if closing else
+               "Write the reply to the last message from THEM. Match their register and language. Answer what they "
+               "actually asked. Under 160 words unless they asked for more."))
     result = {"body": "", "confidence": "low", "confidence_reason": "", "qa": {}, "attempts": 0, "scope_link": ""}
     outbound = [m.get("body_text") or m.get("body") or m.get("snippet") or "" for m in messages if m.get("direction") == "outbound"]
     thread_text = " ".join((m.get("body_text") or m.get("body") or m.get("snippet") or "") for m in messages)
@@ -117,6 +124,86 @@ async def draft_reply(brain: MailBrain, settings: MailboxSettings, mailbox: dict
             break
         user += ("\n\nYour previous draft failed the pre-send check: " + describe(qa["reasons"])
                  + ". Rewrite it without those, keeping the substance. Same JSON.")
+    if result["confidence"] not in ("high", "medium", "low"):
+        result["confidence"] = "medium"
+    if result["qa"].get("sensitive") and result["confidence"] == "high":
+        result["confidence"] = "medium"
+        result["confidence_reason"] = (result["confidence_reason"] + " Touches money, legal or commitments.").strip()
+    return result
+
+
+_STOP_WORDS = {"about", "after", "again", "also", "because", "before", "being", "below", "between", "could", "every",
+               "first", "found", "great", "having", "hello", "other", "really", "should", "since", "still", "thanks",
+               "their", "there", "these", "thing", "think", "those", "through", "under", "until", "where", "which",
+               "while", "would", "write", "wrote", "yours", "regards", "please", "thank", "today", "tomorrow", "morning"}
+
+
+def _topic_words(text: str) -> set[str]:
+    return {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'-]{4,}", text or "") if w.lower() not in _STOP_WORDS}
+
+
+async def draft_reconnect(brain: MailBrain, settings: MailboxSettings, mailbox: dict, thread: dict, messages: list[dict],
+                          scope: dict | None = None, instructions: str = "") -> dict:
+    """A follow-up months later in a thread we already had with someone:
+    picks the conversation up where it left off, bridges to the project
+    the way this thread allows, and carries the brief's link once.
+    Returns {suitable, why, body, confidence, confidence_reason, qa,
+    attempts, scope_link}; ``suitable`` is False for personal or private
+    threads, or when no natural bridge exists, and nothing is written."""
+    me = mailbox.get("address", "")
+    first = (settings.display_name or me).split()[0] if (settings.display_name or me) else "I"
+    them = next((m for m in reversed(messages) if m.get("direction") == "inbound" and not m.get("automated")), messages[-1] if messages else {})
+    inbound_text = " ".join((m.get("body_text") or m.get("body") or m.get("snippet") or "") for m in messages if m.get("direction") == "inbound")
+    thread_text = " ".join((m.get("body_text") or m.get("body") or m.get("snippet") or "") for m in messages)
+    system = (f"You write email on behalf of {settings.display_name or me} <{me}>, in the first person, as that person.\n"
+              f"PERSONA: {settings.persona_notes.strip() or 'a straightforward professional'}\n\n"
+              + QUALITY_STANDARD + scope_mod.context_block(scope)
+              + "\n\nTHE SITUATION: this is a conversation " + (settings.display_name or "you") + " already had with this person, "
+                "months ago, in this same thread. You are writing the next message in it. First decide whether it is a thread "
+                "to continue at all: a personal or private exchange (family, friends, a doctor, a bank, a landlord, a receipt, "
+                "HR, a job application, a complaint, anything where news about " + first + "'s work would be out of place), "
+                "or one with no natural bridge from what it was about to the project, is NOT suitable: say so and write "
+                "nothing. Otherwise write the next message, under 140 words, that: (1) picks the thread up where it left "
+                "off, naming the specific thing it was about and, where it fits, how it ended, in words a person who "
+                "remembers it would use; (2) bridges in one or two sentences to what " + first + " has been building "
+                "since (WHAT YOU NEED and the campaign goal above), from the angle THIS thread allows (what they do, what "
+                "they asked, what they offered); (3) puts the brief's marker [SCOPE LINK n] alone on its own line where "
+                "the link belongs, introduced in your own words as the quickest way to see the whole thing; (4) ends with at "
+                "most one open question, or none. Not a template: every sentence comes from this thread and these facts. "
+                "Never \"reaching out\", \"I hope this finds you well\", \"following up\", \"touch base\", \"circle back\".\n\n"
+                "Return ONLY JSON: {\"suitable\": true|false, \"why\": \"...\", \"body\": \"...\", "
+                "\"confidence\": \"high\"|\"medium\"|\"low\", \"confidence_reason\": \"...\"}. Confidence is high only "
+                "when the bridge is natural and every fact in the body comes from the thread or the facts above.")
+    user = (f"THREAD: \"{thread.get('subject', '')}\" with {them.get('from_name') or them.get('from_email', '')}, last message "
+            f"{(messages[-1].get('sent_at') if messages else '') or ''}\n\n{_mail_turns(messages, me)}\n\n"
+            + (f"INSTRUCTIONS FROM {settings.display_name or 'the sender'} FOR THESE FOLLOW-UPS: {instructions.strip()}\n\n" if instructions.strip() else "")
+            + "Decide whether this thread is suitable, then write the next message in it as described. Same JSON.")
+    result = {"suitable": True, "why": "", "body": "", "confidence": "low", "confidence_reason": "", "qa": {}, "attempts": 0, "scope_link": ""}
+    outbound = [m.get("body_text") or m.get("body") or m.get("snippet") or "" for m in messages if m.get("direction") == "outbound"]
+    for attempt in (1, 2):
+        result["attempts"] = attempt
+        data = await brain.complete_json(system, user)
+        if not isinstance(data, dict):
+            raise BrainError("The model did not return a draft.")
+        if data.get("suitable") is False or (not str(data.get("body") or "").strip() and data.get("why")):
+            result.update(suitable=False, why=str(data.get("why") or "")[:200])
+            return result
+        body = strip_greeting_and_signoff(str(data.get("body") or "").strip(), settings.display_name)
+        if scope and scope.get("mode") == "inquiry":
+            body, result["scope_link"] = scope_mod.apply_scope_link(body, scope, outbound, inbound_text=inbound_text,
+                                                                     thread_text=thread_text, always=True)
+        qa = qa_check("Re: " + thread.get("subject", ""), body, allowed_links=[result["scope_link"]] if result["scope_link"] else None)
+        confidence = str(data.get("confidence") or "medium").lower()
+        reason = str(data.get("confidence_reason") or "")[:300]
+        # The bridge must stand on the thread: a body that shares nothing with
+        # what they wrote is a template, whatever the model says.
+        if inbound_text and not (_topic_words(body) & _topic_words(inbound_text)):
+            qa = {**qa, "ok": False, "reasons": qa.get("reasons", []) + ["does not pick up anything from the thread"]}
+        result.update(body=body, confidence=confidence, confidence_reason=reason, qa=qa)
+        if qa["ok"]:
+            break
+        user += ("\n\nYour previous draft failed the check: " + describe(qa["reasons"])
+                 + ". Rewrite it from the thread itself, keeping the substance. Same JSON.")
     if result["confidence"] not in ("high", "medium", "low"):
         result["confidence"] = "medium"
     if result["qa"].get("sensitive") and result["confidence"] == "high":

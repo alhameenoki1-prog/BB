@@ -226,8 +226,8 @@ def test_thread_composer_review_and_compose_pages(mail_client, monkeypatch):
     assert "Sending" in r.headers["location"]
     d = asyncio.run(db.one("SELECT * FROM drafts WHERE id = ?", (draft["id"],)))
     assert d["status"] == "approved" and d["body"].endswith("Edited by hand.") and d["reply_to"] == "inbox@mine.example"
-    jobs = asyncio.run(Jobs(db).list("queued"))
-    assert jobs and jobs[0]["kind"] == "send_draft" and jobs[0]["payload"] == {"draft_id": draft["id"], "dry_run": False}
+    jobs = [j for j in asyncio.run(Jobs(db).list("queued")) if j["kind"] == "send_draft"]   # a backfill job may sit beside it
+    assert jobs and jobs[0]["payload"] == {"draft_id": draft["id"], "dry_run": False}
     assert "Sending…" in client.get(f"/mail/threads/{tid}").text
     assert "already%20sent" not in client.post(f"/mail/drafts/{draft['id']}/send", data={}).headers["location"]
 

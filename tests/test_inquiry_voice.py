@@ -131,10 +131,12 @@ async def test_a_reply_answers_on_the_need_and_sends_the_scope_once(state):  # n
     # Asked for or not, the first reply carries it, above the sign-off, which stays last.
     assert text4.rstrip().endswith("https://docs.example/general\n\nJane")
     assert "Have a look and tell me whether it's something you'd take on:" in text4
-    # Someone who declined gets an answer and no link, whatever the model wrote.
-    brain.texts = ["Hi Sam,\n\nUnderstood, thanks for letting me know. Everything is in the brief:\n[SCOPE LINK]\n\nJane"]
+    # Someone who said no gets one closing note: the brief left with them, nothing asked.
+    brain.texts = ["Hi Sam,\n\nUnderstood, thanks for the straight answer.\n[SCOPE LINK]\n\nWould a smaller order work?\n\nJane"]
     text5 = await handler._generate_response("objection", "We're not taking new work this year.", other, convo2)
-    assert "docs.example" not in text5 and "[SCOPE LINK]" not in text5 and text5.rstrip().endswith("Jane")
+    assert text5.count("https://docs.example/general") == 1 and "[SCOPE LINK]" not in text5 and text5.rstrip().endswith("Jane")
+    assert "No action needed on your side. I'll leave the brief with you in case it's ever relevant:" in text5
+    assert "?" not in text5 and "CLOSING NOTE" in brain.prompts[-1]
     # The classifier speaks the customer's language in inquiry mode.
     assert "asks for details, specs, scope" in (await _classifier_prompt(handler, other))
 

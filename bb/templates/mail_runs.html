@@ -47,11 +47,37 @@
 </div>
 </form>
 
+<form method="post" action="/mail/runs/reconnect" id="reconnect-form">
+<div class="card" style="margin-top:14px">
+  <h2>Follow up with past contacts</h2>
+  <p class="small muted">Scan the conversations you already had and continue each one in its own thread: the next message picks up where that exchange left off, bridges to the project the way that thread allows, and carries the brief's link. One message per contact per scan, written from the actual thread, never a template. Personal or private threads, automated senders, colleagues at your own domain, people on the excluded list and contacts already followed up with are left out; what cannot be bridged naturally waits on <a href="/mail/review">Review</a>, and everything else keeps sending.</p>
+  <div class="actions" style="gap:14px;align-items:flex-end">
+    <label>Conversations from the last<select name="months" onchange="location.href='/mail/runs?months=' + this.value{% if mailbox %} + '&mailbox={{ mailbox }}'{% endif %}">{% for m in reconnect_choices %}<option value="{{ m }}" {{ 'selected' if m == reconnect_months else '' }}>{{ m }} months</option>{% endfor %}</select></label>
+    <div><b>{{ reconnect_total }} contact{{ 's' if reconnect_total != 1 else '' }}</b> <span class="small muted">with a two-way thread the project could follow on from</span></div>
+  </div>
+  {% if reconnect_window_short %}<p class="small" style="color:var(--warn)">An account's history was fetched for fewer days than this window; connect it with a longer history (Accounts) to see older threads.</p>{% endif %}
+  {% if reconnect %}
+  <table class="compact" style="margin-top:8px"><tbody>
+  {% for t in reconnect[:40] %}<tr><td><a href="/mail/threads/{{ t.id }}">{{ t.subject or '(no subject)' }}</a><div class="tiny">{{ t.contact_name or t.contact }} · {{ t.box.address }}</div></td><td class="tiny" style="white-space:nowrap">{{ t.last_message_at }}</td></tr>{% endfor %}
+  {% if reconnect_total > 40 %}<tr><td class="tiny muted" colspan="2">and {{ reconnect_total - 40 }} more</td></tr>{% endif %}
+  </tbody></table>
+  {% endif %}
+  <div class="radio-list" style="margin-top:12px">
+    <label><input type="radio" name="mode" value="review" checked> <b>Draft and hold for review</b> <span class="small muted">— every follow-up waits on Review.</span></label>
+    <label><input type="radio" name="mode" value="auto"> <b>Send the confident ones</b> <span class="small muted">— natural bridges that pass the writing check go out, paced 20–60 seconds apart; the rest wait on Review.</span></label>
+    <label><input type="radio" name="mode" value="dry_run"> <b>Dry run</b> <span class="small muted">— draft everything, send nothing.</span></label>
+  </div>
+  <label style="margin-top:12px">How to bridge to the project <span class="small muted">(optional)</span><input name="instructions" maxlength="2000" placeholder="e.g. mention that the Towson block is now fully designed; offer the brief, no call unless they ask"></label>
+  <div class="actions" style="margin-top:12px"><button type="submit" {{ '' if (reconnect_total and brain_ok) else 'disabled' }}>{{ icon('play', 15) }} Start the follow-up run</button>
+    <span class="tiny">Each follow-up is written from its own thread with your model ({{ brain_label }}) and checked like every other email.</span></div>
+</div>
+</form>
+
 {% if recent %}
 <div class="card" style="margin-top:14px"><h2>Earlier runs</h2>
   <table><thead><tr><th>Started</th><th>Accounts</th><th>Mode</th><th>Progress</th><th>Result</th><th></th></tr></thead><tbody>
   {% for r in recent %}<tr><td class="tiny">{{ r.created_at }}</td><td>{% for b in r.boxes %}<span class="acct acct-{{ b.settings_model.color }}">{{ b.address }}</span> {% endfor %}</td>
-    <td>{{ r.mode.replace('_', ' ') }}</td><td>{{ r.done }} / {{ r.total }} <span class="tag {{ 'good' if r.status == 'done' else ('' if r.status in ('queued', 'running') else 'warn') }}">{{ r.status }}</span></td>
+    <td>{{ 'follow-up · ' if r.kind == 'reconnect' else '' }}{{ r.mode.replace('_', ' ') }}</td><td>{{ r.done }} / {{ r.total }} <span class="tag {{ 'good' if r.status == 'done' else ('' if r.status in ('queued', 'running') else 'warn') }}">{{ r.status }}</span></td>
     <td class="small">{% if r.summary.sent %}{{ r.summary.sent }} sent{% endif %}{% if r.summary.needs_review %} · {{ r.summary.needs_review }} for review{% endif %}{% if r.summary.dry_run %} · {{ r.summary.dry_run }} dry run{% endif %}{% if r.summary.skipped %} · {{ r.summary.skipped }} skipped{% endif %}{% if r.summary.failed %} · {{ r.summary.failed }} failed{% endif %}</td>
     <td><a class="small" href="/mail/runs/{{ r.id }}">open</a></td></tr>{% endfor %}
   </tbody></table></div>
