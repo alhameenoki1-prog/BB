@@ -2505,9 +2505,26 @@ def _process_gone(pid: int) -> bool:
     return False
 
 
+_PROCESS_SEEN: dict[int, tuple[bool, float]] = {}
+_PROCESS_SEEN_SECONDS = 60.0
+
+
 def _is_harvey_process(pid: int) -> bool:
     """True when the process with this pid is one of our workers (or we
-    cannot tell). A reused pid after a reboot must not count as running."""
+    cannot tell). A reused pid after a reboot must not count as running.
+    The answer is kept a minute per pid: on a Mac it costs a ps run, and
+    the pages ask often (the Mail page's live feed every two seconds)."""
+    seen = _PROCESS_SEEN.get(pid)
+    if seen and time.monotonic() - seen[1] < _PROCESS_SEEN_SECONDS:
+        return seen[0]
+    answer = _ask_is_harvey_process(pid)
+    if len(_PROCESS_SEEN) > 512:
+        _PROCESS_SEEN.clear()
+    _PROCESS_SEEN[pid] = (answer, time.monotonic())
+    return answer
+
+
+def _ask_is_harvey_process(pid: int) -> bool:
     try:
         proc = Path(f"/proc/{pid}/cmdline")
         if proc.exists():
