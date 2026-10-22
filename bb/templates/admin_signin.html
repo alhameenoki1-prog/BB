@@ -3,7 +3,7 @@
 {% block title %}Sign-in setup{% endblock %}
 {% block content %}
 <div class="page-head"><div><div class="eyebrow">Admin</div><h1>Sign in with Google and Microsoft</h1>
-  <p class="lead">These buttons connect a mailbox with the account the browser is already signed in to: one click, no password typed into this site, and it keeps working after the password changes. Google and Microsoft allow that only through an app the site owner registers once. Do it here once (about five minutes each) and the buttons work for everyone on this site.</p></div>
+  <p class="lead">These buttons connect a mailbox with the account the browser is already signed in to: one click, no password typed into this site, and it keeps working after the password changes. Google and Microsoft allow that only through an app the site owner registers once. Microsoft is one button here; Google is a few screens of its own (about five minutes). After that the buttons work for everyone on this site.</p></div>
   <div class="actions"><a class="button secondary" href="/admin/users">Back to Users</a></div></div>
 
 {% if quick_tunnel %}<div class="card flat" style="border-color:var(--warn)"><b>This site's address changes when its tunnel restarts</b> ({{ base_url }}). Google and Microsoft send people back only to the exact addresses registered below, so after a new address you would have to register it again. For sign-in that keeps working, use an address that stays the same: a named tunnel on your own domain or a server (docs/HOSTING.md).</div>{% endif %}
@@ -11,26 +11,59 @@
 <div class="two signin-two">
 <div class="card" id="google">
   <h2>{{ icon('mail', 16) }} Google (Gmail and Google Workspace) <span class="tag {{ 'good' if st.google_on else '' }}" style="margin-left:6px">{{ 'on' if st.google_on else 'off' }}</span></h2>
+  <p class="small muted" style="margin-top:0">Google lets no site make this for you, so it is a few screens in Google Cloud, signed in as you already are. Each link opens the exact screen; at the end you drop the file Google gives you here, and nothing is copied by hand.</p>
   <ol class="small howto">
-    <li>Open <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">console.cloud.google.com</a> and create a project (any name, e.g. "BB mail").</li>
-    <li><a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">Enable the Gmail API</a> for it.</li>
-    <li><a href="https://console.cloud.google.com/auth/overview" target="_blank" rel="noopener">Google Auth Platform</a> → Get started: app name, your email; audience <b>External</b>. Under <b>Data access</b> add the scope <code>https://www.googleapis.com/auth/gmail.modify</code> (read, send and label mail). Under <b>Audience</b>, while the app is in testing, add every Gmail address that will connect as a <b>test user</b> (Google signs testing apps out after about seven days; publish the app to stop that).</li>
-    <li><b>Clients</b> → Create client → <b>Web application</b>. Under <b>Authorized redirect URIs</b> add both:
+    <li><a href="https://console.cloud.google.com/flows/enableapi?apiid=gmail.googleapis.com" target="_blank" rel="noopener"><b>Switch on the Gmail API</b></a>: pick a project or create one (any name, e.g. "BB mail"), then Next and Enable.</li>
+    <li><a href="https://console.cloud.google.com/auth/overview/create" target="_blank" rel="noopener"><b>Google Auth Platform → Get started</b></a>: an app name, your email, audience <b>External</b>, your email again, agree, Create.</li>
+    <li><a href="https://console.cloud.google.com/auth/scopes" target="_blank" rel="noopener"><b>Data access</b></a> → Add or remove scopes → paste <code>https://www.googleapis.com/auth/gmail.modify</code> → Update, Save. Then <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener"><b>Audience</b></a>: add every Gmail address that will connect as a <b>test user</b> (or Publish app; testing apps are signed out after about seven days).</li>
+    <li><a href="https://console.cloud.google.com/auth/clients/create" target="_blank" rel="noopener"><b>Create client</b></a>: type <b>Web application</b>; under <b>Authorized redirect URIs</b> add both, then Create:
       <div class="copyrow"><code>{{ google_uris[0] }}</code><button type="button" class="small secondary" data-copy="{{ google_uris[0] }}">Copy</button></div>
       <div class="copyrow"><code>{{ google_uris[1] }}</code><button type="button" class="small secondary" data-copy="{{ google_uris[1] }}">Copy</button></div></li>
-    <li>Create, then paste the <b>Client ID</b> and <b>Client secret</b> here and save.</li>
+    <li>In the box that shows the new client, press <b>Download JSON</b> and drop that file here:</li>
   </ol>
+  {% if 'gmail_client_id' in st.fixed or 'gmail_client_secret' in st.fixed %}<div class="hint">Set in the server's own settings (bb.env or the environment); change it there.</div>{% else %}
+  <form method="post" action="/admin/signin" enctype="multipart/form-data" class="drop" id="g-drop">
+    <input type="hidden" name="provider" value="google">
+    <label class="dropzone"><input type="file" name="client_json" accept=".json,application/json" required onchange="this.form.submit()"><span><b>Drop client_secret_….json here</b><span class="tiny muted"> or click to choose it. It is read here and switched on at once.</span></span></label>
+  </form>
+  <details style="margin-top:10px"><summary class="small">Or paste the client ID and secret</summary>
   <form method="post" action="/admin/signin" autocomplete="off">
     <input type="hidden" name="provider" value="google">
-    <label>Client ID</label><input type="text" name="gmail_client_id" value="{{ st.gmail_client_id }}" placeholder="1234…apps.googleusercontent.com" {{ 'disabled' if 'gmail_client_id' in st.fixed else '' }}>
-    <label>Client secret</label><input type="password" name="gmail_client_secret" placeholder="{{ 'saved; leave blank to keep it' if st.gmail_secret_set else 'GOCSPX-…' }}" {{ 'disabled' if 'gmail_client_secret' in st.fixed else '' }}>
-    {% if 'gmail_client_id' in st.fixed or 'gmail_client_secret' in st.fixed %}<div class="hint">Set in the server's own settings (bb.env or the environment); change it there.</div>{% endif %}
-    <div class="actions" style="margin-top:12px"><button type="submit">Save and switch on</button>{% if st.google_on and 'gmail_client_id' not in st.fixed %}<button type="submit" class="secondary danger" name="clear" value="google" onclick="return confirm('Switch Google sign-in off? Mailboxes already signed in stop syncing until it is on again.')">Switch off</button>{% endif %}</div>
-  </form>
+    <label>Client ID</label><input type="text" name="gmail_client_id" value="{{ st.gmail_client_id }}" placeholder="1234…apps.googleusercontent.com">
+    <label>Client secret</label><input type="password" name="gmail_client_secret" placeholder="{{ 'saved; leave blank to keep it' if st.gmail_secret_set else 'GOCSPX-…' }}">
+    <div class="actions" style="margin-top:12px"><button type="submit">Save and switch on</button></div>
+  </form></details>
+  {% endif %}
+  {% if st.google_on and 'gmail_client_id' not in st.fixed %}<form method="post" action="/admin/signin" style="margin-top:10px"><input type="hidden" name="provider" value="google"><button type="submit" class="secondary danger small" name="clear" value="google" onclick="return confirm('Switch Google sign-in off? Mailboxes already signed in stop syncing until it is on again.')">Switch Google sign-in off</button></form>{% endif %}
 </div>
 
 <div class="card" id="microsoft">
   <h2>{{ icon('mail', 16) }} Microsoft (Outlook, Hotmail, Microsoft 365) <span class="tag {{ 'good' if st.microsoft_on else '' }}" style="margin-left:6px">{{ 'on' if st.microsoft_on else 'off' }}</span></h2>
+  {% if 'ms_client_id' in st.fixed %}<div class="hint">Set in the server's own settings (bb.env or the environment); change it there.</div>{% else %}
+  <div class="auto" id="ms-auto">
+    {% if ms_job and ms_job.state in ('waiting', 'working', 'starting') %}
+      <div id="ms-wait" {{ 'hidden' if ms_job.state != 'waiting' else '' }}>
+        <ol class="small howto">
+          <li>Open <a href="{{ ms_job.verification_uri }}" target="_blank" rel="noopener"><b>{{ ms_job.verification_uri.split('://')[-1] }}</b></a> (your browser is already signed in there).</li>
+          <li>Enter this code: <span class="code">{{ ms_job.user_code }}</span> <button type="button" class="small secondary" data-copy="{{ ms_job.user_code }}">Copy</button></li>
+          <li>Pick the Microsoft account, then agree. This page does the rest.</li>
+        </ol>
+        <div class="tiny muted">Waiting for you<span id="ms-left"></span>.</div>
+      </div>
+      <ul class="small" id="ms-steps">{% for line in ms_job.steps %}<li>{{ line }}</li>{% endfor %}</ul>
+      <form method="post" action="/admin/signin/microsoft/auto/cancel"><button type="submit" class="secondary small">Cancel</button></form>
+    {% elif ms_job and ms_job.state == 'done' %}
+      <div class="note good">Done: Sign in with Microsoft is on.</div>
+      <ul class="small">{% for line in ms_job.steps %}<li>{{ line }}</li>{% endfor %}</ul>
+      {% if ms_job.done_note %}<p class="tiny muted">{{ ms_job.done_note }}</p>{% endif %}
+    {% else %}
+      {% if ms_job and ms_job.state == 'failed' %}<div class="note bad">{{ ms_job.error }}</div>{% endif %}
+      <p class="small" style="margin-top:0"><b>Let the site do steps 1 to 5.</b> Sign in on Microsoft's own page with the account your browser already uses, and the site registers the app in your directory with both sign-in addresses and the mail permissions, makes its secret and switches the button on. Nothing but a one-time token for this reaches the site.</p>
+      <form method="post" action="/admin/signin/microsoft/auto"><button type="submit">{{ 'Set it up again with my Microsoft sign-in' if st.microsoft_on else 'Set it up with my Microsoft sign-in' }}</button></form>
+      <p class="tiny muted" style="margin-bottom:0">Needs a work or school Microsoft account that may register apps (the owner of a Microsoft 365 or Entra directory can; a free Microsoft 365 developer account has one). Microsoft asks you once to agree that the setup may manage app registrations.</p>
+    {% endif %}
+  </div>
+  <details style="margin-top:12px" {{ 'open' if ms_job and ms_job.state == 'failed' else '' }}><summary class="small">Or do it by hand</summary>
   <ol class="small howto">
     <li>Open <a href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">entra.microsoft.com → App registrations</a> → <b>New registration</b> (any name).</li>
     <li>Supported account types: <b>Accounts in any organizational directory and personal Microsoft accounts</b>.</li>
@@ -45,9 +78,10 @@
     <label>Application (client) ID</label><input type="text" name="ms_client_id" value="{{ st.ms_client_id }}" placeholder="1a2b3c4d-…" {{ 'disabled' if 'ms_client_id' in st.fixed else '' }}>
     <label>Client secret value</label><input type="password" name="ms_client_secret" placeholder="{{ 'saved; leave blank to keep it' if st.ms_secret_set else 'the Value, not the Secret ID' }}" {{ 'disabled' if 'ms_client_secret' in st.fixed else '' }}>
     <label>Accounts <span class="muted" style="font-weight:400">(leave "common" for personal and work accounts)</span></label><input type="text" name="ms_tenant" value="{{ st.ms_tenant }}" {{ 'disabled' if 'ms_tenant' in st.fixed else '' }}>
-    {% if 'ms_client_id' in st.fixed %}<div class="hint">Set in the server's own settings (bb.env or the environment); change it there.</div>{% endif %}
-    <div class="actions" style="margin-top:12px"><button type="submit">Save and switch on</button>{% if st.microsoft_on and 'ms_client_id' not in st.fixed %}<button type="submit" class="secondary danger" name="clear" value="microsoft" onclick="return confirm('Switch Microsoft sign-in off? Mailboxes already signed in stop syncing until it is on again.')">Switch off</button>{% endif %}</div>
-  </form>
+    <div class="actions" style="margin-top:12px"><button type="submit">Save and switch on</button></div>
+  </form></details>
+  {% endif %}
+  {% if st.microsoft_on and 'ms_client_id' not in st.fixed %}<form method="post" action="/admin/signin" style="margin-top:10px"><input type="hidden" name="provider" value="microsoft"><button type="submit" class="secondary danger small" name="clear" value="microsoft" onclick="return confirm('Switch Microsoft sign-in off? Mailboxes already signed in stop syncing until it is on again.')">Switch Microsoft sign-in off</button></form>{% endif %}
 </div>
 </div>
 <p class="tiny muted">The client secrets are stored sealed with this site's key in its data folder. Values set in the server's own settings (bb.env) win over this page. Saving restarts the background workers that use these sign-ins so they pick the new values up; nothing else is interrupted.</p>
@@ -56,8 +90,34 @@
   .howto { padding-left:20px; line-height:1.55; margin:6px 0 4px; } .howto li { margin:6px 0; display:list-item; }
   .howto code { word-break:break-all; }
   .copyrow { display:flex; gap:8px; align-items:center; margin:4px 0; } .copyrow code { word-break:break-all; flex:1; }
+  .dropzone { display:flex; align-items:center; justify-content:center; text-align:center; border:2px dashed var(--line); border-radius:var(--r-sm); padding:18px 12px; cursor:pointer; margin:4px 0 0; }
+  .dropzone.over { border-color:var(--accent); background:var(--accent-soft); }
+  .note { border-radius:var(--r-sm); padding:8px 10px; margin:0 0 8px; font-size:13px; } .note.good { background:var(--good-soft); } .note.bad { background:var(--bad-soft); }
+  .dropzone input[type=file] { position:absolute; width:1px; height:1px; opacity:0; }
+  .dropzone > span { display:flex; flex-direction:column; gap:2px; }
+  .code { font:600 18px/1.2 var(--mono); letter-spacing:2px; padding:2px 8px; border:1px solid var(--line); border-radius:6px; }
+  #ms-steps:empty { display:none; }
 </style>
 <script>
   document.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = 'Copied'; })));
+  // The Google file: dropped on the box, sent at once.
+  document.querySelectorAll('.dropzone').forEach(z => {
+    const input = z.querySelector('input[type=file]');
+    ['dragenter', 'dragover'].forEach(e => z.addEventListener(e, ev => { ev.preventDefault(); z.classList.add('over'); }));
+    ['dragleave', 'drop'].forEach(e => z.addEventListener(e, () => z.classList.remove('over')));
+    z.addEventListener('drop', ev => { ev.preventDefault(); if (ev.dataTransfer.files.length) { input.files = ev.dataTransfer.files; input.form.submit(); } });
+  });
+  // Microsoft: follow the setup while it waits for the sign-in and works.
+  {% if ms_job and ms_job.state in ('waiting', 'working', 'starting') %}
+  (function poll() {
+    fetch('/admin/signin/microsoft/auto', {credentials: 'same-origin'}).then(r => r.json()).then(j => {
+      if (j.state === 'done' || j.state === 'failed' || j.state === 'none') { location.replace('/admin/signin#microsoft'); location.reload(); return; }
+      const wait = document.getElementById('ms-wait'); if (wait) wait.hidden = j.state !== 'waiting';
+      const left = document.getElementById('ms-left'); if (left && j.expires_in) left.textContent = ' (the code works for ' + Math.ceil(j.expires_in / 60) + ' more minute' + (j.expires_in > 60 ? 's' : '') + ')';
+      const ul = document.getElementById('ms-steps'); if (ul) ul.innerHTML = j.steps.map(s => '<li>' + s.replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c])) + '</li>').join('');
+      setTimeout(poll, 2000);
+    }).catch(() => setTimeout(poll, 4000));
+  })();
+  {% endif %}
 </script>
 {% endblock %}

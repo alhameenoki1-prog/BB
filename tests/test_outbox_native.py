@@ -581,3 +581,31 @@ async def test_replies_go_when_the_daily_limit_is_used_up(state, tmp_path, monke
         assert len(provider.sent) == 5
     finally:
         sender.config.channels.email.max_daily_sends = 50
+
+
+@pytest.mark.asyncio
+async def test_a_shared_limit_used_up_mid_pass_holds_first_emails_not_replies(state, tmp_path, monkeypatch):
+    from harvey.ledger import Ledger
+    monkeypatch.setenv("HARVEY_LEDGER", str(tmp_path / "sendlog.db"))
+    monkeypatch.setenv("HARVEY_LEDGER_ACCOUNT", "harvey@x.co")
+    monkeypatch.setenv("HARVEY_LEDGER_CAMPAIGN", "c-1")
+    Ledger(tmp_path / "sendlog.db").set_limit("harvey@x.co", 10)
+    real = Ledger.reserve
+
+    def taken(self, *a, free=False, **kw):     # another campaign takes the last slot meanwhile
+        return real(self, *a, free=free, **kw) if free else (None, {"reason": "the account's daily limit of 10 is reached"})
+    monkeypatch.setattr(Ledger, "reserve", taken)
+    provider = FakeProvider()
+    sender = make_sender(state, provider, require_approval=False)
+    ids = [await seed_prospect(state, email=f"p{i}@acme.com") for i in range(2)]
+    campaign = await seed_campaign(state, ids)
+    await sender._stage_campaign_native(campaign)          # the first emails are queued first...
+    await __import__("asyncio").sleep(0.01)
+    await state.add_outbox_item(prospect_id=ids[0], to_email="p0@acme.com", subject="Re: hi", body="Thanks, Tuesday works.",
+                                send_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), status="approved",
+                                kind="reply", in_reply_to="<in0@acme.com>")   # ...and the reply after them
+    due = await state.get_outbox(status="approved", due_before=datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
+    assert [i["kind"] for i in sorted(due, key=lambda i: (i.get("send_at") or "", i.get("created_at") or ""))] == ["sequence", "sequence", "reply"]
+    await sender._drain_due()
+    # The first emails wait for room; the reply, queued after them, still went.
+    assert [s["to"] for s in provider.sent] == ["p0@acme.com"] and provider.sent[0]["subject"] == "Re: hi"

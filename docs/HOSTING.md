@@ -148,7 +148,31 @@ compose --profile tls up -d --build`. The long way follows.
   Anthropic/OpenAI account) and pastes their own key. It is checked when
   saved and stored only in their workspace; the site is never billed.
 
-## 1. Google OAuth client
+## 1. Sign in with Google and Microsoft: the easy way
+
+You can skip editing `.env` for these. Log in as the admin and open
+**Users → Sign-in setup** (`/admin/signin`):
+
+- **Microsoft: one button.** *Set it up with my Microsoft sign-in* shows a
+  short code; open microsoft.com/devicelogin (your browser is already
+  signed in there), enter it, pick your account and agree. The site then
+  registers the app in your directory with both redirect addresses, the
+  mail permissions and a secret, saves them and switches the button on.
+  It needs a work or school account that may register apps (the owner of
+  a Microsoft 365 or Entra directory can; a free Microsoft 365 developer
+  account has one). The sign-in uses Microsoft Graph Command Line Tools,
+  Microsoft's own app for scripts, and the token is dropped afterwards.
+- **Google: a few screens, no copying.** Google has no way for a site to
+  make the client, so the page links each step to its exact Google Cloud
+  screen (Gmail API, Get started, Data access and Audience, Create
+  client). When the client is made, press **Download JSON** and drop that
+  file on the page; it is read and switched on at once, and the page says
+  if a redirect address is missing from it.
+
+Values in `.env`/`bb.env` win over the page. The steps below are the same
+thing by hand.
+
+## 1a. Google OAuth client (by hand)
 
 1. Google Cloud Console → a project → *APIs & Services* → enable the **Gmail API**.
 2. *OAuth consent screen*: External, fill in the app name, support email and
@@ -165,7 +189,7 @@ Gmail's send/read scope is a *restricted* scope: to let anyone connect, you
 submit the app for Google's verification, which includes a third-party
 security assessment (the CASA process). Start that early; it takes weeks.
 
-## 1b. Microsoft app registration (Outlook, Hotmail, Microsoft 365 sign-in)
+## 1b. Microsoft app registration by hand (Outlook, Hotmail, Microsoft 365 sign-in)
 
 Optional, and the same idea as the Google client: one app registration
 for the site lets every user connect an Outlook, Hotmail or Microsoft 365
@@ -426,6 +450,12 @@ than a personal one where you can. The brief the writer follows is
 `prompts/inquiry_writer.md`; edit it to change the voice for everyone.
 
 ## Several campaigns at once
+
+**Replies have no send limit.** Every daily limit below (an account's
+limit, the command center's cap, the warm-up) counts first emails,
+follow-ups and mailbox scans. An answer to someone who wrote, from a reply
+run, a reply campaign, an outreach campaign or by hand, always goes and
+uses none of it; the Campaigns page lists replies beside the limit.
 
 A user can run several campaigns at the same time, on several accounts,
 in any mix. The **Campaigns** page (top of the menu) shows them all with

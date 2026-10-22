@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
+import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -1204,7 +1205,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def admin_signin_page(request: Request, admin: dict = Depends(current_admin)):
         from bb import signin_setup
         base = settings.base_url
+        from bb import signin_auto
+        job = signin_auto.job_for(admin["id"])
         return await render(request, "admin_signin.html", admin, st=signin_setup.status(settings), base_url=base,
+                            ms_job=job.view() if job else None,
                             quick_tunnel="trycloudflare.com" in base,
                             google_uris=[base + "/gmail/callback", base + "/mail/gmail/callback"],
                             ms_uris=[base + "/microsoft/callback", base + "/mail/microsoft/callback"])
@@ -1217,11 +1221,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         clear = [str(form["clear"])] if form.get("clear") in ("google", "microsoft") else []
         fields = {k: v for k, v in form.items() if k in signin_setup.FIELDS and
                   ((provider == "google" and k.startswith("gmail_")) or (provider == "microsoft" and k.startswith("ms_")))}
+        warnings = []
+        upload = form.get("client_json")
+        if provider == "google" and upload is not None and getattr(upload, "filename", ""):
+            # The file Google offers when the client is made: no copying by hand.
+            from bb.signin_auto import read_google_client
+            values, bad, warnings = read_google_client(await upload.read(), settings.base_url)
+            if bad:
+                return _redirect("/admin/signin", error=" ".join(bad))
+            fields.update(values)
         problems = signin_setup.save(settings, {**fields, "clear": clear})
         if problems:
             return _redirect("/admin/signin", error=" ".join(problems))
-        # Workers hold the sign-in settings from when they started: the ones
-        # that use them start again with the new ones.
+        restarted = await _restart_for_signin()
+        name = "Google" if provider == "google" else "Microsoft"
+        if clear:
+            msg = f"Sign in with {name} is off."
+        else:
+            on = settings.gmail_client_id if provider == "google" else settings.ms_client_id
+            msg = (f"Sign in with {name} is on: the button works on every Mailbox and Accounts page now."
+                   if on else f"Saved. Sign in with {name} is still off: it needs the client ID.")
+        return _redirect("/admin/signin", msg=msg + (f" {restarted} background worker(s) restarted to use it." if restarted else "")
+                         + ("" if not warnings else " " + " ".join(warnings)))
+
+    async def _restart_for_signin() -> int:
+        """Workers hold the sign-in settings from when they started: the ones
+        that use them start again with the new ones."""
         restarted = 0
         for ws in all_workspaces(settings, accounts):
             try:
@@ -1233,14 +1258,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             restarted += 1
             except Exception as e:
                 logger.warning("restart after sign-in setup failed for %s: %s", ws.user["email"], e)
-        name = "Google" if provider == "google" else "Microsoft"
-        if clear:
-            msg = f"Sign in with {name} is off."
-        else:
-            on = settings.gmail_client_id if provider == "google" else settings.ms_client_id
-            msg = (f"Sign in with {name} is on: the button works on every Mailbox and Accounts page now."
-                   if on else f"Saved. Sign in with {name} is still off: it needs the client ID.")
-        return _redirect("/admin/signin", msg=msg + (f" {restarted} background worker(s) restarted to use it." if restarted else ""))
+        return restarted
+
+    @app.post("/admin/signin/microsoft/auto")
+    async def admin_signin_ms_auto(admin: dict = Depends(current_admin)):
+        """Set Microsoft sign-in up from the admin's own Microsoft sign-in."""
+        from bb import signin_auto, signin_setup
+        if "ms_client_id" in signin_setup.from_server(settings):
+            return _redirect("/admin/signin", error="Microsoft sign-in is set in the server's own settings (bb.env); change it there.")
+
+        async def save(client_id, secret, tenant):
+            problems = signin_setup.save(settings, {"ms_client_id": client_id, "ms_client_secret": secret, "ms_tenant": tenant})
+            if not problems:
+                await _restart_for_signin()
+            return problems
+
+        try:
+            job = await signin_auto.start(admin["id"], settings.base_url, save)
+        except httpx.HTTPError as e:
+            return _redirect("/admin/signin", error=f"Could not reach Microsoft: {e}")
+        if job.state == "failed":
+            return _redirect("/admin/signin", error=job.error)
+        return RedirectResponse("/admin/signin#microsoft", status_code=303)
+
+    @app.get("/admin/signin/microsoft/auto")
+    async def admin_signin_ms_auto_status(admin: dict = Depends(current_admin)):
+        from bb import signin_auto
+        job = signin_auto.job_for(admin["id"])
+        return JSONResponse(job.view() if job else {"state": "none"})
+
+    @app.post("/admin/signin/microsoft/auto/cancel")
+    async def admin_signin_ms_auto_cancel(admin: dict = Depends(current_admin)):
+        from bb import signin_auto
+        signin_auto.cancel(admin["id"])
+        return RedirectResponse("/admin/signin#microsoft", status_code=303)
 
     @app.post("/admin/users")
     async def admin_create_user(admin: dict = Depends(current_admin), email: str = Form(""),

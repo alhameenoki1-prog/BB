@@ -280,8 +280,12 @@
     document.querySelectorAll('.as-sent').forEach(box => {
       const frame = box.querySelector('iframe');
       if (!frame) return;
-      const fit = () => { try { frame.style.height = Math.min(900, frame.contentDocument.documentElement.scrollHeight + 4) + 'px'; } catch (e) {} };
+      // (A frame in a closed section has no height to measure: it is fitted
+      // again when the section opens.)
+      const fit = () => { try { const h = frame.contentDocument.documentElement.scrollHeight;
+        if (frame.offsetParent !== null && h > 0) frame.style.height = Math.min(900, h + 4) + 'px'; } catch (e) {} };
       frame.addEventListener('load', fit); fit();
+      for (let d = box.closest('details'); d; d = d.parentElement && d.parentElement.closest('details')) d.addEventListener('toggle', fit);
       const source = box.dataset.source && document.getElementById(box.dataset.source);
       if (!source || !box.dataset.previewUrl) return;
       let timer, asked = 0;

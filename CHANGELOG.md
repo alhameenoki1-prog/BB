@@ -9,6 +9,25 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Sign-in setup from the site, done for you on Microsoft.** An admin
+  switches *Sign in with Google* and *Sign in with Microsoft* on from
+  Users → Sign-in setup (`/admin/signin`, `bb/signin_setup.py`; kept in
+  `BB_HOME/signin.json` with the secrets sealed; `bb.env` still wins).
+  For Microsoft one button does every step: the admin signs in on
+  Microsoft's own page with the account their browser already uses (a
+  short code), and the site registers the app in their directory through
+  Microsoft Graph with both redirect addresses, the mail permissions and a
+  secret, then switches it on (`bb/signin_auto.py`). Google offers no
+  such API, so its steps link straight to each Google Cloud screen and
+  the `client_secret_….json` Google offers is dropped on the page instead
+  of copying anything by hand. The sign-in buttons show on every Mailbox
+  and Accounts page.
+
+- **Links on their words in the editors.** The draft editors show a
+  link as the words it sits on, with buttons to link the selected words
+  or remove a link; the text is kept as `[words](address)` and goes out
+  as a labelled link (`MD_LINK_RE`, `embed_links`, `links_to_html`).
+
 - **How it looks when sent.** The draft editors (a thread's reply, the
   Review page and the Outbox) show the email exactly as it goes out,
   greeting, links on their words and signature included, in a sandboxed
@@ -240,6 +259,23 @@ minor versions can still change behaviour.
   check only applies when their side gave it words to stand on.
 
 ### Changed
+
+- **Replies have no send limit.** An answer to someone who wrote (a reply
+  run, a reply campaign, an outreach campaign's answers to its leads and
+  inbox, or a reply sent by hand) is never held back by the daily cap,
+  the warm-up or the account's shared limit, and does not use them up.
+  The limits now count first emails, follow-ups and mailbox scans; the
+  Campaigns page shows replies beside them (`Ledger.reserve(free=True)`,
+  `sending.is_answer`, `Sender._drain_due`).
+
+- **A draft the model answers in the wrong shape no longer fails.** The
+  JSON is read through code fences, a reasoning model's `<think>` block,
+  real line breaks in strings, braces in the prose around it, trailing
+  commas and Python-style quotes; an answer that still cannot be read is
+  asked for once more (in the endpoint's JSON mode where it has one, with
+  more room when it was cut off), and a reply that then still is not JSON
+  is kept as a low-confidence draft for review instead of "drafting
+  failed" (`bb/mail/brain.py` `complete_json(salvage=)`).
 
 - **The pipeline does not wait its turn.** Writing now runs every cycle
   while recipients are waiting for an email, beside reading replies and

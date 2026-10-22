@@ -755,6 +755,7 @@ class Sender:
         sent = 0
 
         self._throttled = False
+        self._cold_held = False
         self._auth_logged = False
 
         async def lane():
@@ -762,6 +763,8 @@ class Sender:
             first = True
             while queue and not self._throttled:
                 item, prospect, receipt_id = queue.pop(0)
+                if self._cold_held and item["kind"] == "sequence":
+                    continue          # the shared limit ran out this pass
                 if self.send_pacing and jitter_max > 0 and not first:
                     await asyncio.sleep(random.uniform(jitter_max / 4, jitter_max))
                 first = False
@@ -1060,12 +1063,17 @@ class Sender:
                     pass        # the stale-send sweep puts it back later in any case
                 raise
             except Exception as e:
-                slot, pic = None, {"reason": f"the shared send ledger could not be read ({e})"}
+                slot, pic = None, {"reason": f"the shared send ledger could not be read ({e})", "unread": True}
             if slot is None:
                 # Another campaign on this account took the last of the shared
-                # limit in the meantime: the email waits, the pass ends.
+                # limit in the meantime: the email waits, and so do the other
+                # first emails of this pass; replies (no limit) still go. A
+                # ledger that cannot be read ends the pass.
                 await self.state.update_outbox_item(item["id"], status="approved")
-                self._throttled = True
+                if pic.get("unread"):
+                    self._throttled = True
+                else:
+                    self._cold_held = True
                 logger.info(f"Sender: {pic.get('reason')}; the rest waits.")
                 return False
         inner = asyncio.ensure_future(self.provider.send_email(

@@ -89,7 +89,7 @@ def preview_document(html: str) -> str:
     links open in a new tab, and nothing in it can reach the page."""
     if not html:
         return ""
-    return ('<!doctype html><html><head><meta charset="utf-8"><base target="_blank">'
+    return ('<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><base target="_blank">'
             '<style>body{margin:14px 16px;background:#fff}a{cursor:pointer}</style></head><body>' + html + "</body></html>")
 
 

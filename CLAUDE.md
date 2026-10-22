@@ -110,7 +110,10 @@ on the next dashboard view; the dashboard has Pause for edits / Resume /
 Start over, and uploading recipients confirms the free signals so the
 profile stage runs without the CLI's confirm step. Start it with `python -m bb` (needs `BB_BASE_URL`,
 `BB_ADMIN_EMAIL`, `BB_ADMIN_PASSWORD`; `GMAIL_CLIENT_ID`/`SECRET` of a *Web
-application* OAuth client are optional). Deployment and Mac quick-start:
+application* OAuth client are optional). Google and Microsoft sign-in can instead be switched on from
+Users → Sign-in setup (`/admin/signin`, `bb/signin_setup.py`, `BB_HOME/signin.json`); Microsoft's app is
+registered there automatically through Graph from the admin's own sign-in (device code with Microsoft
+Graph Command Line Tools, `bb/signin_auto.py`), Google's `client_secret_….json` is dropped on the page. Deployment and Mac quick-start:
 `docs/HOSTING.md`. `python -m bb install-service` keeps it running (launchd/systemd, `bb/service.py`); `python -m bb doctor` is the go-live check; `deploy/install.sh` + `docker compose --profile tls` is the one-command server install with Caddy. `BB_TUNNEL=cloudflare` makes the site run a cloudflared quick tunnel itself (`bb/tunnel.py`; the link is printed and shown on Users; `BB_TUNNEL_TOKEN` for a named tunnel). Code: `bb/app.py` (routes),
 `bb/workspaces.py` (per-user home, config writer, worker control),
 `bb/recipients.py` (CSV import), `bb/gmail_oauth.py`, `bb/accounts.py`.
@@ -126,7 +129,9 @@ mail DB, mail worker and alerts stay per user), reply campaigns
 (`runs.pause_run/resume_run`), a job lane per run (`jobs.lane`), and the
 per-user ledger `harvey/ledger.py` (`data/sendlog.db`) that splits each
 account's daily limit (`service.account_daily_limit`) and holds opt-outs
-for every campaign. Accounts can be added in bulk (`/mail/accounts/bulk`,
+for every campaign. Replies have no send limit anywhere: `Ledger.reserve(free=True)` records an answer without counting or
+holding it, reply-only members take no part of the limit, `sending.is_answer` skips the command center's
+cap, and Harvey's `Sender._drain_due` limits only `sequence` items (scans stay limited). Accounts can be added in bulk (`/mail/accounts/bulk`,
 `/mail/accounts/graph/bulk`). **Wake up now** (`/worker/wake`,
 `/campaigns/outreach/<id>/wake`; `Workspace.wake_worker`) reaches a
 running worker through `data/worker.wake`; the worker's `harvey/wake.py`
@@ -141,7 +146,8 @@ multi-mailbox side: `db.py` (per-user `data/mail.db`, WAL), `crypto.py`
 imap, graph adapters), `service.py` (connect/check/scope/migration),
 `routes.py`, `ingest.py` (idempotent store + threading + counts),
 `state.py` (reply-state rules), `parse.py` (RFC 822), `brain.py` (the
-user's model, Anthropic or OpenAI-compatible, from `BB_LLM_*` env),
+user's model, Anthropic or OpenAI-compatible, from `BB_LLM_*` env; `complete_json` reads JSON leniently,
+asks once more, and with `salvage="body"` keeps an unreadable answer as a low-confidence draft),
 `drafting.py` (draft_reply / draft_new, `qa_check` writing check,
 `finalize` adds greeting + signature + project link at send time),
 `sending.py` (cap, window, dry run, send from the receiving mailbox,

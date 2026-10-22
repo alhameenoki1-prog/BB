@@ -1297,7 +1297,11 @@ class Workspace:
                      and (item.get("kind") or "sequence") == "sequence" and int(item.get("step") or 1) == 1)
             if plain:
                 return {"html": "", "plain": True}
-            outreach = model.outreach.model_copy(update={"signature_image": ""})    # shown from this site below
+            # The logo is shown from this site (the email carries it inline):
+            # its place is marked before rendering, which would drop it here.
+            sig = model.outreach.signature_html or ""
+            placed = "{{logo}}" in sig
+            outreach = model.outreach.model_copy(update={"signature_image": "", "signature_html": sig.replace("{{logo}}", "%%BB-LOGO%%")})
             text = item.get("body") or "" if body is None else body
             html = render_parts(text, outreach, booking=booking_url(model))[1]
         except Exception as e:
@@ -1307,7 +1311,9 @@ class Workspace:
             return {"html": "", "plain": False}
         logo = '<img src="/signature/image" alt="" style="max-width:320px;height:auto;display:block;margin-top:6px">' \
             if self.signature_image() else ""
-        html = html.replace(_html.escape("{{logo}}"), logo).replace("{{logo}}", logo)
+        if logo and not placed and html.endswith("</div></div>"):
+            html = html[:-len("</div></div>")] + logo + "</div></div>"     # after the signature, as it is sent
+        html = html.replace("%%BB-LOGO%%", logo).replace(_html.escape("{{logo}}"), logo).replace("{{logo}}", logo)
         return {"html": html, "plain": False}
 
     def writing_brief(self) -> str:

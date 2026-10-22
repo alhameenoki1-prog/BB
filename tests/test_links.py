@@ -182,6 +182,16 @@ def test_the_outbox_shows_each_email_as_it_goes_out(client, monkeypatch):
     doc = client.post("/outbox/f2/preview", data={"body": "Hi Dana,\n\nHere is the brief.\n\nhttps://docs.example/brief"}).json()["doc"]
     assert ">the brief</a>." in doc
     assert client.post("/outbox/f1/preview", data={"body": body}).json()["plain"] is True
+    assert '<meta name="referrer" content="no-referrer">' in doc            # a link clicked there does not name this site
+    # The signature's logo shows where it goes out: in its {{logo}} place, or after the signature.
+    ws.set_signature_image("logo.png", b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+    cfg = ws.config()
+    for sig, check in (("Jane Doe<br>{{logo}}<br>Founder", lambda h: h.index("/signature/image") < h.index("Founder")),
+                       ("Jane Doe<br>Founder", lambda h: h.index("/signature/image") > h.index("Founder"))):
+        cfg["outreach"]["signature_html"] = sig
+        ws.config_file.write_text(__import__("yaml").safe_dump(cfg))
+        html = ws.as_sent({"body": "Hi Dana,\n\nThe brief: https://docs.example/brief", "kind": "sequence", "step": 2})["html"]
+        assert html.count('src="/signature/image"') == 1 and check(html) and "%%BB-LOGO%%" not in html and "{{logo}}" not in html
 
 
 # ── links on words everywhere: [words](address) ──
