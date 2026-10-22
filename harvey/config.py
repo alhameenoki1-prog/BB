@@ -535,6 +535,19 @@ class BrainConfig(BaseModel):
     # Claude only: let the API re-run a request a safety classifier declined
     # on a fallback model, inside the same call, instead of returning nothing.
     fallbacks: bool = True
+    # Model calls the writer keeps in flight at once (drafts, sequences,
+    # classification). 6 suits a paid Anthropic or OpenAI key; a free tier
+    # with a low per-minute limit wants 2.
+    concurrency: int = 6
+
+    @field_validator("concurrency", mode="before")
+    @classmethod
+    def _valid_concurrency(cls, v) -> int:
+        try:
+            n = int(v or 6)
+        except (TypeError, ValueError):
+            n = 6
+        return max(1, min(16, n))
 
     @field_validator("provider", mode="before")
     @classmethod

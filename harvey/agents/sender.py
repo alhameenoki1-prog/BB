@@ -608,6 +608,12 @@ class Sender:
                     item["id"], status="failed", error="prospect missing"
                 )
                 continue
+            if (prospect.email_status or "") == "invalid":
+                # The list check (which runs beside the writer) found the
+                # address dead after this email was staged.
+                await self.state.update_outbox_item(
+                    item["id"], status="cancelled", error="address marked invalid before sending")
+                continue
 
             # Stop-on-reply / opt-out: never continue a sequence after contact.
             if item["kind"] == "sequence" and prospect.status in STOP_STATUSES:

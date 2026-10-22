@@ -7,6 +7,23 @@ minor versions can still change behaviour.
 
 ## [Unreleased]
 
+### Changed
+
+- **The pipeline does not wait its turn.** Writing now runs every cycle
+  while recipients are waiting for an email, beside reading replies and
+  sending, instead of only when nothing else needs doing; the writer's
+  lead over the sender is two days of the daily limit or twenty send
+  batches and never under a hundred first emails in per-person mode
+  (`Writer.room`), so the sender never idles; per-person drafting handles
+  40 people per segment per cycle (was 8) with `brain.concurrency` model
+  calls in flight (default 6, 1 to 16). While there is still writing to
+  do, the next cycle follows in 45 seconds rather than a full heartbeat.
+  The uploaded list's domain and verifier checks moved off the writer's
+  path: they ride along the heartbeat under a 45-second budget, sixteen
+  lookups and six verifier calls at a time, and the sender re-reads the
+  address status before every send so an address found dead after
+  staging is cancelled, not sent.
+
 ### Added
 
 - **A soft no still gets the brief, once.** "Not interested", "booked

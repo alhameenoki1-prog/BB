@@ -37,6 +37,9 @@ CYCLE_TIMEOUT_SECONDS = 600
 # sender, never ahead of them.
 PROFILE_PER_CYCLE = 200
 PROFILE_BUDGET_SECONDS = 120
+# While recipients are still waiting to be written and the writer has room,
+# the next cycle follows this soon instead of a full heartbeat later.
+BUSY_SLEEP_SECONDS = 45
 
 # Cap on a single quiet-hours sleep chunk. See the quiet-hours block in
 # heartbeat() for why this exists — a system sleep/wake cycle during one
@@ -194,6 +197,33 @@ async def _bounded_profile(state, limit: int = PROFILE_PER_CYCLE):
     except asyncio.TimeoutError:
         logger.info(f"profile: stopped after {PROFILE_BUDGET_SECONDS}s this cycle; the rest waits for the next heartbeat.")
         return None
+
+
+async def _bounded_listcheck(state, env):
+    """The uploaded list's domain and verifier checks, under their own time
+    budget, beside the writer rather than in front of it."""
+    from harvey import listcheck
+    try:
+        return await listcheck.run_all(state, env)
+    except Exception as e:
+        logger.debug(f"listcheck: skipped this cycle: {e}")
+        return None
+
+
+async def _more_to_write(state, writer, brain) -> bool:
+    """Should the next cycle follow quickly? Yes when deliverable recipients
+    still have no email, the writer has room for more, and the brain is
+    usable."""
+    if getattr(brain, "paused_reason", ""):
+        return False
+    try:
+        waiting = await state.get_prospects_by_status("new", limit=1, email_statuses=("verified", "provided", "risky"))
+        if not waiting:
+            return False
+        room, _ahead, _backlog = await writer.room()
+        return room > 0
+    except Exception:
+        return False
 
 
 async def _locked(coro):
@@ -409,6 +439,14 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
                     tasks.append(("handle_replies", handler.run()))
             elif action == "idle":
                 tasks.append(("analyze", analyst.run()))
+            # Writing never waits its turn behind replies or sending: while
+            # recipients are waiting for an email, the writer runs every
+            # cycle beside whatever else the cycle does (it keeps its own
+            # ceiling, so it costs nothing when the outbox is full).
+            prospects = summary.get("prospects") or {}
+            if (isinstance(prospects, dict) and prospects.get("new", 0) > 0
+                    and not any(n == "write_campaign" for n, _ in tasks) and sender.is_native):
+                tasks.append(("write_campaign", writer.run()))
 
             # Sending happens in a second phase, after every agent above has
             # finished: the handler's stop-on-reply must cancel follow-ups to
@@ -435,6 +473,10 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
             # turns a name and a domain into something worth writing about.
             if summary.get("unprofiled", 0):
                 tasks.append(("profile", _bounded_profile(state)))
+            # So does the uploaded list's domain check (and the verifier when
+            # a key is set): beside the writer, never in front of it.
+            if sender.is_native and (summary.get("prospects") or {}).get("new", 0) > 0:
+                tasks.append(("listcheck", _bounded_listcheck(state, getattr(writer, "env", None))))
 
             outcomes = await _run_agents(tasks)
 
@@ -473,11 +515,17 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
                 except Exception as e:
                     logger.debug(f"Mailbox health check skipped: {e}")
 
-            # 7. Sleep until next heartbeat
-            logger.info(
-                f"Cycle complete. Sleeping for {config.usage.heartbeat_interval_minutes} minutes."
-            )
-            if await _interruptible_sleep(interval, stop_event):
+            # 7. Sleep until next heartbeat: a short pause while there is
+            # still writing to do, the full heartbeat otherwise.
+            sleep_for = interval
+            if sender.is_native and interval > BUSY_SLEEP_SECONDS and await _more_to_write(state, writer, brain):
+                sleep_for = BUSY_SLEEP_SECONDS
+                logger.info(f"Cycle complete. Recipients are still waiting for an email: next cycle in {BUSY_SLEEP_SECONDS} seconds.")
+            else:
+                logger.info(
+                    f"Cycle complete. Sleeping for {config.usage.heartbeat_interval_minutes} minutes."
+                )
+            if await _interruptible_sleep(sleep_for, stop_event):
                 break
 
         except (KeyboardInterrupt, asyncio.CancelledError):

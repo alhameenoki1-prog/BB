@@ -26,7 +26,7 @@ logger = logging.getLogger("harvey.writer")
 
 # Native mode: one Claude call per prospect for email 1, so batches stay
 # small — the rest of the 'new' pool is picked up on later cycles.
-NATIVE_BATCH_CAP = 8
+NATIVE_BATCH_CAP = 40   # personal drafts per segment per cycle; model-bound, and the room() ceiling applies
 LEGACY_BATCH_CAP = 50
 # Segment mode (outreach.personalize_each: false): one sequence per
 # sector × role segment, sent to everyone in it, so a segment can be large.
@@ -167,13 +167,9 @@ class Writer:
         # An uploaded list is checked before anything is written to it, when
         # a verifier key is available: a guessed address bounces, and a few
         # bounces at one company get the rest of that company held.
-        try:
-            from harvey import listcheck
-            await listcheck.check_domains(self.state)      # free: a dead domain is never written to
-            if listcheck.verifier_configured(self.env):
-                await listcheck.verify_uploaded(self.state, self.env)
-        except Exception as e:
-            logger.debug(f"Writer: list check skipped: {e}")
+        # (The list check itself rides along the heartbeat on its own clock
+        # (main._bounded_listcheck) so it never delays the writing; the
+        # sender re-reads the address status before every send.)
 
         # Get prospects that haven't been contacted yet (a bounded page: a
         # 10,000-row upload is not loaded whole every cycle)
@@ -203,18 +199,9 @@ class Writer:
         # Segment mode writes one sequence per segment, so it can look
         # further ahead.
         if self.is_native:
-            max_daily = int(self.config.channels.email.max_daily_sends or 0)
-            # No daily limit: keep roughly a day of 15-minute cycles ahead.
-            ahead = 2 * max(1, max_daily) if max_daily else 200
-            per_cycle = int(getattr(self.config.channels.email, "sends_per_cycle", 0) or 0)
-            if not self.personalize_each:
-                # Segment mode is cheap to write: stay ten send batches ahead.
-                ahead = max(ahead, SEGMENT_ROOM, 10 * per_cycle)
-            approval = bool(getattr(self.config.channels.email, "require_approval", True))
-            backlog = await self.state.count_outbox_queued(
-                statuses=("pending_review", "approved") if approval else ("approved",))
-            room = max(0, ahead - backlog)
+            room, ahead, backlog = await self.room()
             if room == 0:
+                max_daily = int(self.config.channels.email.max_daily_sends or 0)
                 logger.info(
                     f"Writer: {backlog} email(s) already written and waiting; "
                     f"drafting more once the sender catches up "
@@ -245,7 +232,7 @@ class Writer:
         batches = self._group_prospects(prospects_with_email)
 
         todo = [(name, ps) for name, ps in batches.items() if ps]
-        gate = asyncio.Semaphore(MODEL_CONCURRENCY)
+        gate = asyncio.Semaphore(self._concurrency)
 
         async def write(ps, name):
             # A segment written in the last day keeps its sequence: the next
@@ -356,7 +343,7 @@ class Writer:
         provider = self.config.channels.email.provider
 
         drafted = 0
-        gate = asyncio.Semaphore(MODEL_CONCURRENCY)
+        gate = asyncio.Semaphore(self._concurrency)
 
         async def write(prospect):
             async with gate:
@@ -987,6 +974,32 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         never count."""
         return enquiry.example_copying(text, self._leak_allowed(prospects), "inquiry_writer")
 
+    @property
+    def _concurrency(self) -> int:
+        """Model calls in flight at once (brain.concurrency in harvey.yaml)."""
+        try:
+            return max(1, min(16, int(getattr(self.config.brain, "concurrency", MODEL_CONCURRENCY) or MODEL_CONCURRENCY)))
+        except (TypeError, ValueError):
+            return MODEL_CONCURRENCY
+
+    async def room(self) -> tuple[int, int, int]:
+        """(room, ahead, backlog): how many more first emails the writer may
+        draft now. It stays far enough ahead that the sender never waits on
+        it (two days of the daily limit, twenty send batches, never under a
+        hundred in per-person mode) without drafting a 10,000-row upload at
+        once; segment mode is cheap and looks further ahead."""
+        email = self.config.channels.email
+        max_daily = int(email.max_daily_sends or 0)
+        per_cycle = int(getattr(email, "sends_per_cycle", 0) or 0)
+        ahead = 2 * max(1, max_daily) if max_daily else 200
+        ahead = max(ahead, 20 * per_cycle, 100)
+        if not self.personalize_each:
+            ahead = max(ahead, SEGMENT_ROOM, 10 * per_cycle)
+        approval = bool(getattr(email, "require_approval", True))
+        backlog = await self.state.count_outbox_queued(
+            statuses=("pending_review", "approved") if approval else ("approved",))
+        return max(0, ahead - backlog), ahead, backlog
+
     def _leak_allowed(self, prospects: list) -> str:
         """Facts that are the sender's own (the need, who they are, their
         background) and therefore never count as copied from the examples."""
@@ -1124,7 +1137,7 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             return
         sorted_count = 0
         batches = [unsorted[i:i + CLASSIFY_BATCH] for i in range(0, len(unsorted), CLASSIFY_BATCH)]
-        gate = asyncio.Semaphore(MODEL_CONCURRENCY)
+        gate = asyncio.Semaphore(self._concurrency)
 
         async def ask(batch):
             async with gate:

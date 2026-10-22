@@ -549,6 +549,36 @@ and switch the ramp off only on a mailbox that already sends a lot. In harvey.ya
 `usage.heartbeat_interval_minutes` plus `channels.email.sends_per_cycle`,
 `send_concurrency` and `send_jitter_seconds`.
 
+### From upload to the first email, and keeping up
+
+Sending pace is one thing; how fast the worker researches, writes and
+hands emails to the sender is another, and it is built not to wait:
+
+- **Writing runs every cycle** while recipients are waiting for an email,
+  beside reading replies and sending, never queued behind them. It keeps
+  a lead over the sender of two days of the daily limit or twenty send
+  batches, never under a hundred first emails in per-person mode, so the
+  sender never idles; a 10,000-row upload is still worked through in
+  pieces, not drafted at once.
+- **Cycles follow quickly while there is work.** When deliverable
+  recipients still have no email and the writer has room, the next cycle
+  starts 45 seconds after the last one instead of a full heartbeat later
+  (the speed presets' heartbeat is already one to five minutes; this
+  matters most for `harvey run` with its 15-minute default). Quiet hours,
+  the AI spend cap and a paused provider still apply.
+- **The list check never delays the writer.** The domain lookups (and the
+  verifier, with a key) run beside the writer under a 45-second budget per
+  cycle, sixteen lookups and six verifier calls at a time; the sender
+  takes one last look at the address before each send, so an address
+  found dead after its email was staged is cancelled, not sent.
+- **Research is parallel already**: 200 businesses a cycle, 24 sites read
+  at once, under a two-minute budget, and it never gates the writer.
+- **Drafting runs several model calls at once**: six by default
+  (`brain.concurrency` in harvey.yaml, 1 to 16). A free-tier key with a
+  low per-minute limit wants 2; a paid Anthropic or OpenAI key takes 8 to
+  12. Per-person mode drafts up to 40 people per segment per cycle; segment
+  mode writes one sequence per segment and is not model-bound.
+
 ## What you need, by kind of business (and the full scope)
 
 In inquiry mode the emails are only as concrete as what you type. The

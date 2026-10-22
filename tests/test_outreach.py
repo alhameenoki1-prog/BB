@@ -168,15 +168,19 @@ async def test_writer_inquiry_mode_and_throttle(state):
         await state.add_prospect(Prospect(id=f"p{i}", first_name=f"P{i}", last_name="X",
                                           email=f"p{i}@build{i}.co", email_status="provided",
                                           title="Owner", company=f"Build {i}"))
-    # max_daily_sends is 1, so the writer drafts at most 2 ahead of the sender.
+    # The writer stays well ahead of the sender (never under a hundred first
+    # emails in per-person mode), so all three are drafted in one cycle.
+    room, ahead, backlog = await writer.room()
+    assert ahead >= 100 and backlog == 0 and room == ahead
     await writer.run()
     queued = await state.get_outbox()
-    assert len(queued) == 2
+    assert len(queued) == 3
+    assert (await writer.room()) == (ahead - 3, ahead, 3)
     # The stub's "hello" is boilerplate, so the subject check swaps in a plain one from the need.
     from harvey.spamcheck import subject_from_need
     assert all(q["subject"] == subject_from_need("get a quote for a two-storey extension") != "hello" for q in queued)
     personal = [p for p in brain.prompts if "Write ONE enquiry email" in p]
-    assert len(personal) == 2
+    assert len(personal) == 3
     for p in personal:
         # Inquiry mode gets its own brief (the fake brain stands prompt files in
         # as "[name prompt]"): no cold-email prompt, no sales skills, no old block.
@@ -187,11 +191,18 @@ async def test_writer_inquiry_mode_and_throttle(state):
     assert sequence and all(p.startswith("[inquiry_writer prompt]") and "the enquiry itself" in p
                             for p in sequence)
 
-    # Backlog is full: the next cycle makes no model calls at all.
+    # Everyone is written: the next cycle makes no model calls at all. And when
+    # the outbox holds the whole allowance, the writer stops before any call.
     calls = len(brain.prompts)
     await writer.run()
     assert len(brain.prompts) == calls
-    assert (await state.count_prospects_by_status()).get("new") == 1
+    assert (await state.count_prospects_by_status()).get("new", 0) == 0
+    await state.add_prospect(Prospect(id="p9", first_name="P9", last_name="X", email="p9@build9.co", email_status="provided", title="Owner"))
+    for i in range(ahead):
+        await state.add_outbox_item(prospect_id="p0", to_email="p0@build0.co", subject="s", body="b", send_at="2030-01-01T00:00:00", status="approved")
+    assert (await writer.room())[0] == 0
+    await writer.run()
+    assert len(brain.prompts) == calls and (await state.count_prospects_by_status()).get("new") == 1
 
 
 # ── sectors, role tiers, and one email per segment ──
