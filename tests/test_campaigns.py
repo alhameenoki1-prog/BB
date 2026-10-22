@@ -251,7 +251,7 @@ async def test_a_run_keeps_to_its_part_and_waits_without_dropping_anything(tmp_p
     SentBox.sent = []
     db = MailDB(tmp_path / "data" / "mail.db"); await db.init()
     mid = await db.add_mailbox(address=ME, provider="imap", creds="", status="ok",
-                               settings=MailboxSettings(signature_html="Jane", project_link="https://p.example", daily_cap=2).model_dump())
+                               settings=MailboxSettings(signature_html="Jane", project_link="https://p.example", account_limit=2).model_dump())
     box = await db.mailbox(mid)
     env = {"HARVEY_HOME": str(tmp_path)}
     led = Ledger(tmp_path / "data" / "sendlog.db")

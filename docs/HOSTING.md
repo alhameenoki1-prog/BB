@@ -473,10 +473,12 @@ side by side, and a campaign that finishes, pauses, fails a step or
 waits on review holds nothing else up. A reply campaign that hits an
 error notes it on its row and tries again on its next round.
 
-**The daily limit is shared.** An account's daily limit is the cap set on
-it on the Accounts page, or a little under what its provider allows
-(gmail.com 450, Google Workspace 1,800, outlook.com 250, Microsoft 365
-9,000, other mailboxes 300). Every campaign working on the account is
+**The daily limit is shared.** An account's daily limit is the *account
+limit* set on its page under Accounts, or by default a little under what
+its provider allows (gmail.com 450, Google Workspace 1,800, outlook.com
+250, Microsoft 365 9,000, other mailboxes 300). Each feature's own caps
+still apply inside it: an outreach campaign's daily maximum on its
+profile, the command center's daily cap for replies and scans. Every campaign working on the account is
 guaranteed an equal part of it and may send beyond its part only from
 what no other campaign there still has a claim on, so a quiet reply
 campaign keeps room for the replies that come in later while a busy

@@ -133,14 +133,18 @@ def register_campaign_routes(app, settings, current_user, base_workspace, render
         mailboxes = await db.mailboxes()
         boxes = {m["id"]: m for m in mailboxes}
         led = base.ledger()
+        for m in mailboxes:   # the ledger follows each account's limit as set now
+            try:
+                led.set_limit(m["address"], mail_service.account_daily_limit(m, mail_service.open_creds(settings.secret_key(), m)))
+            except Exception:
+                pass
         outreach = await _outreach_rows(base, led)
         taken_accounts = {r["account"] for r in outreach if r["account"]}
         accounts = []
         for m in mailboxes:
             m["ready"], m["ready_why"] = mail_service.ready_to_send(m)
             pic = led.summary(m["address"])
-            accounts.append({**m, "ledger": pic, "has_outreach": m["address"].lower() in taken_accounts,
-                             "limit": mail_service.account_daily_limit(m)})
+            accounts.append({**m, "ledger": pic, "has_outreach": m["address"].lower() in taken_accounts, "limit": pic["limit"]})
         return await render(request, "campaigns.html", user, outreach=outreach, runs=await _run_rows(db, led, boxes),
                             accounts=accounts, profiles=[(w.campaign_id, w.campaign_name()) for w in base.all_campaigns()],
                             months=runs_mod.RECONNECT_MONTHS, backlog_choices=runs_mod.BACKLOG_CHOICES,

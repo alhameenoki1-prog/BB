@@ -23,7 +23,11 @@ class MailboxSettings(BaseModel):
     reply_to: str = ""
     persona_notes: str = ""
     auto_send: bool = False
-    daily_cap: int = 50
+    daily_cap: int = 50     # the command center's own sends from this mailbox per day
+    # The account's whole daily limit, shared by every campaign on it
+    # (outreach, reply campaigns, scans; harvey.ledger). 0 = a little under
+    # what the provider allows (service.account_daily_limit).
+    account_limit: int = 0
     excluded: list[str] = Field(default_factory=list)   # senders or domains never auto-replied to
     hours_start: str = ""   # "09:00" or blank for any time
     hours_end: str = ""
@@ -45,6 +49,17 @@ class MailboxSettings(BaseModel):
         v = str(v or "").strip().lower()
         if v and ("@" not in v or " " in v):
             raise ValueError("Reply-To must be an email address.")
+        return v
+
+    @field_validator("account_limit", mode="before")
+    @classmethod
+    def _account_limit(cls, v) -> int:
+        try:
+            v = int(v or 0)
+        except (TypeError, ValueError):
+            raise ValueError("The account limit must be a whole number (0 = what the provider allows).")
+        if v < 0 or v > 20000:
+            raise ValueError("The account limit must be between 0 and 20,000.")
         return v
 
     @field_validator("daily_cap", mode="before")

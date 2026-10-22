@@ -329,6 +329,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         m["settings_model"] = service.settings_of(m)
         m["ready"], m["ready_why"] = service.ready_to_send(m)
         m["signin"] = service.signed_in(settings.secret_key(), m)
+        m["provider_limit"] = service.provider_daily_limit(m, service.open_creds(settings.secret_key(), m))
         return await render(request, "mail_account.html", user, **page_ctx(c), box=m,
                             creds=service.masked_creds(settings.secret_key(), m),
                             gmail_available=bool(settings.gmail_client_id and settings.gmail_client_secret),
@@ -346,7 +347,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                 display_name=form.get("display_name", ""), signature_html=form.get("signature_html", ""),
                 project_link=form.get("project_link", ""), reply_to=form.get("reply_to", ""),
                 persona_notes=form.get("persona_notes", ""), auto_send=bool(form.get("auto_send")),
-                daily_cap=form.get("daily_cap", 50), excluded=form.get("excluded", ""),
+                daily_cap=form.get("daily_cap", 50), account_limit=form.get("account_limit", m["settings"].get("account_limit", 0)),
+                excluded=form.get("excluded", ""),
                 hours_start=form.get("hours_start", ""), hours_end=form.get("hours_end", ""),
                 color=form.get("color", "blue"),
             )
@@ -354,6 +356,10 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             first = e.errors()[0]
             return _redirect(f"/mail/accounts/{mailbox_id}", error=str(first["msg"]).replace("Value error, ", ""))
         await c["db"].update_mailbox(mailbox_id, settings=new.model_dump())
+        try:   # campaigns on this account share the new limit at once
+            c["ws"].ledger().set_limit(m["address"], service.account_daily_limit({**m, "settings": new.model_dump()}))
+        except Exception:
+            pass
         ok, why = new.ready_to_send()
         msg = "Settings saved." + ("" if ok else f" {why}")
         return _redirect(f"/mail/accounts/{mailbox_id}", msg=msg)

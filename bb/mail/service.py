@@ -43,13 +43,19 @@ CONSUMER_DOMAINS = ("gmail.com", "googlemail.com", "outlook.com", "hotmail.com",
 
 
 def account_daily_limit(mailbox: dict, creds: dict | None = None) -> int:
-    """The account's daily limit that its campaigns share: the cap set on
-    the account, else a little under what its provider allows (gmail.com
-    450, Google Workspace 1,800, outlook.com 250, Microsoft 365 9,000,
-    other mailboxes 300, Yahoo and the like 450)."""
-    cap = int(settings_of(mailbox).daily_cap or 0)
-    if cap:
-        return cap
+    """The account's whole daily limit, which every campaign on it shares:
+    the account limit set on its page, else a little under what its
+    provider allows (gmail.com 450, Google Workspace 1,800, outlook.com
+    250, Microsoft 365 9,000, other mailboxes 300, Yahoo and the like 450).
+    Each feature's own caps (the command center's daily cap, an outreach
+    campaign's daily maximum) still apply inside it."""
+    own = int(settings_of(mailbox).account_limit or 0)
+    if own:
+        return own
+    return provider_daily_limit(mailbox, creds)
+
+
+def provider_daily_limit(mailbox: dict, creds: dict | None = None) -> int:
     address = (mailbox.get("address") or "").lower()
     domain = address.rsplit("@", 1)[-1]
     consumer = domain in CONSUMER_DOMAINS

@@ -71,7 +71,7 @@
   <table class="small"><thead><tr><th>Account</th><th>Daily limit</th><th>Sent in the last 24 hours</th><th>Working on it now</th></tr></thead><tbody>
   {% for a in accounts %}
   <tr><td>{{ a.address }}{% if a.status == 'reconnect' %} <span class="tag bad">reconnect</span>{% endif %}</td>
-    <td>{{ a.limit }} <a class="tiny" href="/mail/accounts/{{ a.id }}">change</a></td>
+    <td>{{ a.limit or 'none' }} <a class="tiny" href="/mail/accounts/{{ a.id }}">change</a></td>
     <td>{{ a.ledger.total }}</td>
     <td>{% if a.ledger.members %}{% for m in a.ledger.members %}{{ m.label or m.feature }} ({{ m.used }}{% if a.ledger.share %} of a {{ a.ledger.share }} part{% endif %}){{ ', ' if not loop.last else '' }}{% endfor %}{% else %}<span class="muted">nothing</span>{% endif %}</td></tr>
   {% endfor %}
@@ -103,7 +103,7 @@
         <div><label>Leads (CSV, optional)</label><input type="file" name="leads" accept=".csv,text/csv,text/plain"><div class="hint">Or add them later on each campaign's Recipients page. Nobody lands on two lists, and anyone who asked any campaign to stop is left out.</div></div>
         <div><label>How to share them out</label>
           <label class="check"><input type="radio" name="split" value="turns" checked> In turns, so each account gets an equal share</label>
-          <label class="check"><input type="radio" name="split" value="column"> By the file's <code>account</code> column (the address that should write to them)</label></div>
+          <label class="check"><input type="radio" name="split" value="column"> <span>By the file's <code>account</code> column (the address that should write to them)</span></label></div>
       </div>
       <label class="check" style="margin-top:8px"><input type="checkbox" name="start" value="1"> Start them straight away</label>
     </div>

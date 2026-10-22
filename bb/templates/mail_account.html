@@ -35,7 +35,8 @@
   <textarea name="persona_notes" rows="4" placeholder="I'm Jane, founder of Acme; warm but direct. We build residential extensions in Lagos. Never quote prices by email; offer a call instead.">{{ s.persona_notes }}</textarea>
   <div class="row" style="margin-top:12px">
     <div><label>Default Reply-To</label><input type="email" name="reply_to" value="{{ s.reply_to }}" placeholder="blank = this mailbox"><div class="hint">Where answers land when this mailbox sends. Per-run and per-draft choices override it.</div></div>
-    <div><label>Daily send cap</label><input type="number" name="daily_cap" value="{{ s.daily_cap }}" min="0" max="2000"><div class="hint">0 = no cap (the provider's own limit applies).</div></div>
+    <div><label>Daily send cap (command center)</label><input type="number" name="daily_cap" value="{{ s.daily_cap }}" min="0" max="2000"><div class="hint">Replies, reply campaigns and scans from here, per day. 0 = no cap of its own.</div></div>
+    <div><label>Account limit, all campaigns</label><input type="number" name="account_limit" value="{{ s.account_limit }}" min="0" max="20000"><div class="hint">Everything sent from this account per day, shared by every campaign on it. 0 = {{ box.provider_limit }}, a little under what the provider allows.</div></div>
     <div><label>Send window</label><div class="actions"><input type="time" name="hours_start" value="{{ s.hours_start }}"><span class="muted">to</span><input type="time" name="hours_end" value="{{ s.hours_end }}"></div><div class="hint">Blank = any time.</div></div>
   </div>
   <label>Never auto-reply to</label>
