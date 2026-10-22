@@ -112,9 +112,25 @@ def _today_utc() -> str:
 
 
 async def sent_today(db: MailDB, mailbox_id: str) -> int:
-    row = await db.one("SELECT COUNT(*) AS n FROM drafts WHERE mailbox_id = ? AND status = 'sent' AND sent_at >= ?",
+    """What this account sent today that counts against its daily cap: new
+    emails and scan follow-ups. Answers to people who wrote do not count."""
+    row = await db.one("SELECT COUNT(*) AS n FROM drafts d LEFT JOIN reply_runs r ON r.id = d.run_id "
+                       "WHERE d.mailbox_id = ? AND d.status = 'sent' AND d.sent_at >= ? "
+                       "AND (d.kind != 'reply' OR r.kind = 'reconnect')",
                        (mailbox_id, _today_utc() + "T00:00:00Z"))
     return row["n"] if row else 0
+
+
+async def is_answer(db: MailDB, draft: dict) -> bool:
+    """A reply to someone who wrote (from a reply run, a reply campaign or a
+    person on the thread page): no send limit applies to it. A scan's
+    follow-up writes first, so it is limited like a new email."""
+    if (draft.get("kind") or "reply") != "reply":
+        return False
+    if not draft.get("run_id"):
+        return True
+    run = await db.one("SELECT kind FROM reply_runs WHERE id = ?", (draft["run_id"],))
+    return (run or {}).get("kind") != "reconnect"
 
 
 def within_hours(settings, now: datetime | None = None) -> bool:
@@ -176,8 +192,9 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     ok, why = service.ready_to_send(mailbox)
     if not ok:
         raise SendRefused(why)
+    answer = await is_answer(db, draft)
     if not dry_run:   # a dry run shows the email; the cap and the window depend on the day it is really sent
-        if settings.daily_cap and await sent_today(db, mailbox["id"]) >= settings.daily_cap:
+        if not answer and settings.daily_cap and await sent_today(db, mailbox["id"]) >= settings.daily_cap:
             raise SendRefused(f"the daily cap of {settings.daily_cap} for {mailbox['address']} is reached; it sends again tomorrow")
         if not within_hours(settings):
             raise SendRefused(f"outside {mailbox['address']}'s send window ({settings.hours_start} to {settings.hours_end})")
@@ -229,15 +246,16 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
             if by and by not in ((run or {}).get("id"), "manual"):
                 raise AnsweredElsewhere(f"another campaign on this account ({_campaign_name(env, by)}) already answered "
                                         "this message; sending this too would be a second answer")
+        # (An answer is written down but never held back: replies have no limit.)
         if run and not pressed and run["status"] in ("queued", "running"):
             slot, pic = led.reserve(mailbox["address"], run["id"], FEATURES.get(run.get("kind") or "reply", "reply-run"),
-                                    run_label(run, mailbox["address"]), kind=draft.get("kind") or "reply")
+                                    run_label(run, mailbox["address"]), kind=draft.get("kind") or "reply", free=answer)
         else:
             # A person pressed Send (from Review or a thread), or the run is
             # over: held only to the account's own limit, counted under the
             # run, and never making a stopped run a member again.
             slot, pic = led.reserve(mailbox["address"], (run or {}).get("id") or "manual", "manual", "Sent by hand",
-                                    priority=True, kind=draft.get("kind") or "reply")
+                                    priority=True, kind=draft.get("kind") or "reply", free=answer)
         if slot is None:
             raise ShareUsed(pic["reason"])
         if led.is_suppressed(recipient.get("email", "")):

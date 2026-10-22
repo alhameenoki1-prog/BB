@@ -249,17 +249,21 @@ async def test_scans_start_one_per_account(tmp_path):
 # ── the shared daily limit across the command center and outreach ──
 
 @pytest.mark.asyncio
-async def test_a_run_keeps_to_its_part_and_waits_without_dropping_anything(tmp_path, monkeypatch):
+async def test_replies_go_whatever_the_shared_limit_and_do_not_use_it_up(tmp_path, monkeypatch):
     monkeypatch.setattr("bb.mail.sending.account_for", lambda m, c, e: SentBox(m, c, e))
     monkeypatch.setenv("BB_MAIL_PACE_SECONDS", "0")
     SentBox.sent = []
     db = MailDB(tmp_path / "data" / "mail.db"); await db.init()
     mid = await db.add_mailbox(address=ME, provider="imap", creds="", status="ok",
-                               settings=MailboxSettings(signature_html="Jane", project_link="https://p.example", account_limit=2).model_dump())
+                               settings=MailboxSettings(signature_html="Jane", project_link="https://p.example", account_limit=2,
+                                                        daily_cap=1).model_dump())
     box = await db.mailbox(mid)
     env = {"HARVEY_HOME": str(tmp_path)}
     led = Ledger(tmp_path / "data" / "sendlog.db")
+    led.set_limit(ME, 2)
     led.join(ME, "outreach-a", "outreach", "Outreach A")          # an outreach campaign also works on this account
+    for i in range(2):
+        assert led.reserve(ME, "outreach-a", "outreach")[0]      # ...and has used the whole limit today
     run = await runs.create_reply_campaign(db, box, mode="auto")
     await db.execute("UPDATE reply_runs SET since = '2000-01-01T00:00:00Z' WHERE id = ?", (run["id"],))
     run = await db.one("SELECT * FROM reply_runs WHERE id = ?", (run["id"],))
@@ -268,20 +272,15 @@ async def test_a_run_keeps_to_its_part_and_waits_without_dropping_anything(tmp_p
     await Ingest(db, box).store_batch([
         RawMessage(provider_id=f"in{i}", thread_key=f"T{i}", message_id=f"<m{i}@x>", from_email=f"p{i}@x.example", from_name=f"P{i}",
                    subject=f"Question {i}", body="Could you send the details?", sent_at=f"2026-02-0{i + 1}T10:00:00Z",
-                   to=[{"name": "", "email": ME}]) for i in range(2)])
-    assert await runs.collect_campaign_threads(db, run, box) == 2
+                   to=[{"name": "", "email": ME}]) for i in range(3)])
+    assert await runs.collect_campaign_threads(db, run, box) == 3
     answer = {"body": "Here is how the project runs, step by step, with the dates we have so far for each stage of it.",
               "confidence": "high", "confidence_reason": "clear", "stance": "engaged"}
-    out = await runs.process_mailbox(db, "s", env, FakeBrain([answer, answer]), Jobs(db), "job", run["id"], mid)
-    # A limit of 2 shared by two campaigns: one each. The second reply waits, it is not dropped.
-    assert out["sent"] == 1 and "share of the account's daily limit is used" in out["waiting"]
-    assert (await runs.run_summary(db, run["id"]))["queued"] == 1
-    detail = (await db.one("SELECT detail FROM reply_runs WHERE id = ?", (run["id"],)))["detail"]
-    assert detail.startswith("waiting for room on me@mine.example")
-    # The outreach campaign stops: its part comes back and the waiting reply goes.
-    led.leave(ME, "outreach-a")
-    out = await runs.process_mailbox(db, "s", env, FakeBrain([answer]), Jobs(db), "job", run["id"], mid)
-    assert out["sent"] == 1 and not out["waiting"] and len(SentBox.sent) == 2
+    out = await runs.process_mailbox(db, "s", env, FakeBrain([answer] * 3), Jobs(db), "job", run["id"], mid)
+    # The account's limit and the command center's cap are both used up, and all three replies went.
+    assert out["sent"] == 3 and not out["waiting"] and len(SentBox.sent) == 3
+    summary = led.summary(ME)
+    assert summary["total"] == 2 and summary["answers"] == 3       # written down apart, none of the limit used
 
 
 @pytest.mark.asyncio
@@ -292,7 +291,7 @@ async def test_the_outreach_sender_takes_slots_from_the_shared_limit(tmp_path, m
     monkeypatch.setenv("HARVEY_LEDGER_CAMPAIGN", "c-1")
     led = Ledger(tmp_path / "sendlog.db")
     led.set_limit("harvey@x.co", 4)
-    led.join("harvey@x.co", "reply-1", "reply", "Replies")              # a reply campaign on the same account
+    led.join("harvey@x.co", "scan-1", "scan", "Scan")                   # a mailbox scan on the same account
     led.suppress("gone@acme.com", "asked not to be contacted", "reply-1")
     sm = StateManager(str(tmp_path / "h.db")); await sm.init_db()
     provider = FakeProvider()
@@ -300,7 +299,7 @@ async def test_the_outreach_sender_takes_slots_from_the_shared_limit(tmp_path, m
     ids = [await seed_prospect(sm, email=f"p{i}@acme.com") for i in range(4)] + [await seed_prospect(sm, email="gone@acme.com")]
     await seed_campaign(sm, ids)
     await sender._run_native()
-    # Two of four for outreach (the reply campaign keeps its two); the suppressed one is cancelled.
+    # Two of four for outreach (the scan keeps its two); the suppressed one is cancelled.
     assert len(provider.sent) == 2 and "gone@acme.com" not in {s["to"] for s in provider.sent}
     assert not [i for i in await sm.get_outbox() if i["to_email"] == "gone@acme.com"]          # never even staged
     assert (await sm.get_prospect_by_email("gone@acme.com")).status == "opted_out"

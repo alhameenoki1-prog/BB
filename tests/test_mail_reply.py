@@ -153,12 +153,20 @@ async def test_send_layer_enforces_rules_and_updates_the_thread(tmp_path, monkey
     assert msg["sent_by"] == "ai" and msg["direction"] == "outbound" and msg["thread_id"] == tid
     assert (await db.mailbox(mid))["counts"]["awaiting_them"] == 1
     assert any(a["text"].startswith('Replied to Ann Lee — "Re: Site visit"') for a in await db.activity())
-    # The daily cap holds the next one.
-    await db.execute("INSERT INTO drafts(id, mailbox_id, thread_id, kind, to_json, subject, body, status, created_at, updated_at) "
-                     "VALUES ('d2', ?, ?, 'reply', ?, 'Re: Site visit', 'Another.', 'approved', ?, ?)",
-                     (mid, tid, json.dumps([{"name": "Ann", "email": "ann@x.example"}]), now, now))
+    # The daily cap (1) counts new emails: the first goes, the next is held...
+    for d in ("d2", "d4"):
+        await db.execute("INSERT INTO drafts(id, mailbox_id, thread_id, kind, to_json, subject, body, status, created_at, updated_at) "
+                         "VALUES (?, ?, '', 'new', ?, 'Site visit dates', 'Another.', 'approved', ?, ?)",
+                         (d, mid, json.dumps([{"name": "Bo", "email": "bo@x.example"}]), now, now))
+    assert (await send_draft(db, "s", {}, await db.one("SELECT * FROM drafts WHERE id = 'd2'")))["status"] == "sent"
     with pytest.raises(SendRefused, match="daily cap"):
-        await send_draft(db, "s", {}, await db.one("SELECT * FROM drafts WHERE id = 'd2'"))
+        await send_draft(db, "s", {}, await db.one("SELECT * FROM drafts WHERE id = 'd4'"))
+    # ...but never a reply: replies have no limit.
+    later = service.now_iso()
+    await db.execute("INSERT INTO drafts(id, mailbox_id, thread_id, kind, to_json, subject, body, in_reply_to, status, created_at, updated_at) "
+                     "VALUES ('d3', ?, ?, 'reply', ?, 'Re: Site visit', 'And the gate code is 4411.', '<a1@x>', 'approved', ?, ?)",
+                     (mid, tid, json.dumps([{"name": "Ann", "email": "ann@x.example"}]), later, later))
+    assert (await send_draft(db, "s", {}, await db.one("SELECT * FROM drafts WHERE id = 'd3'")))["status"] == "sent"
     # The sync later sees the same sent email by Message-ID: no duplicate.
     ing = Ingest(db, await db.mailbox(mid))
     assert await ing.store_batch([RawMessage(provider_id="Sent:99", thread_key="T1", message_id="<out1@mine>", from_email=ME, subject="Re: Site visit", body="x", outbound=True)]) == 0
@@ -227,7 +235,7 @@ def test_thread_composer_review_and_compose_pages(mail_client, monkeypatch):
     d = asyncio.run(db.one("SELECT * FROM drafts WHERE id = ?", (draft["id"],)))
     assert d["status"] == "approved" and d["body"].endswith("Edited by hand.") and d["reply_to"] == "inbox@mine.example"
     jobs = [j for j in asyncio.run(Jobs(db).list("queued")) if j["kind"] == "send_draft"]   # a backfill job may sit beside it
-    assert jobs and jobs[0]["payload"] == {"draft_id": draft["id"], "dry_run": False}
+    assert jobs and jobs[0]["payload"] == {"draft_id": draft["id"], "dry_run": False, "saw_thread": False}
     assert "Sending…" in client.get(f"/mail/threads/{tid}").text
     assert "already%20sent" not in client.post(f"/mail/drafts/{draft['id']}/send", data={}).headers["location"]
 
@@ -253,3 +261,51 @@ def test_thread_composer_review_and_compose_pages(mail_client, monkeypatch):
     new = asyncio.run(db.one("SELECT * FROM drafts WHERE kind = 'new'"))
     assert json.loads(new["to_json"]) == [{"name": "John", "email": "john@x.example"}]
     assert "Draft%20discarded" in client.post(f"/mail/drafts/{new['id']}/reject").headers["location"]
+
+
+# ── answers that are not the JSON asked for ──
+
+
+def test_json_is_read_through_what_models_wrap_it_in():
+    assert extract_json('<think>Answer {briefly} with [care]</think>\n{"body": "Tuesday works", "confidence": "high"}') == \
+        {"body": "Tuesday works", "confidence": "high"}
+    # real line breaks inside the string, prose with braces before it, a trailing comma
+    assert extract_json('Here is the {draft}: {"body": "Line one\nLine two", "confidence": "medium",}') == \
+        {"body": "Line one\nLine two", "confidence": "medium"}
+    assert extract_json("{'body': 'hi there', 'confidence': 'low'}") == {"body": "hi there", "confidence": "low"}
+    assert extract_json('{"body": "See [SCOPE LINK 1] and {this}", "confidence": "high"}')["body"] == "See [SCOPE LINK 1] and {this}"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_answer_is_asked_for_once_more_then_kept_for_a_person():
+    settings = MailboxSettings(display_name="Jane Doe")
+    thread = {"subject": "Site visit", "id": "t"}
+    messages = [{"direction": "inbound", "from_name": "Ann Lee", "from_email": "ann@x", "body": "Can we do Tuesday at ten?", "sent_at": "2026-01-01"}]
+    good = {"body": "Tuesday at ten works, Ann. I'll bring the drawings you asked about so we can walk the site together.",
+            "confidence": "high", "confidence_reason": "clear ask", "stance": "question"}
+    # Not JSON the first time: asked again, plainly, and the second answer is used.
+    brain = FakeBrain(["I think Tuesday is fine!", good])
+    result = await draft_reply(brain, settings, {"address": ME}, thread, messages)
+    assert result["body"].startswith("Tuesday at ten works") and result["confidence"] == "high"
+    assert "could not be read as JSON" in brain.prompts[1][1]
+    # Cut off both times: the body it wrote is kept, at low confidence, so it waits on Review.
+    cut = '{"body": "Tuesday at ten works, Ann. I will bring the drawings you asked about so we can walk the site'
+    brain = FakeBrain([cut, cut, cut, cut])
+    result = await draft_reply(brain, settings, {"address": ME}, thread, messages)
+    assert result["body"].startswith("Tuesday at ten works, Ann.") and result["confidence"] == "low"
+    assert "read it before it goes" in result["confidence_reason"]
+    # The email written out instead of JSON, twice: kept the same way, without the "Here's a reply" line.
+    plain = "Here's a reply:\n\nTuesday at ten works, Ann. I'll bring the drawings you asked about so we can walk the site."
+    brain = FakeBrain([plain, plain, plain, plain])
+    result = await draft_reply(brain, settings, {"address": ME}, thread, messages)
+    assert result["body"].startswith("Tuesday at ten works") and result["confidence"] == "low"
+    # A no-contact in their message still stops it, even without the model's reading.
+    stop = [{**messages[0], "body": "Please remove me from your list and stop emailing me."}]
+    brain = FakeBrain([plain, plain])
+    result = await draft_reply(brain, settings, {"address": ME}, thread, stop)
+    assert result["stance"] == "opt_out" and result["body"] == ""
+    # Nothing usable at all: the item fails with what the model said.
+    brain = FakeBrain(["", ""])
+    from bb.mail.brain import BrainError
+    with pytest.raises(BrainError, match="twice"):
+        await draft_reply(brain, settings, {"address": ME}, thread, messages)

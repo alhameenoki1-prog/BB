@@ -71,6 +71,9 @@ def qa_check(subject: str, body: str, allowed_links: list[str] | None = None) ->
     return {"ok": not reasons and score < REVIEW, "reasons": reasons, "score": score, "sensitive": bool(sensitive)}
 
 
+SALVAGED_REASON = "the model did not answer in the form asked for; its text was kept, so read it before it goes"
+
+
 def greeting_for(name: str) -> str:
     first = (name or "").strip().split(" ")[0] if name else ""
     return f"Hi {first}," if first and first[0].isalpha() else "Hi,"
@@ -111,9 +114,15 @@ async def draft_reply(brain: MailBrain, settings: MailboxSettings, mailbox: dict
     thread_text = " ".join((m.get("body_text") or m.get("body") or m.get("snippet") or "") for m in messages)
     for attempt in (1, 2):
         result["attempts"] = attempt
-        data = await brain.complete_json(system, user)
+        data = await brain.complete_json(system, user, salvage="body")
         if not isinstance(data, dict):
             raise BrainError("The model did not return a draft.")
+        if data.get("_salvaged"):
+            # Not the JSON asked for, but a usable answer: their stance is read
+            # here instead, and a person looks at it before it goes.
+            data = {**data, "confidence": "low", "confidence_reason": SALVAGED_REASON,
+                    "stance": "opt_out" if _enq.is_opt_out(their_text) else
+                              "soft_no" if _enq.is_soft_no(their_text) else str(data.get("stance") or "other")}
         stance = str(data.get("stance") or "").strip().lower()
         result["stance"] = stance if stance in ("interested", "question", "soft_no", "opt_out", "other") else ""
         if result["stance"] == "opt_out":
@@ -190,9 +199,11 @@ async def draft_reconnect(brain: MailBrain, settings: MailboxSettings, mailbox: 
     outbound = [m.get("body_text") or m.get("body") or m.get("snippet") or "" for m in messages if m.get("direction") == "outbound"]
     for attempt in (1, 2):
         result["attempts"] = attempt
-        data = await brain.complete_json(system, user)
+        data = await brain.complete_json(system, user, salvage="body")
         if not isinstance(data, dict):
             raise BrainError("The model did not return a draft.")
+        if data.get("_salvaged"):
+            data = {**data, "confidence": "low", "confidence_reason": SALVAGED_REASON}
         if data.get("suitable") is False or (not str(data.get("body") or "").strip() and data.get("why")):
             result.update(suitable=False, why=str(data.get("why") or "")[:200])
             return result
@@ -238,9 +249,11 @@ async def draft_new(brain: MailBrain, settings: MailboxSettings, mailbox: dict, 
     result = {"subject": "", "body": "", "confidence": "low", "confidence_reason": "", "qa": {}, "attempts": 0, "scope_link": ""}
     for attempt in (1, 2):
         result["attempts"] = attempt
-        data = await brain.complete_json(system, user)
+        data = await brain.complete_json(system, user, salvage="body")
         if not isinstance(data, dict):
             raise BrainError("The model did not return a draft.")
+        if data.get("_salvaged"):
+            data = {**data, "confidence": "low", "confidence_reason": SALVAGED_REASON}
         body = strip_greeting_and_signoff(str(data.get("body") or "").strip(), settings.display_name)
         if scope and scope.get("mode") == "inquiry":
             body, result["scope_link"] = scope_mod.apply_scope_link(body, scope, [], inbound_text=instruction, always=False)

@@ -228,7 +228,7 @@ def test_the_campaign_goal_is_saved_and_every_queued_email_can_be_rewritten(clie
         def __init__(self, env):
             seen["env"] = env
 
-        async def complete_json(self, system, user):
+        async def complete_json(self, system, user, **_kw):
             seen["system"], seen["user"] = system, user
             return {"subject": "Quick question", "body": "Hi Dana,\n\nShorter: a 24-unit block in Towson, drawings done, start in April. "
                                                         "Want me to send over the project brief so you have the full scope?\n\nJane"}

@@ -88,8 +88,10 @@ async def test_no_second_reply_while_one_waits_and_none_after_the_thread_was_ans
 
 
 @pytest.mark.asyncio
-async def test_a_reply_campaign_waits_out_the_daily_cap_instead_of_dropping(tmp_path, monkeypatch):
+async def test_a_reply_campaign_answers_past_the_daily_cap(tmp_path, monkeypatch):
     monkeypatch.setattr("bb.mail.sending.account_for", lambda m, c, e: SentBox(m, c, e))
+    monkeypatch.setenv("BB_MAIL_PACE_SECONDS", "0")
+    SentBox.sent = []
     monkeypatch.setattr(runs, "sent_today", lambda db, mid: asyncio.sleep(0, result=5), raising=False)
     import bb.mail.sending as sending_mod
     monkeypatch.setattr(sending_mod, "sent_today", lambda db, mid: asyncio.sleep(0, result=5))
@@ -98,8 +100,11 @@ async def test_a_reply_campaign_waits_out_the_daily_cap_instead_of_dropping(tmp_
     await db.execute("UPDATE reply_runs SET since = '2000-01-01T00:00:00Z' WHERE id = ?", (run["id"],))
     await _mail_in(db, box, 1, "2026-01-01T10:00:00Z")
     await runs.collect_campaign_threads(db, await db.one("SELECT * FROM reply_runs WHERE id = ?", (run["id"],)), box)
-    out = await runs.process_mailbox(db, "s", {"HARVEY_HOME": str(tmp_path)}, FakeBrain([]), None, "j", run["id"], mid)
-    assert "daily cap of 5" in out["waiting"] and (await runs.run_summary(db, run["id"]))["queued"] == 1
+    answer = {"body": "Tuesday at ten works. I'll bring the drawings you asked about so we can walk the site together.",
+              "confidence": "high", "confidence_reason": "clear ask", "stance": "question"}
+    out = await runs.process_mailbox(db, "s", {"HARVEY_HOME": str(tmp_path)}, FakeBrain([answer]), None, "j", run["id"], mid)
+    # Five sent today against a cap of five, and the reply still goes: replies have no limit.
+    assert out["sent"] == 1 and not out["waiting"] and len(SentBox.sent) == 1
 
 
 @pytest.mark.asyncio

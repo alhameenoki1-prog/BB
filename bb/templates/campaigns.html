@@ -18,7 +18,7 @@
       {% if c.summary.worker_doing %}<div class="tiny {{ 'bad' if c.summary.worker_doing.state == 'stuck' else 'muted' }}">{{ c.summary.worker_doing.text }}</div>{% endif %}
       {% if c.summary.sending %}<div class="tiny muted">{{ c.summary.sending.text if c.summary.sending.text is defined else '' }}</div>{% endif %}</td>
     <td>{{ c.summary.recipients }} lead{{ 's' if c.summary.recipients != 1 else '' }} · {{ c.summary.sent + c.summary.replied }} emailed · {{ c.summary.replied }} replied · {{ c.summary.outbox_scheduled }} scheduled{% if c.summary.outbox_pending %} · <a href="/outbox">{{ c.summary.outbox_pending }} need review</a>{% endif %}</td>
-    <td>{% if c.share and c.share.limit %}{{ c.share.used }} sent{% if c.share.share %}, part {{ c.share.share }}{% endif %} · account {{ c.share.total }} of {{ c.share.limit }}{% if c.share.members > 1 %} · shared by {{ c.share.members }}{% endif %}{% elif c.account %}no limit known{% endif %}</td>
+    <td>{% if c.share and c.share.limit %}{{ c.share.used }} first email{{ 's' if c.share.used != 1 else '' }} and follow-ups{% if c.share.share %}, part {{ c.share.share }}{% endif %} · account {{ c.share.total }} of {{ c.share.limit }}{% if c.share.members > 1 %} · shared by {{ c.share.members }}{% endif %}{% elif c.account %}no limit known{% endif %}{% if c.share and c.share.answers %}<div class="tiny muted">+ {{ c.share.answers }} repl{{ 'ies' if c.share.answers != 1 else 'y' }} (replies have no limit)</div>{% endif %}</td>
     <td style="text-align:right;white-space:nowrap">
       <form class="inline" method="post" action="/campaigns/outreach/{{ c.id }}/open"><button class="secondary small" type="submit">Open</button></form>
       {% if c.status == 'running' %}
@@ -74,11 +74,11 @@
   {% for a in accounts %}
   <tr><td>{{ a.address }}{% if a.status == 'reconnect' %} <span class="tag bad">reconnect</span>{% endif %}</td>
     <td>{{ a.limit or 'none' }} <a class="tiny" href="/mail/accounts/{{ a.id }}">change</a></td>
-    <td>{{ a.ledger.total }}</td>
-    <td>{% if a.ledger.members %}{% for m in a.ledger.members %}{{ m.label or m.feature }} ({{ m.used }}{% if a.ledger.share %} of a {{ a.ledger.share }} part{% endif %}){{ ', ' if not loop.last else '' }}{% endfor %}{% else %}<span class="muted">nothing</span>{% endif %}</td></tr>
+    <td>{{ a.ledger.total }}{% if a.ledger.answers %} <span class="tiny muted">+ {{ a.ledger.answers }} repl{{ 'ies' if a.ledger.answers != 1 else 'y' }}, not counted</span>{% endif %}</td>
+    <td>{% if a.ledger.members %}{% for m in a.ledger.members %}{{ m.label or m.feature }} ({% if m.answers_only %}{{ m.answers }} repl{{ 'ies' if m.answers != 1 else 'y' }}, no limit{% else %}{{ m.used }}{% if a.ledger.share %} of a {{ a.ledger.share }} part{% endif %}{% if m.answers %}, + {{ m.answers }} repl{{ 'ies' if m.answers != 1 else 'y' }}{% endif %}{% endif %}){{ ', ' if not loop.last else '' }}{% endfor %}{% else %}<span class="muted">nothing</span>{% endif %}</td></tr>
   {% endfor %}
   </tbody></table>
-  <p class="tiny muted" style="margin-top:8px">Every campaign on an account is guaranteed an equal part of its daily limit and may use more only from what no other campaign there still has a claim on. Pausing or stopping one gives its part back at once.</p>
+  <p class="tiny muted" style="margin-top:8px">Every campaign on an account is guaranteed an equal part of its daily limit and may use more only from what no other campaign there still has a claim on. Pausing or stopping one gives its part back at once. Replies to people who wrote are never limited and do not use up the limit: it is for first emails, follow-ups and scans.</p>
 </div>
 
 <div class="card" id="new">

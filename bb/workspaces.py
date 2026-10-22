@@ -1237,7 +1237,13 @@ class Workspace:
             rows = await self._query("SELECT value FROM settings WHERE key = 'sending_paused'")
             out["sending_paused"] = (rows[0]["value"] or "") if rows else ""
         out["not_sent"] = out["waiting"] + out["queued"]
-        out["allowance"] = await self._send_allowance(out["sent_today"])
+        first_today = out["sent_today"]
+        if out["sent_today"] and await self._table_exists("outbox"):
+            # The daily limit counts first emails and follow-ups; replies have none.
+            rows = await self._query("SELECT COUNT(*) AS n FROM outbox WHERE status = 'sent' AND date(sent_at) = date('now') "
+                                     "AND COALESCE(kind, 'sequence') = 'sequence'")
+            first_today = rows[0]["n"] if rows else 0
+        out["allowance"] = await self._send_allowance(first_today)
         out["sending"] = await self._sending_status(out)
         return out
 
@@ -1515,12 +1521,13 @@ class Workspace:
         out = {"allowed": allowed, "sent": sent_today, "warming": warming, "day": day + 1,
                "reached": bool(allowed and sent_today >= allowed), "max_daily": max_daily}
         if warming:
-            out["text"] = (f"Warm-up day {day + 1}: {sent_today} of {allowed} sent today. "
+            out["text"] = (f"Warm-up day {day + 1}: {sent_today} of {allowed} first emails and follow-ups sent today. "
                            f"Starts at {WARMUP_START} a day and rises by {WARMUP_STEP} each day"
-                           + (f" up to your limit of {max_daily}." if max_daily else "."))
+                           + (f" up to your limit of {max_daily}." if max_daily else ".") + " Replies have no limit.")
         elif allowed:
-            out["text"] = (f"{sent_today} of {allowed} sent today "
-                           + ("(what this mailbox allows per day)." if ceiling and allowed == ceiling else "(your daily limit)."))
+            out["text"] = (f"{sent_today} of {allowed} first emails and follow-ups sent today "
+                           + ("(what this mailbox allows per day)." if ceiling and allowed == ceiling else "(your daily limit).")
+                           + " Replies have no limit.")
         else:
             out["text"] = f"{sent_today} sent today, no daily limit set."
         return out
@@ -1608,7 +1615,7 @@ class Workspace:
                   + "\n\nReturn ONLY JSON: {\"subject\": \"...\", \"body\": \"...\"}")
         user = ((f"INSTRUCTION FROM {name}: {instruction}\n\n" if instruction else "Make it better: shorter, more concrete, more natural.\n\n")
                 + f"SUBJECT: {item.get('subject', '')}\n\nBODY:\n{body}")
-        data = await brain.complete_json(system, user)
+        data = await brain.complete_json(system, user, salvage="body")
         if not isinstance(data, dict) or not str(data.get("body") or "").strip():
             raise ValueError("the model did not return an email")
         new_body = str(data["body"]).strip()

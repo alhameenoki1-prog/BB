@@ -83,23 +83,30 @@ async def test_run_across_accounts_routes_by_mode_and_confidence(tmp_path, monke
     run2 = await runs.create_run(db, boxes, ta + tb, mode="auto", reply_to="team@mine.example")
     brain = FakeBrain([GOOD, GOOD, UNSURE, GOOD])
     out = await runs.process_mailbox(db, "s", {}, brain, None, "", run2["id"], ma)
-    assert out["sent"] == 1 and out["skipped"] == 1          # cap of 1: the second is skipped before drafting
-    assert len(brain.prompts) == 1
+    assert out["sent"] == 2 and out["skipped"] == 0          # a cap of 1, and both go: replies have no limit
+    assert len(brain.prompts) == 2
     out = await runs.process_mailbox(db, "s", {}, brain, None, "", run2["id"], mb)
     assert out["sent"] == 1 and out["needs_review"] == 1 and out["skipped"] == 1
-    assert len(SentBox.sent) == 2 and all(s["reply_to"] == "team@mine.example" for s in SentBox.sent)
+    assert len(SentBox.sent) == 3 and all(s["reply_to"] == "team@mine.example" for s in SentBox.sent)
     items = await db.query("SELECT * FROM run_items WHERE run_id = ? ORDER BY status", (run2["id"],))
     held = next(i for i in items if i["status"] == "needs_review")
     assert "confidence low" in held["detail"] and "pricing" in held["detail"]
     r = await db.one("SELECT * FROM reply_runs WHERE id = ?", (run2["id"],))
-    assert r["status"] == "done" and json.loads(r["summary_json"]) == {"queued": 0, "drafting": 0, "needs_review": 1, "sent": 2, "dry_run": 0, "skipped": 2, "failed": 0}
+    assert r["status"] == "done" and json.loads(r["summary_json"]) == {"queued": 0, "drafting": 0, "needs_review": 1, "sent": 3, "dry_run": 0, "skipped": 1, "failed": 0}
     sent_threads = [i["thread_id"] for i in items if i["status"] == "sent"]
     for t in sent_threads:
         assert (await db.one("SELECT state FROM threads WHERE id = ?", (t,)))["state"] == "awaiting_them"
 
     # Dry run: drafts everything that still needs a reply, sends nothing.
+    # (One answered thread gets a new message, so it needs a reply again.)
+    again = await db.one("SELECT * FROM threads WHERE id = ?", (sent_threads[0],))
+    who = await db.one("SELECT from_email, message_id FROM messages WHERE thread_id = ? AND direction = 'inbound'", (again["id"],))
+    await Ingest(db, await db.mailbox(again["mailbox_id"])).store_batch([RawMessage(
+        provider_id="again1", thread_key="", message_id="<again1@x>", in_reply_to=who["message_id"], references=who["message_id"],
+        from_email=who["from_email"], from_name="Again", subject="Re: " + again["subject"], body="And could we start at nine instead?",
+        sent_at="2027-01-01T10:00:00Z", to=[{"name": "", "email": "x@mine.example"}])])
     SentBox.sent.clear()
-    remaining = [t for t in ta + tb if t not in sent_threads]
+    remaining = [t for t in ta + tb if t not in sent_threads] + [again["id"]]
     run3 = await runs.create_run(db, boxes, remaining, mode="dry_run")
     brain = FakeBrain([GOOD] * 5)
     for mid in (ma, mb):

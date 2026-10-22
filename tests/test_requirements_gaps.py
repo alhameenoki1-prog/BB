@@ -43,8 +43,8 @@ async def _mail_in(db, box, n, when, body="Can we do Tuesday?"):
                                                   sent_at=when, to=[{"name": "", "email": ME}])])
 
 
-async def _run(db, mid, kind, status="running", mode="auto", created="2026-01-01T00:00:00Z"):
-    rid = f"r-{kind}-{status}"
+async def _run(db, mid, kind, status="running", mode="auto", created="2026-01-01T00:00:00Z", rid=""):
+    rid = rid or f"r-{kind}-{status}"
     await db.execute("INSERT INTO reply_runs(id, mailbox_ids_json, mode, status, total, created_at, updated_at, kind) "
                      "VALUES (?, ?, ?, ?, 0, ?, ?, ?)", (rid, json.dumps([mid]), mode, status, created, created, kind))
     return rid
@@ -61,47 +61,54 @@ async def _sent(db, mid, rid, n):
 # ── 1. the command center's cap is split, like the account's limit ──
 
 @pytest.mark.asyncio
-async def test_a_scan_cannot_use_the_whole_cap_and_leave_the_reply_campaign_none(tmp_path):
+async def test_two_scans_split_the_cap_and_replies_are_not_part_of_it(tmp_path):
     db, mid, box = await _box(tmp_path, daily_cap=4)
     scan = await _run(db, mid, "reconnect")
+    other = await _run(db, mid, "reconnect", rid="r-other-scan")
     replies = await _run(db, mid, "reply_campaign")
-    await db.execute("INSERT INTO run_items(id, run_id, mailbox_id, thread_id, status, updated_at) VALUES ('i1', ?, ?, 't', 'queued', 'x')",
-                     (scan, mid))
+    for rid, iid in ((scan, "i1"), (other, "i2")):
+        await db.execute("INSERT INTO run_items(id, run_id, mailbox_id, thread_id, status, updated_at) VALUES (?, ?, ?, 't', 'queued', 'x')",
+                         (iid, rid, mid))
     await _sent(db, mid, scan, 2)                                   # the scan used its part of four
     full, why = await runs.cap_room(db, mid, scan, 4)
     assert not full and "part of the command center's daily cap of 4 is used (2 of 2)" in why
-    assert await runs.cap_room(db, mid, replies, 4) == (False, "")  # the reply campaign still has its two
-    await _sent(db, mid, replies, 2)
-    full, why = await runs.cap_room(db, mid, replies, 4)
+    assert await runs.cap_room(db, mid, other, 4) == (False, "")    # the other scan still has its two
+    # Replies sent today count for nothing: the cap is for what writes first.
+    await _sent(db, mid, replies, 5)
+    assert await runs.cap_room(db, mid, other, 4) == (False, "")
+    await _sent(db, mid, other, 2)
+    full, why = await runs.cap_room(db, mid, other, 4)
     assert full and "daily cap of 4 for this account is reached" in why
-    # Sends by a run that is over (or by hand) are nobody's part: two live
-    # runs never hold each other's part with the cap half used.
+    # Sends by a run that is over (or by hand) are nobody's part.
     await db.execute("DELETE FROM drafts")
     old = await _run(db, mid, "reconnect", status="done")
     await _sent(db, mid, old, 2)
-    assert await runs.cap_room(db, mid, replies, 4) == (False, "")
+    assert await runs.cap_room(db, mid, other, 4) == (False, "")
     assert await runs.cap_room(db, mid, scan, 4) == (False, "")
-    await db.execute("DELETE FROM drafts WHERE run_id = ?", (old,))
-    # A scan that is done on this account holds nothing back.
-    await db.execute("UPDATE run_items SET status = 'sent'")
-    await db.execute("DELETE FROM drafts WHERE run_id = ?", (replies,))
-    assert await runs.cap_room(db, mid, replies, 4) == (False, "")
 
 
 @pytest.mark.asyncio
-async def test_a_reply_campaign_waits_for_its_part_instead_of_dropping(tmp_path, monkeypatch):
+async def test_a_reply_campaign_answers_past_the_cap(tmp_path, monkeypatch):
     monkeypatch.setattr("bb.mail.sending.account_for", lambda m, c, e: SentBox(m, c, e))
+    monkeypatch.setenv("BB_MAIL_PACE_SECONDS", "0")
+    SentBox.sent = []
     db, mid, box = await _box(tmp_path, daily_cap=2)
     scan = await _run(db, mid, "reconnect")                          # a scan on the same account, with work left
     await db.execute("INSERT INTO run_items(id, run_id, mailbox_id, thread_id, status, updated_at) VALUES ('s1', ?, ?, 't', 'queued', 'x')",
                      (scan, mid))
+    await _sent(db, mid, scan, 2)                                    # the cap is used up
     run = await runs.create_reply_campaign(db, box, mode="auto")
     await db.execute("UPDATE reply_runs SET since = '2000-01-01T00:00:00Z' WHERE id = ?", (run["id"],))
-    await _sent(db, mid, run["id"], 1)                               # its part of two
     await _mail_in(db, box, 1, "2026-01-01T10:00:00Z")
     await runs.collect_campaign_threads(db, await db.one("SELECT * FROM reply_runs WHERE id = ?", (run["id"],)), box)
-    out = await runs.process_mailbox(db, "s", {}, None, None, "j", run["id"], mid)
-    assert "part of the command center's daily cap" in out["waiting"] and (await runs.run_summary(db, run["id"]))["queued"] == 1
+    from tests.test_mail_reply import FakeBrain
+    answer = {"body": "Tuesday at ten works. I'll bring the drawings you asked about so we can walk the site together.",
+              "confidence": "high", "confidence_reason": "clear ask", "stance": "question"}
+    out = await runs.process_mailbox(db, "s", {}, FakeBrain([answer]), None, "j", run["id"], mid)
+    assert out["sent"] == 1 and not out["waiting"] and len(SentBox.sent) == 1
+    # The scan, which writes first, still waits for tomorrow.
+    full, why = await runs.cap_room(db, mid, scan, 2)
+    assert full and "daily cap of 2 for this account is reached" in why
 
 
 # ── 2. people who only wrote in are the reply campaign's ──
@@ -397,15 +404,14 @@ async def test_a_draft_approved_on_review_is_not_a_second_answer(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_a_review_mode_campaign_keeps_its_part_of_the_cap(tmp_path):
+async def test_a_reply_campaign_holds_no_part_of_the_cap(tmp_path):
     db, mid, box = await _box(tmp_path, daily_cap=4)
     scan = await _run(db, mid, "reconnect")
     await db.execute("INSERT INTO run_items(id, run_id, mailbox_id, thread_id, status, updated_at) VALUES ('i1', ?, ?, 't', 'queued', 'x')",
                      (scan, mid))
-    await _run(db, mid, "reply_campaign", mode="review")             # a person approves its replies
-    await _sent(db, mid, scan, 2)
-    full, why = await runs.cap_room(db, mid, scan, 4)
-    assert not full and "(2 of 2)" in why
+    await _run(db, mid, "reply_campaign", mode="review")             # replies need no room: they have no limit
+    await _sent(db, mid, scan, 3)
+    assert await runs.cap_room(db, mid, scan, 4) == (False, "")      # the scan may use all four
 
 
 @pytest.mark.asyncio

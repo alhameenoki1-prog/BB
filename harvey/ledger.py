@@ -24,6 +24,12 @@ replies that come in later while a busy outreach campaign uses what is
 left. A send is reserved before it goes (one transaction, so two
 processes cannot both take the last slot) and released if it fails.
 
+Replies are not limited: an answer to someone who wrote is never held
+back by any limit, and does not use up the account's limit for first
+emails. It is still written down (its feature starts with ``free:``) so
+the Campaigns page can show it, and a campaign that only answers people
+(a reply campaign, a reply run) holds no part of the limit.
+
 The same file holds **suppressed** addresses: someone who asks one
 campaign never to be contacted again is skipped by all of them.
 """
@@ -37,6 +43,8 @@ from pathlib import Path
 
 WINDOW_SECONDS = 24 * 3600     # providers count a rolling day
 ACTIVE_SECONDS = 6 * 3600       # a member that has not checked in for this long has stopped (a paused or finished one leaves at once)
+FREE = "free:"                  # a send no limit applies to (an answer): recorded, never counted
+ANSWERS_ONLY = ("reply", "reply-run")   # members that only answer people: they take no part of the limit
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sends (
@@ -196,19 +204,28 @@ class Ledger:
 
     # ── the split ──
 
-    def _used(self, con, account: str, since: float, campaign: str | None = None) -> int:
+    def _used(self, con, account: str, since: float, campaign: str | None = None, free: bool = False) -> int:
+        """Sends in the window that count against the limit (``free``: the
+        answers instead, which do not)."""
+        which = "feature LIKE 'free:%'" if free else "feature NOT LIKE 'free:%'"
         if campaign is None:
-            row = con.execute("SELECT COUNT(*) FROM sends WHERE account = ? AND sent_at > ?", (account, since)).fetchone()
+            row = con.execute(f"SELECT COUNT(*) FROM sends WHERE account = ? AND sent_at > ? AND {which}",
+                              (account, since)).fetchone()
         else:
-            row = con.execute("SELECT COUNT(*) FROM sends WHERE account = ? AND campaign = ? AND sent_at > ?",
+            row = con.execute(f"SELECT COUNT(*) FROM sends WHERE account = ? AND campaign = ? AND sent_at > ? AND {which}",
                               (account, campaign, since)).fetchone()
         return int(row[0] or 0)
+
+    @staticmethod
+    def _sharing(members: list[dict]) -> list[dict]:
+        """The members that take a part of the limit (not those that only answer)."""
+        return [m for m in members if m.get("feature") not in ANSWERS_ONLY]
 
     def _picture(self, con, account: str, campaign: str, now: float, priority: bool = False) -> dict:
         since = now - WINDOW_SECONDS
         row = con.execute("SELECT daily FROM limits WHERE account = ?", (account,)).fetchone()
         limit = int(row[0]) if row else 0
-        members = [m for m in self.members(account, now, con=con)]
+        members = self._sharing(self.members(account, now, con=con))
         others = [m for m in members if m["campaign"] != campaign]
         total = self._used(con, account, since)
         mine = self._used(con, account, since, campaign)
@@ -248,10 +265,12 @@ class Ledger:
             con.close()
 
     def reserve(self, account: str, campaign: str, feature: str = "", label: str = "",
-                now: float | None = None, priority: bool = False, kind: str = "") -> tuple[int | None, dict]:
+                now: float | None = None, priority: bool = False, kind: str = "",
+                free: bool = False) -> tuple[int | None, dict]:
         """Take one send slot, or say why not. (slot id or None, picture).
         ``priority`` (a person pressing Send) is held only to the account's
-        own limit, not to the campaigns' parts."""
+        own limit, not to the campaigns' parts. ``free`` (an answer to
+        someone who wrote) is never held back and does not count."""
         t, account = self._now(now), _key(account)
         con = self._con()
         try:
@@ -259,11 +278,13 @@ class Ledger:
             if not priority:
                 self.join(account, campaign, feature, label, now=t, con=con)
             pic = self._picture(con, account, campaign, t, priority)
+            if free:
+                pic = {**pic, "ok": True, "free": True, "reason": ""}
             if not pic["ok"]:
                 con.execute("ROLLBACK")
                 return None, pic
             cur = con.execute("INSERT INTO sends(account, campaign, feature, sent_at) VALUES (?, ?, ?, ?)",
-                              (account, campaign, kind or feature, t))
+                              (account, campaign, (FREE if free else "") + (kind or feature), t))
             con.execute("DELETE FROM sends WHERE sent_at < ?", (t - 2 * WINDOW_SECONDS,))
             con.execute("COMMIT")
             return cur.lastrowid, pic
@@ -296,13 +317,17 @@ class Ledger:
             row = con.execute("SELECT daily FROM limits WHERE account = ?", (account,)).fetchone()
             limit = int(row[0]) if row else 0
             members = self.members(account, t, con=con)
-            share = limit // max(1, len(members)) if limit else 0
+            share = limit // max(1, len(self._sharing(members))) if limit else 0
             return {"limit": limit, "total": self._used(con, account, since), "share": share,
-                    "members": [{**m, "used": self._used(con, account, since, m["campaign"])} for m in members]}
+                    "answers": self._used(con, account, since, free=True),
+                    "members": [{**m, "used": self._used(con, account, since, m["campaign"]),
+                                 "answers": self._used(con, account, since, m["campaign"], free=True),
+                                 "answers_only": m.get("feature") in ANSWERS_ONLY} for m in members]}
         finally:
             con.close()
 
     def used_by(self, campaign: str, now: float | None = None) -> int:
+        """Every send of this campaign in the window, answers included."""
         con = self._con()
         try:
             row = con.execute("SELECT COUNT(*) FROM sends WHERE campaign = ? AND sent_at > ?",

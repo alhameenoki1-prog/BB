@@ -546,3 +546,38 @@ async def test_a_mailbox_that_cannot_be_read_holds_sending(state):
         await provider.get_replies()
     handler = make_handler(state, provider)
     assert await handler._run_native() is False
+
+
+@pytest.mark.asyncio
+async def test_replies_go_when_the_daily_limit_is_used_up(state, tmp_path, monkeypatch):
+    """The daily limit, the warm-up and the account's share are for first
+    emails and follow-ups. Replies have no limit and do not use it up."""
+    from harvey.ledger import Ledger
+    monkeypatch.setenv("HARVEY_LEDGER", str(tmp_path / "sendlog.db"))
+    monkeypatch.setenv("HARVEY_LEDGER_ACCOUNT", "harvey@x.co")
+    monkeypatch.setenv("HARVEY_LEDGER_CAMPAIGN", "c-1")
+    led = Ledger(tmp_path / "sendlog.db")
+    led.set_limit("harvey@x.co", 2)
+    provider = FakeProvider()
+    sender = make_sender(state, provider, require_approval=False)
+    sender.config.channels.email.max_daily_sends = 2
+    try:
+        ids = [await seed_prospect(state, email=f"p{i}@acme.com") for i in range(4)]
+        await seed_campaign(state, ids)
+        await sender._run_native()
+        assert len(provider.sent) == 2                       # two of four first emails: the limit
+        # Three people wrote back; their answers go although the day's limit is used.
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+        for i in range(3):
+            await state.add_outbox_item(prospect_id=ids[i], to_email=f"p{i}@acme.com", subject="Re: hi", body="Thanks, Tuesday works.",
+                                        send_at=now, status="approved", kind="reply", in_reply_to=f"<in{i}@acme.com>")
+        await sender._run_native()
+        assert len(provider.sent) == 5
+        assert [s["to"] for s in provider.sent[2:]] == ["p0@acme.com", "p1@acme.com", "p2@acme.com"]
+        # The first emails still wait, and the replies used none of the limit.
+        assert await state.count_outbox_sent_today(kind="sequence") == 2
+        assert led.summary("harvey@x.co")["total"] == 2 and led.summary("harvey@x.co")["answers"] == 3
+        await sender._run_native()
+        assert len(provider.sent) == 5
+    finally:
+        sender.config.channels.email.max_daily_sends = 50

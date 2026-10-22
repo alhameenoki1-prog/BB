@@ -95,14 +95,13 @@ def pace() -> float:
 
 
 async def cap_room(db: MailDB, mailbox_id: str, run_id: str, cap: int) -> tuple[bool, str]:
-    """May this run send one more today under the command center's own cap
+    """May this scan send one more today under the command center's own cap
     on this account? (cap reached for everyone, why not) or (False, "").
 
-    The cap is split like the account's shared limit: each run sending on
-    its own on the account (a reply campaign always, a scan or reply run
-    while it has items left here) is guaranteed an equal part, and goes
-    beyond it only from what the others are not still owed. So a scan
-    cannot use the whole cap and leave the reply campaign none."""
+    Only scans keep to the cap (replies have no limit and do not count).
+    It is split like the account's shared limit: each scan sending on its
+    own on the account while it has items left here is guaranteed an equal
+    part, and goes beyond it only from what the others are not still owed."""
     from bb.mail.sending import sent_today
     if not cap:
         return False, ""
@@ -113,7 +112,7 @@ async def cap_room(db: MailDB, mailbox_id: str, run_id: str, cap: int) -> tuple[
     # same cap, and the account's shared limit already counts them.)
     others = await db.query(
         "SELECT r.id, r.kind FROM reply_runs r WHERE r.id != ? AND r.status IN ('queued', 'running') "
-        "AND r.mode IN ('auto', 'review') AND r.mailbox_ids_json LIKE ?", (run_id, f'%"{mailbox_id}"%'))
+        "AND r.kind = 'reconnect' AND r.mode IN ('auto', 'review') AND r.mailbox_ids_json LIKE ?", (run_id, f'%"{mailbox_id}"%'))
     live = []
     for o in others:
         if o["kind"] != "reply_campaign":
@@ -820,10 +819,11 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
                 pic = led.allowance(mailbox["address"], run_id, feature, label)
             except Exception as e:
                 pic = {"ok": False, "reason": f"the shared send ledger could not be read ({type(e).__name__})"}
-            if not pic["ok"]:
+            if not pic["ok"] and reconnect:
                 waiting = pic["reason"]
                 break                 # the rest waits for room on the account; nothing is dropped
-        if run["mode"] == "auto" and settings.daily_cap:
+        # Replies have no send limit: only a scan, which writes first, keeps to the cap.
+        if reconnect and run["mode"] == "auto" and settings.daily_cap:
             full, why = await cap_room(db, mailbox_id, run_id, settings.daily_cap)
             if why and (kind == "reply_campaign" or not full):
                 waiting = why

@@ -385,7 +385,7 @@ def test_gmail_connect_needs_a_server_client(tmp_path):
     with TestClient(create_app(settings), follow_redirects=False) as client:
         _login(client, **ADMIN)
         assert "no%20Google%20OAuth%20client" in client.post("/gmail/connect").headers["location"]
-        assert "GMAIL_CLIENT_ID" in client.get("/").text  # admin sees the server gap
+        assert "Sign in with Google is off" in client.get("/").text  # admin sees the gap and where to fix it
 
 
 # ── worker process ──
@@ -1173,11 +1173,11 @@ def test_dashboard_explains_the_warm_up_cap(client):
     s = _a.run(ws.summary())
     assert s["allowance"]["warming"] and s["allowance"]["allowed"] == 20 and s["allowance"]["day"] == 1
     page = client.get("/").text
-    assert "Warm-up day 1: 0 of 20 sent today" in page and "Warm this mailbox up" in page
+    assert "Warm-up day 1: 0 of 20 first emails and follow-ups sent today" in page and "Warm this mailbox up" in page
     client.post("/profile", data={**PROFILE, "speed": "fast", "max_daily_sends": "500"})   # ramp off
     s = _a.run(ws.summary())
     assert not s["allowance"]["warming"] and s["allowance"]["allowed"] == 500
-    assert "0 of 500 sent today (your daily limit)" in client.get("/").text
+    assert "0 of 500 first emails and follow-ups sent today (your daily limit)" in client.get("/").text
 
 
 def test_cli_make_admin(tmp_path, monkeypatch, capsys):

@@ -38,6 +38,7 @@ PER_COPY_REWRITES = 3
 # Max sends drained per heartbeat cycle — spreads volume through the day
 # instead of bursting the daily cap in one minute.
 MAX_SENDS_PER_CYCLE = 8
+REPLIES_PER_PASS = 200      # replies have no limit; this only bounds one pass (the next pass takes the rest)
 # Warm-up ramp for a mailbox new to cold outreach: this many on day one,
 # then WARMUP_STEP more each day until the configured daily cap (or, with
 # no cap, until the ramp no longer binds). Mailbox providers watch a
@@ -573,7 +574,10 @@ class Sender:
         if await self._in_cooloff():
             return
         max_daily = email_cfg.max_daily_sends
-        sent_today = await self.state.count_outbox_sent_today()
+        # Every limit below is for first emails and follow-ups. Replies (an
+        # answer to someone who wrote) have none: they go whatever the day's
+        # count, the warm-up or the account's share, and do not use them up.
+        sent_today = await self.state.count_outbox_sent_today(kind="sequence")
         per_cycle = int(getattr(email_cfg, "sends_per_cycle", MAX_SENDS_PER_CYCLE) or
                         MAX_SENDS_PER_CYCLE)
         ceiling = int(getattr(email_cfg, "mailbox_daily_ceiling", 0) or 0)
@@ -587,29 +591,31 @@ class Sender:
         # 0 means no daily limit: the provider's own ceiling is the only one.
         budget = per_cycle if allowance == 0 else min(per_cycle, allowance - sent_today)
         if budget <= 0:
+            budget = 0
             logger.info(
                 f"Sender: daily send allowance reached ({sent_today}/{allowance}"
-                f"{' warm-up' if allowance != max_daily else ''}).")
-            return
+                f"{' warm-up' if allowance != max_daily else ''}); only replies go.")
 
-        if self.ledger is not None:
+        if self.ledger is not None and budget > 0:
             # Other campaigns send from this account too: this one keeps to
             # its part of the account's daily limit.
             try:
                 pic = await self._led(self.ledger.allowance, self.ledger_account, self.ledger_campaign, "outreach", self.ledger_label)
             except Exception as e:
-                logger.warning(f"Sender: the shared send ledger could not be read ({e}); sending waits for the next pass.")
-                return
+                logger.warning(f"Sender: the shared send ledger could not be read ({e}); first emails wait for the next pass.")
+                pic = {"ok": False, "limited": True, "room": 0, "reason": ""}
             if not pic["ok"]:
-                logger.info(f"Sender: {pic['reason']}.")
-                await self.state.set_setting(SKIP_REASON_KEY, f"daily allowance shared with other campaigns: {pic['reason']}")
-                return
-            # Room again: the wait is over, so the dashboard (and the stall
-            # check, which ignores a deliberate wait) stop reading it.
-            if ((await self.state.get_setting(SKIP_REASON_KEY)) or "").startswith("daily allowance shared with other campaigns"):
-                await self.state.set_setting(SKIP_REASON_KEY, "")
-            if pic["limited"]:
-                budget = min(budget, pic["room"])
+                if pic.get("reason"):
+                    logger.info(f"Sender: {pic['reason']}; only replies go.")
+                    await self.state.set_setting(SKIP_REASON_KEY, f"daily allowance shared with other campaigns: {pic['reason']}")
+                budget = 0
+            else:
+                # Room again: the wait is over, so the dashboard (and the stall
+                # check, which ignores a deliberate wait) stop reading it.
+                if ((await self.state.get_setting(SKIP_REASON_KEY)) or "").startswith("daily allowance shared with other campaigns"):
+                    await self.state.set_setting(SKIP_REASON_KEY, "")
+                if pic["limited"]:
+                    budget = min(budget, pic["room"])
 
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         stale = await self.state.release_stale_sending()
@@ -617,23 +623,21 @@ class Sender:
             logger.warning(f"Sender: {stale} email(s) were left mid-send by an earlier worker; marked failed.")
         due = await self.state.get_outbox(
             status="approved", due_before=now, limit=budget * 3
+        ) if budget > 0 else []
+        # Replies on their own query, every pass: cold emails held at the
+        # front of the queue (no allowance left, or an unavailable
+        # compliance check) never keep them waiting.
+        seen = {item["id"] for item in due}
+        replies = await self.state.get_outbox(
+            status="approved", due_before=now, limit=REPLIES_PER_PASS,
+            exclude_kind="sequence",
         )
-        if self.precleared is not None:
-            # Cold emails held by an unavailable compliance check stay
-            # approved at the front of the queue and could fill the page
-            # above, so fetch replies (and any other unchecked kind) on their
-            # own too. Bounded: one extra query of the same size.
-            seen = {item["id"] for item in due}
-            unchecked = await self.state.get_outbox(
-                status="approved", due_before=now, limit=budget * 3,
-                exclude_kind="sequence",
+        extra = [item for item in replies if item["id"] not in seen]
+        if extra:
+            due = sorted(
+                due + extra,
+                key=lambda i: (i.get("send_at") or "", i.get("created_at") or ""),
             )
-            extra = [item for item in unchecked if item["id"] not in seen]
-            if extra:
-                due = sorted(
-                    due + extra,
-                    key=lambda i: (i.get("send_at") or "", i.get("created_at") or ""),
-                )
         if not due:
             return
 
@@ -642,9 +646,10 @@ class Sender:
         # cold emails wait for a later cycle, replies still go out.
         compliance_paused = False
         ready: list[tuple[dict, object, str]] = []   # (item, prospect, receipt_id)
+        cold = 0
         for item in due:
-            if len(ready) >= budget:
-                break
+            if item["kind"] == "sequence" and cold >= budget:
+                continue                  # the limit is for these; replies after them still go
             needs_check = self.precleared is not None and item["kind"] == "sequence"
             if needs_check and compliance_paused:
                 continue
@@ -738,6 +743,8 @@ class Sender:
                     continue
                 receipt_id = clearance.receipt_id
             ready.append((item, prospect, receipt_id))
+            if item["kind"] == "sequence":
+                cold += 1
 
         # Send: several at once when the channel allows it, each lane pausing
         # a little between its sends. With send_concurrency 1 this is the
@@ -765,7 +772,8 @@ class Sender:
 
         if sent:
             logger.info(f"Sender: {sent} email(s) sent this cycle "
-                        f"({sent_today + sent}/{max_daily or 'no limit'} today).")
+                        f"(first emails and follow-ups today: {await self.state.count_outbox_sent_today(kind='sequence')}"
+                        f"/{max_daily or 'no limit'}; replies have no limit).")
 
     async def _led(self, fn, *args, **kw):
         """A call on the shared ledger, off the event loop: the file is shared
@@ -1029,7 +1037,9 @@ class Sender:
             ledger, kind = self.ledger, item.get("kind") or "sequence"
 
             def _take():
-                got, picture = ledger.reserve(self.ledger_account, self.ledger_campaign, "outreach", self.ledger_label, kind=kind)
+                # An answer is written down but never held back: replies have no limit.
+                got, picture = ledger.reserve(self.ledger_account, self.ledger_campaign, "outreach", self.ledger_label,
+                                              kind=kind, free=kind != "sequence")
                 if got and gave_up.is_set():
                     ledger.release(got)
                     return None, picture

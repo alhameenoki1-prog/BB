@@ -4,6 +4,7 @@ endpoint (Gemini, Groq, OpenRouter, Ollama). Configured from the
 environment the site hands the worker (BB_LLM_*), so the web app and the
 worker use the same account."""
 
+import contextvars
 import json
 import re
 
@@ -26,27 +27,126 @@ def env_from_llm(llm: dict) -> dict:
     return {k: v for k, v in out.items() if v}
 
 
+_THINK_RE = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.S | re.I)
+_FENCE_RE = re.compile(r"^\s*```[A-Za-z]*\s*$", re.M)
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+_CLOSERS = {"{": "}", "[": "]"}
+
+
+def _span(text: str, start: int) -> int:
+    """Where the bracket at ``start`` closes (the index after it), quotes
+    and escapes respected, or -1 when it never does (a cut-off answer)."""
+    stack, in_str, esc = [], False, False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in _CLOSERS:
+            stack.append(_CLOSERS[ch])
+        elif ch in "}]":
+            if not stack or stack.pop() != ch:
+                return -1
+            if not stack:
+                return i + 1
+    return -1
+
+
+def _loads(candidate: str):
+    # strict=False: a model often writes the line breaks of an email as real
+    # line breaks inside the string, which strict JSON refuses.
+    for attempt in (candidate, _TRAILING_COMMA_RE.sub(r"\1", candidate)):
+        try:
+            return json.loads(attempt, strict=False)
+        except ValueError:
+            pass
+    try:   # a Python dict ('single quotes', True/None) from a small model
+        import ast
+        data = ast.literal_eval(candidate)
+        return data if isinstance(data, (dict, list)) else None
+    except (ValueError, SyntaxError, MemoryError, RecursionError, TypeError):
+        return None
+
+
+def _clean(text: str) -> str:
+    text = _THINK_RE.sub("", text or "")
+    if re.search(r"(?i)</think>", text):        # the opening tag fell off: drop up to the close
+        text = re.split(r"(?i)</think>", text)[-1]
+    return _FENCE_RE.sub("", text).strip()
+
+
 def extract_json(text: str):
-    """The first JSON object or array in a model reply, fences and prose tolerated."""
+    """The JSON object (or array) in a model reply. Tolerates code fences,
+    prose around it, braces in that prose, a reasoning model's <think>
+    block, real line breaks inside strings, trailing commas and Python
+    style quoting."""
+    text = _clean(text)
     if not text:
         return None
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.M)
-    for opener, closer in (("{", "}"), ("[", "]")):
-        start = text.find(opener)
-        if start < 0:
-            continue
-        depth = 0
-        for i in range(start, len(text)):
-            if text[i] == opener:
-                depth += 1
-            elif text[i] == closer:
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(text[start:i + 1])
-                    except ValueError:
-                        break
+    for opener in ("{", "["):
+        tries, start = 0, text.find(opener)
+        while start >= 0 and tries < 40:
+            end = _span(text, start)
+            if end > 0:
+                data = _loads(text[start:end])
+                if data is not None:
+                    return data
+            tries += 1
+            start = text.find(opener, start + 1)
     return None
+
+
+def salvage_field(text: str, field: str) -> str:
+    """A string field's value from an answer that is not valid JSON, cut
+    off at the length limit included: everything after ``"field": "`` up
+    to its closing quote, or to the end."""
+    text = _clean(text)
+    m = re.search(r'["\']' + re.escape(field) + r'["\']\s*:\s*"', text)
+    if not m:
+        return ""
+    out, esc = [], False
+    for ch in text[m.end():]:
+        if esc:
+            out.append({"n": "\n", "t": "\t", "r": "", '"': '"', "\\": "\\", "/": "/"}.get(ch, "\\" + ch))
+            esc = False
+        elif ch == "\\":
+            esc = True
+        elif ch == '"':
+            break
+        else:
+            out.append(ch)
+    return "".join(out).strip()
+
+
+_PREAMBLE_RE = re.compile(r"(?i)^\s*(?:sure[,!.]?\s*)?(?:here(?:'s| is) (?:a |the |my |your )?(?:draft|reply|response|email|message)[^\n]*|"
+                          r"(?:draft|reply|subject)\s*:)\s*\n+")
+
+
+def plain_answer(text: str) -> str:
+    """An answer written as the email itself instead of JSON: the email,
+    without a "Here's a reply:" line. Empty when it looks like broken JSON."""
+    text = _clean(text)
+    if not text or text.lstrip()[:1] in "{[" or re.search(r'"\w+"\s*:', text):
+        return ""
+    return _PREAMBLE_RE.sub("", text, count=1).strip()
+
+
+JSON_AGAIN = ("Your last answer could not be read as JSON. Answer again with ONLY the JSON object asked for: it starts with "
+              "{ and ends with }, every string in double quotes, line breaks inside a string written as \\n, and nothing "
+              "before or after it.")
+
+# Set for one call (a context variable, so drafts written at the same time
+# do not see each other's): ask the endpoint for JSON, and whether the
+# answer was cut off at the length limit.
+_JSON_MODE: contextvars.ContextVar[bool] = contextvars.ContextVar("bb_json_mode", default=False)
+_CUT_OFF: contextvars.ContextVar[bool] = contextvars.ContextVar("bb_cut_off", default=False)
 
 
 class MailBrain:
@@ -78,12 +178,43 @@ class MailBrain:
             return await self._anthropic(system, user, max_tokens)
         return await self._openai(system, user, max_tokens)
 
-    async def complete_json(self, system: str, user: str, max_tokens: int = 1200):
-        text = await self.complete(system, user, max_tokens)
-        data = extract_json(text)
-        if data is None:
-            raise BrainError("The model did not return the JSON asked for.")
-        return data
+    async def complete_json(self, system: str, user: str, max_tokens: int = 1200, salvage: str = ""):
+        """The JSON the prompt asks for. An answer that cannot be read is
+        asked for once more, plainly (with more room when it was cut off,
+        and in the endpoint's JSON mode where it has one). With ``salvage``
+        (a string field, "body"), an answer that still is not JSON is used
+        as that field, marked ``_salvaged`` so the caller routes it to a
+        person, rather than failing the item."""
+        _CUT_OFF.set(False)
+        first = await self.complete(system, user, max_tokens)
+        data = extract_json(first)
+        if data is not None:
+            return data
+        cut = _CUT_OFF.get()
+        token = _JSON_MODE.set(True)
+        try:
+            _CUT_OFF.set(False)
+            second = await self.complete(system, user + "\n\n" + JSON_AGAIN, max_tokens * 2 if cut else max_tokens)
+        finally:
+            _JSON_MODE.reset(token)
+        data = extract_json(second)
+        if data is not None:
+            return data
+        cut = cut or _CUT_OFF.get()
+        if salvage:
+            for text in (second, first):
+                value = salvage_field(text, salvage) or plain_answer(text)
+                if value:
+                    out = {salvage: value, "_salvaged": True}
+                    for extra in ("subject", "confidence", "confidence_reason", "stance", "why"):
+                        got = salvage_field(text, extra)
+                        if got and extra != salvage:
+                            out[extra] = got
+                    return out
+        raise BrainError("The model did not return the JSON asked for, twice"
+                         + (" (its answers were cut off at the length limit)" if cut else "")
+                         + (". Its answer began: " + repr(_clean(second or first)[:120]) if (second or first) else ": it answered nothing")
+                         + ".")
 
     async def _anthropic(self, system: str, user: str, max_tokens: int) -> str:
         import anthropic
@@ -98,6 +229,8 @@ class MailBrain:
             raise BrainError(f"Anthropic answered {e.status_code}: {str(e)[:200]}") from e
         except anthropic.APIError as e:
             raise BrainError(f"Anthropic error: {str(e)[:200]}") from e
+        if getattr(msg, "stop_reason", "") == "max_tokens":
+            _CUT_OFF.set(True)
         return "".join(getattr(b, "text", "") for b in msg.content)
 
     async def tool_turn(self, system: str, messages: list, tools: list, max_tokens: int = 1500) -> dict:
@@ -133,14 +266,23 @@ class MailBrain:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         body = {"model": self.model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 "max_tokens": max_tokens, "temperature": 0.7}
+        if _JSON_MODE.get():
+            body["response_format"] = {"type": "json_object"}
         try:
             async with httpx.AsyncClient(timeout=90) as client:
                 r = await client.post(f"{self.base_url}/chat/completions", json=body, headers=headers)
+                if r.status_code == 400 and "response_format" in body:
+                    # An endpoint without a JSON mode: the same request without it.
+                    body.pop("response_format")
+                    r = await client.post(f"{self.base_url}/chat/completions", json=body, headers=headers)
         except httpx.HTTPError as e:
             raise BrainError(f"Could not reach {self.base_url}: {e}") from e
         if r.status_code >= 400:
             raise BrainError(f"{self.label} answered {r.status_code}: {r.text[:200]}")
         try:
-            return r.json()["choices"][0]["message"]["content"] or ""
-        except (KeyError, IndexError, TypeError, ValueError) as e:
+            choice = r.json()["choices"][0]
+            if choice.get("finish_reason") == "length":
+                _CUT_OFF.set(True)
+            return choice["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
             raise BrainError("Unexpected reply shape from the model endpoint.") from e

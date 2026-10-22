@@ -1183,11 +1183,14 @@ class StateManager:
                 row = await cursor.fetchone()
                 return row[0] if row and row[0] else None
 
-    async def count_outbox_sent_today(self) -> int:
+    async def count_outbox_sent_today(self, kind: str = "") -> int:
+        """Emails sent today (UTC); ``kind`` counts only that kind ("sequence":
+        the first emails and follow-ups the daily limit is for)."""
         async with self._connect() as db:
             async with db.execute(
                 "SELECT COUNT(*) FROM outbox WHERE status = 'sent' "
-                "AND date(sent_at) = date('now')"
+                "AND date(sent_at) = date('now')" + (" AND COALESCE(kind, 'sequence') = ?" if kind else ""),
+                (kind,) if kind else (),
             ) as cursor:
                 return (await cursor.fetchone())[0]
 

@@ -104,7 +104,8 @@ def register_campaign_routes(app, settings, current_user, base_workspace, render
                 pic = led.summary(account)
                 me = next((m for m in pic["members"] if m["campaign"] == ws.campaign_id), None)
                 share = {"limit": pic["limit"], "total": pic["total"], "share": pic["share"] if me else 0,
-                         "used": led.used_by(ws.campaign_id), "members": len(pic["members"])}
+                         "used": (me or {}).get("used", 0), "answers": (me or {}).get("answers", 0),
+                         "members": len(pic["members"])}
             cfg = ws.config() or {}
             rows.append({"id": ws.campaign_id, "name": ws.campaign_name(), "account": account, "status": status,
                          "goal": ((cfg.get("outreach") or {}).get("goal") or "")[:160], "summary": summ, "share": share,
