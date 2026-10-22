@@ -18,7 +18,8 @@
   </div>
 </div>
 {% for p in problems %}<div class="card flat" style="border-color:var(--bad);color:var(--bad)">Server setup: {{ p }}</div>{% endfor %}
-{% if health and health.alert %}<div class="card flat" style="border-color:var(--bad);color:var(--bad)"><b>Mailbox:</b> {{ health.alert }} <a href="/mailbox">Mailbox page</a></div>{% endif %}
+{% if reconnect %}<div class="card flat" style="border-color:var(--bad)"><b style="color:var(--bad)">Your mailbox needs reconnecting.</b> <span class="small">{{ reconnect }}</span> <a href="/mailbox" class="button small" style="margin-left:8px">Reconnect on the Mailbox page</a></div>
+{% elif health and health.alert %}<div class="card flat" style="border-color:var(--bad);color:var(--bad)"><b>Mailbox:</b> {{ health.alert }} <a href="/mailbox">Mailbox page</a></div>{% endif %}
 
 <div class="grid">
   <div class="stat hero"><div class="l">Replies received</div><div class="n">{{ summary.replies }}</div><div class="sub">{{ summary.open_replies }} open conversation{{ 's' if summary.open_replies != 1 else '' }}</div></div>

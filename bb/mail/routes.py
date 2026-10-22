@@ -9,7 +9,7 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import ValidationError
 
-from bb import gmail_oauth
+from bb import gmail_oauth, microsoft_oauth
 from bb.mail import service
 from bb.mail.jobs import Jobs
 from bb.mail import scope as scope_mod
@@ -18,6 +18,7 @@ from bb.mail.providers import AuthError, TransientError
 from bb.mail_autoconfig import guess_settings
 
 GMAIL_STATE_COOKIE = "bb_mail_gmail_state"
+MS_STATE_COOKIE = "bb_mail_ms_state"
 
 
 def register_mail_routes(app, settings, current_user, workspace_for, render, _redirect, templates):
@@ -35,6 +36,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         for m in boxes:
             m["settings_model"] = service.settings_of(m)
             m["ready"], m["ready_why"] = service.ready_to_send(m)
+            m["signin"] = service.signed_in(settings.secret_key(), m)
         ids = await service.scope(db)
         selected = boxes if ids is None else [m for m in boxes if m["id"] in ids]
         return {"ws": ws, "db": db, "mailboxes": boxes, "scope_ids": ids, "selected": selected,
@@ -141,7 +143,9 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         c = await ctx(user)
         return await render(request, "mail_accounts.html", user, **page_ctx(c),
                             gmail_available=bool(settings.gmail_client_id and settings.gmail_client_secret),
-                            redirect_uri=settings.base_url + "/mail/gmail/callback")
+                            ms_available=bool(settings.ms_client_id),
+                            redirect_uri=settings.base_url + "/mail/gmail/callback",
+                            ms_redirect_uri=settings.base_url + "/mail/microsoft/callback")
 
     @app.post("/mail/accounts/graph")
     async def mail_connect_graph(request: Request, user: dict = Depends(current_user)):
@@ -208,9 +212,11 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             raise HTTPException(404)
         m["settings_model"] = service.settings_of(m)
         m["ready"], m["ready_why"] = service.ready_to_send(m)
+        m["signin"] = service.signed_in(settings.secret_key(), m)
         return await render(request, "mail_account.html", user, **page_ctx(c), box=m,
                             creds=service.masked_creds(settings.secret_key(), m),
-                            gmail_available=bool(settings.gmail_client_id and settings.gmail_client_secret))
+                            gmail_available=bool(settings.gmail_client_id and settings.gmail_client_secret),
+                            ms_available=bool(settings.ms_client_id))
 
     @app.post("/mail/accounts/{mailbox_id}")
     async def mail_account_save(request: Request, mailbox_id: str, user: dict = Depends(current_user)):
@@ -303,6 +309,46 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             c["ws"].start_mail_worker()
         response = _redirect(f"/mail/accounts/{mid}", msg=f"Connected {email} through Google. {detail}")
         response.delete_cookie(GMAIL_STATE_COOKIE, path="/")
+        return response
+
+    # ── Microsoft sign-in for mailboxes (Outlook, Hotmail, Microsoft 365) ──
+
+    @app.post("/mail/microsoft/connect")
+    async def mail_microsoft_connect(request: Request, user: dict = Depends(current_user)):
+        if not settings.ms_client_id:
+            return _redirect("/mail/accounts", error="The site has no Microsoft app registration yet; use the "
+                                                      "Microsoft 365 admin app or the password sign-in for now.")
+        form = dict(await request.form())
+        nonce = secrets.token_urlsafe(16)
+        state = microsoft_oauth.sign_state(settings.secret_key(), user["id"], nonce)
+        redirect = settings.base_url + "/mail/microsoft/callback"
+        url = microsoft_oauth.auth_url(settings, state, login_hint=str(form.get("email", "") or ""), redirect=redirect)
+        response = _redirect(url)
+        response.set_cookie(MS_STATE_COOKIE, nonce, max_age=600, httponly=True, samesite="lax",
+                            secure=settings.base_url.startswith("https://"), path="/")
+        return response
+
+    @app.get("/mail/microsoft/callback")
+    async def mail_microsoft_callback(request: Request, user: dict = Depends(current_user),
+                                      code: str = "", state: str = "", error: str = "", error_description: str = ""):
+        nonce = request.cookies.get(MS_STATE_COOKIE, "")
+        if error:
+            return _redirect("/mail/accounts", error=f"Microsoft said: {error_description or error}")
+        if not microsoft_oauth.verify_state(settings.secret_key(), user["id"], nonce, state):
+            return _redirect("/mail/accounts", error="The sign-in did not match this session. Try again.")
+        c = await ctx(user)
+        redirect = settings.base_url + "/mail/microsoft/callback"
+        try:
+            data = await microsoft_oauth.exchange_code(settings, code, redirect=redirect)
+            email = await microsoft_oauth.account_email(data["access_token"])
+            mid, detail = await service.connect_microsoft(c["db"], settings.secret_key(), address=email,
+                                                          refresh_token=data["refresh_token"], env=settings.worker_env())
+        except (AuthError, TransientError, KeyError, RuntimeError, ValueError) as e:
+            return _redirect("/mail/accounts", error=f"Microsoft sign-in failed: {e}")
+        if not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        response = _redirect(f"/mail/accounts/{mid}", msg=f"Connected {email} through Microsoft. {detail}")
+        response.delete_cookie(MS_STATE_COOKIE, path="/")
         return response
 
     @app.post("/mail/accounts/{mailbox_id}/sync")

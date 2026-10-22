@@ -19,6 +19,7 @@ from harvey.paths import PROJECT_ROOT
 WORKER_ENV_KEYS = (
     "ANTHROPIC_BASE_URL",
     "GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET",
+    "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_TENANT",
     "REOON_API_KEY", "ZEROBOUNCE_API_KEY", "HUNTER_API_KEY",
     "SERPER_API_KEY", "PRECLEARED_API_KEY",
 )
@@ -35,6 +36,12 @@ class Settings:
         self.admin_password = get("BB_ADMIN_PASSWORD")
         self.gmail_client_id = get("GMAIL_CLIENT_ID").strip()
         self.gmail_client_secret = get("GMAIL_CLIENT_SECRET").strip()
+        # The site's Microsoft app registration (Entra): one-click Outlook,
+        # Hotmail and Microsoft 365 sign-in. MS_TENANT "common" takes both
+        # personal and work accounts; a tenant id restricts it to one company.
+        self.ms_client_id = get("MS_CLIENT_ID").strip()
+        self.ms_client_secret = get("MS_CLIENT_SECRET").strip()
+        self.ms_tenant = get("MS_TENANT", "common").strip() or "common"
         self.default_model = get("BB_DEFAULT_MODEL").strip()
         self.default_daily_cost_usd = float(get("BB_DEFAULT_DAILY_COST_USD", "5") or 5)
         self.session_days = int(get("BB_SESSION_DAYS", "14") or 14)

@@ -22,10 +22,29 @@
   <form method="post" action="/mailbox/provider">
     <label class="choice"><input type="radio" name="provider" value="gmail" {{ 'checked' if provider == 'gmail' else '' }}><span><b>Gmail / Google Workspace</b><span class="small muted">{{ 'Connected as ' ~ account.email if gmail_connected and account.email else ('Connected' if gmail_connected else 'Not connected') }}</span></span></label>
     <label class="choice"><input type="radio" name="provider" value="smtp" {{ 'checked' if provider == 'smtp' else '' }}><span><b>My mailbox's SMTP/IMAP</b><span class="small muted">{{ 'Saved: ' ~ smtp.smtp_username if smtp_configured else 'Not set up' }}</span></span></label>
+    <label class="choice"><input type="radio" name="provider" value="microsoft" {{ 'checked' if provider == 'microsoft' else '' }}><span><b>Microsoft account (Outlook, Hotmail, Microsoft 365)</b><span class="small muted">{{ 'Connected as ' ~ ms_account.email if microsoft_connected and ms_account.email else ('Connected' if microsoft_connected else 'Not connected') }}</span></span></label>
     <label class="choice"><input type="radio" name="provider" value="microsoft_app" {{ 'checked' if provider == 'microsoft_app' else '' }}><span><b>Microsoft 365 admin app</b><span class="small muted">{{ 'Saved: ' ~ m365.m365_mailbox if m365_configured else 'Not set up' }}</span></span></label>
     <p style="margin-top:10px"><button class="secondary small" type="submit">Use the selected one</button></p>
   </form>
 </div>
+{% if reconnect %}
+<div class="card" style="border-color:var(--bad)" id="reconnect">
+  <h2 style="color:var(--bad)">Reconnect your mailbox</h2>
+  <p class="small"><b>The mailbox refused the sign-in:</b> {{ reconnect }}</p>
+  <p class="muted small">Changing your password does not do this on its own: Google and Microsoft sign-ins keep working after a password change. It happens when you revoked the site's access in your account, when your organisation's policy signs every app out after a password change, or when an app password or SMTP password stopped being valid. One sign-in puts it right; nothing already queued is lost.</p>
+  <div class="actions" style="margin-top:10px">
+    {% if provider == 'gmail' %}
+      {% if gmail_available %}<form class="inline" method="post" action="/gmail/connect"><button type="submit">{{ icon('mail', 15) }} Reconnect Google</button></form>{% else %}<span class="small">The site's Google client is missing; the admin must add it before Gmail can be reconnected.</span>{% endif %}
+    {% elif provider == 'microsoft' %}
+      {% if microsoft_available %}<form class="inline" method="post" action="/microsoft/connect"><button type="submit">{{ icon('mail', 15) }} Reconnect Microsoft</button></form>{% else %}<span class="small">The site's Microsoft app registration is missing; the admin must add it before this can be reconnected.</span>{% endif %}
+    {% elif provider == 'microsoft_app' %}
+      <a class="button" href="#m365">Enter the app's client secret again</a>
+    {% else %}
+      <a class="button" href="#smtp">Enter the password again</a>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
 {% if health %}
 <div class="card" {% if health.alert %}style="border-color:var(--bad)"{% endif %}>
   <h2>Is it still sending?</h2>
@@ -90,7 +109,7 @@
       <p class="small">Yahoo and iCloud need an app password too (Yahoo: Account security → Generate app password; iCloud: appleid.apple.com → Sign-In and Security → App-Specific Passwords). Zoho and Fastmail take an app password from their security settings. For a mailbox from your web host, the servers are usually <code>mail.yourdomain.com</code> for both SMTP (port 587 or 465) and IMAP (port 993); your host's email settings page lists them.</p>
     </details>
     {% if smtp_configured %}<p style="margin-top:10px"><span class="tag good">{{ icon('check', 13) }} Saved</span> {{ smtp.smtp_username }} via {{ smtp.smtp_host }}:{{ smtp.smtp_port or 587 }} · password <code>{{ smtp_masked }}</code></p>{% endif %}
-    <form method="post" action="/mailbox/smtp">
+    <form method="post" action="/mailbox/smtp" id="smtp">
       <div class="row">
         <div><label>SMTP server *</label><input type="text" name="smtp_host" value="{{ smtp.smtp_host }}" placeholder="smtp.gmail.com" required></div>
         <div><label>SMTP port</label><input type="number" name="smtp_port" value="{{ smtp.smtp_port or 587 }}"><div class="hint">587 (STARTTLS) or 465 (TLS)</div></div>
@@ -148,7 +167,7 @@
       <p class="small">Yahoo and iCloud need an app password too (Yahoo: Account security → Generate app password; iCloud: appleid.apple.com → Sign-In and Security → App-Specific Passwords). Zoho and Fastmail take an app password from their security settings. For a mailbox from your web host, the servers are usually <code>mail.yourdomain.com</code> for both SMTP (port 587 or 465) and IMAP (port 993); your host's email settings page lists them.</p>
     </details>
     {% if smtp_configured %}<p style="margin-top:10px"><span class="tag good">{{ icon('check', 13) }} Saved</span> {{ smtp.smtp_username }} via {{ smtp.smtp_host }}:{{ smtp.smtp_port or 587 }} · password <code>{{ smtp_masked }}</code></p>{% endif %}
-    <form method="post" action="/mailbox/smtp">
+    <form method="post" action="/mailbox/smtp" id="smtp">
       <div class="row">
         <div><label>SMTP server *</label><input type="text" name="smtp_host" value="{{ smtp.smtp_host }}" placeholder="smtp.gmail.com" required></div>
         <div><label>SMTP port</label><input type="number" name="smtp_port" value="{{ smtp.smtp_port or 587 }}"><div class="hint">587 (STARTTLS) or 465 (TLS)</div></div>
@@ -188,6 +207,25 @@
     {% endif %}
   </div>
 {% endif %}
+
+<div class="card" id="microsoft">
+  <h2>Microsoft account <span class="tiny" style="font-weight:400">Outlook, Hotmail or Microsoft 365, one click</span></h2>
+  {% if microsoft_connected %}
+    <p><span class="tag good">{{ icon('check', 13) }} Connected</span> {% if ms_account.email %}as <b>{{ ms_account.email }}</b>{% endif %}</p>
+    <p class="muted small">Mail is sent and replies are read through Microsoft Graph as this account. The sign-in survives a password change; it ends only if you disconnect here or revoke the site's access at myaccount.microsoft.com, and then this page shows Reconnect.</p>
+    <div class="actions" style="margin-top:12px">
+      <form class="inline" method="post" action="/microsoft/test"><button class="secondary small" type="submit">Test connection</button></form>
+      {% if microsoft_available %}<form class="inline" method="post" action="/microsoft/connect"><button class="secondary small" type="submit">Sign in again</button></form>{% endif %}
+      <form class="inline" method="post" action="/microsoft/disconnect" onsubmit="return confirm('Disconnect the Microsoft account?')"><button class="danger small" type="submit">Disconnect</button></form>
+    </div>
+  {% elif microsoft_available %}
+    <p class="muted small">Sign in on Microsoft's own page with the account your browser is already signed in to (or any other). No password reaches this site; Microsoft hands it a token to send and read mail as you, which keeps working after you change your password. You can revoke it any time at myaccount.microsoft.com.</p>
+    <form method="post" action="/microsoft/connect" style="margin-top:12px"><button type="submit">{{ icon('mail', 15) }} Sign in with Microsoft</button></form>
+  {% else %}
+    <p class="muted small">One-click Microsoft sign-in is not switched on for this site yet. A Microsoft 365 tenant you administer can use the admin app below; a personal Outlook or Hotmail address needs the site's Microsoft app registration.</p>
+    {% if user.role == 'admin' %}<div class="card flat small" style="margin:12px 0 0"><b>To switch it on (admin):</b> at entra.microsoft.com register an app with a <i>Web</i> platform redirect URI <code>{{ ms_redirect_uri }}</code> (and <code>{{ ms_redirect_uri.replace('/microsoft/callback', '/mail/microsoft/callback') }}</code> for the command center), the delegated Microsoft Graph permissions <code>Mail.ReadWrite</code>, <code>Mail.Send</code>, <code>User.Read</code> and <code>offline_access</code>, and "accounts in any organizational directory and personal Microsoft accounts". Start the site with <code>MS_CLIENT_ID</code> (and <code>MS_CLIENT_SECRET</code> for a confidential client; <code>MS_TENANT</code> defaults to <code>common</code>).</div>{% endif %}
+  {% endif %}
+</div>
 
 <div class="card" id="m365">
   <h2>Option C <span class="tiny" style="font-weight:400">Microsoft 365 admin app — high volume, no sign-in per user</span></h2>

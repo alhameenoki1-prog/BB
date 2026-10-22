@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from bb import deliverability
-from bb import gmail_oauth, recipients as recipients_mod
+from bb import gmail_oauth, microsoft_oauth, recipients as recipients_mod
 from bb.linkcheck import check_public_url
 from bb.mail_autoconfig import guess_settings
 from bb.accounts import Accounts, LoginThrottle
@@ -33,6 +33,7 @@ logger = logging.getLogger("bb.app")
 
 SESSION_COOKIE = "bb_session"
 GMAIL_NONCE_COOKIE = "bb_gmail_nonce"
+MS_NONCE_COOKIE = "bb_ms_nonce"
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
@@ -353,8 +354,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def dashboard(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
         revived = ws.revive_worker()
+        health = await ws.mailbox_health()
         return await render(request, "dashboard.html", user, logs=ws.log_tail(40), activity=ws.recent_activity(30),
-                            bounces=await ws.bounce_summary(), stale=await ws.stale_queued(), health=await ws.mailbox_health(),
+                            bounces=await ws.bounce_summary(), stale=await ws.stale_queued(), health=health,
+                            reconnect=ws.needs_reconnect(health),
                             problems=settings.problems() if user["role"] == "admin" else [],
                             msg=revived or request.query_params.get("msg", ""))
 
@@ -509,15 +512,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sending = ws.sending_address()
         domain = deliverability.domain_of(sending)
         report = await check_domain(domain) if domain and ws.mailbox_connected() else None
+        health = await ws.mailbox_health()
         return await render(request, "mailbox.html", user, provider=ws.mail_provider(),
                             gmail_connected=ws.gmail_connected(), account=ws.gmail_account(),
                             gmail_available=bool(settings.gmail_client_id and settings.gmail_client_secret),
+                            microsoft_available=bool(settings.ms_client_id),
+                            microsoft_connected=ws.microsoft_connected(), ms_account=ws.microsoft_account(),
+                            ms_redirect_uri=microsoft_oauth.redirect_uri(settings),
+                            reconnect=ws.needs_reconnect(health),
                             smtp={**smtp, "smtp_password": "", "imap_password": ""},
                             smtp_configured=ws.smtp_configured(),
                             smtp_masked=ws.mask(smtp["smtp_password"]),
                             m365={**m365, "m365_client_secret": ""}, m365_configured=ws.m365_configured(),
                             m365_masked=ws.mask(m365["m365_client_secret"]),
-                            sending=sending, report=report, health=await ws.mailbox_health(),
+                            sending=sending, report=report, health=health,
                             redirect_uri=gmail_oauth.redirect_uri(settings))
 
     @app.post("/mailbox/m365")
@@ -555,7 +563,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if ws.worker_running() and ws.mail_provider() == "microsoft_app":
             await ws.stop_worker("the Microsoft 365 settings were removed")
         ws.save_secrets(**{k: "" for k in ws.m365_settings()})
-        ws.set_mail_provider("gmail" if ws.gmail_connected() else "smtp")
+        ws.set_mail_provider("gmail" if ws.gmail_connected() else ("microsoft" if ws.microsoft_connected() else "smtp"))
         ws.rewrite_config()
         await ws.restart_worker_if_running("the new mailbox settings")
         return _redirect("/mailbox", msg="Microsoft 365 settings removed.")
@@ -601,7 +609,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/mailbox", error=str(e))
         ws.rewrite_config()
         await ws.restart_worker_if_running("the new mailbox settings")
-        label = "Gmail" if provider == "gmail" else "your mailbox's SMTP/IMAP settings"
+        label = {"gmail": "Gmail", "microsoft": "your Microsoft account", "microsoft_app": "the Microsoft 365 app"
+                 }.get(provider, "your mailbox's SMTP/IMAP settings")
         return _redirect("/mailbox", msg=f"Emails will go through {label}."
                          + (" The worker was restarted with it." if ws.worker_running() else ""))
 
@@ -749,7 +758,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if ws.worker_running() and ws.mail_provider() == "gmail":
             await ws.stop_worker("Gmail was disconnected")
         ws.disconnect_gmail()
-        if ws.smtp_configured():
+        if ws.microsoft_connected():
+            ws.set_mail_provider("microsoft")
+        elif ws.smtp_configured():
             ws.set_mail_provider("smtp")
         ws.rewrite_config()
         await ws.restart_worker_if_running("the new mailbox settings")
@@ -758,6 +769,65 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/gmail/test")
     async def gmail_test(user: dict = Depends(current_user)):
         ok, detail = await gmail_oauth.test_connection(settings, workspace_for(user))
+        return _redirect("/mailbox", msg=detail if ok else "", error="" if ok else detail)
+
+    # ── Microsoft sign-in (the site's Entra app): Outlook, Hotmail, Microsoft 365 ──
+
+    @app.post("/microsoft/connect")
+    async def microsoft_connect(user: dict = Depends(current_user)):
+        if not settings.ms_client_id:
+            return _redirect("/mailbox", error="The site has no Microsoft app registration configured yet. "
+                                               "Use the Microsoft 365 admin app or your mailbox's SMTP settings instead.")
+        nonce = secrets.token_urlsafe(16)
+        state = microsoft_oauth.sign_state(settings.secret_key(), user["id"], nonce)
+        ws = workspace_for(user)
+        hint = ws.microsoft_account().get("email", "") or ws.profile().get("email", "")
+        response = RedirectResponse(microsoft_oauth.auth_url(settings, state, login_hint=hint), status_code=303)
+        response.set_cookie(MS_NONCE_COOKIE, nonce, max_age=600, httponly=True, samesite="lax",
+                            secure=settings.secure_cookies, path="/microsoft")
+        return response
+
+    @app.get("/microsoft/callback")
+    async def microsoft_callback(request: Request, user: dict = Depends(current_user),
+                                 code: str = "", state: str = "", error: str = "", error_description: str = ""):
+        nonce = request.cookies.get(MS_NONCE_COOKIE, "")
+        if error:
+            return _redirect("/mailbox", error=f"Microsoft said: {error_description or error}")
+        if not microsoft_oauth.verify_state(settings.secret_key(), user["id"], nonce, state):
+            return _redirect("/mailbox", error="The sign-in did not match this session. Try again.")
+        ws = workspace_for(user)
+        try:
+            data = await microsoft_oauth.exchange_code(settings, code)
+            email = await microsoft_oauth.account_email(data.get("access_token", ""))
+        except Exception as e:
+            return _redirect("/mailbox", error=str(e))
+        if not email:
+            return _redirect("/mailbox", error="Microsoft did not say which mailbox this is. Try again.")
+        microsoft_oauth.save_token(ws, data, email)
+        ws.set_mail_provider("microsoft")
+        ws.rewrite_config()  # the persona sends from the connected mailbox
+        await ws.restart_worker_if_running("the new mailbox settings")
+        response = _redirect("/mailbox", msg=f"Microsoft connected as {email}.")
+        response.delete_cookie(MS_NONCE_COOKIE, path="/microsoft")
+        return response
+
+    @app.post("/microsoft/disconnect")
+    async def microsoft_disconnect(user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        if ws.worker_running() and ws.mail_provider() == "microsoft":
+            await ws.stop_worker("the Microsoft account was disconnected")
+        ws.disconnect_microsoft()
+        if ws.gmail_connected():
+            ws.set_mail_provider("gmail")
+        elif ws.smtp_configured():
+            ws.set_mail_provider("smtp")
+        ws.rewrite_config()
+        await ws.restart_worker_if_running("the new mailbox settings")
+        return _redirect("/mailbox", msg="Microsoft account disconnected.")
+
+    @app.post("/microsoft/test")
+    async def microsoft_test(user: dict = Depends(current_user)):
+        ok, detail = await microsoft_oauth.test_connection(settings, workspace_for(user))
         return _redirect("/mailbox", msg=detail if ok else "", error="" if ok else detail)
 
     # ── recipients ──

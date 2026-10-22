@@ -291,13 +291,16 @@ def strip_greeting_and_signoff(body: str, name: str = "") -> str:
     return "\n".join(lines).strip()
 
 
-def finalize(body: str, settings: MailboxSettings, greeting_name: str = "") -> tuple[str, str]:
+def finalize(body: str, settings: MailboxSettings, greeting_name: str = "", link_labels: dict | None = None) -> tuple[str, str]:
     """(plain, html) with the greeting on top and the signature block, which
     always carries the project link, at the bottom. Enforced here, at
-    send time, whatever the model wrote."""
+    send time, whatever the model wrote. In the HTML part every web
+    address in the body is a link on its own words ("View the brief"),
+    never a raw address; ``link_labels`` (url → name) says what to call
+    each one."""
     import html as _html
 
-    from harvey.integrations.mail_provider import html_to_text
+    from harvey.integrations.mail_provider import body_to_html, html_to_text
 
     greeting = greeting_for(greeting_name)
     core = (body or "").strip()
@@ -305,14 +308,16 @@ def finalize(body: str, settings: MailboxSettings, greeting_name: str = "") -> t
     link = (settings.project_link or "").strip()
     if link and link.rstrip("/").lower() in (body or "").lower():
         link = ""   # the body already carries it (a scope link that is also the project link): never twice
-    if link and link.lower() not in sig_html.lower():
-        sig_html = (sig_html + "<br>" if sig_html else "") + f'<a href="{_html.escape(link)}">{_html.escape(link)}</a>'
-    sig_text = html_to_text(sig_html)
+    sig_text = html_to_text(sig_html)           # the text part shows the address itself: nothing else to click there
     if link and link not in sig_text:
         sig_text = (sig_text + "\n" if sig_text else "") + link
+    if link and link.lower() not in sig_html.lower():
+        sig_html = (sig_html + "<br>" if sig_html else "") + f'<a href="{_html.escape(link)}">View the project</a>'
     plain = f"{greeting}\n\n{core}\n\n-- \n{sig_text}".rstrip()
-    paragraphs = [p.strip() for p in core.split("\n\n") if p.strip()]
-    html_body = "".join(f'<p style="margin:0 0 14px">{_html.escape(p).replace(chr(10), "<br>")}</p>' for p in paragraphs)
+    labels = dict(link_labels or {})
+    if settings.project_link:
+        labels.setdefault(settings.project_link, "the project")
+    html_body = body_to_html(core, labels)
     html = ('<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif;font-size:15px;'
             f'line-height:1.5;color:#1d1d1f"><p style="margin:0 0 14px">{_html.escape(greeting)}</p>{html_body}'
             f'<div style="margin-top:18px;font-size:14px;color:#3a3a3c">{sig_html}</div></div>')

@@ -3,12 +3,13 @@
 {% block title %}{{ box.address }}{% endblock %}
 {% block content %}
 {% set s = box.settings_model %}
-<div class="page-head"><div><div class="eyebrow">Mail · account</div><h1>{{ box.address }}</h1><p class="lead">{{ {'gmail':'Connected through Google (full mode).','imap':'Connected with a password (limited mode: polled, not pushed).','graph':'Microsoft 365 through the Graph API (full mode).'}[box.provider] }} {% if box.status == 'ok' %}{{ box.status_detail }}{% endif %}</p></div>
+<div class="page-head"><div><div class="eyebrow">Mail · account</div><h1>{{ box.address }}</h1><p class="lead">{% if box.provider == 'graph' and box.signin %}Connected through Microsoft (full mode).{% else %}{{ {'gmail':'Connected through Google (full mode).','imap':'Connected with a password (limited mode: polled, not pushed).','graph':'Microsoft 365 through the Graph API (full mode).'}[box.provider] }}{% endif %} {% if box.status == 'ok' %}{{ box.status_detail }}{% endif %}</p></div>
   <div class="actions"><form class="inline" method="post" action="/mail/accounts/{{ box.id }}/check"><button class="secondary small" type="submit">Test connection</button></form></div></div>
 
 {% if box.status == 'reconnect' %}
 <div class="card flat" style="border-color:var(--bad)"><b>This mailbox needs reconnecting.</b> {{ box.status_detail }}
   {% if box.provider == 'gmail' %}{% if gmail_available %}<form class="inline" method="post" action="/mail/gmail/connect" style="margin-left:8px"><input type="hidden" name="email" value="{{ box.address }}"><button class="small" type="submit">Reconnect with Google</button></form>{% else %}The site's Google client is missing; the admin must add it.{% endif %}
+  {% elif box.provider == 'graph' and box.signin %}{% if ms_available %}<form class="inline" method="post" action="/mail/microsoft/connect" style="margin-left:8px"><input type="hidden" name="email" value="{{ box.address }}"><button class="small" type="submit">Reconnect with Microsoft</button></form>{% else %}The site's Microsoft app registration is missing; the admin must add it.{% endif %}
   {% elif box.provider == 'graph' %}Enter the app's client secret again below (a new one if the old one expired).{% else %}Enter the password again below.{% endif %}
 </div>
 {% elif box.status == 'error' %}

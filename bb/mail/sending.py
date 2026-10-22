@@ -39,6 +39,17 @@ def within_hours(settings, now: datetime | None = None) -> bool:
     return hhmm >= settings.hours_start or hhmm <= settings.hours_end   # a window over midnight
 
 
+def _link_labels(env: dict) -> dict:
+    """URL → name for the links the profile knows (the scope documents),
+    so the HTML part says "View the Towson brief" instead of the address."""
+    root = (env or {}).get("HARVEY_HOME") or ""
+    if not root:
+        return {}
+    from bb.mail import scope as scope_mod
+    scope = scope_mod.load(root)
+    return {l["url"]: (l.get("label") or "the full scope") for l in (scope.get("links") or []) if l.get("url")}
+
+
 async def _reply_attachments(db: MailDB, env: dict, draft: dict) -> list[str]:
     """The project brief (and other reply files) from the sender's profile,
     on the first reply in a thread or every reply as the policy says."""
@@ -88,7 +99,8 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     from bb.mail.runs import is_excluded
     if is_excluded(settings, recipient.get("email", "")):
         raise SendRefused(f"{recipient.get('email')} is on {mailbox['address']}'s excluded list (they asked not to be contacted)")
-    plain, html = finalize(draft["body"], settings, greeting_name=recipient.get("name") or "")
+    plain, html = finalize(draft["body"], settings, greeting_name=recipient.get("name") or "",
+                           link_labels=_link_labels(env))
     reply_to = (draft.get("reply_to") or settings.reply_to or "").strip()
     if dry_run:
         await db.execute("UPDATE drafts SET status = 'dry_run', body = ?, updated_at = ? WHERE id = ?",
@@ -99,11 +111,14 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     creds = service.open_creds(secret, mailbox)
     account = account_for(mailbox, creds, env)
     attachments = await _reply_attachments(db, env, draft)
-    message_id, provider_id, thread_key = await account.send(
-        to=[recipient["email"]], subject=draft["subject"], body_text=plain, body_html=html,
-        in_reply_to=draft.get("in_reply_to") or "", references=draft.get("references_text") or "",
-        reply_to=reply_to, from_name=settings.display_name, attachments=attachments or None,
-    )
+    try:
+        message_id, provider_id, thread_key = await account.send(
+            to=[recipient["email"]], subject=draft["subject"], body_text=plain, body_html=html,
+            in_reply_to=draft.get("in_reply_to") or "", references=draft.get("references_text") or "",
+            reply_to=reply_to, from_name=settings.display_name, attachments=attachments or None,
+        )
+    finally:
+        await service.persist_creds(db, secret, mailbox, account)   # a rotated Microsoft refresh token
     if attachments:
         await db.log("send", f"Attached {', '.join(a.rsplit('/', 1)[-1] for a in attachments)} to the reply to "
                              f"{recipient.get('name') or recipient['email']}", mailbox["id"], draft_id=draft["id"])

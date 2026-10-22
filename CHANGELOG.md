@@ -7,6 +7,32 @@ minor versions can still change behaviour.
 
 ## [Unreleased]
 
+### Added
+
+- **Sign in with Microsoft, and Reconnect.** The Mailbox page and the
+  command center's Accounts page take an Outlook, Hotmail or Microsoft
+  365 mailbox with one click through the site's own Entra app
+  registration (`MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_TENANT`;
+  `bb/microsoft_oauth.py`, `/microsoft/*` and `/mail/microsoft/*`). The
+  user signs in on Microsoft's page with the session their browser
+  already has; no password reaches the site. The refresh token is the
+  credential, so the connection survives a password change; Microsoft's
+  rotation of it is stored on every use (`GraphAccount.creds_changed`,
+  `service.persist_creds`). The command center's Graph adapter now works
+  as the signed-in person (`/me`) as well as an admin app. When a
+  provider does end a sign-in (revoked, a tenant policy, Google's
+  seven-day testing limit), the dashboard and the Mailbox page show a
+  Reconnect card with the one action that fits (`Workspace.needs_reconnect`),
+  and the Accounts page a Reconnect button on the row. A disconnected
+  sign-in is no longer kept as the chosen mailbox (`Workspace.mail_provider`).
+- **Links are clicked, never pasted.** Every link that goes out, the
+  project brief, the full-scope link, an inbox document, the signature's
+  project link, is an anchor with a label ("View project brief", "View
+  here", the signature's "View the project"), in the worker
+  (`mail_provider.body_to_html`, `link_text`, `render_parts`) and in the
+  command center (`drafting.finalize` with `link_labels`). The plain-text
+  part keeps the URL for clients that show no HTML.
+
 ### Fixed
 
 - **Review fixes, third round.** A no is now judged on what they wrote,

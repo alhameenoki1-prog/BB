@@ -302,6 +302,67 @@ def strip_links(text: str) -> str:
     return "\n".join(out).strip()
 
 
+_BARE_URL_LINE_RE = re.compile(r"^\s*(?:(?P<label>[^\n:]{1,80}):\s*)?(?P<url>https?://\S+?)\s*$", re.I)
+_INLINE_URL_RE = re.compile(r"(?<![\w\"'=])(https?://[^\s<>\"')\]]+)")
+
+
+def link_text(url: str, labels: dict | None = None, line_label: str = "", inline: bool = False) -> str:
+    """What a recipient clicks: "View the Towson brief" on a line of its
+    own; inside a sentence, the document's name or "here"."""
+    label = (labels or {}).get(url.rstrip("/").lower(), "") or line_label.strip()
+    if label:
+        label = label.strip().rstrip(".:")
+        if inline or label.lower().startswith(("view", "open", "see", "read")):
+            return label
+        return f"View {label}"
+    return "here" if inline else "View here"
+
+
+def body_to_html(body: str, labels: dict | None = None) -> str:
+    """The HTML paragraphs for a plain body. A line that is only a URL (or
+    "label: URL") becomes a link the recipient clicks, never a raw address;
+    a URL inside a sentence becomes a link on its own text."""
+    import html as _html
+
+    labels = {k.rstrip("/").lower(): v for k, v in (labels or {}).items() if k}
+    out = []
+    for para in (body or "").strip().split("\n\n"):
+        if not para.strip():
+            continue
+        lines = []
+        for ln in para.split("\n"):
+            m = _BARE_URL_LINE_RE.match(ln)
+            if m:
+                url = m.group("url").rstrip(".,;")
+                text = link_text(url, labels, m.group("label") or "")
+                lines.append(f'<a href="{_html.escape(url, quote=True)}" style="color:#0a60c2;font-weight:600">{_html.escape(text)}</a>')
+                continue
+            escaped = _html.escape(ln)
+            escaped = _INLINE_URL_RE.sub(
+                lambda mm: f'<a href="{mm.group(1).rstrip(".,;")}" style="color:#0a60c2">{_html.escape(link_text(_html.unescape(mm.group(1).rstrip(".,;")), labels, inline=True))}</a>'
+                           + mm.group(1)[len(mm.group(1).rstrip(".,;")):], escaped)
+            lines.append(escaped)
+        out.append("<p style=\"margin:0 0 14px\">" + "<br>".join(lines) + "</p>")
+    return "".join(out)
+
+
+def link_labels(outreach) -> dict:
+    """URL → what to call it, from everything the profile names: the scope
+    links, the inbox documents, the booking link."""
+    labels = {}
+    try:
+        from harvey import enquiry
+        for sl in enquiry.scope_links(outreach):
+            labels[sl["url"]] = sl.get("label") or "the full scope"
+    except Exception:
+        pass
+    for link in getattr(outreach, "inbox_links", None) or []:
+        url, label = getattr(link, "url", ""), getattr(link, "label", "")
+        if url:
+            labels.setdefault(url, label or "the document")
+    return labels
+
+
 def render_parts(body: str, outreach, plain: bool = False) -> tuple[str, str, object]:
     """(plain_text, html_or_empty, signature_image_path_or_None) for one
     outgoing email: the model-written plain body plus the operator's
@@ -324,13 +385,13 @@ def render_parts(body: str, outreach, plain: bool = False) -> tuple[str, str, ob
         image_path = None
 
     plain_text = body.rstrip() + (f"\n\n-- \n{sig_text}" if sig_text else "")
-    if not sig_html and image_path is None:
-        return plain_text, "", None
+    if not sig_html and image_path is None and not _URL_RE.search(body or ""):
+        return plain_text, "", None     # nothing an HTML part would add
 
-    paragraphs = [p.strip() for p in body.strip().split("\n\n") if p.strip()]
-    html_body = "".join(
-        "<p style=\"margin:0 0 14px\">" + _html.escape(p).replace("\n", "<br>") + "</p>"
-        for p in paragraphs)
+    # Every web address in the HTML part is a link on its own words
+    # ("View the Towson brief"); the text part keeps the address, since
+    # plain text has nothing else to click.
+    html_body = body_to_html(body, link_labels(outreach))
     img_tag = ('<img src="cid:signature-image" alt="" '
                'style="max-width:320px;height:auto;display:block;margin-top:6px">'
                if image_path is not None else "")

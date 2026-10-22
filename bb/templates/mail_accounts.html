@@ -10,8 +10,12 @@
   <table><thead><tr><th>Mailbox</th><th>How</th><th>Status</th><th>Sending</th><th></th></tr></thead><tbody>
   {% for m in mailboxes %}
   <tr><td><a href="/mail/accounts/{{ m.id }}"><span class="acct acct-{{ m.settings_model.color }}">{{ m.address }}</span></a>{% if m.settings_model.display_name %} <span class="muted small">{{ m.settings_model.display_name }}</span>{% endif %}</td>
-    <td class="small">{{ {'gmail':'Google sign-in','imap':'Password (limited mode)','graph':'Microsoft 365'}[m.provider] }}</td>
-    <td>{% if not m.enabled %}<span class="tag">disabled</span>{% elif m.status == 'ok' %}<span class="tag good">connected</span>{% elif m.status == 'reconnect' %}<span class="tag bad">reconnect</span>{% elif m.status == 'error' %}<span class="tag warn">unreachable</span>{% else %}<span class="tag">{{ m.status }}</span>{% endif %}</td>
+    <td class="small">{% if m.provider == 'graph' and m.signin %}Microsoft sign-in{% else %}{{ {'gmail':'Google sign-in','imap':'Password (limited mode)','graph':'Microsoft 365 app'}[m.provider] }}{% endif %}</td>
+    <td>{% if not m.enabled %}<span class="tag">disabled</span>{% elif m.status == 'ok' %}<span class="tag good">connected</span>{% elif m.status == 'reconnect' %}<span class="tag bad">reconnect</span>
+      {% if m.provider == 'gmail' and gmail_available %}<form class="inline" method="post" action="/mail/gmail/connect"><input type="hidden" name="email" value="{{ m.address }}"><button class="small" type="submit">Reconnect</button></form>
+      {% elif m.provider == 'graph' and m.signin and ms_available %}<form class="inline" method="post" action="/mail/microsoft/connect"><input type="hidden" name="email" value="{{ m.address }}"><button class="small" type="submit">Reconnect</button></form>
+      {% else %}<a href="/mail/accounts/{{ m.id }}" class="small">Reconnect</a>{% endif %}
+    {% elif m.status == 'error' %}<span class="tag warn">unreachable</span>{% else %}<span class="tag">{{ m.status }}</span>{% endif %}</td>
     <td>{% if m.ready %}<span class="tag good">ready</span>{% else %}<span class="tag warn" title="{{ m.ready_why }}">needs signature &amp; link</span>{% endif %}</td>
     <td style="text-align:right"><a href="/mail/accounts/{{ m.id }}" class="small">Settings</a></td></tr>
   {% endfor %}</tbody></table>
@@ -41,14 +45,25 @@
     </form>
   </div>
 </div>
-<div class="card" style="margin-top:14px">
-  <h2>Microsoft 365 <span class="tiny" style="font-weight:400">app registration, full mode</span></h2>
+<div class="two" style="margin-top:14px">
+  <div class="card">
+    <h2>Microsoft <span class="tiny" style="font-weight:400">Outlook, Hotmail or Microsoft 365 sign-in, full mode</span></h2>
+    {% if ms_available %}
+    <p class="muted small">Sign in on Microsoft's own page with the account your browser already holds (or any other). No password reaches this site; the mailbox syncs and sends through Microsoft Graph as you, and the sign-in keeps working after you change your password. Only revoking the site's access at myaccount.microsoft.com, or a tenant policy that signs apps out, ends it, and then the account shows Reconnect.</p>
+    <form method="post" action="/mail/microsoft/connect"><div class="row"><div><label>Address (optional hint)</label><input type="email" name="email" placeholder="you@outlook.com"></div><div style="display:flex;align-items:flex-end"><button type="submit">{{ icon('mail', 15) }} Sign in with Microsoft</button></div></div></form>
+    {% else %}
+    <p class="muted small">Not switched on yet. {% if user.role == 'admin' %}Register an app at entra.microsoft.com with a <i>Web</i> platform redirect URI <code>{{ ms_redirect_uri }}</code> (and <code>{{ ms_redirect_uri.replace('/mail/microsoft/callback', '/microsoft/callback') }}</code> for the Mailbox page), the delegated Graph permissions <code>Mail.ReadWrite</code>, <code>Mail.Send</code>, <code>User.Read</code> and <code>offline_access</code>, "any organizational directory and personal Microsoft accounts", and start the site with <code>MS_CLIENT_ID</code> and <code>MS_CLIENT_SECRET</code>.{% else %}Ask the admin to add the site's Microsoft app registration, or use the password sign-in or the Microsoft 365 app.{% endif %}</p>
+    {% endif %}
+  </div>
+  <div class="card">
+  <h2>Microsoft 365 app <span class="tiny" style="font-weight:400">app registration, full mode, no sign-in per user</span></h2>
   <p class="muted small">For a mailbox on Microsoft 365: an admin registers an app in Entra (Azure AD), grants it the <b>Mail.ReadWrite</b> and <b>Mail.Send</b> <i>application</i> permissions with admin consent, and creates a client secret. Reads and sends go through the Graph API as that mailbox; replies keep Outlook's conversation. The secret is stored encrypted.</p>
   <form method="post" action="/mail/accounts/graph">
     <div class="row"><div><label>Mailbox address</label><input type="email" name="email" required placeholder="you@yourcompany.com"></div><div><label>Tenant id</label><input type="text" name="tenant_id" required placeholder="00000000-0000-…"></div>
     <div><label>Client id</label><input type="text" name="client_id" required></div><div><label>Client secret</label><input type="password" name="client_secret" required autocomplete="off"></div></div>
     <p style="margin-top:12px"><button type="submit">{{ icon('check', 15) }} Connect Microsoft 365</button></p>
   </form>
+  </div>
 </div>
 <style>.acct { display:inline-flex; align-items:center; gap:6px; font-weight:600; } .acct::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--accent); }
 .acct-blue::before{background:#0a84ff} .acct-green::before{background:#30d158} .acct-orange::before{background:#ff9f0a} .acct-purple::before{background:#bf5af2} .acct-pink::before{background:#ff375f} .acct-teal::before{background:#64d2ff} .acct-red::before{background:#ff453a} .acct-slate::before{background:#8e8e93}</style>

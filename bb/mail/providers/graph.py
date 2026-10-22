@@ -1,8 +1,20 @@
-"""Microsoft 365 through the Graph API with an app registration's client
-credentials (tenant id, client id, client secret), the same kind of app
-the Mailbox page's "Microsoft 365 admin app" option uses. Mail is read
-and sent as /users/{address}; threading uses Graph's conversationId and
-replies are created with createReply so Outlook keeps the thread."""
+"""Microsoft mailboxes through the Graph API, two ways.
+
+A **signed-in account** (creds hold a ``refresh_token`` from the site's
+own app registration, the Mailbox page's "Sign in with Microsoft"):
+Outlook, Hotmail or Microsoft 365, read and sent as ``/me``. The refresh
+token is the stored credential and keeps working after a password
+change; Microsoft rotates it on use, so the adapter sets ``creds_changed``
+and the caller stores the new one (``service.persist_creds``). A refresh
+Microsoft refuses (``invalid_grant``: revoked, or a tenant that signs apps
+out on password change) raises AuthError and the mailbox shows Reconnect.
+
+An **admin app** (creds hold tenant id, client id and client secret, the
+"Microsoft 365 admin app" option): client credentials, read and sent as
+``/users/{address}``.
+
+Either way threading uses Graph's conversationId and replies are created
+with createReply so Outlook keeps the thread."""
 
 import time
 from email.utils import make_msgid
@@ -31,14 +43,22 @@ class GraphAccount(MailAccount):
         super().__init__(mailbox, creds, env)
         self._access, self._expires = "", 0.0
         self._sent_folder = ""
+        self.creds_changed = False   # a rotated refresh token waits to be stored
+
+    @property
+    def signed_in(self) -> bool:
+        """A person's own sign-in (delegated), not an admin app."""
+        return bool(self.creds.get("refresh_token"))
 
     @property
     def _me(self) -> str:
-        return f"/users/{self.address}"
+        return "/me" if self.signed_in else f"/users/{self.address}"
 
     async def _token(self) -> str:
         if self._access and time.time() < self._expires - 60:
             return self._access
+        if self.signed_in:
+            return await self._refresh_signed_in()
         tenant, cid, secret = self.creds.get("tenant_id", ""), self.creds.get("client_id", ""), self.creds.get("client_secret", "")
         if not (tenant and cid and secret):
             raise AuthError("the tenant id, client id and client secret are all needed")
@@ -63,6 +83,46 @@ class GraphAccount(MailAccount):
             raise AuthError("Microsoft returned no access token")
         return self._access
 
+    async def _refresh_signed_in(self) -> str:
+        """An access token from the stored refresh token, through the
+        site's app registration (MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT)."""
+        from harvey.integrations.microsoft import SCOPE as USER_SCOPE
+        cid = self.env.get("MS_CLIENT_ID", "")
+        if not cid:
+            raise TransientError("the site has no Microsoft app registration configured")
+        form = {"client_id": cid, "grant_type": "refresh_token", "refresh_token": self.creds["refresh_token"],
+                "scope": USER_SCOPE}
+        if self.env.get("MS_CLIENT_SECRET"):
+            form["client_secret"] = self.env["MS_CLIENT_SECRET"]
+        tenant = self.env.get("MS_TENANT") or "common"
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.post(f"{LOGIN}/{tenant}/oauth2/v2.0/token", data=form)
+        except httpx.HTTPError as e:
+            raise TransientError(f"could not reach Microsoft sign-in: {e}") from e
+        if r.status_code in (400, 401):
+            try:
+                body = r.json()
+            except ValueError:
+                body = {}
+            code = str(body.get("error", ""))
+            why = str(body.get("error_description") or r.text)[:200]
+            if code in ("invalid_grant", "interaction_required", "unauthorized_client", "invalid_client", "consent_required"):
+                raise AuthError(f"Microsoft no longer accepts this sign-in (the token expired or was revoked): {why}")
+            raise TransientError(f"Microsoft sign-in answered {r.status_code}: {why}")
+        if r.status_code >= 400:
+            raise TransientError(f"Microsoft sign-in answered {r.status_code}: {r.text[:160]}")
+        data = r.json()
+        self._access = data.get("access_token", "")
+        self._expires = time.time() + int(data.get("expires_in") or 3600)
+        if not self._access:
+            raise AuthError("Microsoft returned no access token")
+        rotated = data.get("refresh_token")
+        if rotated and rotated != self.creds.get("refresh_token"):
+            self.creds["refresh_token"] = rotated
+            self.creds_changed = True
+        return self._access
+
     async def _call(self, method: str, path: str, *, params=None, json=None, absolute=False):
         token = await self._token()
         url = path if absolute else GRAPH + path
@@ -72,6 +132,8 @@ class GraphAccount(MailAccount):
         except httpx.HTTPError as e:
             raise TransientError(f"could not reach Microsoft Graph: {e}") from e
         if r.status_code in (401, 403):
+            if self.signed_in:
+                raise AuthError(f"Microsoft Graph refused the request ({r.status_code}): reconnect the account")
             raise AuthError(f"Microsoft Graph refused the request ({r.status_code}): check the app's Mail.ReadWrite and "
                             f"Mail.Send application permissions and admin consent for {self.address}")
         if r.status_code == 404:
@@ -85,9 +147,16 @@ class GraphAccount(MailAccount):
         return r.json()
 
     async def test(self) -> str:
+        if self.signed_in:
+            me = await self._call("GET", "/me")
+            address = str(me.get("mail") or me.get("userPrincipalName") or "").lower()
+            if address and self.address and address != self.address:
+                raise AuthError(f"signed in as {address}, not {self.address}")
         try:
             inbox = await self._call("GET", f"{self._me}/mailFolders/inbox")
         except LookupError:
+            if self.signed_in:
+                raise AuthError(f"Microsoft shows no mailbox for {self.address}; the account may have no Exchange mailbox")
             raise AuthError(f"no mailbox {self.address} in this tenant (or the app may not read it)")
         await self._sent_id()
         return f"Inbox reachable ({inbox.get('totalItemCount', 0)} messages)."

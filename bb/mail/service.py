@@ -103,6 +103,49 @@ async def connect_gmail(db: MailDB, secret: str, *, address: str, refresh_token:
     return mid, note
 
 
+async def connect_microsoft(db: MailDB, secret: str, *, address: str, refresh_token: str, env: dict) -> tuple[str, str]:
+    """Store a mailbox from a completed Microsoft sign-in (Outlook, Hotmail
+    or Microsoft 365 as the person themselves) and verify it. The refresh
+    token is the credential; a rotation during the check is kept."""
+    address = (address or "").strip().lower()
+    if "@" not in address:
+        raise ValueError("Microsoft did not say which mailbox this is.")
+    creds = {"refresh_token": refresh_token}
+    probe = {"address": address, "provider": "graph"}
+    account = account_for(probe, creds, env)
+    note = await account.test()
+    sealed = crypto.seal_json(secret, account.creds)
+    existing = await db.mailbox_by_address(address)
+    if existing:
+        await db.update_mailbox(existing["id"], creds=sealed, provider="graph", mode="full",
+                                status="ok", status_detail=note, last_checked_at=now_iso(), enabled=1)
+        await db.log("connected", f"Reconnected {address} through Microsoft.", existing["id"])
+        return existing["id"], note
+    mid = await db.add_mailbox(address=address, provider="graph", creds=sealed, mode="full",
+                               settings=MailboxSettings(color=_next_color(await db.mailboxes())).model_dump(),
+                               status="ok")
+    await db.update_mailbox(mid, status_detail=note, last_checked_at=now_iso())
+    await db.log("connected", f"Connected {address} through Microsoft.", mid)
+    return mid, note
+
+
+def signed_in(secret: str, mailbox: dict) -> bool:
+    """A Microsoft mailbox connected by the person's own sign-in (a
+    refresh token), as opposed to an admin app's client secret."""
+    return mailbox.get("provider") == "graph" and bool(open_creds(secret, mailbox).get("refresh_token"))
+
+
+async def persist_creds(db: MailDB, secret: str, mailbox: dict, account) -> bool:
+    """Store a credential the provider rotated during a call (Microsoft
+    hands back a new refresh token on every use). Returns True when
+    something was written."""
+    if not getattr(account, "creds_changed", False):
+        return False
+    await db.update_mailbox(mailbox["id"], creds=crypto.seal_json(secret, account.creds))
+    account.creds_changed = False
+    return True
+
+
 def _next_color(mailboxes: list[dict]) -> str:
     from bb.mail.models import COLORS
     used = {(m.get("settings") or {}).get("color") for m in mailboxes}
@@ -145,8 +188,9 @@ async def check_mailbox(db: MailDB, secret: str, mailbox: dict, env: dict) -> st
     crash); a network failure is 'error' and is retried later."""
     creds = open_creds(secret, mailbox)
     previous = mailbox.get("status")
+    account = account_for(mailbox, creds, env)
     try:
-        note = await account_for(mailbox, creds, env).test()
+        note = await account.test()
         status, detail = "ok", note
     except AuthError as e:
         status, detail = "reconnect", str(e)[:300]
@@ -154,6 +198,7 @@ async def check_mailbox(db: MailDB, secret: str, mailbox: dict, env: dict) -> st
         status, detail = "error", str(e)[:300]
     except Exception as e:  # a bug in an adapter must not take the worker down
         status, detail = "error", f"{type(e).__name__}: {str(e)[:200]}"
+    await persist_creds(db, secret, mailbox, account)
     await db.update_mailbox(mailbox["id"], status=status, status_detail=detail, last_checked_at=now_iso())
     if status != previous:
         if status == "reconnect":
@@ -200,8 +245,10 @@ async def run_sync(db: MailDB, secret: str, mailbox: dict, env: dict, jobs: Jobs
         await db.log("warning", f"{mailbox['address']} needs reconnecting: {e}", mailbox["id"])
         return {"status": "reconnect", **totals}
     except TransientError as e:
+        await persist_creds(db, secret, mailbox, account)
         await db.update_mailbox(mailbox["id"], status="error", status_detail=str(e)[:300], last_checked_at=now_iso())
         raise  # the queue retries with backoff
+    await persist_creds(db, secret, mailbox, account)
     merged = {**(mailbox.get("sync") or {}), **state}
     await db.update_mailbox(mailbox["id"], sync=merged, last_sync_at=now_iso(), status="ok",
                             status_detail=mailbox.get("status_detail") or "", last_checked_at=now_iso())
@@ -307,6 +354,12 @@ async def migrate_from_workspace(db: MailDB, secret: str, ws) -> str | None:
         refresh = (token or {}).get("refresh_token", "")
         if refresh:
             mid = await db.add_mailbox(address=ws.sending_address(), provider="gmail",
+                                       creds=crypto.seal_json(secret, {"refresh_token": refresh}), mode="full",
+                                       settings=settings.model_dump(), status="new")
+    elif provider == "microsoft" and ws.microsoft_connected():
+        refresh = (ws.microsoft_token() or {}).get("refresh_token", "")
+        if refresh and ws.sending_address():
+            mid = await db.add_mailbox(address=ws.sending_address(), provider="graph",
                                        creds=crypto.seal_json(secret, {"refresh_token": refresh}), mode="full",
                                        settings=settings.model_dump(), status="new")
     if mid:

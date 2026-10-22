@@ -113,6 +113,9 @@ class MicrosoftProvider(MailProvider):
         self.config = config
         self.client_id = getattr(env, "m365_client_id", "")
         self.tenant = getattr(env, "m365_tenant_id", "") or "organizations"
+        # A web app registration (the hosted site's) is a confidential client
+        # and must send its secret with the refresh; the CLI's public client has none.
+        self.client_secret = getattr(env, "m365_client_secret", "") or ""
         self._transport = transport  # httpx.MockTransport in tests
         self._access_token = ""
         self._access_expires = 0.0
@@ -136,13 +139,16 @@ class MicrosoftProvider(MailProvider):
         if not stored:
             raise GraphError("not authorized. Run 'harvey microsoft auth'.")
         try:
+            form = {
+                "client_id": self.client_id,
+                "grant_type": "refresh_token",
+                "refresh_token": stored["refresh_token"],
+                "scope": SCOPE,
+            }
+            if self.client_secret and self._user_path == "/me":
+                form["client_secret"] = self.client_secret
             async with self._client() as client:
-                resp = await client.post(_token_url(self.tenant), data={
-                    "client_id": self.client_id,
-                    "grant_type": "refresh_token",
-                    "refresh_token": stored["refresh_token"],
-                    "scope": SCOPE,
-                })
+                resp = await client.post(_token_url(self.tenant), data=form)
         except httpx.HTTPError as e:
             raise GraphError(f"token refresh failed: {e}") from e
         if resp.status_code != 200:

@@ -208,7 +208,7 @@ STYLES = {
     "engaging": "Engaging: 90–130 words with a hook, one useful detail, an easy question and a PS",
     "concise": "Concise: under 75 words, one observation and one question",
 }
-MAIL_PROVIDERS = ("gmail", "smtp", "microsoft_app")
+MAIL_PROVIDERS = ("gmail", "smtp", "microsoft", "microsoft_app")
 STOP_GRACE_SECONDS = 30   # how long a worker gets to finish after SIGTERM before SIGKILL
 MAX_SIGNATURE_IMAGE = 1024 * 1024
 
@@ -249,6 +249,9 @@ class Workspace:
         self.paused_file = self.data_dir / "worker.paused"
         self.gmail_token_file = self.data_dir / "gmail_token.json"
         self.gmail_account_file = self.data_dir / "gmail_account.json"
+        # Where harvey.integrations.microsoft reads the signed-in user's token.
+        self.microsoft_token_file = self.data_dir / "m365_token.json"
+        self.microsoft_account_file = self.data_dir / "microsoft_account.json"
         self.secrets_file = self.data_dir / "secrets.json"
         self.mailbox_file = self.data_dir / "mailbox.json"
         self.attachments_dir = self.root / "attachments"
@@ -381,15 +384,19 @@ class Workspace:
             provider = str(data.get("provider") or "")
         except (OSError, ValueError, AttributeError):
             provider = ""
-        if provider in MAIL_PROVIDERS:
+        usable = {"gmail": True, "smtp": True, "microsoft": self.microsoft_connected(),
+                  "microsoft_app": self.m365_configured()}
+        if provider in MAIL_PROVIDERS and usable[provider]:   # a disconnected sign-in is not a choice
             return provider
+        if self.microsoft_connected() and not self.gmail_connected():
+            return "microsoft"
         if self.m365_configured() and not self.gmail_connected():
             return "microsoft_app"
         return "smtp" if self.smtp_configured() and not self.gmail_connected() else "gmail"
 
     def set_mail_provider(self, provider: str):
         if provider not in MAIL_PROVIDERS:
-            raise ValueError("Choose gmail, smtp or microsoft_app.")
+            raise ValueError("Choose gmail, smtp, microsoft or microsoft_app.")
         self.ensure()
         self.mailbox_file.write_text(json.dumps({"provider": provider}))
 
@@ -432,7 +439,8 @@ class Workspace:
                             "yahoo.com", "icloud.com", "me.com", "aol.com")
         host = str(self.smtp_settings().get("smtp_host") or "").strip().lower() if provider == "smtp" else ""
         google = (provider == "gmail" and self.gmail_connected()) or host.endswith(("gmail.com", "googlemail.com"))
-        microsoft = provider == "microsoft_app" or host.endswith(("office365.com", "outlook.com", "live.com"))
+        microsoft = (provider in ("microsoft", "microsoft_app")
+                     or host.endswith(("office365.com", "outlook.com", "live.com")))
         if host.startswith("smtp-relay."):
             return "", ""
         if google:
@@ -501,6 +509,8 @@ class Workspace:
         provider = self.mail_provider()
         if provider == "gmail":
             return self.gmail_connected()
+        if provider == "microsoft":
+            return self.microsoft_connected()
         if provider == "microsoft_app":
             return self.m365_configured()
         return self.smtp_configured()
@@ -509,6 +519,8 @@ class Workspace:
         provider = self.mail_provider()
         if provider == "gmail":
             return self.gmail_account().get("email", "")
+        if provider == "microsoft":
+            return self.microsoft_account().get("email", "")
         if provider == "microsoft_app":
             return self.m365_settings()["m365_mailbox"].lower()
         s = self.smtp_settings()
@@ -992,6 +1004,62 @@ class Workspace:
             except FileNotFoundError:
                 pass
 
+    def microsoft_connected(self) -> bool:
+        try:
+            data = json.loads(self.microsoft_token_file.read_text())
+            return bool(isinstance(data, dict) and data.get("refresh_token"))
+        except (OSError, ValueError):
+            return False
+
+    def microsoft_account(self) -> dict:
+        try:
+            data = json.loads(self.microsoft_account_file.read_text())
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def microsoft_token(self) -> dict:
+        try:
+            data = json.loads(self.microsoft_token_file.read_text())
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def disconnect_microsoft(self):
+        for path in (self.microsoft_token_file, self.microsoft_account_file):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+    def needs_reconnect(self, health: dict | None = None) -> str:
+        """Why the connected mailbox must be reconnected, or "": the health
+        check or the sender found the sign-in refused."""
+        texts = [(health or {}).get("alert", ""), (health or {}).get("error", "")]
+        try:
+            texts.append(self._skip_reason_sync())
+        except Exception:
+            pass
+        low = " ".join(t or "" for t in texts).lower()
+        if any(w in low for w in ("refused the login", "login failed", "sign-in", "no longer accepts", "reconnect",
+                                  "authentication failed", "invalid_grant", "not authorized", "535 ",
+                                  "refresh rejected", "refresh failed", "re-run 'harvey")):
+            return next((t for t in texts if t), "the mailbox refused the sign-in")
+        return ""
+
+    def _skip_reason_sync(self) -> str:
+        import sqlite3
+        if not self.db_path.exists():
+            return ""
+        con = sqlite3.connect(str(self.db_path))
+        try:
+            row = con.execute("SELECT value FROM settings WHERE key = 'sender_skip_reason'").fetchone()
+            return (row[0] or "") if row else ""
+        except sqlite3.Error:
+            return ""
+        finally:
+            con.close()
+
     # ── state ──
 
     def state(self) -> StateManager:
@@ -1458,6 +1526,11 @@ class Workspace:
             m = self.m365_settings()
             env.update({"M365_TENANT_ID": m["m365_tenant_id"], "M365_CLIENT_ID": m["m365_client_id"],
                         "M365_CLIENT_SECRET": m["m365_client_secret"], "M365_MAILBOX": m["m365_mailbox"]})
+        elif self.mail_provider() == "microsoft":
+            # The signed-in user's mailbox through the site's own app registration.
+            env.update({"M365_TENANT_ID": getattr(self.settings, "ms_tenant", "") or "common",
+                        "M365_CLIENT_ID": getattr(self.settings, "ms_client_id", "") or "",
+                        "M365_CLIENT_SECRET": getattr(self.settings, "ms_client_secret", "") or ""})
         return env
 
     def start_worker(self) -> tuple[bool, str]:

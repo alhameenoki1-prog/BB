@@ -163,6 +163,43 @@ Gmail's send/read scope is a *restricted* scope: to let anyone connect, you
 submit the app for Google's verification, which includes a third-party
 security assessment (the CASA process). Start that early; it takes weeks.
 
+## 1b. Microsoft app registration (Outlook, Hotmail, Microsoft 365 sign-in)
+
+Optional, and the same idea as the Google client: one app registration
+for the site lets every user connect an Outlook, Hotmail or Microsoft 365
+mailbox with a click on Microsoft's own sign-in page. (A tenant you
+administer can also use the admin app on the Mailbox page, which needs
+no sign-in per user; this one is for everyone else, personal accounts
+included.)
+
+1. entra.microsoft.com → *Applications → App registrations → New
+   registration*. Any name. Supported account types: **Accounts in any
+   organizational directory and personal Microsoft accounts** (pick
+   *this directory only* if the site is for one company).
+2. *Redirect URI*: platform **Web**, value `https://outreach.example.com/microsoft/callback`
+   (exactly `BB_BASE_URL` + `/microsoft/callback`). Under
+   *Authentication*, add a second Web redirect URI
+   `https://outreach.example.com/mail/microsoft/callback` for the
+   command center.
+3. *API permissions → Add a permission → Microsoft Graph → Delegated
+   permissions*: `Mail.ReadWrite`, `Mail.Send`, `User.Read`,
+   `offline_access`. No admin consent is needed for these; each user
+   consents when they sign in (a tenant admin can grant it for everyone).
+4. *Certificates & secrets → New client secret*, copy the *Value*.
+5. `.env`: `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, and `MS_TENANT` only if
+   you chose *this directory only* (the tenant id or domain; the default
+   `common` takes both work and personal accounts).
+
+What the user sees: *Sign in with Microsoft* on the Mailbox page (and on
+the command center's Accounts page) sends them to Microsoft, which uses
+the browser session they already have and shows the consent screen once.
+No password reaches the site. Microsoft hands the site a refresh token,
+stored in the user's workspace (`data/m365_token.json`, the file the
+worker's Microsoft provider reads) and, in the command center, sealed in
+the mail database. Mail is then sent and read through Microsoft Graph as
+that account, replies keep Outlook's conversation, and the token keeps
+working after the user changes their password.
+
 ## 2. Configure
 
 ```bash
@@ -272,8 +309,18 @@ and the 16-character app password as the password, and *Test and save*.
 Replies arrive in the same inbox and the worker reads and answers them.
 Servers: `smtp.gmail.com:587`, `imap.gmail.com:993`.
 
+**Outlook, Hotmail or Microsoft 365, one click.** When the site has a
+Microsoft app registration (section 1b), the Mailbox page shows *Sign in
+with Microsoft*: the user signs in on Microsoft's page, with the account
+their browser already holds or any other, allows mail access once, and
+is back on the page connected. Personal outlook.com and hotmail.com
+accounts work this way (the only way, since Microsoft removed password
+sign-in for them), and so do work accounts without any admin SMTP
+toggle. Sending and reading replies both go through Microsoft Graph.
+
 **Outlook / Microsoft 365 over SMTP.** (If you administer the tenant, use
-Option C below instead.) Sending works for work or school accounts
+Option C below instead; if the site has the Microsoft sign-in above,
+use that.) Sending works for work or school accounts
 once the admin allows *Authenticated SMTP* on the mailbox (Microsoft 365
 admin center → Users → user → Mail → Manage email apps). Microsoft no
 longer allows password sign-in over IMAP, so the worker cannot read a
@@ -313,6 +360,31 @@ Personal outlook.com accounts have no tenant and cannot use this.
 security settings; the page's buttons fill in the servers. A mailbox from a
 web host is usually `mail.yourdomain.com` on ports 587/465 (SMTP) and 993
 (IMAP).
+
+### Changing your password, and Reconnect
+
+A Google or Microsoft sign-in is an authorization, not a stored password:
+the site holds a refresh token and mints access tokens from it, so the
+connection survives a password change. It ends only when the user
+disconnects on the Mailbox page, revokes the site's access in their
+Google or Microsoft account, or, on some Microsoft 365 tenants, when the
+tenant's policy signs every app out after a password change. A Google
+client still in testing mode also ends sign-ins after seven days.
+
+SMTP/IMAP with a password or an app password is the one connection a
+password change does break (an app password usually survives it; a
+normal password does not).
+
+When a sign-in stops being accepted, nothing crashes and nothing queued
+is lost: the worker's half-hourly login check (and the sender, if it
+hits the refusal first) records it, the dashboard shows *Your mailbox
+needs reconnecting* with a button to the Mailbox page, and the Mailbox
+page shows a red *Reconnect your mailbox* card with the one action that
+fits the connection: *Reconnect Google*, *Reconnect Microsoft*, or the
+password form. One sign-in puts it right and sending resumes. The
+command center's Accounts page marks such a mailbox *reconnect* with
+the same one-click button beside it; until then that mailbox is skipped
+by reply runs and the others carry on.
 
 ## What makes the emails good or bad
 
