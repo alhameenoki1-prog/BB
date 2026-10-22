@@ -18,6 +18,7 @@ from bb.mail import scope as scope_mod
 from bb.mail.models import COLORS, MailboxSettings
 from bb.mail.providers import AuthError, TransientError
 from bb.mail_autoconfig import guess_settings
+from bb.mail_paste import parse_pasted_login, to_smtp_fields
 
 logger = logging.getLogger("bb.mail.routes")
 
@@ -349,6 +350,39 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         if not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
         return _redirect(f"/mail/accounts/{mid}", msg=f"Connected {email} (limited mode). {detail} "
+                                                   "Now add the signature and project link.")
+
+    @app.post("/mail/accounts/paste")
+    async def mail_connect_paste(request: Request, user: dict = Depends(current_user)):
+        """Paste the mailbox's login in whatever shape (a labelled settings
+        block, a connection URL, JSON, or one address-and-password line);
+        it is read, the servers filled from the address, then tested and
+        stored like the typed form."""
+        c = await ctx(user)
+        form = dict(await request.form())
+        parsed, note = parse_pasted_login(str(form.get("pasted", "") or ""))
+        if parsed is None:
+            return _redirect("/mail/accounts", error=note)
+        try:
+            smtp, _ = to_smtp_fields(parsed, guess_settings)
+        except ValueError as e:
+            return _redirect("/mail/accounts", error=str(e))
+        email = parsed["email"]
+        try:
+            mid, detail = await service.connect_imap(c["db"], settings.secret_key(), address=email, smtp=smtp,
+                                                     env=settings.worker_env())
+        except AuthError as e:
+            hint = (" Gmail, Yahoo and iCloud need an app password, not the normal one."
+                    if any(h in smtp["smtp_host"] for h in ("gmail", "yahoo", "me.com")) else "")
+            return _redirect("/mail/accounts", error=f"Sign-in refused: {e}.{hint} ({note})")
+        except TransientError as e:
+            return _redirect("/mail/accounts", error=f"Could not connect: {e}. ({note})")
+        except ValueError as e:
+            return _redirect("/mail/accounts", error=str(e))
+        await c["ws"].main().account_changed(mid)
+        if not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        return _redirect(f"/mail/accounts/{mid}", msg=f"Connected {email} from the login you pasted. {note} {detail} "
                                                    "Now add the signature and project link.")
 
     @app.get("/mail/accounts/{mailbox_id}", response_class=HTMLResponse)

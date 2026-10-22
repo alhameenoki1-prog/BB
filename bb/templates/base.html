@@ -115,6 +115,8 @@
   input:focus, select:focus, textarea:focus { background:var(--surface); border-color:var(--accent); box-shadow:0 0 0 4px var(--accent-soft); outline:none; }
   input[readonly] { color:var(--ink-2); }
   textarea { min-height:104px; resize:vertical; }
+  .paste-login textarea { font:13px/1.5 var(--mono); min-height:120px; white-space:pre; }
+  .paste-login > summary { color:var(--accent); }
   input[type=file] { padding:10px; background:var(--fill); border-radius:var(--r-sm); width:100%; }
   .row { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:0 18px; }
   .check { display:flex; align-items:flex-start; gap:10px; font-weight:500; margin:12px 0; font-size:14px; line-height:1.4; }

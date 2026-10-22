@@ -29,6 +29,14 @@
     </div>
   </form>
   <p class="tiny" style="margin-top:8px">Need to set the servers yourself? The full form is under Option {{ 'B' if gmail_available else 'A' }} below.</p>
+  <details class="paste-login" style="margin-top:10px">
+    <summary class="small" style="cursor:pointer">Or paste the whole login at once</summary>
+    <p class="muted small" style="margin-top:8px">Have the mailbox's settings as a block, a link or a line? Paste it as it is and the site reads the address, password and servers out of it. It takes the settings block a provider shows, a <code>imap://…</code> or <code>smtp://…</code> link, a little JSON, or just <code>you@domain.com&nbsp;&nbsp;app-password</code> on one line.</p>
+    <form method="post" action="/mailbox/paste">
+      <textarea name="pasted" rows="5" required placeholder="Email: you@company.com&#10;Password: your-app-password&#10;IMAP server: imap.company.com   Port: 993&#10;SMTP server: smtp.company.com   Port: 587"></textarea>
+      <p style="margin-top:10px"><button type="submit">{{ icon('check', 15) }} Read it and log in</button></p>
+    </form>
+  </details>
 </div>
 
 <div class="card">

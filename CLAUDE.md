@@ -101,7 +101,7 @@ mail from strangers with the right document links (Handler
 `_auto_reply_inbox`; `inbox_backlog_days` also sweeps older unanswered
 mail via each provider's `get_unanswered`; web Inbox page). The Mailbox
 page's "Log in with your email" derives SMTP/IMAP servers from the
-address (`bb/mail_autoconfig.py`). `harvey/spamcheck.py` scores every draft like a filter would (rewrite once,
+address (`bb/mail_autoconfig.py`); its "paste the whole login" box reads a login in any shape (a provider's settings block, an `imap://`/`smtp://` URL, JSON, or one `address password` line) into those fields (`bb/mail_paste.py`, `/mailbox/paste`, `/mail/accounts/paste`). `harvey/spamcheck.py` scores every draft like a filter would (rewrite once,
 then hold for review; `vague_risk` adds the campaign-phrasing score in inquiry mode); first emails go as plain text with a links-free signature (`channels.email.plain_first_email`), segment mode rotates three wordings (`EmailStep.variant`, `Writer._add_variants`), and a spam-block bounce pauses the sender (`Handler._stand_down_after_block`, `Sender._in_cooloff`) instead of marking the address invalid; `outreach.use_template` sends the user's own message
 instead of AI text. `harvey/names.py` resolves missing recipient
 names (LinkedIn slug, first.last address, team page) and puts the greeting

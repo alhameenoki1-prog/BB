@@ -45,6 +45,14 @@
       </details>
       <p style="margin-top:12px"><button type="submit">{{ icon('check', 15) }} Connect</button></p>
     </form>
+    <details class="paste-login" style="margin-top:12px">
+      <summary class="small" style="cursor:pointer">Or paste the whole login at once</summary>
+      <p class="muted small" style="margin-top:8px">Paste the mailbox's settings as you have them and the site reads the address, password and servers out of it: the settings block a provider shows, a <code>imap://…</code> or <code>smtp://…</code> link, a little JSON, or just <code>you@domain.com&nbsp;&nbsp;app-password</code> on one line. Missing servers are worked out from the address.</p>
+      <form method="post" action="/mail/accounts/paste">
+        <textarea name="pasted" rows="5" required placeholder="Email: you@company.com&#10;Password: your-app-password&#10;IMAP server: imap.company.com   Port: 993&#10;SMTP server: smtp.company.com   Port: 587"></textarea>
+        <p style="margin-top:10px"><button type="submit">{{ icon('check', 15) }} Read it and connect</button></p>
+      </form>
+    </details>
   </div>
 </div>
 <div class="card" style="margin-top:14px" id="bulk">

@@ -24,6 +24,7 @@ from bb import deliverability
 from bb import gmail_oauth, microsoft_oauth, recipients as recipients_mod
 from bb.linkcheck import check_public_url
 from bb.mail_autoconfig import guess_settings
+from bb.mail_paste import parse_pasted_login, to_smtp_fields
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
 from bb.workspaces import (ASKS, ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
@@ -850,6 +851,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws.rewrite_config()
         await ws.restart_worker_if_running("the new mailbox settings")
         return _redirect("/mailbox", msg=f"Signed in to {email}. {detail}")
+
+    @app.post("/mailbox/paste")
+    async def mailbox_paste(request: Request, user: dict = Depends(current_user)):
+        """Paste the mailbox login (a settings block, a connection URL, JSON
+        or one line); it is read, the servers filled from the address, then
+        tested and saved like the typed form."""
+        ws = workspace_for(user)
+        if not ws.is_main:
+            return _redirect("/mailbox", error=f"{ws.campaign_name()} sends from an account on the Accounts page; change it below.")
+        form = dict(await request.form())
+        parsed, note = parse_pasted_login(str(form.get("pasted", "") or ""))
+        if parsed is None:
+            return _redirect("/mailbox", error=note)
+        email = parsed["email"]
+        taken = campaign_taken(ws, email)
+        if taken:
+            return _redirect("/mailbox", error=f"That account already sends for the campaign {taken} (one campaign per account).")
+        try:
+            smtp, _ = to_smtp_fields(parsed, guess_settings)
+        except ValueError as e:
+            return _redirect("/mailbox", error=str(e))
+        ok, detail = await test_smtp(smtp)
+        if not ok:
+            hint = ""
+            if smtp["smtp_host"] == "smtp.gmail.com":
+                hint = " Gmail needs an app password (myaccount.google.com/apppasswords), not your normal password."
+            elif smtp["smtp_host"] == "smtp.office365.com":
+                hint = " Microsoft 365 needs Authenticated SMTP switched on by your admin, or sign in with Microsoft."
+            elif smtp["smtp_host"].startswith("smtp.mail.yahoo") or smtp["smtp_host"].startswith("smtp.mail.me"):
+                hint = " This provider needs an app password from its security settings."
+            return _redirect("/mailbox", error=f"Could not sign in: {detail}.{hint} {note}")
+        ws.save_secrets(**smtp)
+        ws.set_mail_provider("smtp")
+        ws.clear_mailbox_problem()
+        ws.rewrite_config()
+        await ws.restart_worker_if_running("the new mailbox settings")
+        return _redirect("/mailbox", msg=f"Signed in to {email} from the login you pasted. {note} {detail}")
 
     @app.post("/mailbox/smtp/test")
     async def mailbox_smtp_test(user: dict = Depends(current_user)):

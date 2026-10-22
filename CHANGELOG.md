@@ -9,6 +9,17 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Paste a mailbox's login to connect it.** A third way to add a mailbox,
+  beside typing the address and password and the browser sign-in: paste the
+  login in whatever shape you have it and the site reads it. It takes the
+  settings block a provider shows ("IMAP server: ..., Port: 993,
+  Username: ..., Password: ..."), an `imap://` or `smtp://` connection URL,
+  a little JSON, or just `you@domain.com app-password` on one line; servers
+  left out are worked out from the address, then it is tested and sealed
+  like the typed form (`bb/mail_paste.py`, `/mailbox/paste`,
+  `/mail/accounts/paste`). It is for a mailbox's own credentials, not for
+  anything standing in for a browser session.
+
 - **Sign-in setup from the site, done for you on Microsoft.** An admin
   switches *Sign in with Google* and *Sign in with Microsoft* on from
   Users → Sign-in setup (`/admin/signin`, `bb/signin_setup.py`; kept in

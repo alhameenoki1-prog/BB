@@ -339,6 +339,16 @@ balance is too low" and the page says so.
 
 ## Connecting a mailbox (what to tell your users)
 
+There are three ways to connect a mailbox, and a user can use whichever
+they have to hand: the browser sign-in (one click, Google or Microsoft),
+typing the address and its password, or **pasting the whole login**. The
+paste box takes the mailbox's settings in any shape, the block a provider's
+help page shows, a connection URL, a little JSON, or one `address password`
+line, reads the address, password and any servers out of it, works out the
+rest from the address, and tests it before saving. It is for the mailbox's
+own credentials (an app password where the provider needs one).
+
+
 The Mailbox page has these instructions built in, with buttons that fill
 in the servers. In short:
 
