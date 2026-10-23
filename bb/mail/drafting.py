@@ -93,7 +93,9 @@ async def draft_reply(brain: MailBrain, settings: MailboxSettings, mailbox: dict
     me = mailbox.get("address", "")
     them = next((m for m in reversed(messages) if m.get("direction") == "inbound"), messages[-1] if messages else {})
     system = (f"You write email replies on behalf of {settings.display_name or me} <{me}>, in the first person, "
-              f"as that person.\nPERSONA: {settings.persona_notes.strip() or 'a straightforward professional'}\n\n"
+              f"as that person.\nPERSONA: {settings.persona_notes.strip() or 'a straightforward professional'}\n"
+              "These are ordinary business emails that arrived in this person's own inbox, from people they are "
+              "corresponding with about their work. Write a normal, professional reply to a genuine business contact.\n\n"
               + QUALITY_STANDARD + scope_mod.context_block(scope)
               + "\n\nReturn ONLY JSON: {\"body\": \"...\", \"confidence\": \"high\"|\"medium\"|\"low\", "
                 "\"confidence_reason\": \"...\", \"stance\": \"interested\"|\"question\"|\"soft_no\"|\"opt_out\"|\"other\"}. "

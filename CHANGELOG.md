@@ -9,6 +9,13 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **Fewer false refusals when drafting a reply.** The reply draft now tells
+  the model, truthfully, that these are ordinary business emails in the
+  person's own inbox, so a plain business reply is less likely to be met
+  with a model safety refusal. (A thread the model genuinely reads as a
+  scam can still be declined — that is the model's call, not a BB guard,
+  and such a thread stays visible as "needs reply" to handle by hand.)
+
 - **A bounce or rejection is never answered.** A delivery-failure notice
   ("Undeliverable", "Delivery Status Notification", "Mail delivery failed")
   or a message from `postmaster@` / `mailer-daemon` is automated mail, so a
