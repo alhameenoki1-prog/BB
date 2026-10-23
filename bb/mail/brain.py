@@ -6,9 +6,12 @@ worker use the same account."""
 
 import contextvars
 import json
+import logging
 import re
 
 import httpx
+
+logger = logging.getLogger("bb.mail.brain")
 
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
 
@@ -150,12 +153,17 @@ def plain_answer(text: str) -> str:
 JSON_AGAIN = ("Your last answer could not be read as JSON. Answer again with ONLY the JSON object asked for: it starts with "
               "{ and ends with }, every string in double quotes, line breaks inside a string written as \\n, and nothing "
               "before or after it.")
+# When the first answer was empty, a plain nudge does better than scolding
+# about JSON format (there was no format to fix).
+RETRY_EMPTY = ("Your last answer was blank. This is an ordinary piece of the sender's own business correspondence; "
+               "write the reply now as the JSON object described above, and nothing else.")
 
 # Set for one call (a context variable, so drafts written at the same time
-# do not see each other's): ask the endpoint for JSON, and whether the
-# answer was cut off at the length limit.
+# do not see each other's): ask the endpoint for JSON, whether the answer
+# was cut off at the length limit, and whether the model declined it.
 _JSON_MODE: contextvars.ContextVar[bool] = contextvars.ContextVar("bb_json_mode", default=False)
 _CUT_OFF: contextvars.ContextVar[bool] = contextvars.ContextVar("bb_cut_off", default=False)
+_REFUSED: contextvars.ContextVar[bool] = contextvars.ContextVar("bb_refused", default=False)
 
 
 class MailBrain:
@@ -195,22 +203,25 @@ class MailBrain:
         as that field, marked ``_salvaged`` so the caller routes it to a
         person, rather than failing the item."""
         _CUT_OFF.set(False)
+        _REFUSED.set(False)
         first = _clean(await self.complete(system, user, max_tokens))
         data = extract_json(first)
         if data is not None:
             return data
         cut = _CUT_OFF.get()
         empty = not first.strip()
-        # The retry. When the first answer buried JSON in prose, ask again in
-        # the endpoint's JSON mode. When it was empty or cut off (a reasoning
-        # model that spent its whole budget thinking, a filter, or just too
-        # little room), give it far more room and keep it plain instead: JSON
-        # mode only makes an empty answer emptier.
+        # The retry — a real second attempt, even after an empty answer or a
+        # one-off refusal, since ordinary business mail should draft. When the
+        # first answer buried JSON in prose, ask again in the endpoint's JSON
+        # mode. When it was empty or cut off, give it far more room, a plain
+        # nudge instead of a JSON scolding, and no JSON mode (which only makes
+        # an empty answer emptier).
         big = min(8000, max_tokens * (4 if empty else 2)) if (empty or cut) else max_tokens
+        note = RETRY_EMPTY if (empty or cut) else JSON_AGAIN
         token = _JSON_MODE.set(not empty and not cut)
         try:
             _CUT_OFF.set(False)
-            second = _clean(await self.complete(system, user + "\n\n" + JSON_AGAIN, big))
+            second = _clean(await self.complete(system, user + "\n\n" + note, big))
         except BrainError:
             if not salvage:
                 raise
@@ -232,6 +243,11 @@ class MailBrain:
                             out[extra] = got
                     return out
         name = (self.model or self.label).strip() or self.label
+        logger.warning("MailBrain: no usable answer after two tries (provider=%s model=%s refused=%s cut=%s empty_first=%s)",
+                       self.provider, name, _REFUSED.get(), cut, empty)
+        if _REFUSED.get() and not (second or first).strip():
+            who = "Claude" if self.provider == "anthropic" else self.label
+            raise BrainRefusal(f"{who} declined to draft a reply to this message (a safety refusal).")
         if not (second or first).strip():
             raise BrainError(f"{self.label} ({name}) returned an empty answer twice. That usually means a reasoning "
                              "model that uses its whole budget thinking and writes nothing, a safety filter, or a model "
@@ -257,8 +273,14 @@ class MailBrain:
         if stop == "max_tokens":
             _CUT_OFF.set(True)
         text = "".join(getattr(b, "text", "") for b in msg.content)
-        if not text.strip() and stop == "refusal":
-            raise BrainRefusal("Claude declined to draft a reply to this message (a safety refusal).")
+        if not text.strip():
+            # Record why, so the next time it happens is a fact, not a guess;
+            # a refusal is flagged (not raised here, so a retry still runs).
+            kinds = [getattr(b, "type", "?") for b in (msg.content or [])]
+            logger.warning("Anthropic returned no text: stop_reason=%s blocks=%s model=%s",
+                           stop, kinds, self.model or DEFAULT_ANTHROPIC_MODEL)
+            if stop == "refusal":
+                _REFUSED.set(True)
         return text
 
     async def tool_turn(self, system: str, messages: list, tools: list, max_tokens: int = 1500) -> dict:
@@ -333,8 +355,11 @@ class MailBrain:
                     if isinstance(alt, str) and alt.strip():
                         content = alt
                         break
-            if not content.strip() and finish in ("content_filter", "safety"):
-                raise BrainRefusal(f"{self.label} blocked the answer (its safety filter).")
+            if not content.strip():
+                logger.warning("%s returned no content: finish_reason=%s message_keys=%s model=%s",
+                               self.label, finish, sorted(message.keys()), self.model)
+                if finish in ("content_filter", "safety"):
+                    _REFUSED.set(True)   # flagged, not raised: the retry still runs
             return content or ""
         except BrainError:
             raise

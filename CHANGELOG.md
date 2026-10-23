@@ -315,10 +315,15 @@ minor versions can still change behaviour.
   plain instead of forcing JSON mode (which only empties it further); a
   model that still answers nothing twice is reported with its name and the
   likely cause (a reasoning model, a filter, or a wrong model name). A
-  safety refusal (Claude declines to draft a reply to what a message
-  contains, or another provider's filter blocks it) is now its own
-  outcome: the reply run skips that thread with a "handle it by hand" note
-  instead of marking it a failure (`BrainRefusal`). Never
+  one-off empty answer or refusal no longer drops an ordinary reply: the
+  retry is a genuine second attempt (more room, a plain nudge, no JSON
+  mode), and only an answer that is still empty after both is reported. A
+  refusal that repeats both times (Claude declines what a message
+  contains, or another provider's filter blocks it) is its own outcome:
+  the reply run skips that thread with a "handle it by hand" note instead
+  of a failure (`BrainRefusal`). When an answer comes back empty, the exact
+  response (stop/finish reason, block types, model) is logged, so a
+  recurrence is a fact rather than a guess. Never
   kept: a
   reasoning model's cut-off thinking, an Outbox Rewrite (the email stays as
   it was), and a follow-up the model declined in its own words; the model's

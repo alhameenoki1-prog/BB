@@ -378,13 +378,35 @@ async def test_an_empty_or_reasoning_provider_answer_is_recovered_or_said_clearl
     with pytest.raises(B.BrainError, match="empty answer twice"):
         await br.complete_json("s", "u", salvage="body")
     assert "response_format" not in calls[1] and calls[1]["max_tokens"] > calls[0]["max_tokens"]   # more room, plain
-    # A safety filter, and a problem returned inside a 200 body, are said plainly.
+    # A safety filter both times is a refusal: skipped by hand, not a crash.
     t, _ = endpoint([{"choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]},
                      {"choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]}])
     use(t)
-    with pytest.raises(B.BrainError, match="safety filter"):
+    with pytest.raises(B.BrainRefusal, match="declined"):
         await br.complete_json("s", "u")
     t, _ = endpoint([{"error": {"message": "model_decommissioned"}}])
     use(t)
     with pytest.raises(B.BrainError, match="model_decommissioned"):
         await br.complete("s", "u")
+
+
+@pytest.mark.asyncio
+async def test_a_one_off_empty_or_refusal_still_gets_a_real_second_try():
+    """A blank first answer (a hiccup or a one-off refusal) must not drop an
+    ordinary business reply: the retry is a genuine second attempt, and only
+    a refusal that repeats is left for a person."""
+    class Seq(MailBrain):
+        def __init__(self, answers):
+            super().__init__({"BB_LLM_PROVIDER": "anthropic", "BB_LLM_API_KEY": "k"})
+            self.answers, self.max_tokens_seen = list(answers), []
+
+        async def complete(self, system, user, max_tokens=1200):
+            self.max_tokens_seen.append(max_tokens)
+            return self.answers.pop(0)
+
+    from bb.mail.brain import BrainRefusal
+    # Empty first, a real draft second: recovered, with more room on the retry.
+    br = Seq(["", '{"body": "Hi Thomas, happy to help. What do you need?", "confidence": "high", "stance": "question"}'])
+    r = await br.complete_json("s", "u", salvage="body")
+    assert r["body"].startswith("Hi Thomas") and not r.get("_salvaged")
+    assert br.max_tokens_seen[1] > br.max_tokens_seen[0]
