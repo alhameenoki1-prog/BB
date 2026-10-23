@@ -9,6 +9,12 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **A refusal now shows the model's reason.** When the model declines to
+  draft a reply, BB asks it in one line why, and puts that in the skip note
+  ("… It said: this reads like an advance-fee scam …") and the log, so the
+  reason is visible in the app instead of a blank "safety refusal"
+  (`MailBrain._refusal_reason`).
+
 - **Fewer false refusals when drafting a reply.** The reply draft now tells
   the model, truthfully, that these are ordinary business emails in the
   person's own inbox, so a plain business reply is less likely to be met

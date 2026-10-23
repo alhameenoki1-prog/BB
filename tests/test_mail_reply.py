@@ -410,3 +410,34 @@ async def test_a_one_off_empty_or_refusal_still_gets_a_real_second_try():
     r = await br.complete_json("s", "u", salvage="body")
     assert r["body"].startswith("Hi Thomas") and not r.get("_salvaged")
     assert br.max_tokens_seen[1] > br.max_tokens_seen[0]
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_carries_the_models_own_reason():
+    """When the model declines, BB asks it why in one line and puts that in
+    the message, so the person sees the reason instead of a blank refusal."""
+    from bb.mail.brain import BrainRefusal
+
+    class Seq(MailBrain):
+        def __init__(self, answers):
+            super().__init__({"BB_LLM_PROVIDER": "anthropic", "BB_LLM_API_KEY": "k"})
+            self.answers = list(answers)
+
+        async def complete(self, system, user, max_tokens=1200):
+            a = self.answers.pop(0)
+            if a == "REFUSE":
+                from bb.mail.brain import _REFUSED
+                _REFUSED.set(True)
+                return ""
+            return a
+
+    # Two refusals, then the "why" probe answers.
+    br = Seq(["REFUSE", "REFUSE", "This reads like an advance-fee scam: a vague high-value deal needing an outside party."])
+    with pytest.raises(BrainRefusal, match="advance-fee scam"):
+        await br.complete_json("sys", "user", salvage="body")
+    # If the model will not even say why, it is still a clean refusal.
+    br = Seq(["REFUSE", "REFUSE", "REFUSE"])
+    try:
+        await br.complete_json("sys", "user", salvage="body")
+    except BrainRefusal as e:
+        assert "declined to draft a reply" in str(e) and "It said:" not in str(e)

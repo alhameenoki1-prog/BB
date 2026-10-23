@@ -247,7 +247,12 @@ class MailBrain:
                        self.provider, name, _REFUSED.get(), cut, empty)
         if _REFUSED.get() and not (second or first).strip():
             who = "Claude" if self.provider == "anthropic" else self.label
-            raise BrainRefusal(f"{who} declined to draft a reply to this message (a safety refusal).")
+            reason = await self._refusal_reason(system, user)
+            logger.warning("MailBrain: %s declined; its reason: %s", who, reason or "(none given)")
+            msg = f"{who} declined to draft a reply to this message (a safety refusal)."
+            if reason:
+                msg += f" It said: {reason}"
+            raise BrainRefusal(msg)
         if not (second or first).strip():
             raise BrainError(f"{self.label} ({name}) returned an empty answer twice. That usually means a reasoning "
                              "model that uses its whole budget thinking and writes nothing, a safety filter, or a model "
@@ -255,6 +260,18 @@ class MailBrain:
         raise BrainError("The model did not return the JSON asked for, twice"
                          + (" (its answers were cut off at the length limit)" if cut else "")
                          + ". Its answer began: " + repr(_clean(second or first)[:120]) + ".")
+
+    async def _refusal_reason(self, system: str, user: str) -> str:
+        """After the model declined, ask it in one line WHY, so the person
+        (and the log) can see it instead of a blank refusal. Returns "" when
+        it will not say, so this never itself becomes an error."""
+        ask = ("You were asked to write a short business email reply, and you declined to write it. In one plain "
+               "sentence, say why — what specifically about this message or thread made you decline. Do not write the "
+               "reply; give only the reason.")
+        try:
+            return _clean(await self.complete(system, user + "\n\n" + ask, 200))[:300]
+        except Exception:
+            return ""
 
     async def _anthropic(self, system: str, user: str, max_tokens: int) -> str:
         import anthropic
