@@ -193,10 +193,17 @@ class MailBrain:
         if data is not None:
             return data
         cut = _CUT_OFF.get()
-        token = _JSON_MODE.set(True)
+        empty = not first.strip()
+        # The retry. When the first answer buried JSON in prose, ask again in
+        # the endpoint's JSON mode. When it was empty or cut off (a reasoning
+        # model that spent its whole budget thinking, a filter, or just too
+        # little room), give it far more room and keep it plain instead: JSON
+        # mode only makes an empty answer emptier.
+        big = min(8000, max_tokens * (4 if empty else 2)) if (empty or cut) else max_tokens
+        token = _JSON_MODE.set(not empty and not cut)
         try:
             _CUT_OFF.set(False)
-            second = _clean(await self.complete(system, user + "\n\n" + JSON_AGAIN, max_tokens * 2 if cut else max_tokens))
+            second = _clean(await self.complete(system, user + "\n\n" + JSON_AGAIN, big))
         except BrainError:
             if not salvage:
                 raise
@@ -217,10 +224,14 @@ class MailBrain:
                         if got and extra != salvage:
                             out[extra] = got
                     return out
+        name = (self.model or self.label).strip() or self.label
+        if not (second or first).strip():
+            raise BrainError(f"{self.label} ({name}) returned an empty answer twice. That usually means a reasoning "
+                             "model that uses its whole budget thinking and writes nothing, a safety filter, or a model "
+                             "name that is not a chat model. Pick a plain chat model on the AI provider page.")
         raise BrainError("The model did not return the JSON asked for, twice"
                          + (" (its answers were cut off at the length limit)" if cut else "")
-                         + (". Its answer began: " + repr(_clean(second or first)[:120]) if (second or first) else ": it answered nothing")
-                         + ".")
+                         + ". Its answer began: " + repr(_clean(second or first)[:120]) + ".")
 
     async def _anthropic(self, system: str, user: str, max_tokens: int) -> str:
         import anthropic
@@ -235,9 +246,13 @@ class MailBrain:
             raise BrainError(f"Anthropic answered {e.status_code}: {str(e)[:200]}") from e
         except anthropic.APIError as e:
             raise BrainError(f"Anthropic error: {str(e)[:200]}") from e
-        if getattr(msg, "stop_reason", "") == "max_tokens":
+        stop = getattr(msg, "stop_reason", "")
+        if stop == "max_tokens":
             _CUT_OFF.set(True)
-        return "".join(getattr(b, "text", "") for b in msg.content)
+        text = "".join(getattr(b, "text", "") for b in msg.content)
+        if not text.strip() and stop == "refusal":
+            raise BrainError("Anthropic declined to answer this one (a safety refusal).")
+        return text
 
     async def tool_turn(self, system: str, messages: list, tools: list, max_tokens: int = 1500) -> dict:
         """One model turn with tools (Anthropic only). Returns
@@ -286,9 +301,35 @@ class MailBrain:
         if r.status_code >= 400:
             raise BrainError(f"{self.label} answered {r.status_code}: {r.text[:200]}")
         try:
-            choice = r.json()["choices"][0]
-            if choice.get("finish_reason") == "length":
+            data = r.json()
+            choices = data.get("choices") or []
+            if not choices:
+                # Some endpoints put a problem in the body of a 200 (quota, a
+                # blocked prompt); surface it instead of "unexpected shape".
+                err = (data.get("error") or {}) if isinstance(data.get("error"), dict) else {}
+                why = err.get("message") or data.get("error") or (data.get("prompt_feedback") or {}).get("block_reason")
+                raise BrainError(f"{self.label} returned no answer" + (f": {str(why)[:200]}" if why else "."))
+            choice = choices[0]
+            finish = choice.get("finish_reason") or choice.get("native_finish_reason") or ""
+            if finish == "length":
                 _CUT_OFF.set(True)
-            return choice["message"]["content"] or ""
+            message = choice.get("message") or {}
+            content = message.get("content")
+            if isinstance(content, list):   # content returned as parts, not a string
+                content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+            content = content or ""
+            if not content.strip():
+                # A reasoning model may leave content empty and put all its
+                # text (sometimes the only JSON there is) in a reasoning field,
+                # or an older endpoint in choices[].text.
+                for alt in (message.get("reasoning_content"), message.get("reasoning"), choice.get("text")):
+                    if isinstance(alt, str) and alt.strip():
+                        content = alt
+                        break
+            if not content.strip() and finish in ("content_filter", "safety"):
+                raise BrainError(f"{self.label} blocked the answer (its safety filter).")
+            return content or ""
+        except BrainError:
+            raise
         except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
             raise BrainError("Unexpected reply shape from the model endpoint.") from e

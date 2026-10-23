@@ -341,3 +341,50 @@ async def test_what_is_never_kept_from_an_unreadable_answer():
     prose = "Not suitable: this is a private exchange with a doctor's office about an appointment, so I won't write a follow-up."
     result = await draft_reconnect(FakeBrain([prose, prose]), settings, {"address": ME}, thread, clinic)
     assert result["suitable"] is False and "private exchange" in result["why"]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_or_reasoning_provider_answer_is_recovered_or_said_clearly(monkeypatch):
+    import httpx
+
+    import bb.mail.brain as B
+
+    def endpoint(answers):
+        seq, calls = list(answers), []
+
+        def handler(request):
+            calls.append(json.loads(request.content))
+            return httpx.Response(200, json=seq.pop(0))
+        return httpx.MockTransport(handler), calls
+
+    orig = httpx.AsyncClient
+    br = B.MailBrain({"BB_LLM_PROVIDER": "groq", "BB_LLM_BASE_URL": "https://x/v1", "BB_LLM_MODEL": "r1"})
+
+    def use(t):
+        monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: orig(transport=t))
+
+    # A reasoning model leaves content empty but the JSON is in reasoning_content.
+    t, _ = endpoint([{"choices": [{"finish_reason": "stop", "message": {"content": "", "reasoning_content": '{"body": "Tuesday works", "confidence": "high"}'}}]}])
+    use(t)
+    assert (await br.complete_json("s", "u"))["body"] == "Tuesday works"
+    # content returned as a list of parts.
+    t, _ = endpoint([{"choices": [{"finish_reason": "stop", "message": {"content": [{"type": "text", "text": '{"body":"Hi","confidence":"low"}'}]}}]}])
+    use(t)
+    assert (await br.complete_json("s", "u"))["body"] == "Hi"
+    # Empty twice: a clear error that names the model, and the retry did not force JSON mode.
+    t, calls = endpoint([{"choices": [{"finish_reason": "stop", "message": {"content": ""}}]},
+                         {"choices": [{"finish_reason": "stop", "message": {"content": ""}}]}])
+    use(t)
+    with pytest.raises(B.BrainError, match="empty answer twice"):
+        await br.complete_json("s", "u", salvage="body")
+    assert "response_format" not in calls[1] and calls[1]["max_tokens"] > calls[0]["max_tokens"]   # more room, plain
+    # A safety filter, and a problem returned inside a 200 body, are said plainly.
+    t, _ = endpoint([{"choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]},
+                     {"choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]}])
+    use(t)
+    with pytest.raises(B.BrainError, match="safety filter"):
+        await br.complete_json("s", "u")
+    t, _ = endpoint([{"error": {"message": "model_decommissioned"}}])
+    use(t)
+    with pytest.raises(B.BrainError, match="model_decommissioned"):
+        await br.complete("s", "u")

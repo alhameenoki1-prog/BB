@@ -295,7 +295,15 @@ minor versions can still change behaviour.
   asked for once more (in the endpoint's JSON mode where it has one, with
   more room when it was cut off), and a reply that then still is not JSON
   is kept as a low-confidence draft for review instead of "drafting
-  failed" (`bb/mail/brain.py` `complete_json(salvage=)`). Never kept: a
+  failed" (`bb/mail/brain.py` `complete_json(salvage=)`). An empty answer
+  is handled too: the JSON is recovered from a reasoning model's
+  `reasoning_content`/`reasoning` field or a list-shaped `content`, a
+  safety-filter block or a problem returned inside a 200 body is named,
+  and when the answer is empty the retry gets far more room and stays
+  plain instead of forcing JSON mode (which only empties it further); a
+  model that still answers nothing twice is reported with its name and the
+  likely cause (a reasoning model, a filter, or a wrong model name). Never
+  kept: a
   reasoning model's cut-off thinking, an Outbox Rewrite (the email stays as
   it was), and a follow-up the model declined in its own words; the model's
   no-contact reading still suppresses the address.

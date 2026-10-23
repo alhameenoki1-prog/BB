@@ -149,7 +149,9 @@ imap, graph adapters), `service.py` (connect/check/scope/migration),
 `routes.py`, `ingest.py` (idempotent store + threading + counts),
 `state.py` (reply-state rules), `parse.py` (RFC 822), `brain.py` (the
 user's model, Anthropic or OpenAI-compatible, from `BB_LLM_*` env; `complete_json` reads JSON leniently,
-asks once more, and with `salvage="body"` keeps an unreadable answer as a low-confidence draft),
+asks once more, and with `salvage="body"` keeps an unreadable answer as a low-confidence draft; an empty answer is
+recovered from a reasoning model's `reasoning_content`/`reasoning` field or list-shaped `content`, and a filter block,
+a 200-body error or an answer that stays empty twice is named with its cause),
 `drafting.py` (draft_reply / draft_new, `qa_check` writing check,
 `finalize` adds greeting + signature + project link at send time),
 `sending.py` (cap, window, dry run, send from the receiving mailbox,
