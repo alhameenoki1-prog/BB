@@ -210,3 +210,42 @@ def test_run_pages_create_watch_and_cancel(mail_client, monkeypatch):
     page = client.get("/mail/runs").text
     assert "Earlier runs" in page and "cancelled" in page
     assert client.get("/mail/runs/nope").status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_bounce_or_rejection_is_never_answered(tmp_path, monkeypatch):
+    """A delivery failure or auto-reply landing in a thread is automated
+    mail: the thread goes to no_reply_needed and a reply run never drafts to
+    it, even if the thread was stored before the detection improved."""
+    monkeypatch.setattr("bb.mail.sending.account_for", lambda m, c, e: SentBox(m, c, e))
+    SentBox.sent.clear()
+    db = MailDB(tmp_path / "mail.db"); await db.init()
+    mid = await db.add_mailbox(address="me@mine.example", provider="imap", creds="", status="ok",
+                               settings=MailboxSettings(signature_html="Jane", project_link="https://p.example").model_dump())
+    box = await db.mailbox(mid)
+    ing = Ingest(db, box)
+    # A real reply: the thread needs a reply.
+    await ing.store_batch([RawMessage(provider_id="h1", thread_key="T1", message_id="<h1@x>", from_email="ann@x.example",
+                                      from_name="Ann", subject="Re: the project", body="Yes, tell me more.",
+                                      sent_at="2026-02-01T10:00:00Z", to=[{"name": "", "email": "me@mine.example"}])])
+    tid = (await db.one("SELECT id FROM threads"))["id"]
+    assert (await db.one("SELECT state FROM threads WHERE id = ?", (tid,)))["state"] == "needs_reply"
+    # A bounce from postmaster lands in the same thread: now it needs no reply.
+    await ing.store_batch([RawMessage(provider_id="b1", thread_key="T1", message_id="<b1@x>", from_email="postmaster@x.example",
+                                      from_name="Mail Delivery", subject="Undeliverable: Re: the project", body="550 mailbox full",
+                                      sent_at="2026-02-02T10:00:00Z", to=[{"name": "", "email": "me@mine.example"}])])
+    assert (await db.one("SELECT state FROM threads WHERE id = ?", (tid,)))["state"] == "no_reply_needed"
+    assert await runs.candidates(db, [box]) == []                       # not a candidate at all
+
+    # A thread wrongly left as needs_reply (stored before detection improved),
+    # whose latest inbound is a bounce, is skipped and put away, not drafted.
+    await db.execute("UPDATE threads SET state = 'needs_reply' WHERE id = ?", (tid,))
+    run = await runs.create_reply_campaign(db, box, mode="auto")
+    await db.execute("UPDATE reply_runs SET since = '2000-01-01T00:00:00Z' WHERE id = ?", (run["id"],))
+    await db.execute("INSERT INTO run_items(id, run_id, mailbox_id, thread_id, contact, status, updated_at) "
+                     "VALUES ('i1', ?, ?, ?, 'ann@x.example', 'queued', 'x')", (run["id"], mid, tid))
+    out = await runs.process_mailbox(db, "s", {}, FakeBrain([]), None, "j", run["id"], mid)
+    assert out["sent"] == 0 and SentBox.sent == []
+    item = await db.one("SELECT status, detail FROM run_items WHERE id = 'i1'")
+    assert item["status"] == "skipped" and "bounce" in item["detail"]
+    assert (await db.one("SELECT state FROM threads WHERE id = ?", (tid,)))["state"] == "no_reply_needed"

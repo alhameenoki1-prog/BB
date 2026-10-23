@@ -7,6 +7,18 @@ minor versions can still change behaviour.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A bounce or rejection is never answered.** A delivery-failure notice
+  ("Undeliverable", "Delivery Status Notification", "Mail delivery failed")
+  or a message from `postmaster@` / `mailer-daemon` is automated mail, so a
+  reply run no longer drafts a reply to it. `looks_automated` now also
+  catches bounces, so such a thread goes to `no_reply_needed` and never
+  becomes a reply-run candidate; a thread stored before this (left as
+  `needs_reply`) is skipped and put away at draft time rather than answered
+  (`harvey/integrations/mail_provider.looks_automated`, `bb/mail/runs.py`
+  `_auto_or_bounce`).
+
 ### Added
 
 - **Paste a mailbox's login to connect it.** A third way to add a mailbox,

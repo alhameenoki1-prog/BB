@@ -77,7 +77,9 @@ BOUNCE_SUBJECTS = (
     "delivery status notification", "undeliverable", "returned mail",
     "delivery failure", "failure notice", "could not be delivered",
     "delivery incomplete", "address not found", "message blocked",
-    "message not delivered", "delivery has failed",
+    "message not delivered", "delivery has failed", "mail delivery failed",
+    "undelivered mail returned", "returned to sender", "delivery notification: delivery has failed",
+    "mail delivery failure", "recipient address rejected",
 )
 
 # What a bounce means and what to do about it, from the SMTP code or the
@@ -200,6 +202,8 @@ AUTOMATED_SUBJECTS = (
 def looks_automated(from_email: str, subject: str = "", headers: dict | None = None) -> bool:
     """Mail a person did not write by hand: notifications, newsletters,
     receipts, auto-replies, mailing lists. Never worth an auto-reply."""
+    if looks_like_bounce(from_email, subject):
+        return True                         # a bounce / rejection is never answered
     local = (from_email or "").lower().split("@", 1)[0]
     if any(local == m or local.startswith(m + "-") or local.startswith(m + ".") or local.startswith(m + "_")
            for m in AUTOMATED_LOCAL_PARTS) or "noreply" in local or "no-reply" in local:

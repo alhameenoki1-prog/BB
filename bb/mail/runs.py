@@ -44,6 +44,18 @@ def lane(mailbox_id: str, run_id: str) -> str:
     return f"{mailbox_id}:{run_id}"
 
 
+def _auto_or_bounce(m: dict) -> bool:
+    """A message no reply run should ever answer: a bounce, a rejection, an
+    auto-reply or other automated mail. Uses the stored flag and re-checks
+    the sender and subject, so a thread stored before the detection improved
+    is caught too."""
+    from harvey.integrations.mail_provider import looks_automated, looks_like_bounce
+    if m.get("automated"):
+        return True
+    frm, subj = m.get("from_email") or "", m.get("subject") or ""
+    return looks_like_bounce(frm, subj) or looks_automated(frm, subj)
+
+
 def ledger_for(env: dict | None):
     """The user's shared send ledger (beside the mail database), or None."""
     from pathlib import Path
@@ -837,7 +849,20 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
         handled += 1
         await db.execute("UPDATE run_items SET status = 'drafting', updated_at = ? WHERE id = ?", (now_iso(), item["id"]))
         messages = await db.query("SELECT * FROM messages WHERE thread_id = ? ORDER BY sent_at, created_at", (thread["id"],))
-        them = next((m for m in reversed(messages) if m["direction"] == "inbound" and (not reconnect or not m.get("automated"))), None)
+        inbound = [m for m in messages if m["direction"] == "inbound"]
+        if reconnect:
+            them = next((m for m in reversed(inbound) if not _auto_or_bounce(m)), None)
+        else:
+            # A reply run answers their last message — unless it is a bounce,
+            # rejection or auto-reply (detection the thread's stored state may
+            # predate). Those are never answered, and the thread is put away.
+            newest = inbound[-1] if inbound else None
+            if newest is not None and _auto_or_bounce(newest):
+                await db.execute("UPDATE threads SET state = 'no_reply_needed', state_reason = 'their last message is automated', "
+                                 "updated_at = ? WHERE id = ?", (now_iso(), thread["id"]))
+                await mark(item, "skipped", "their last message is a bounce, rejection or auto-reply, so there is nothing to answer")
+                continue
+            them = newest
         if not them:
             await mark(item, "skipped", "no message from them to answer")
             continue
