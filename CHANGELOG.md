@@ -7,6 +7,17 @@ minor versions can still change behaviour.
 
 ## [Unreleased]
 
+### Added
+
+- **Deliverability check now covers the sending server, not just the
+  domain.** On top of SPF/DKIM/DMARC/MX, the Mailbox page's deliverability
+  card checks whether the sending domain is on a domain blocklist, and for
+  a custom or self-hosted SMTP server whether its IP has reverse DNS (PTR)
+  and is on an IP blocklist — the gaps that quietly junk mail from your own
+  server. A blocklist that cannot be queried from your resolver is shown as
+  nothing rather than a false "listed", and the big providers' own IPs are
+  skipped (`bb/deliverability.py` `check_sending_host`).
+
 ### Fixed
 
 - **A refusal now shows the model's reason.** When the model declines to

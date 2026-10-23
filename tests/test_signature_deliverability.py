@@ -156,9 +156,16 @@ def test_dns_checks_with_fixes(monkeypatch):
     }
     monkeypatch.setattr(deliverability, "_txt", lambda name: records.get(name, []))
     monkeypatch.setattr(deliverability, "_has_mx", lambda d: d == "good.test")
+    monkeypatch.setattr(deliverability, "_dnsbl", lambda value, zone, reverse_ip: None)   # blocklist not reachable here
     good = deliverability.check_domain_sync("Good.Test.")
     assert good["domain"] == "good.test" and good["score"] == 4 and not good["public"]
     assert all(c["ok"] for c in good["checks"]) and good["checks"][1]["detail"].endswith("'google').")
+    # A domain on a blocklist adds a failing check with a real-removal fix.
+    monkeypatch.setattr(deliverability, "_dnsbl", lambda value, zone, reverse_ip: True)
+    listed = deliverability.check_domain_sync("good.test")
+    bl = next(c for c in listed["checks"] if "Not on" in c["name"])
+    assert not bl["ok"] and "spamhaus.org/lookup" in bl["fix"]
+    monkeypatch.setattr(deliverability, "_dnsbl", lambda value, zone, reverse_ip: None)
 
     bad = deliverability.check_domain_sync("bare.test")
     assert bad["score"] == 0
@@ -171,3 +178,23 @@ def test_dns_checks_with_fixes(monkeypatch):
     assert public["public"] and public["checks"][0]["ok"] and "own domain" in public["checks"][0]["fix"]
     assert deliverability.check_domain_sync("") == {"domain": "", "public": False, "checks": [], "score": 0}
     assert deliverability.domain_of("Jane@Acme.Test") == "acme.test" and deliverability.domain_of("nope") == ""
+
+
+def test_sending_host_checks_ptr_and_blocklist(monkeypatch):
+    # A managed provider's own IPs are not the user's concern.
+    assert "managed provider" in deliverability.check_sending_host_sync("smtp.gmail.com")["skipped"]
+    assert deliverability.check_sending_host_sync("")["skipped"] == "no SMTP server set"
+    # A self-hosted server with no reverse DNS and a listed IP: both flagged.
+    monkeypatch.setattr(deliverability, "_resolve_ips", lambda host: ["203.0.113.5"])
+    monkeypatch.setattr(deliverability, "_ptr", lambda ip: "")
+    monkeypatch.setattr(deliverability, "_dnsbl", lambda value, zone, reverse_ip: True)
+    bad = deliverability.check_sending_host_sync("mail.myserver.example")
+    names = {c["name"]: c for c in bad["checks"]}
+    assert not names["Reverse DNS (PTR)"]["ok"] and "PTR" in names["Reverse DNS (PTR)"]["fix"]
+    assert not names["Not on Spamhaus ZEN"]["ok"] and bad["score"] == 0
+    # A clean self-hosted server: both pass, and a blocklist that cannot be
+    # reached is simply not shown (never a false "listed").
+    monkeypatch.setattr(deliverability, "_ptr", lambda ip: "mail.myserver.example")
+    monkeypatch.setattr(deliverability, "_dnsbl", lambda value, zone, reverse_ip: None)
+    ok = deliverability.check_sending_host_sync("mail.myserver.example")
+    assert [c["name"] for c in ok["checks"]] == ["Reverse DNS (PTR)"] and ok["checks"][0]["ok"]

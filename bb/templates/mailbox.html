@@ -315,10 +315,15 @@
     <table>
       <thead><tr><th>Check</th><th>Result</th><th>What it means</th></tr></thead>
       <tbody>{% for c in report.checks %}
-      <tr><td><b>{{ c.name }}</b></td><td>{% if c.ok %}<span class="tag good">{{ icon('check', 12) }} OK</span>{% else %}<span class="tag bad">Missing</span>{% endif %}</td>
+      <tr><td><b>{{ c.name }}</b></td><td>{% if c.ok %}<span class="tag good">{{ icon('check', 12) }} OK</span>{% else %}<span class="tag bad">{{ 'Listed' if 'Not on' in c.name else 'Missing' }}</span>{% endif %}</td>
         <td class="small">{{ c.detail }}{% if not c.ok and c.fix %}<div class="hint">{{ c.fix }}</div>{% endif %}</td></tr>
-      {% endfor %}</tbody>
+      {% endfor %}
+      {% if host_report and host_report.checks %}{% for c in host_report.checks %}
+      <tr><td><b>{{ c.name }}</b> <span class="tiny muted">sending server</span></td><td>{% if c.ok %}<span class="tag good">{{ icon('check', 12) }} OK</span>{% else %}<span class="tag bad">{{ 'Listed' if 'Not on' in c.name else 'Missing' }}</span>{% endif %}</td>
+        <td class="small">{{ c.detail }}{% if not c.ok and c.fix %}<div class="hint">{{ c.fix }}</div>{% endif %}</td></tr>
+      {% endfor %}{% endif %}</tbody>
     </table>
+    {% if host_report and host_report.skipped and not host_report.checks %}<p class="tiny muted" style="margin-top:6px">Sending server: {{ host_report.skipped }}</p>{% endif %}
   {% else %}
     <p class="muted small">Connect a mailbox above and this card checks its domain's SPF, DKIM, DMARC and MX records every time you open the page.</p>
   {% endif %}

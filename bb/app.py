@@ -628,6 +628,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sending = ws.sending_address()
         domain = deliverability.domain_of(sending)
         report = await check_domain(domain) if domain and ws.mailbox_connected() else None
+        # For a custom or self-hosted SMTP server, also check the sending IP's
+        # reverse DNS and blocklist standing (skipped for the big providers).
+        host_report = None
+        if report and smtp.get("smtp_host") and ws.mail_provider() == "smtp":
+            host_report = await deliverability.check_sending_host(smtp["smtp_host"])
         health = await ws.mailbox_health()
         bound, choices = None, []
         if not ws.is_main:
@@ -654,7 +659,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             smtp_masked=ws.mask(smtp["smtp_password"]),
                             m365={**m365, "m365_client_secret": ""}, m365_configured=ws.m365_configured(),
                             m365_masked=ws.mask(m365["m365_client_secret"]),
-                            sending=sending, report=report, health=health,
+                            sending=sending, report=report, host_report=host_report, health=health,
                             redirect_uri=gmail_oauth.redirect_uri(settings))
 
     @app.post("/mailbox/alerts")
