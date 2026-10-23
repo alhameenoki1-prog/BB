@@ -740,7 +740,7 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
                           run_id: str, mailbox_id: str, scope: dict | None = None) -> dict:
     """The worker's job: every queued item of this run for this mailbox,
     in order. Drafts, routes by mode and confidence, sends with pacing."""
-    from bb.mail.brain import BrainError
+    from bb.mail.brain import BrainError, BrainRefusal
     from bb.mail.drafting import draft_reconnect, draft_reply
     from bb.mail.sending import AnsweredElsewhere, SendRefused, StaleFollowUp, send_draft, sent_today
 
@@ -923,6 +923,11 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
                     await mark(item, "skipped", f"{them['from_email']} asked not to be contacted (the model's reading); "
                                                 "added to the excluded list, nothing sent")
                     continue
+        except BrainRefusal as e:
+            # The model will not write this one (what they sent trips its
+            # safety filter). Not a system failure: a person handles it.
+            await mark(item, "skipped", f"{e} Answer it by hand from the thread if it needs one.")
+            continue
         except BrainError as e:
             await mark(item, "failed", f"drafting failed: {e}")
             continue

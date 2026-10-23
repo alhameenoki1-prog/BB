@@ -249,3 +249,34 @@ async def test_a_bounce_or_rejection_is_never_answered(tmp_path, monkeypatch):
     item = await db.one("SELECT status, detail FROM run_items WHERE id = 'i1'")
     assert item["status"] == "skipped" and "bounce" in item["detail"]
     assert (await db.one("SELECT state FROM threads WHERE id = ?", (tid,)))["state"] == "no_reply_needed"
+
+
+@pytest.mark.asyncio
+async def test_a_model_refusal_is_left_for_a_person_not_marked_failed(tmp_path, monkeypatch):
+    """When the model declines to draft a reply (a safety refusal on what
+    they sent), the item is skipped with a 'handle by hand' note, not
+    reported as a system failure."""
+    from bb.mail.brain import BrainRefusal
+    monkeypatch.setattr("bb.mail.sending.account_for", lambda m, c, e: SentBox(m, c, e))
+    SentBox.sent.clear()
+    db = MailDB(tmp_path / "mail.db"); await db.init()
+    mid = await db.add_mailbox(address="me@mine.example", provider="imap", creds="", status="ok",
+                               settings=MailboxSettings(signature_html="Jane", project_link="https://p.example").model_dump())
+    box = await db.mailbox(mid)
+    await Ingest(db, box).store_batch([RawMessage(provider_id="h1", thread_key="T1", message_id="<h1@x>", from_email="ann@x.example",
+                                                  from_name="Ann", subject="Re: the project", body="Here is what I think...",
+                                                  sent_at="2026-02-01T10:00:00Z", to=[{"name": "", "email": "me@mine.example"}])])
+    tid = (await db.one("SELECT id FROM threads"))["id"]
+    run = await runs.create_reply_campaign(db, box, mode="auto")
+    await db.execute("UPDATE reply_runs SET since = '2000-01-01T00:00:00Z' WHERE id = ?", (run["id"],))
+    await db.execute("INSERT INTO run_items(id, run_id, mailbox_id, thread_id, contact, status, updated_at) "
+                     "VALUES ('i1', ?, ?, ?, 'ann@x.example', 'queued', 'x')", (run["id"], mid, tid))
+
+    class Refusing(FakeBrain):
+        async def complete(self, system, user, max_tokens=1200):
+            raise BrainRefusal("Claude declined to draft a reply to this message (a safety refusal).")
+
+    out = await runs.process_mailbox(db, "s", {}, Refusing([]), None, "j", run["id"], mid)
+    assert out["sent"] == 0 and out.get("failed", 0) == 0 and SentBox.sent == []
+    item = await db.one("SELECT status, detail FROM run_items WHERE id = 'i1'")
+    assert item["status"] == "skipped" and "declined" in item["detail"] and "by hand" in item["detail"]

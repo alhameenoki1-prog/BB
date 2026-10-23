@@ -17,6 +17,13 @@ class BrainError(Exception):
     pass
 
 
+class BrainRefusal(BrainError):
+    """The model declined to answer this one (a safety refusal, or a
+    provider's safety filter). Not a system failure: the thread is left for
+    a person, not retried."""
+    pass
+
+
 def env_from_llm(llm: dict) -> dict:
     """The BB_LLM_* variables for a workspace's AI provider settings."""
     provider = llm.get("provider") or ""
@@ -251,7 +258,7 @@ class MailBrain:
             _CUT_OFF.set(True)
         text = "".join(getattr(b, "text", "") for b in msg.content)
         if not text.strip() and stop == "refusal":
-            raise BrainError("Anthropic declined to answer this one (a safety refusal).")
+            raise BrainRefusal("Claude declined to draft a reply to this message (a safety refusal).")
         return text
 
     async def tool_turn(self, system: str, messages: list, tools: list, max_tokens: int = 1500) -> dict:
@@ -327,7 +334,7 @@ class MailBrain:
                         content = alt
                         break
             if not content.strip() and finish in ("content_filter", "safety"):
-                raise BrainError(f"{self.label} blocked the answer (its safety filter).")
+                raise BrainRefusal(f"{self.label} blocked the answer (its safety filter).")
             return content or ""
         except BrainError:
             raise

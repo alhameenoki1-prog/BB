@@ -314,7 +314,11 @@ minor versions can still change behaviour.
   and when the answer is empty the retry gets far more room and stays
   plain instead of forcing JSON mode (which only empties it further); a
   model that still answers nothing twice is reported with its name and the
-  likely cause (a reasoning model, a filter, or a wrong model name). Never
+  likely cause (a reasoning model, a filter, or a wrong model name). A
+  safety refusal (Claude declines to draft a reply to what a message
+  contains, or another provider's filter blocks it) is now its own
+  outcome: the reply run skips that thread with a "handle it by hand" note
+  instead of marking it a failure (`BrainRefusal`). Never
   kept: a
   reasoning model's cut-off thinking, an Outbox Rewrite (the email stays as
   it was), and a follow-up the model declined in its own words; the model's
