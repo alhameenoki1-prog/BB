@@ -1012,7 +1012,10 @@ class StateManager:
         due_before: str | None = None,
         limit: int = 200,
         exclude_kind: str | None = None,
+        first_only: bool = False,
     ) -> list[dict]:
+        """``first_only``: no follow-ups (a sequence step after the first);
+        first emails and replies only."""
         where, params = [], []
         if status:
             where.append("status = ?")
@@ -1023,6 +1026,8 @@ class StateManager:
         if exclude_kind:
             where.append("(kind IS NULL OR kind != ?)")
             params.append(exclude_kind)
+        if first_only:
+            where.append("(kind IS NULL OR kind != 'sequence' OR step IS NULL OR step <= 1)")
         sql = "SELECT * FROM outbox"
         if where:
             sql += " WHERE " + " AND ".join(where)

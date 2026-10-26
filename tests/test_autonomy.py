@@ -253,6 +253,37 @@ async def test_the_mailbox_health_check_raises_and_clears_an_alert(state):  # no
     assert (await health.run_check(state, box, Cfg()))["alert"] == ""
 
 
+@pytest.mark.asyncio
+async def test_a_stall_is_flagged_while_only_first_emails_go(state):  # noqa: F811
+    """The model is out of reach and only first emails go: held follow-ups
+    are no stall, but a first email due for hours with nothing delivered is,
+    whatever words the reason uses. A day's limit already used up explains it."""
+    from types import SimpleNamespace
+    from harvey import health
+    box = _Mailbox()
+    cfg = SimpleNamespace(channels=SimpleNamespace(email=SimpleNamespace(max_daily_sends=2)))
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    old = (now - timedelta(hours=3)).isoformat()
+    await state.set_setting(health.LAST_SENT_KEY, old)
+    await state.set_setting("sender_skip_reason", "replies couldn't all be read and handled (the AI can't answer right now: "
+                            "LLM API usage limit reached for this plan); follow-ups wait, first emails still go out")
+    await state.add_prospect(Prospect(id="f1", first_name="A", email="a@f.example", email_status="provided"))
+    await state.add_outbox_item(prospect_id="f1", to_email="a@f.example", subject="s", body="b", send_at=old,
+                                status="approved", campaign_id="c1", step=2)
+    assert (await health.run_check(state, box, cfg))["alert"] == ""          # a follow-up waits on purpose
+    await state.add_prospect(Prospect(id="f2", first_name="B", email="b@f.example", email_status="provided"))
+    await state.add_outbox_item(prospect_id="f2", to_email="b@f.example", subject="s", body="b", send_at=old,
+                                status="approved", campaign_id="c1", step=1)
+    out = await health.run_check(state, box, cfg)
+    assert "Nothing has been delivered since" in out["alert"] and "1 approved email is due" in out["alert"]
+    # Today's two are sent: the limit, not a stall.
+    for i in range(2):
+        item = await state.add_outbox_item(prospect_id="f2", to_email=f"s{i}@f.example", subject="s", body="b",
+                                           send_at=old, status="approved", campaign_id=f"d{i}", step=1)
+        await state.update_outbox_item(item, status="sent", sent_at=now.isoformat())
+    assert (await health.run_check(state, box, cfg))["alert"] == ""
+
+
 def test_the_command_center_knows_the_goal_and_the_brief(tmp_path):
     from bb.mail import scope as scope_mod
 

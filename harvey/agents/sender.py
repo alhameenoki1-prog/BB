@@ -164,14 +164,22 @@ class Sender:
             and self.provider is not None
         )
 
-    async def run(self):
-        """Deploy campaigns — natively through the outbox, or via Instantly."""
+    async def run(self, first_only: bool = False):
+        """Deploy campaigns — natively through the outbox, or via Instantly.
+        ``first_only``: send only first emails (step 1), the ones nobody can
+        have replied to yet — what is safe while replies cannot be read."""
+        self.auth_refused = False   # set when the mailbox refuses the login this pass
         if not self.config.channels.email.enabled:
             logger.info("Sender: Email channel disabled. Skipping.")
             return
 
         if self.is_native:
-            await self._run_native()
+            await self._run_native(first_only=first_only)
+            return
+        if first_only:
+            # Instantly runs the whole sequence once a campaign is deployed:
+            # there is no first-emails-only, so it waits as before.
+            logger.info("Sender: replies can't be read right now; campaigns are deployed once they can.")
             return
 
         logger.info("Sender: Checking for campaigns to deploy...")
@@ -405,7 +413,7 @@ class Sender:
 
     # ── Native provider flow (Gmail / SMTP via the outbox) ──
 
-    async def _run_native(self):
+    async def _run_native(self, first_only: bool = False):
         """Stage new campaigns into the outbox, then drain what's due."""
         paused = await self.state.get_setting(KILL_SWITCH_KEY)
         if paused:
@@ -415,13 +423,25 @@ class Sender:
             )
             return
 
+        autopilot = not getattr(self.config.channels.email, "require_approval", True)
+        waiting = 0
         for campaign in await self.state.get_campaigns_by_status("draft"):
+            if first_only and autopilot and not campaign.name.startswith("your message"):
+                # Staging an AI-written campaign on autopilot runs the spam
+                # check, whose fix is a model call; with the model out of
+                # reach a failing copy would be parked for a person. It
+                # stays a draft and is staged (and fixed) once the model is back.
+                waiting += 1
+                continue
             try:
                 await self._stage_campaign_native(campaign)
             except Exception as e:
                 logger.error(f"Sender: staging '{campaign.name}' failed: {e}")
+        if waiting:
+            logger.info(f"Sender: {waiting} AI-written campaign(s) wait for the model before they are staged; "
+                        "your own message and emails already in the outbox still go.")
 
-        await self._drain_due()
+        await self._drain_due(first_only=first_only)
 
     def _render(self, text: str, prospect, *, body: bool = False) -> str:
         """Fill merge variables. The pre-send gate rejects any leftovers.
@@ -562,8 +582,10 @@ class Sender:
                 details={"campaign": campaign.name, "staged": staged, "mode": mode},
             )
 
-    async def _drain_due(self):
-        """Send due, approved outbox items through the provider."""
+    async def _drain_due(self, first_only: bool = False):
+        """Send due, approved outbox items through the provider. With
+        ``first_only``, follow-ups (step 2 and on) are left for a pass that
+        can read replies first; first emails and answers still go."""
         # (allowance and per-cycle size come from channels.email)
         if not self.provider.is_configured():
             logger.warning(
@@ -638,8 +660,12 @@ class Sender:
         stale = await self.state.release_stale_sending()
         if stale:
             logger.warning(f"Sender: {stale} email(s) were left mid-send by an earlier worker; marked failed.")
+        # With first_only (the model cannot run: out of allowance,
+        # rate-limited, replies unread) a follow-up could land on someone who
+        # has answered, so the query leaves them out; first emails need no
+        # model and go now.
         due = await self.state.get_outbox(
-            status="approved", due_before=now, limit=budget * 3
+            status="approved", due_before=now, limit=budget * 3, first_only=first_only,
         ) if budget > 0 else []
         # Replies on their own query, every pass: cold emails held at the
         # front of the queue (no allowance left, or an unavailable
@@ -1124,6 +1150,7 @@ class Sender:
                 await self.state.update_outbox_item(item["id"], status="approved",
                                                     error=f"waiting: {result.error[:200]}")
                 self._throttled = True
+                self.auth_refused = True
                 if not self._auth_logged:
                     self._auth_logged = True
                     logger.error(f"Sender: the mailbox refused the login; nothing is sent until it is reconnected ({result.error[:160]}).")

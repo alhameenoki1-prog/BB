@@ -117,7 +117,25 @@ instead of AI text; in an AI mode `outreach.template_fallback` sends that
 message to any batch the model cannot write (rate limit, no credit) instead
 of waiting (`Writer.template_fallback`), and "Write a general message for me"
 (`Workspace.generate_general_message`, `/profile/general-message`) has the AI
-draft one direct, industry-agnostic message + subject from the profile once. `harvey/names.py` resolves missing recipient
+draft one direct, industry-agnostic message + subject from the profile once.
+When replies can't be read and handled (the model is rate-limited or paused),
+the sender still drains **first emails** — `sender.run(first_only=True)` in
+`main._mail_pass` and the heartbeat's send phase; a first email has no reply
+to miss, follow-ups wait — the paused heartbeat writes the general message
+and sends first emails instead of sleeping an hour, and a fallback batch is
+named `your message · <batch>` so the sender sends it as the operator's own
+words with no AI spam-fix in front; the handler records why a pass was
+incomplete (`Handler.last_problem`), the skip reason carries it, and the
+dashboard adds it as a note to the real state (sending first emails, the
+day's limit, nothing approved) with a link to the page that fixes it
+(`Workspace._sending_status`). In that state `get_outbox(first_only=True)`
+leaves follow-ups out in SQL, an AI-written campaign on autopilot stays a
+draft, `main._first_emails_pass` reads bounces with no model
+(`Handler.run(model=False)`) before sending, `Writer.run(use_model=False)`
+makes no model call at all, the over-budget heartbeat still runs
+`health.run_check` (the stall alert counts first emails only and holds off
+when the day's allowance is used), and `Sender.auth_refused` keeps a refused
+login on the dashboard. `harvey/names.py` resolves missing recipient
 names (LinkedIn slug, first.last address, team page) and puts the greeting
 line on every email (`outreach.greeting`); a worker that dies is revived
 on the next dashboard view; the dashboard has Pause for edits / Resume /

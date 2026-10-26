@@ -108,7 +108,7 @@ async def run_check(state, provider, config, *, quiet: bool = False, force: bool
     if not ok:
         alert = f"The mailbox check at {_when(last_check)} failed: {error}. Nothing is sent until it works again."
     elif not quiet:
-        alert = await _stall_alert(state, now)
+        alert = await _stall_alert(state, now, config)
     out["last_sent_at"] = await state.get_setting(LAST_SENT_KEY) or ""
     previous = await state.get_setting(ALERT_KEY) or ""
     if alert != previous:
@@ -124,11 +124,15 @@ async def run_check(state, provider, config, *, quiet: bool = False, force: bool
     return out
 
 
-async def _stall_alert(state, now: datetime) -> str:
+async def _stall_alert(state, now: datetime, config=None) -> str:
     """Emails are due and approved, nothing has left for a long while,
     and no deliberate pause explains it: say so."""
+    skip = (await state.get_setting("sender_skip_reason") or "").lower()
+    # The model is out of reach and only first emails go (follow-ups wait
+    # on purpose): those are what should be leaving, so they are what counts.
+    first_only = "first emails still go out" in skip
     try:
-        due = [i for i in await state.get_outbox(status="approved", limit=500)
+        due = [i for i in await state.get_outbox(status="approved", limit=500, first_only=first_only)
                if (_parse(i.get("send_at")) or now) <= now]
     except Exception:
         return ""
@@ -145,13 +149,37 @@ async def _stall_alert(state, now: datetime) -> str:
     cooloff = _parse(await state.get_setting("sender_cooloff_until"))
     if cooloff and cooloff > now:
         return ""
-    skip = (await state.get_setting("sender_skip_reason") or "").lower()
-    if any(w in skip for w in ("quiet", "warm", "daily", "cap", "limit", "allowance", "maximum", "stands down",
-                               "paused", "replies", "unread", "provider", "budget", "approval")):
+    # The day's allowance used up: they wait for tomorrow on purpose.
+    if await _allowance_used_up(state, config, now):
+        return ""
+    # With first emails still going out, the reason's words ("replies",
+    # "limit") are not a deliberate stop: those emails are meant to leave.
+    if not first_only and any(w in skip for w in ("quiet", "warm", "daily", "cap", "limit", "allowance", "maximum",
+                                                  "stands down", "paused", "replies", "unread", "provider", "budget",
+                                                  "approval")):
         return ""
     reason = f" The sender's last reason: {skip}." if skip else ""
     return (f"Nothing has been delivered since {_when(last_sent) if last_sent else 'the worker started'} although "
             f"{len(due)} approved email{'s are' if len(due) != 1 else ' is'} due.{reason} Check the Mailbox page and the worker log.")
+
+
+async def _allowance_used_up(state, config, now: datetime) -> bool:
+    """Today's first emails and follow-ups have reached the sender's daily
+    allowance (the limit, the mailbox's own maximum, the warm-up ramp)."""
+    email = getattr(getattr(config, "channels", None), "email", None)
+    if email is None:
+        return False
+    try:
+        from harvey.agents.sender import daily_allowance
+        max_daily = int(getattr(email, "max_daily_sends", 0) or 0)
+        ceiling = int(getattr(email, "mailbox_daily_ceiling", 0) or 0)
+        if ceiling:
+            max_daily = min(max_daily, ceiling) if max_daily else ceiling
+        allowance = daily_allowance(await state.first_outbox_sent_at(), now.replace(tzinfo=None),
+                                    max_daily, bool(getattr(email, "warmup_ramp", False)))
+        return bool(allowance) and await state.count_outbox_sent_today(kind="sequence") >= allowance
+    except Exception:
+        return False
 
 
 async def picture(state) -> dict:

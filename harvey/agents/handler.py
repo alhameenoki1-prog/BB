@@ -108,6 +108,9 @@ class Handler:
         self.instantly = InstantlyClient(env.instantly_api_key)
         self.provider = get_mail_provider(config, env)
         self.skills = ""
+        # Why the last pass could not read and handle every reply, for the
+        # sender's skip reason and the dashboard ("" when it could).
+        self.last_problem = ""
 
     @property
     def is_native(self) -> bool:
@@ -116,15 +119,19 @@ class Handler:
             and self.provider is not None
         )
 
-    async def run(self, backlog: bool = True):
+    async def run(self, backlog: bool = True, model: bool = True):
         """Check for new replies and handle them. ``backlog`` False skips the
         older-unanswered-mail sweep (the sender's frequent passes).
+        ``model`` False (over the AI budget): nothing is asked of the model;
+        bounces are still handled (address invalid, queued sends cancelled,
+        the bounce-rate kill switch), human replies are left for later.
 
         Returns True only if every reply could be fetched and handled. The
         heartbeat sends nothing in a cycle where this isn't True, because a
         reply that wasn't read can't have cancelled its queued follow-ups.
         """
         logger.info("Handler: Checking for replies...")
+        self.last_problem = ""
 
         # Load foundational skills for this agent
         self.skills = self.brain.load_skills_for_agent("handler")
@@ -133,7 +140,10 @@ class Handler:
             return True
 
         if self.is_native:
-            return await self._run_native(backlog=backlog)
+            return await self._run_native(backlog=backlog, model=model)
+        if not model:
+            self.last_problem = "the AI budget is used up, so replies wait for it"
+            return False
 
         # 1. Fetch active campaigns
         active_campaigns = await self.state.get_campaigns_by_status("active")
@@ -153,6 +163,7 @@ class Handler:
                 replies = await self.instantly.get_replies(campaign.instantly_campaign_id)
             except Exception as e:
                 logger.error(f"Handler: Failed to fetch replies for {campaign.name}: {e}")
+                self.last_problem = f"replies for {campaign.name} could not be fetched: {str(e)[:160]}"
                 complete = False
                 continue
             if not replies:
@@ -167,9 +178,11 @@ class Handler:
                         total_handled += 1
                 except BrainUnavailable as e:
                     logger.error(f"Handler: stopping; replies are left for later ({e}).")
+                    self.last_problem = f"the AI can't answer right now: {str(e)[:160]}"
                     return False
                 except Exception as e:
                     logger.error(f"Handler: Error processing reply: {e}")
+                    self.last_problem = f"a reply could not be handled: {str(e)[:160]}"
                     complete = False
 
         if total_handled:
@@ -465,9 +478,13 @@ class Handler:
 
     # ── Native provider path (Gmail / SMTP) ──
 
-    async def _run_native(self, backlog: bool = True) -> bool:
+    async def _run_native(self, backlog: bool = True, model: bool = True) -> bool:
         """Poll the mailbox, split bounces from human replies, handle both.
-        Returns True only if the mailbox was read and every message handled."""
+        Returns True only if the mailbox was read and every message handled.
+        With ``model`` False (or once the model turns out to be unavailable)
+        human replies are left for later and bounces are still handled."""
+        self.last_problem = ""
+        model_down = not model
         if not self.provider.is_configured():
             logger.debug(
                 f"Handler: provider '{self.provider.name}' not configured yet."
@@ -478,9 +495,11 @@ class Handler:
             inbound = await self.provider.get_replies()
         except Exception as e:
             logger.error(f"Handler: fetching replies failed: {e}")
+            self.last_problem = f"the mailbox could not be read: {str(e)[:160]}"
             return False
 
         handled = 0
+        left = 0
         complete = True
         for msg in inbound:
             dedup_key = msg.provider_id or msg.message_id
@@ -495,6 +514,13 @@ class Handler:
                     if known is not None and known.source == "inbox" and await self._reply_campaign_runs():
                         # They only wrote in; the reply campaign on this account answers them.
                         logger.info(f"Handler: inbox: a reply campaign answers {msg.from_email} on this account; no reply here.")
+                    elif model_down:
+                        # Answering needs the model: read again next time.
+                        consumed = False
+                        complete = False
+                        left += 1
+                        self._rewind(msg)
+                        continue
                     elif self.inbox_autoreply and (known is None or known.source == "inbox"):
                         await self._auto_reply_inbox(msg)
                     else:
@@ -516,11 +542,14 @@ class Handler:
             except BrainUnavailable as e:
                 consumed = False
                 complete = False
+                left += 1
                 self._rewind(msg)
-                logger.error(f"Handler: stopping; replies are left for later ({e}).")
-                break
+                self.last_problem = f"the AI can't answer right now: {str(e)[:160]}"
+                logger.error(f"Handler: replies are left for later ({e}); bounces are still read.")
+                model_down = True   # the rest: bounces handled, replies left, no more calls
             except Exception as e:
                 logger.error(f"Handler: error processing {msg.from_email}: {e}")
+                self.last_problem = f"the reply from {msg.from_email} could not be handled: {str(e)[:160]}"
                 complete = False
             finally:
                 if consumed:
@@ -528,10 +557,16 @@ class Handler:
 
         if handled:
             logger.info(f"Handler: processed {handled} inbound message(s).")
-        else:
+        elif not left:
             logger.info("Handler: no new replies.")
-        if backlog and complete and self.inbox_autoreply and self.inbox_backlog_days > 0:
+        if left and not model:
+            logger.info(f"Handler: {left} repl{'ies wait' if left != 1 else 'y waits'} for the AI budget; bounces were read.")
+        if left and not self.last_problem:
+            self.last_problem = "the AI budget is used up, so replies wait for it"
+        if backlog and complete and not model_down and self.inbox_autoreply and self.inbox_backlog_days > 0:
             complete = await self._scan_unanswered() and complete
+            if not complete and not self.last_problem:
+                self.last_problem = "the sweep of older unanswered mail did not finish"
         return complete
 
     @property

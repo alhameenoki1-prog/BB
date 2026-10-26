@@ -546,6 +546,25 @@ async def test_a_mailbox_that_cannot_be_read_holds_sending(state):
         await provider.get_replies()
     handler = make_handler(state, provider)
     assert await handler._run_native() is False
+    assert handler.last_problem.startswith("the mailbox could not be read: ")
+    # A paused model with a reply to classify: the reply is left for later,
+    # and the reason names the model, not the mailbox.
+    pid = await seed_prospect(state, status="contacted")
+    fake = FakeProvider()
+    fake.inbound = [InboundMessage(provider_id="in9", from_email="jane@acme.com", subject="Re: hi", body="Tell me more?")]
+    paused = make_handler(state, fake)
+
+    class _Paused(StubBrain):
+        paused_reason = "LLM API usage limit reached for this plan"
+        async def think(self, *a, **k):
+            return ""
+    paused.brain = _Paused()
+    assert await paused._run_native() is False
+    assert paused.last_problem == "the AI can't answer right now: LLM API usage limit reached for this plan"
+    assert not await state.is_reply_processed("in9")           # read again once the model is back
+    # A pass that reads everything clears it.
+    fake.inbound = []
+    assert await paused._run_native() is True and paused.last_problem == ""
 
 
 @pytest.mark.asyncio
@@ -638,3 +657,142 @@ async def test_the_mailbox_maximum_counts_replies_and_a_pass_ends_in_time(state,
     before = len(provider.sent)
     await sender._run_native()
     assert len(provider.sent) == before and [i for i in await state.get_outbox(status="approved") if i["kind"] == "reply"]
+
+
+@pytest.mark.asyncio
+async def test_first_only_holds_follow_ups_and_sends_first_emails_and_replies(state):
+    """While the model cannot run (rate-limited, out of allowance, replies
+    unread), a follow-up could land on someone who has answered, so it waits.
+    A first email needs no model and a reply is already written: both go."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    first = await seed_prospect(state, email="new@acme.com")
+    second = await seed_prospect(state, email="old@acme.com", status="contacted")
+    third = await seed_prospect(state, email="wrote@acme.com", status="replied")
+    await state.add_outbox_item(prospect_id=first, to_email="new@acme.com", subject="hello",
+                                body="A first email. Interested?", send_at=now, status="approved", campaign_id="c1", step=1)
+    await state.add_outbox_item(prospect_id=second, to_email="old@acme.com", subject="hello again",
+                                body="Bumping this. Any thoughts?", send_at=now, status="approved", campaign_id="c1", step=2)
+    await state.add_outbox_item(prospect_id=third, to_email="wrote@acme.com", subject="Re: hello", body="Thanks, Tuesday works.",
+                                send_at=now, status="approved", kind="reply", in_reply_to="<in1@acme.com>")
+    provider = FakeProvider()
+    sender = make_sender(state, provider, require_approval=False)
+    await sender.run(first_only=True)
+    assert sorted(s["to"] for s in provider.sent) == ["new@acme.com", "wrote@acme.com"]
+    left = await state.get_outbox(status="approved")
+    assert len(left) == 1 and left[0]["step"] == 2 and left[0]["to_email"] == "old@acme.com"
+    # The model is back: a plain pass sends the follow-up.
+    await sender.run()
+    assert sorted(s["to"] for s in provider.sent) == ["new@acme.com", "old@acme.com", "wrote@acme.com"]
+    assert await state.get_outbox(status="approved") == []
+
+
+
+@pytest.mark.asyncio
+async def test_first_only_finds_first_emails_behind_a_crowd_of_due_follow_ups(state):
+    """Held follow-ups pile up at the front of the queue while the model is
+    down; the query itself leaves them out, so a first email behind them
+    still goes."""
+    yesterday = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)).isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    for i in range(60):
+        pid = await seed_prospect(state, email=f"old{i}@acme.com", status="contacted")
+        await state.add_outbox_item(prospect_id=pid, to_email=f"old{i}@acme.com", subject="again",
+                                    body="Bumping this. Any thoughts?", send_at=yesterday, status="approved",
+                                    campaign_id="c1", step=2)
+    new = await seed_prospect(state, email="new@acme.com")
+    await state.add_outbox_item(prospect_id=new, to_email="new@acme.com", subject="hello",
+                                body="A first email. Interested?", send_at=now, status="approved", campaign_id="c2", step=1)
+    provider = FakeProvider()
+    sender = make_sender(state, provider, require_approval=False)
+    sender.config.channels.email.sends_per_cycle = 2          # a fetch window of 6, all follow-ups
+    try:
+        await sender.run(first_only=True)
+    finally:
+        del sender.config.channels.email.sends_per_cycle          # the shared test config, as it was
+    assert [m["to"] for m in provider.sent] == ["new@acme.com"]
+
+
+@pytest.mark.asyncio
+async def test_first_only_stages_only_what_needs_no_model(state):
+    """On autopilot, staging an AI-written campaign runs the spam check, whose
+    fix is a model call: with the model out of reach it stays a draft. The
+    operator's own message is staged and sent."""
+    ai = await seed_prospect(state, email="ai@acme.com")
+    mine = await seed_prospect(state, email="mine@acme.com")
+    await seed_campaign(state, [ai])                                   # "test-campaign"
+    await state.add_campaign(Campaign(id="", name="your message · other · owner", channel="email",
+                                      sequence=[EmailStep(step=1, subject="hi {{first_name}}",
+                                                          body="Body for {{company}}. Question?", delay_days=0)],
+                                      prospect_ids=[mine], status="draft"))
+    provider = FakeProvider()
+    sender = make_sender(state, provider, require_approval=False)
+    await sender.run(first_only=True)
+    assert [m["to"] for m in provider.sent] == ["mine@acme.com"]
+    assert [c.name for c in await state.get_campaigns_by_status("draft")] == ["test-campaign"]
+    await sender.run()                                                 # the model is back
+    assert sorted(m["to"] for m in provider.sent) == ["ai@acme.com", "mine@acme.com"]
+
+
+@pytest.mark.asyncio
+async def test_without_the_model_bounces_are_still_read_and_replies_wait(state):
+    """A pass with no model (over budget) handles bounces (address invalid,
+    queued follow-ups cancelled) and leaves human replies for later; a reply
+    the model cannot answer no longer stops the bounces behind it."""
+    async def sent_to(email, mid):
+        pid = await seed_prospect(state, email=email, status="contacted")
+        item = await state.add_outbox_item(prospect_id=pid, to_email=email, subject="s", body="b",
+                                           send_at=_now_iso(), status="approved", campaign_id="c1", step=1)
+        await state.update_outbox_item(item, status="sent", message_id=mid, sent_at=_now_iso())
+        await state.add_outbox_item(prospect_id=pid, to_email=email, subject="again", body="b",
+                                    send_at=_now_iso(), status="approved", campaign_id="c1", step=2)
+        return pid
+
+    def bounce_of(mid, pid_):
+        return InboundMessage(provider_id=pid_, from_email="mailer-daemon@googlemail.com",
+                              subject="Delivery Status Notification (Failure)",
+                              body="couldn't be delivered\n\nThe response was:\n550 5.1.1 The email account that you "
+                                   "tried to reach does not exist.", in_reply_to=mid, is_bounce=True)
+
+    await seed_prospect(state, email="jane@acme.com", status="contacted")
+    dead = await sent_to("gone@acme.com", "<m1@x>")
+    reply = InboundMessage(provider_id="r1", from_email="jane@acme.com", subject="Re: hi", body="Tell me more?")
+    provider = FakeProvider()
+    provider.inbound = [reply, bounce_of("<m1@x>", "b1")]
+    handler = make_handler(state, provider)
+    assert await handler.run(backlog=False, model=False) is False
+    assert (await state.get_prospect(dead)).email_status == "invalid"
+    assert await state.is_reply_processed("b1") and not await state.is_reply_processed("r1")
+    assert handler.last_problem == "the AI budget is used up, so replies wait for it"
+    # The model turning out to be down mid-pass: the bounce behind the reply is still read.
+    class _Paused(StubBrain):
+        paused_reason = "LLM API usage limit reached for this plan"
+        async def think(self, *a, **k):
+            return ""
+    other = await sent_to("gone2@acme.com", "<m2@x>")
+    provider.inbound = [reply, bounce_of("<m2@x>", "b2")]
+    handler.brain = _Paused()
+    assert await handler.run(backlog=False) is False
+    assert (await state.get_prospect(other)).email_status == "invalid" and not await state.is_reply_processed("r1")
+    assert handler.last_problem.startswith("the AI can't answer right now")
+
+
+@pytest.mark.asyncio
+async def test_instantly_deploys_nothing_while_replies_cannot_be_read(state):
+    """Instantly runs the whole sequence once deployed: there is no
+    first-emails-only, so a first_only pass deploys nothing."""
+    from harvey.agents.sender import Sender
+    sender = make_sender(state, FakeProvider())
+    sender.config.channels.email.provider = "instantly"
+    deployed = []
+
+    async def deploy(campaign):
+        deployed.append(campaign.name)
+    sender._deploy_campaign = deploy
+    try:
+        pid = await seed_prospect(state)
+        await seed_campaign(state, [pid])
+        assert not sender.is_native
+        await Sender.run(sender, first_only=True)
+        assert deployed == []
+    finally:
+        sender.config.channels.email.provider = "smtp"

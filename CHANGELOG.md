@@ -9,6 +9,49 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **First emails keep going out when the AI is rate-limited.** Sending
+  used to wait whenever replies could not be read and handled — which is
+  exactly what a rate-limited or paused model causes, every cycle — so even
+  emails that need no AI at all sat in the outbox. Now, in that state, the
+  sender still drains **first emails** (nobody has written back to one yet,
+  so there is no reply to miss) and only follow-ups wait; the heartbeat
+  writes the general message and sends first emails instead of sleeping an
+  hour; and a batch that got the general message is named like your own
+  campaign, so the sender sends those words as they are rather than holding
+  them behind an AI spam-fix (`sender.run(first_only=True)`,
+  `main._mail_pass`, the heartbeat's send phase, `Writer` fallback naming).
+  The fallback also fires when the model answers with nothing: a
+  rate-limited or paused brain returns an empty answer rather than an
+  error, and the writer used to treat that as "nothing to send" instead of
+  "the model could not write". The dashboard no longer reads that state as
+  "Not sending. The sender is skipping its passes: replies couldn't all be
+  read and handled". It shows what the sender is really doing (sending
+  first emails, the day's limit used up, nothing approved yet) and adds why
+  replies and follow-ups wait: the handler now records its cause
+  (`Handler.last_problem`), and the note links the page that fixes it (the
+  AI key page, the profile for the spend cap, the Mailbox page when the
+  inbox can't be read) (`Workspace._sending_status`). Over the AI budget,
+  the writer is run with `use_model=False`: your own message or the general
+  message is written with no model call at all (no sorting into sectors,
+  no reused sequence personalised per person), so the daily spend cap is
+  never spent past.
+  Also in this change: the outbox query itself leaves follow-ups out
+  (`get_outbox(first_only=True)`), so a crowd of held follow-ups can no
+  longer push the first emails out of a pass; an AI-written campaign on
+  autopilot stays a draft until the model is back, since staging it runs
+  the spam check's model fix; a pass with no model still reads bounces
+  (address marked invalid, queued sends cancelled, the bounce-rate kill
+  switch), and one reply the model can't answer no longer stops the
+  bounces behind it (`Handler.run(model=False)`, `main._first_emails_pass`);
+  the over-budget heartbeat leaves sending to the send loop when one runs
+  and still checks the mailbox login; the stall alert now fires when first
+  emails are due and nothing leaves in this state, unless the day's
+  allowance is used up (`health._stall_alert`, `_allowance_used_up`); a
+  refused mailbox login stays on the dashboard for the Reconnect card
+  instead of being written over by the send loop (`Sender.auth_refused`);
+  and Instantly, which has no first-emails-only, deploys nothing while
+  replies can't be read, as before.
+
 - **Sending never stops when the AI can't write.** In an AI writing mode,
   tick "If the AI can't write, send my general message instead of waiting"
   on the profile and the writer sends your general message to any batch the

@@ -1275,6 +1275,61 @@ def test_speed_is_held_on_personal_mailboxes_and_dashboard_says_why_not_sending(
     assert "Not sending." in page and "The worker is not running" in page
 
 
+def test_dashboard_says_first_emails_go_while_replies_wait_for_the_model(client):
+    """The sender's skip reason "…; follow-ups wait, first emails still go out"
+    is a note on what the sender is really doing, not a verdict of its own:
+    sending when approved first emails can leave, the day's limit when it is
+    used up, waiting when nothing is approved; the cause says the AI or the
+    inbox, and links the page that fixes it."""
+    from datetime import datetime, timezone
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    client.post("/profile", data={**PROFILE, "quiet_form": "1"})          # quiet hours off
+    sm = StateManager(str(ws.db_path))
+    asyncio.run(sm.init_db())
+    base = {"worker_running": True, "worker_paused": False, "worker_doing": {}, "sending_paused": "",
+            "allowance": {"reached": False, "text": ""}, "outbox_pending": 0, "outbox_scheduled": 0,
+            "recipients": 3, "waiting": 0, "sent_today": 2}
+    ai = ("replies couldn't all be read and handled (the AI can't answer right now: LLM API usage limit "
+          "reached for this plan); follow-ups wait, first emails still go out")
+    asyncio.run(sm.set_setting("sender_skip_reason", ai))
+    # Nothing approved to go: waiting, not "sending", and not "stuck" either.
+    s = asyncio.run(ws._sending_status(dict(base)))
+    assert s["state"] == "waiting" and s["link"] == "/apikey"
+    assert "No first emails are waiting to go right now." in s["text"]
+    assert "Replies and follow-ups wait until the AI can answer again" in s["text"]
+    assert "usage limit reached for this plan" in s["text"] and "follow-ups wait, first emails" not in s["text"]
+    # A held follow-up is not something that can leave; an approved first email is.
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    asyncio.run(sm.add_outbox_item(prospect_id="p1", to_email="a@x.example", subject="s", body="b",
+                                   send_at=now, status="approved", campaign_id="c1", step=2))
+    assert asyncio.run(ws._sending_status(dict(base, outbox_scheduled=1)))["state"] == "waiting"
+    asyncio.run(sm.add_outbox_item(prospect_id="p2", to_email="b@x.example", subject="s", body="b",
+                                   send_at=now, status="approved", campaign_id="c1", step=1))
+    s = asyncio.run(ws._sending_status(dict(base, outbox_scheduled=2)))
+    assert s["state"] == "sending" and s["text"].startswith("Sending first emails: 1 are approved")
+    assert "2 went out today" in s["text"] and s["link"] == "/apikey"
+    # The day's limit used up: that is what stops them, said with the note.
+    s = asyncio.run(ws._sending_status(dict(base, outbox_scheduled=2,
+                                            allowance={"reached": True, "text": "20 of 20 sent today."})))
+    assert s["state"] == "stuck" and s["text"].startswith("20 of 20 sent today.") and "until the AI can answer" in s["text"]
+    # The inbox as the cause: the mailbox page, and the AI is not blamed.
+    asyncio.run(sm.set_setting("sender_skip_reason", "replies couldn't all be read and handled (the mailbox could not "
+                               "be read: IMAP login refused); follow-ups wait, first emails still go out"))
+    s = asyncio.run(ws._sending_status(dict(base, outbox_scheduled=2)))
+    assert s["state"] == "sending" and s["link"] == "/mailbox" and "IMAP login refused" in s["text"]
+    assert "until the inbox can be read again" in s["text"] and "the AI" not in s["text"]
+    # The daily spend cap: the profile, where the cap is set.
+    asyncio.run(sm.set_setting("sender_skip_reason", "the daily AI spend cap is reached; replies wait for tomorrow; "
+                               "follow-ups wait, first emails still go out"))
+    assert asyncio.run(ws._sending_status(dict(base, outbox_scheduled=2)))["link"] == "/profile"
+    # Any other skip reason is still a stop.
+    asyncio.run(sm.set_setting("sender_skip_reason", "the mailbox refused the login: 535 bad credentials"))
+    s = asyncio.run(ws._sending_status(dict(base)))
+    assert s["state"] == "stuck" and "skipping its passes" in s["text"]
+
+
 def test_gmail_mailboxes_get_their_own_daily_ceiling(client):
     _as_user(client)
     user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])

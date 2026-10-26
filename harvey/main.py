@@ -71,19 +71,44 @@ async def _mail_pass(handler, sender, brain, config, max_calls: int) -> str:
     except Exception:
         within = True
     if not within:
-        if getattr(brain, "paused_reason", ""):
-            # The provider said it is out of credit or quota: an hour's pause, not a day's.
-            return f"{brain.paused_reason}; replies wait until it resets (it is checked again every hour), so sending waits too"
-        return "the daily AI spend cap is reached; replies wait for tomorrow, so sending waits too"
+        # Replies need the model; a first email does not, and nobody has
+        # written back to one yet, so there is no reply to miss: those still
+        # go out. Follow-ups wait with the replies.
+        reason = (f"{brain.paused_reason}; replies wait until it resets (it is checked again every hour)"
+                  if getattr(brain, "paused_reason", "") else "the daily AI spend cap is reached; replies wait for tomorrow")
+        async with _mail_lock:
+            await _first_emails_pass(handler, sender)
+        return reason + "; follow-ups wait, first emails still go out"
     async with _mail_lock:
         read = await asyncio.wait_for(handler.run(backlog=False), timeout=CYCLE_TIMEOUT_SECONDS)
         if read is not True:
-            return "replies couldn't all be read and handled"
+            # A reply that wasn't read can't have cancelled its follow-ups, so
+            # those wait; a first email has no reply to miss and still goes.
+            await asyncio.wait_for(sender.run(first_only=True), timeout=CYCLE_TIMEOUT_SECONDS)
+            cause = (getattr(handler, "last_problem", "") or "").strip()
+            return ("replies couldn't all be read and handled" + (f" ({cause})" if cause else "")
+                    + "; follow-ups wait, first emails still go out")
         await asyncio.wait_for(sender.run(), timeout=CYCLE_TIMEOUT_SECONDS)
     return ""
 
 
 SKIP_REASON_KEY = "sender_skip_reason"   # settings row the dashboard reads
+
+
+async def _first_emails_pass(handler, sender):
+    """The pass for when the model is out of reach (over budget, paused):
+    bounces are read and handled with no model call (address invalid,
+    queued sends cancelled, the bounce-rate kill switch), human replies are
+    left for later, and only first emails go. The caller holds _mail_lock."""
+    try:
+        await asyncio.wait_for(handler.run(backlog=False, model=False), timeout=CYCLE_TIMEOUT_SECONDS)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"Bounces could not be read this pass ({e}); first emails still go.")
+    await asyncio.wait_for(sender.run(first_only=True), timeout=CYCLE_TIMEOUT_SECONDS)
+
+
 SEND_LOOP_STOP_GRACE = 25   # seconds a stopping worker gives the send loop to finish its pass
 
 
@@ -99,12 +124,18 @@ async def _send_loop(handler, sender, brain, config, stop_event: asyncio.Event, 
             skipped = await _mail_pass(handler, sender, brain, config, max_calls)
             if skipped and skipped != last_skip:
                 logger.info(f"Sender: not sending right now: {skipped}.")
-            if skipped != last_skip and state is not None:
-                try:
-                    await state.set_setting(SKIP_REASON_KEY, skipped)
-                except Exception:
-                    pass
-            last_skip = skipped
+            if getattr(sender, "auth_refused", False) is True:
+                # The sender recorded "the mailbox refused the login" this
+                # pass: that is what the Reconnect card reads, so it stays;
+                # the next pass that gets through writes its own state again.
+                last_skip = None
+            else:
+                if skipped != last_skip and state is not None:
+                    try:
+                        await state.set_setting(SKIP_REASON_KEY, skipped)
+                    except Exception:
+                        pass
+                last_skip = skipped
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:
@@ -463,13 +494,15 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
                 cap = (f"${config.usage.max_daily_cost_usd:.2f}/day"
                        if brain.provider == "claude" and config.usage.max_daily_cost_usd
                        else f"{config.usage.max_daily_claude_percent}% of quota")
+                own_message = sender.is_native and (writer.use_template or getattr(writer, "template_fallback", False))
+                wait = f"back in {interval // 60} min" if own_message else "Sleeping 1h, then re-checking"
                 if brain.paused_reason:
                     # The provider is out of credit or quota (not the daily cap).
-                    logger.info(f"{brain.paused_reason}. Sleeping 1h, then re-checking (Wake up now checks at once).")
+                    logger.info(f"{brain.paused_reason}. {wait} (Wake up now checks at once).")
                 else:
                     logger.info(
                         f"{brain.provider_label} usage limit reached "
-                        f"({cap} or {max_calls} calls). Sleeping 1h, then re-checking."
+                        f"({cap} or {max_calls} calls). {wait}."
                     )
                 if brain.paused_reason:
                     # The provider's own hour-long pause (credit, quota): this
@@ -477,7 +510,27 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
                     # (Not the daily spend cap: that holds until tomorrow, and
                     # a part held all day would only slow the others.)
                     await _ledger_checkin(sender, state)
-                if await _interruptible_sleep(3600, stop_event, "paused", f"the AI usage limit ({cap}) is reached"):
+                if sender.is_native:
+                    if own_message:
+                        # The operator's own message needs no model: write it
+                        # to whoever is waiting (no model call is made).
+                        logger.info("Your general message needs no AI: writing it to whoever is waiting; first emails go out.")
+                        await _run_agents([("write_campaign", writer.run(use_model=False))])
+                    if not has_send_loop:
+                        # (With the send loop, its own passes do this at its pace.)
+                        await _run_agents([("send_first_emails", _locked(_first_emails_pass(handler, sender)))])
+                    if getattr(sender, "provider", None) is not None:
+                        # The mailbox login check and the stall alert need no
+                        # model: a mailbox that stops delivering is still flagged.
+                        try:
+                            from harvey import health
+                            await health.run_check(state, sender.provider, config, quiet=in_quiet_hours(config))
+                        except Exception as e:
+                            logger.debug(f"Mailbox health check skipped: {e}")
+                # Back in one interval, not an hour, while the operator's
+                # message keeps the list moving.
+                if await _interruptible_sleep(interval if own_message else 3600, stop_event, "paused",
+                                              f"the AI usage limit ({cap}) is reached"):
                     break
                 continue
 
@@ -557,11 +610,16 @@ async def _heartbeat_cycles(stop_event, config, state, brain, scout, writer, sen
                           if n in REPLY_READERS and outcomes.get(n) is not True]
                 paused = brain.paused_reason
                 if paused or unread:
-                    reason = paused or "replies couldn't all be read and handled."
-                    logger.error(
-                        f"Not sending this cycle: {reason} Queued emails wait "
-                        "until replies can be read again."
+                    # A reply that wasn't read can't have cancelled its
+                    # follow-ups, so those wait. A first email has no reply to
+                    # miss (nobody has written back to it yet) and still goes.
+                    cause = (getattr(handler, "last_problem", "") or "").strip()
+                    reason = paused or ("replies couldn't all be read and handled" + (f" ({cause})" if cause else "") + ".")
+                    logger.warning(
+                        f"Replies can't be handled this cycle: {reason} Follow-ups wait until they "
+                        "can; first emails still go out."
                     )
+                    await _run_agents([(name, _locked(run(first_only=True))) for name, run in send_tasks])
                 else:
                     await _run_agents([(name, _locked(run())) for name, run in send_tasks])
 

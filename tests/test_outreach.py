@@ -462,10 +462,131 @@ async def test_writer_falls_back_to_the_general_message_when_the_model_cannot_wr
     # stages the outbox rows on its own cycle, so nothing is staged yet.)
     campaigns = await state.get_campaigns_by_status("draft")
     assert len(campaigns) == 1
+    # Named like the operator's own campaign, so the sender sends the words as they are.
+    assert campaigns[0].name.startswith("your message")
     step = campaigns[0].sequence[0]
     assert step.subject == "Two-storey extension, looking for a builder" and "two-storey extension" in step.body
     assert (await state.count_prospects_by_status()).get("queued") == 2
     assert await state.count_outbox_queued() == 0
+
+
+class _SilentBrain(_Brain):
+    """The real brain's rate-limit shape: no error, just no answer (think
+    returns "" after its retries, think_json None)."""
+    paused_reason = "LLM API usage limit reached for this plan"
+
+    async def think_json(self, prompt, **kw):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_writer_falls_back_when_the_model_answers_nothing(state):
+    """A rate-limited brain returns an empty answer rather than raising;
+    that is still the model not writing, so the general message goes."""
+    cfg = _config(mode="inquiry", intent="get a quote for a two-storey extension", personalize_each=False,
+                  template_fallback=True, template_subject="Two-storey extension, looking for a builder",
+                  template_body="Hi {{first_name}},\n\nWe are planning a two-storey extension and want to start in "
+                                "March. Do you take on work like this?\n\nJane")
+    writer = Writer(_SilentBrain(), state, cfg, EnvConfig())
+    for i in range(2):
+        await state.add_prospect(Prospect(id=f"p{i}", first_name=f"P{i}", last_name="X", email=f"p{i}@build{i}.co",
+                                          email_status="provided", title="Owner", company=f"Build {i}"))
+    await writer.run()
+    campaigns = await state.get_campaigns_by_status("draft")
+    assert len(campaigns) == 1 and campaigns[0].name.startswith("your message")
+    assert campaigns[0].sequence[0].subject == "Two-storey extension, looking for a builder"
+    assert (await state.count_prospects_by_status()).get("queued") == 2
+
+
+class _ForbiddenBrain(_Brain):
+    """Over the daily spend cap: any call would spend past it."""
+    calls = 0
+
+    async def think_json(self, prompt, **kw):
+        _ForbiddenBrain.calls += 1
+        raise AssertionError("the model must not be called over the budget")
+
+    async def think(self, prompt, **kw):
+        _ForbiddenBrain.calls += 1
+        raise AssertionError("the model must not be called over the budget")
+
+
+@pytest.mark.asyncio
+async def test_over_the_budget_the_writer_asks_the_model_nothing(state):
+    """The heartbeat's over-budget pass: with the fallback on, the general
+    message goes to every batch without a model call (no classification
+    either); with it off, nothing is written until the model is back."""
+    cfg = _config(mode="inquiry", intent="get a quote for a two-storey extension", personalize_each=False,
+                  template_fallback=True, template_subject="Two-storey extension, looking for a builder",
+                  template_body="Hi {{first_name}},\n\nWe are planning a two-storey extension and want to start in "
+                                "March. Do you take on work like this?\n\nJane")
+    writer = Writer(_ForbiddenBrain(), state, cfg, EnvConfig())
+    for i in range(2):
+        await state.add_prospect(Prospect(id=f"p{i}", first_name=f"P{i}", last_name="X", email=f"p{i}@build{i}.co",
+                                          email_status="provided", title="Owner", company=f"Build {i}"))
+    await writer.run(use_model=False)
+    assert _ForbiddenBrain.calls == 0
+    campaigns = await state.get_campaigns_by_status("draft")
+    assert len(campaigns) == 1 and campaigns[0].name.startswith("your message")
+    assert (await state.count_prospects_by_status()).get("queued") == 2
+    # Fallback off: they wait.
+    cfg = _config(mode="inquiry", intent="get a quote for a two-storey extension", personalize_each=False,
+                  template_body="Hi {{first_name}},\n\nA message long enough to count.\n\nJane")
+    writer = Writer(_ForbiddenBrain(), state, cfg, EnvConfig())
+    await state.add_prospect(Prospect(id="p9", first_name="P9", last_name="X", email="p9@build9.co",
+                                      email_status="provided", title="Owner", company="Build 9"))
+    await writer.run(use_model=False)
+    assert _ForbiddenBrain.calls == 0 and len(await state.get_campaigns_by_status("draft")) == 1
+    assert (await state.count_prospects_by_status()).get("new") == 1
+
+
+class _RecordingBrain(_Brain):
+    """A working model; its calls are recorded in .prompts."""
+
+
+@pytest.mark.asyncio
+async def test_over_the_budget_a_reused_sequence_is_not_personalised_by_the_model(state):
+    """Per-person writing with a segment written earlier today: over the
+    budget the batch gets the general message, not today's sequence
+    personalised one call per person."""
+    general = dict(template_fallback=True, template_subject="Two-storey extension, looking for a builder",
+                   template_body="Hi {{first_name}},\n\nWe are planning a two-storey extension and want to start in "
+                                 "March. Do you take on work like this?\n\nJane")
+    cfg = _config(mode="inquiry", intent="get a quote for a two-storey extension", personalize_each=True, **general)
+    for i in range(2):
+        await state.add_prospect(Prospect(id=f"a{i}", first_name=f"A{i}", last_name="X", email=f"a{i}@build.co",
+                                          email_status="provided", title="Owner", company="Build", industry="construction",
+                                          seniority="executive"))
+    await Writer(_Brain(), state, cfg, EnvConfig()).run()          # this morning, with the model
+    assert (await state.count_prospects_by_status()).get("queued") == 2
+    for i in range(2):
+        await state.add_prospect(Prospect(id=f"b{i}", first_name=f"B{i}", last_name="X", email=f"b{i}@build.co",
+                                          email_status="provided", title="Owner", company="Build", industry="construction",
+                                          seniority="executive"))
+    brain = _RecordingBrain()
+    await Writer(brain, state, cfg, EnvConfig()).run(use_model=False)
+    assert brain.prompts == []
+    names = sorted(c.name for c in await state.get_campaigns_by_status("draft"))
+    assert any(n.startswith("your message") for n in names), names
+    assert (await state.count_prospects_by_status()).get("queued") == 4
+
+
+@pytest.mark.asyncio
+async def test_over_the_budget_your_own_message_is_not_sorted_by_the_model(state):
+    """Template mode with sector versions sorts newcomers with the model
+    first; over the budget it does not, and they get the default message."""
+    cfg = _config(mode="inquiry", intent="get a quote", use_template=True,
+                  template_body="Hi {{first_name}},\n\nThe default message, long enough to count.\n\nJane",
+                  sector_messages=[{"sectors": ["construction"], "subject": "Builders",
+                                    "body": "Hi {{first_name}},\n\nThe builders' version, long enough to count.\n\nJane"}])
+    brain = _RecordingBrain()
+    writer = Writer(brain, state, cfg, EnvConfig())
+    assert writer.use_template
+    await state.add_prospect(Prospect(id="t0", first_name="T0", last_name="X", email="t0@build.co",
+                                      email_status="provided", title="Owner", company="Build"))
+    await writer.run(use_model=False)
+    assert brain.prompts == []
+    assert [c.name for c in await state.get_campaigns_by_status("draft")] == ["your message"]
 
 
 @pytest.mark.asyncio

@@ -152,9 +152,19 @@ class Writer:
     def is_native(self) -> bool:
         return self.config.channels.email.provider in NATIVE_PROVIDERS
 
-    async def run(self):
-        """Create email campaigns for prospects that need outreach."""
+    async def run(self, use_model: bool = True):
+        """Create email campaigns for prospects that need outreach.
+
+        ``use_model`` False: the heartbeat is over its AI budget (the daily
+        spend cap, or a provider pause) and nothing may be asked of the
+        model. Your own message needs none and is written as usual; with
+        the fallback on, the general message goes to every batch; else
+        nothing is written until the model is back."""
         logger.info("Writer: Crafting email campaigns...")
+        if not use_model and not self.use_template and not self.template_fallback:
+            logger.info("Writer: the AI budget is used up and no general message is set to go in its place; "
+                        "writing waits for the model.")
+            return
 
         # Load foundational skills for this agent
         self.skills = self.brain.load_skills_for_agent("writer")
@@ -224,13 +234,14 @@ class Writer:
         # The operator's own message: no model call, one campaign, the
         # sender fills in {{first_name}} and the greeting per person.
         if self.use_template:
-            await self._queue_template_campaign(prospects_with_email)
+            await self._queue_template_campaign(prospects_with_email, use_model=use_model)
             return
 
         # Sort newcomers into sector × role before grouping, so every
         # campaign is one sector and one tier and the writing can speak to
         # what that business does and who is reading.
-        await self._classify(prospects_with_email)
+        if use_model:
+            await self._classify(prospects_with_email)
 
         # Batch prospects into campaign groups (by sector and role tier)
         batches = self._group_prospects(prospects_with_email)
@@ -240,6 +251,12 @@ class Writer:
         fell_back: set = set()    # batches sent the general message because the model could not write
 
         async def write(ps, name):
+            if not use_model:
+                # Over the AI budget: the general message, with no call made
+                # (a reused sequence would still be personalised, and staged
+                # behind the spam check's fix, both by the model).
+                fell_back.add(name)
+                return self.template_steps()
             # A segment written in the last day keeps its sequence: the next
             # batch of the same sector and tier costs no model call.
             try:
@@ -250,18 +267,27 @@ class Writer:
                 logger.info(f"Writer: reusing today's sequence for '{name}'.")
                 return list(earlier.sequence)
             async with gate:
+                why = ""
                 try:
-                    return await self._write_sequence(ps)
+                    steps = await self._write_sequence(ps)
                 except Exception as e:
-                    if self.template_fallback:
-                        # The model is unavailable (rate-limited, out of credit):
-                        # the general message goes out instead, so nothing waits.
-                        logger.warning(f"Writer: the model could not write '{name}' ({e}); "
-                                       "sending your general message to them instead.")
-                        fell_back.add(name)
-                        return self.template_steps()
-                    logger.warning(f"Writer: sequence failed: {e}")
-                    return []
+                    steps, why = [], str(e)
+                if steps:
+                    return steps
+                # The brain answers a rate limit, a pause or an empty reply
+                # with nothing rather than an error: that is the model not
+                # writing, the same as an exception.
+                why = (why or getattr(self.brain, "paused_reason", "") or getattr(self.brain, "unavailable", "")
+                       or "no usable email came back (rate-limited, or an empty answer)")
+                if self.template_fallback:
+                    # The model is unavailable (rate-limited, out of credit):
+                    # the general message goes out instead, so nothing waits.
+                    logger.warning(f"Writer: the model could not write '{name}' ({why}); "
+                                   "sending your general message to them instead.")
+                    fell_back.add(name)
+                    return self.template_steps()
+                logger.warning(f"Writer: sequence failed: {why}")
+                return []
 
         for name, ps in todo:
             logger.info(f"Writer: Creating campaign '{name}' for {len(ps)} prospects.")
@@ -275,10 +301,13 @@ class Writer:
             # Create the campaign. While first emails are being personalised
             # it is 'writing', invisible to the sender, so the sender cannot
             # stage the segment template over the personal drafts.
-            personalising = self.is_native and self.personalize_each and batch_name not in fell_back
+            personalising = self.is_native and self.personalize_each and use_model and batch_name not in fell_back
             campaign = Campaign(
                 id="",
-                name=batch_name,
+                # A batch that got the general message is named like the
+                # operator's own campaign: the sender sends those words as
+                # they are, with no model in front of them.
+                name=(f"your message · {batch_name}" if batch_name in fell_back else batch_name),
                 channel="email",
                 sequence=sequence,
                 prospect_ids=[p.id for p in prospects],
@@ -541,13 +570,15 @@ class Writer:
                 return message
         return None
 
-    async def _queue_template_campaign(self, prospects: list) -> list[str]:
+    async def _queue_template_campaign(self, prospects: list, use_model: bool = True) -> list[str]:
         """One campaign per version of the operator's message. With sector
         versions, contacts are sorted into sectors first (one model call per
-        25); anyone unsorted or in an uncovered sector gets the default."""
+        25); anyone unsorted or in an uncovered sector gets the default.
+        ``use_model`` False (over the AI budget): no sorting, so the newly
+        unsorted get the default message."""
         versions = [m for m in (getattr(self.config.outreach, "sector_messages", None) or [])
                     if (m.body or "").strip() and m.sectors]
-        if versions:
+        if versions and use_model:
             try:
                 await self._classify(prospects)
             except Exception as e:

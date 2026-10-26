@@ -1480,12 +1480,27 @@ class Workspace:
                             "link": "/profile#sending"}
             except Exception:
                 pass
+        # The model (or the mailbox's inbox) is out of reach: first emails
+        # need neither and still go; replies and follow-ups wait. That is a
+        # note on whatever the sender is doing, not a state of its own.
+        note, note_link = "", ""
         if await self._table_exists("settings"):
             rows = await self._query("SELECT value FROM settings WHERE key = 'sender_skip_reason'")
             skip = (rows[0]["value"] or "") if rows else ""
-            if skip and "quiet" not in skip:
+            if skip and "first emails still go out" in skip:
+                cause = skip.rsplit("; follow-ups wait", 1)[0].strip()
+                low = cause.lower()
+                if "mailbox could not be read" in low:
+                    note, note_link = f" Replies and follow-ups wait until the inbox can be read again: {cause}.", "/mailbox"
+                else:
+                    note = f" Replies and follow-ups wait until the AI can answer again: {cause}."
+                    if "spend cap" in low:
+                        note_link = "/profile"
+                    elif any(w in low for w in ("usage limit", "credit", "rate limit", "rate-limited", "the ai ", "llm", "quota")):
+                        note_link = "/apikey"
+            elif skip and "quiet" not in skip:
                 return {"state": "stuck", "text": f"The sender is skipping its passes: {skip}.", "link": ""}
-        for line in reversed(self.log_tail(80)):
+        for line in ([] if note else reversed(self.log_tail(80))):
             low = line.lower()
             if "harvey is paused" in low or "usage limit reached" in low or "not sending" in low:
                 text = line.split(" - ", 2)[-1] if " - " in line else line
@@ -1510,7 +1525,7 @@ class Workspace:
             now = datetime.now(timezone.utc)
             left = int(((now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) - now).total_seconds())
             when = f" Sending starts again at 00:00 UTC, in {left // 3600}h {(left % 3600) // 60}m."
-            return {"state": "stuck", "text": a["text"] + when + (" Switch off warm-up or raise the daily maximum on the profile." if a.get("warming") else " Raise the daily maximum on the profile."), "link": "/profile#sending"}
+            return {"state": "stuck", "text": a["text"] + when + (" Switch off warm-up or raise the daily maximum on the profile." if a.get("warming") else " Raise the daily maximum on the profile.") + note, "link": "/profile#sending"}
         review = ""
         if out["outbox_pending"]:
             review = (f" {out['outbox_pending']} wait for your approval in the Outbox." if email.get("require_approval") else
@@ -1518,6 +1533,21 @@ class Workspace:
                       "nothing else waits on them.")
         if out["recipients"] == 0:
             return {"state": "waiting", "text": "No recipients yet. Upload a list and the worker starts writing.", "link": "/recipients"}
+        if note:
+            # Only what can leave now counts: approved first emails and replies.
+            rows = await self._query("SELECT COUNT(*) AS n FROM outbox WHERE status IN ('approved', 'sending') "
+                                     "AND (kind IS NULL OR kind != 'sequence' OR step IS NULL OR step <= 1)")
+            going = rows[0]["n"] if rows else 0
+            if going:
+                pace = (f"{email.get('sends_per_cycle') or speed['per_cycle']} every "
+                        f"{email.get('send_every_seconds') or speed['send_every']} seconds")
+                return {"state": "sending", "text": f"Sending first emails: {going} are approved and leave at {pace}"
+                                                     + (f" (held to this pace because {held})" if held else "")
+                                                     + f"; {out['sent_today']} went out today." + note + review,
+                        "link": note_link or ("/outbox" if review else "")}
+            return {"state": "waiting", "text": ("No first emails are approved to go right now." + review if review else
+                                                 "No first emails are waiting to go right now.") + note,
+                    "link": note_link or ("/outbox" if review else "")}
         if out["outbox_scheduled"]:
             pace = (f"{email.get('sends_per_cycle') or speed['per_cycle']} every "
                     f"{email.get('send_every_seconds') or speed['send_every']} seconds")
