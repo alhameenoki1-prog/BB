@@ -9,6 +9,14 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Your email signature builds itself.** Leave the signature HTML box on
+  the profile blank and BB composes a clean signature from your name, role,
+  company and LinkedIn, with your uploaded image underneath — scaled to fit
+  (about 240×120px, proportions kept) so it never comes out oversized, and no
+  HTML to write. It rebuilds from your details every time you save the profile, so
+  it always stays in step; paste your own HTML any time to override it
+  (`build_auto_signature` in `bb/workspaces.py`, placed by `render_parts`).
+
 - **Verify & clean your lead list for free — no API key, no credits.** A
   new sweep checks every recipient's address (syntax, whether the domain
   has a live mail server, disposable/throwaway domains, and shared role
@@ -45,6 +53,13 @@ minor versions can still change behaviour.
   skipped (`bb/deliverability.py` `check_sending_host`).
 
 ### Fixed
+
+- **A rate-limited reply no longer fails.** When a reply draft hit a free
+  provider's per-minute rate limit (HTTP 429) or a brief overload (503), the
+  mail command center raised an error and the draft failed. It now waits
+  (honouring Retry-After, capped at 60s) and retries a few times — the way the
+  outreach writer already did — so a free tier just slows a run down instead of
+  breaking it (`bb/mail/brain.py`, `_retry_after_seconds`).
 
 - **Groq's default model is current again.** Groq retired
   `llama-3.3-70b-versatile`, so the Groq preset on the AI provider page now

@@ -685,7 +685,7 @@ def render_parts(body: str, outreach, plain: bool = False, booking: str = "") ->
     # plain text has nothing else to click.
     html_body = body_to_html(body, link_labels(outreach, booking))
     img_tag = ('<img src="cid:signature-image" alt="" '
-               'style="max-width:320px;height:auto;display:block;margin-top:6px">'
+               'style="max-width:240px;max-height:120px;height:auto;width:auto;display:block;margin-top:8px">'
                if image_path is not None else "")
     if "{{logo}}" in sig_html:
         sig_html = sig_html.replace("{{logo}}", img_tag)

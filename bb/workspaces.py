@@ -239,6 +239,32 @@ STUCK_CYCLE_SECONDS = 45 * 60   # one cycle is cut off after 20 minutes at most;
 WAKE_BUSY_SECONDS = 60    # a beat this fresh with no answer to a wake: busy (a slow step), not frozen
 MAX_SIGNATURE_IMAGE = 1024 * 1024
 
+# A hidden marker on a signature BB built itself (from the profile fields),
+# so the profile form can tell it from HTML the user typed and rebuild it on
+# every save. An HTML comment: invisible in the email, dropped from plain text.
+AUTO_SIG_MARKER = "<!-- bb-auto-signature -->"
+
+
+def build_auto_signature(name: str, role: str, company: str, linkedin: str) -> str:
+    """A clean, email-safe signature from the profile fields, so nobody has to
+    write HTML. The uploaded image is added underneath it by the send path
+    (``render_parts``), so this is just the name, role, company and LinkedIn."""
+    import html as _h
+
+    parts = []
+    name = (name or "").strip()
+    if name:
+        parts.append(f'<div style="font-weight:600;color:#1d1d1f">{_h.escape(name)}</div>')
+    role_company = " · ".join(p for p in ((role or "").strip(), (company or "").strip()) if p)
+    if role_company:
+        parts.append(f"<div>{_h.escape(role_company)}</div>")
+    linkedin = (linkedin or "").strip()
+    if linkedin:
+        url = linkedin if linkedin.lower().startswith(("http://", "https://")) else "https://" + linkedin.lstrip("/")
+        parts.append(f'<div style="margin-top:2px"><a href="{_h.escape(url, quote=True)}" '
+                     'style="color:#0a66c2;text-decoration:none">LinkedIn</a></div>')
+    return AUTO_SIG_MARKER + "".join(parts)
+
 COMMON_TIMEZONES = (
     "UTC", "Europe/London", "Europe/Paris", "Europe/Berlin", "Africa/Lagos", "Africa/Nairobi",
     "Africa/Johannesburg", "Asia/Dubai", "Asia/Kolkata", "Asia/Singapore", "Asia/Tokyo",
@@ -706,7 +732,8 @@ class Workspace:
             "greeting": outreach.get("greeting", "Hi"),
             "ask": outreach.get("ask", "") if outreach.get("ask", "") in ASKS else "",
             "ask_detail": outreach.get("ask_detail", ""),
-            "signature_html": outreach.get("signature_html", ""),
+            "signature_html": "" if (outreach.get("signature_html", "") or "").startswith(AUTO_SIG_MARKER)
+                              else outreach.get("signature_html", ""),
             "speed": (self._held_speed_marker() if self._held_speed_marker() in SPEEDS else
                       next((k for k, v in SPEEDS.items()
                             if v["interval"] == usage.get("heartbeat_interval_minutes")
@@ -861,7 +888,10 @@ class Workspace:
             pass
         speed["held"] = self.pace_held_reason(speed)
         speed = self.held_pace(speed)
-        signature_html = str(form.get("signature_html", "") or "").strip()
+        custom_sig = str(form.get("signature_html", "") or "").strip()
+        if custom_sig.startswith(AUTO_SIG_MARKER):
+            custom_sig = ""   # an auto signature from a previous save: rebuild it from the current fields
+        signature_html = custom_sig or build_auto_signature(name, text("role"), company, text("linkedin"))
         cfg = {
             "persona": {
                 "name": name, "company": company, "role": text("role"),
@@ -1309,7 +1339,7 @@ class Workspace:
             return {"html": "", "plain": False}
         if not html:
             return {"html": "", "plain": False}
-        logo = '<img src="/signature/image" alt="" style="max-width:320px;height:auto;display:block;margin-top:6px">' \
+        logo = '<img src="/signature/image" alt="" style="max-width:240px;max-height:120px;height:auto;width:auto;display:block;margin-top:8px">' \
             if self.signature_image() else ""
         if logo and not placed and html.endswith("</div></div>"):
             html = html[:-len("</div></div>")] + logo + "</div></div>"     # after the signature, as it is sent

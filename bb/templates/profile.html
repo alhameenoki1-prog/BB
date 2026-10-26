@@ -224,7 +224,7 @@
 </div>
 <div class="card">
   <h2>Email signature</h2>
-  <p class="muted small">Goes at the bottom of every email and reply. Plain text or HTML: links (<code>&lt;a href="…"&gt;</code>), line breaks (<code>&lt;br&gt;</code>), bold. Put <code>{{ '{{logo}}' }}</code> where the image should appear, or leave it out and the image goes last. Keep it short — a long signature with many links reads as marketing.</p>
+  <p class="muted small"><b>Leave this blank</b> and BB builds your signature from your name, role, company and LinkedIn above, with your uploaded image underneath — no HTML needed. Prefer your own? Write it here: plain text or HTML (links <code>&lt;a href="…"&gt;</code>, line breaks <code>&lt;br&gt;</code>, bold), and put <code>{{ '{{logo}}' }}</code> where the image should go. Keep it short — a long signature with many links reads as marketing.</p>
   <textarea name="signature_html" rows="5" placeholder="Ada Okafor&lt;br&gt;Founder, Okafor &amp; Co&lt;br&gt;&lt;a href=&quot;https://okafor.co&quot;&gt;okafor.co&lt;/a&gt; · &lt;a href=&quot;https://linkedin.com/in/ada&quot;&gt;LinkedIn&lt;/a&gt;&#10;{{ '{{logo}}' }}" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px">{{ profile.signature_html }}</textarea>
   {% if signature_image %}<p class="small" style="margin-top:10px"><span class="tag good">{{ icon('check', 12) }} Image</span> {{ signature_image }} is embedded inline (manage it below).</p>{% endif %}
   <label class="check" style="margin-top:12px"><input type="checkbox" name="plain_first_email" {{ 'checked' if profile.plain_first_email else '' }}> Send the first email to each person as plain text <span class="muted">(recommended)</span></label>
@@ -235,7 +235,7 @@
 
 <div class="card">
   <h2>Signature image</h2>
-  <p class="muted small">A logo or headshot, PNG/JPG/GIF/WebP up to 1 MB, shown at most 320px wide. It is embedded in the email rather than loaded from the web, which spam filters prefer.</p>
+  <p class="muted small">A logo or headshot, PNG/JPG/GIF/WebP up to 1 MB. It is scaled automatically to fit about 240×120px, keeping its proportions, so it never comes out oversized. Embedded in the email rather than loaded from the web, which spam filters prefer.</p>
   {% if signature_image %}
   <p><img src="/signature/image" alt="" style="max-width:240px;max-height:120px;border-radius:8px;border:1px solid var(--line)"></p>
   <form class="inline" method="post" action="/signature/image/delete"><button class="small danger" type="submit">{{ icon('trash', 13) }} Remove {{ signature_image }}</button></form>

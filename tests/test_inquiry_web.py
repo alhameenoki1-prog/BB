@@ -5,7 +5,7 @@ import yaml
 
 from bb.accounts import Accounts
 from bb.mail.brain import MailBrain as _RealMailBrain  # the class itself, before a test swaps it
-from bb.workspaces import Workspace
+from bb.workspaces import AUTO_SIG_MARKER, Workspace, build_auto_signature
 from harvey.config import HarveyConfig
 
 from tests.test_bb_web import PROFILE, USER, _as_user, client, settings  # noqa: F401
@@ -282,3 +282,37 @@ def test_the_dashboard_and_mailbox_page_show_the_health_alert(client):  # noqa: 
     assert "Is it still sending?" in page and "FAILED: SMTP login failed: 535" in page and "2026-10-22 06:00 UTC" in page
 
 
+
+
+def test_build_auto_signature_unit():
+    sig = build_auto_signature("Ada Okafor", "Founder", "Okafor & Co", "linkedin.com/in/ada")
+    assert sig.startswith(AUTO_SIG_MARKER)
+    assert "Ada Okafor" in sig and "Founder · Okafor &amp; Co" in sig
+    assert 'href="https://linkedin.com/in/ada"' in sig and "LinkedIn</a>" in sig
+    assert build_auto_signature("", "", "", "") == AUTO_SIG_MARKER   # nothing to show but the (invisible) marker
+
+
+def test_signature_auto_builds_when_blank(client):  # noqa: F811
+    _as_user(client)
+    assert client.post("/profile", data=NEEDS_FORM).status_code == 303   # leaves signature_html blank
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    sig = HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach.signature_html
+    assert sig.startswith(AUTO_SIG_MARKER)
+    assert "Jane Doe" in sig and "Founder · Acme Research" in sig
+    assert "linkedin.com/in/janedoe" in sig and "LinkedIn</a>" in sig
+    # The form shows the box blank, so later saves keep rebuilding it from the fields.
+    assert "bb-auto-signature" not in client.get("/profile").text
+    # A mailbox-change rewrite keeps it auto and fresh.
+    ws.rewrite_config()
+    sig2 = HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach.signature_html
+    assert sig2.startswith(AUTO_SIG_MARKER) and "Jane Doe" in sig2
+
+
+def test_custom_signature_is_kept(client):  # noqa: F811
+    _as_user(client)
+    assert client.post("/profile", data={**NEEDS_FORM, "signature_html": "<b>My own sig</b>"}).status_code == 303
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    assert HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach.signature_html == "<b>My own sig</b>"
+    assert "My own sig" in client.get("/profile").text   # shown back for editing

@@ -4,6 +4,7 @@ endpoint (Gemini, Groq, OpenRouter, Ollama). Configured from the
 environment the site hands the worker (BB_LLM_*), so the web app and the
 worker use the same account."""
 
+import asyncio
 import contextvars
 import json
 import logging
@@ -14,6 +15,30 @@ import httpx
 logger = logging.getLogger("bb.mail.brain")
 
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
+
+# OpenAI-compatible endpoints: wait out a rate limit (429) or a brief overload
+# (503) and retry instead of failing the draft, honouring Retry-After up to a
+# cap — so a free tier's per-minute limit just slows a run down, never breaks it.
+OPENAI_RATE_RETRIES = 3
+RATE_RETRY_BASE = 4.0
+MAX_RETRY_AFTER = 60.0
+
+
+def _retry_after_seconds(r) -> float:
+    """How long a 429/503 asks us to wait — from a Retry-After header or the
+    body's 'try again in Xs' (what Groq/OpenAI send) — capped; 0 when silent."""
+    for header, div in (("retry-after", 1.0), ("retry-after-ms", 1000.0)):
+        v = r.headers.get(header)
+        if v:
+            try:
+                return max(0.5, min(MAX_RETRY_AFTER, float(v) / div))
+            except ValueError:
+                pass
+    m = re.search(r"try again in ([\d.]+)\s*(ms|s)\b", r.text or "", re.I)
+    if m:
+        secs = float(m.group(1)) / (1000.0 if m.group(2).lower() == "ms" else 1.0)
+        return max(0.5, min(MAX_RETRY_AFTER, secs))
+    return 0.0
 
 
 class BrainError(Exception):
@@ -335,15 +360,25 @@ class MailBrain:
                 "max_tokens": max_tokens, "temperature": 0.7}
         if _JSON_MODE.get():
             body["response_format"] = {"type": "json_object"}
-        try:
-            async with httpx.AsyncClient(timeout=90) as client:
-                r = await client.post(f"{self.base_url}/chat/completions", json=body, headers=headers)
-                if r.status_code == 400 and "response_format" in body:
-                    # An endpoint without a JSON mode: the same request without it.
-                    body.pop("response_format")
-                    r = await client.post(f"{self.base_url}/chat/completions", json=body, headers=headers)
-        except httpx.HTTPError as e:
-            raise BrainError(f"Could not reach {self.base_url}: {e}") from e
+        url = f"{self.base_url}/chat/completions"
+        r = None
+        for attempt in range(OPENAI_RATE_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=90) as client:
+                    r = await client.post(url, json=body, headers=headers)
+                    if r.status_code == 400 and "response_format" in body:
+                        # An endpoint without a JSON mode: the same request without it.
+                        body.pop("response_format")
+                        r = await client.post(url, json=body, headers=headers)
+            except httpx.HTTPError as e:
+                raise BrainError(f"Could not reach {self.base_url}: {e}") from e
+            if r.status_code in (429, 503) and attempt < OPENAI_RATE_RETRIES:
+                wait = min(_retry_after_seconds(r) or RATE_RETRY_BASE * (2 ** attempt), MAX_RETRY_AFTER)
+                logger.info("%s rate-limited (%s); waiting %.0fs then retrying (%d/%d)",
+                            self.label, r.status_code, wait, attempt + 1, OPENAI_RATE_RETRIES)
+                await asyncio.sleep(wait)
+                continue
+            break
         if r.status_code >= 400:
             raise BrainError(f"{self.label} answered {r.status_code}: {r.text[:200]}")
         try:
