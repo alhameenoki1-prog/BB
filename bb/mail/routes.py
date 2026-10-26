@@ -843,6 +843,18 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             c["ws"].start_mail_worker()
         return _redirect("/mail/review", msg=f"Approved {len(rows)}; sending.")
 
+    @app.post("/mail/review/reject-all")
+    async def mail_review_reject_all(user: dict = Depends(current_user)):
+        c = await ctx(user)
+        ids = [m["id"] for m in c["selected"]]
+        marks = ",".join("?" for _ in ids) or "''"
+        rows = await c["db"].query(
+            f"SELECT id FROM drafts WHERE mailbox_id IN ({marks}) AND status = 'pending_review'", ids)
+        for r in rows:
+            await c["db"].execute("UPDATE drafts SET status = 'rejected', updated_at = ? WHERE id = ? AND status != 'sent'",
+                                  (service.now_iso(), r["id"]))
+        return _redirect("/mail/review", msg=f"Discarded {len(rows)} draft(s).")
+
     @app.get("/mail/compose", response_class=HTMLResponse)
     async def mail_compose(request: Request, user: dict = Depends(current_user), draft: str = ""):
         c = await ctx(user)

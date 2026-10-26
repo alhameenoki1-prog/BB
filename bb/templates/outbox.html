@@ -5,8 +5,16 @@
 {% block content %}
 <div class="page-head">
   <div><div class="eyebrow">Mail</div><h1>Outbox</h1><p class="lead">Every email the worker has written, before and after it goes out.</p></div>
-  {% if status == 'pending_review' and items %}
-    <form class="inline" method="post" action="/outbox/approve-all" onsubmit="return confirm('Approve all {{ items|length }} emails?')"><button type="submit">{{ icon('check', 15) }} Approve all {{ items|length }}</button></form>
+  {% if items and status in ('pending_review', 'approved') %}
+    <div class="actions">
+      {% if status == 'pending_review' %}
+      <form class="inline" method="post" action="/outbox/approve-all" onsubmit="return confirm('Approve all {{ items|length }} emails?')"><button type="submit">{{ icon('check', 15) }} Approve all {{ items|length }}</button></form>
+      {% endif %}
+      <form class="inline" method="post" action="/outbox/reject-all" onsubmit="return confirm('{{ 'Cancel' if status == 'approved' else 'Reject' }} all {{ items|length }} email(s)? None will be sent.')">
+        <input type="hidden" name="status" value="{{ status }}">
+        <button type="submit" class="secondary danger">{{ icon('x', 15) }} {{ 'Cancel all' if status == 'approved' else 'Reject all' }} {{ items|length }}</button>
+      </form>
+    </div>
   {% endif %}
 </div>
 <div class="segs" style="margin-bottom:18px">

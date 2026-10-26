@@ -1166,6 +1166,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         n = await state.approve_outbox()
         return _redirect("/outbox", msg=f"Approved {n} email(s).")
 
+    @app.post("/outbox/reject-all")
+    async def outbox_reject_all(user: dict = Depends(current_user), status: str = Form("pending_review")):
+        state = workspace_for(user).state()
+        await state.init_db()
+        n = await state.reject_all_outbox(status)
+        verb = "Cancelled" if status == "approved" else "Rejected"
+        return _redirect(f"/outbox?status={status}", msg=f"{verb} {n} email(s); none will be sent.")
+
     @app.post("/outbox/{item_id}/{action}")
     async def outbox_action(request: Request, item_id: str, action: str, user: dict = Depends(current_user)):
         ws = workspace_for(user)

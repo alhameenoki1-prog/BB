@@ -398,8 +398,84 @@ def _print_clean_report(report: dict, applied: bool) -> None:
     print("  A specific mailbox being 'in use' needs a verifier key (REOON_API_KEY etc.).\n")
 
 
+_EMAIL_HEADERS = {"email", "e-mail", "email_address", "emailaddress", "email address", "mail"}
+
+
+async def _clean_csv(path: str, apply: bool) -> dict:
+    """Free-check a CSV file. With ``apply`` write <name>.cleaned.csv (kept
+    rows) and <name>.invalid.csv (removed rows, with a reason column),
+    preserving the original columns. Returns a report."""
+    import csv as _csv
+    import os
+
+    from harvey import listclean
+
+    if not os.path.isfile(path):
+        return {"error": f"no such file: {path}"}
+    with open(path, newline="", encoding="utf-8-sig", errors="replace") as f:
+        reader = _csv.DictReader(f)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+    col = next((f for f in fieldnames if f and f.strip().lower() in _EMAIL_HEADERS), None)
+    if col is None:                       # no obvious header: find a column whose values look like emails
+        col = next((f for f in fieldnames if any(
+            listclean.EMAIL_RE.match(((r.get(f) or "").strip().lower())) for r in rows[:25])), None)
+    if col is None:
+        return {"error": "could not find an email column in the CSV"}
+
+    verdicts = await listclean.sweep([(r.get(col) or "") for r in rows])
+    counts = {"ok": 0, "risky": 0, "invalid": 0, "unknown": 0}
+    kept, removed = [], []
+    for r in rows:
+        v = verdicts.get((r.get(col) or "").strip().lower())
+        if v is None:
+            kept.append(r); continue
+        counts[v.status] = counts.get(v.status, 0) + 1
+        if v.status in listclean.REMOVE:
+            removed.append({**r, "clean_reason": v.reason})
+        else:
+            kept.append(r)
+    report = {"checked": len(rows), "counts": counts, "removable": len(removed), "applied": apply,
+              "column": col, "kept": len(kept),
+              "removed": [{"email": (x.get(col) or ""), "reason": x.get("clean_reason", "")} for x in removed[:10]]}
+    if apply and removed:
+        base, ext = os.path.splitext(path)
+        ext = ext or ".csv"
+        report["cleaned_path"], report["invalid_path"] = f"{base}.cleaned{ext}", f"{base}.invalid{ext}"
+        with open(report["cleaned_path"], "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=fieldnames); w.writeheader(); w.writerows(kept)
+        with open(report["invalid_path"], "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=fieldnames + ["clean_reason"]); w.writeheader(); w.writerows(removed)
+    return report
+
+
+def _print_csv_report(report: dict, applied: bool) -> None:
+    if report.get("error"):
+        print(f"\n  {report['error']}\n")
+        return
+    c = report["counts"]
+    print(f"\n  Checked {report['checked']} row(s) (email column: '{report['column']}'):")
+    print(f"    valid (domain accepts mail):  {c.get('ok', 0)}")
+    print(f"    risky (role / shared mailbox): {c.get('risky', 0)}")
+    print(f"    invalid (dead / disposable):   {c.get('invalid', 0)}")
+    print(f"    unverifiable (lookup failed):  {c.get('unknown', 0)}")
+    for r in report.get("removed", []):
+        print(f"      - {r['email']}  ({r['reason']})")
+    if applied and report.get("cleaned_path"):
+        print(f"\n  Wrote {report['kept']} kept row(s) to {report['cleaned_path']}")
+        print(f"  Wrote {report['removable']} invalid row(s) to {report['invalid_path']}")
+    elif applied:
+        print("\n  No invalid rows — nothing written.")
+    else:
+        print("\n  Report only. Run `harvey clean --csv <file>` to write cleaned and invalid files.")
+    print()
+
+
 def cmd_verify(args):
     """Report list health without changing anything (free checks)."""
+    if getattr(args, "csv", ""):
+        asyncio.run(_csv_flow(args.csv, apply=False))
+        return
     from harvey import listclean
     from harvey.state import StateManager
 
@@ -414,6 +490,9 @@ def cmd_verify(args):
 
 def cmd_clean(args):
     """Verify, then move provably-invalid leads to the Excluded list (reversible)."""
+    if getattr(args, "csv", ""):
+        asyncio.run(_csv_flow(args.csv, apply=True))
+        return
     from harvey import listclean
     from harvey.state import StateManager
 
@@ -424,6 +503,10 @@ def cmd_clean(args):
         _print_clean_report(report, applied=True)
 
     asyncio.run(_clean())
+
+
+async def _csv_flow(path: str, apply: bool) -> None:
+    _print_csv_report(await _clean_csv(path, apply), applied=apply)
 
 
 def cmd_gmail(args):
@@ -788,12 +871,14 @@ def main():
         "verify", help="Check every lead's email (syntax, live domain, disposable, role) — report only"
     )
     sub.add_argument("--limit", type=int, default=0, help="Only check the newest N leads (default: all)")
+    sub.add_argument("--csv", default="", help="Check a CSV file instead of the prospect database")
     sub.set_defaults(func=cmd_verify)
 
     sub = subparsers.add_parser(
         "clean", help="Verify, then move provably-invalid leads to the Excluded list (reversible)"
     )
     sub.add_argument("--limit", type=int, default=0, help="Only check the newest N leads (default: all)")
+    sub.add_argument("--csv", default="", help="Clean a CSV file: writes <name>.cleaned.csv and <name>.invalid.csv")
     sub.set_defaults(func=cmd_clean)
 
     # harvey gmail auth|test

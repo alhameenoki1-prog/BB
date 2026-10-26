@@ -98,3 +98,12 @@ async def test_sweep_classifies_a_whole_list(monkeypatch):
     assert counts["invalid"] == 3
     assert counts["ok"] == 1
     assert counts["risky"] == 1
+
+
+def test_reserved_tld_is_kept_not_removed():
+    # RFC 6761 reserved/test TLDs are synthetic, never a real dead domain —
+    # even with a 'none' DNS answer they must not be removed.
+    for addr in ("sam@foo.example", "lee@host.test", "mo@a.invalid"):
+        v = verdict_for(addr, "none")
+        assert v.status == "unknown"
+        assert v.status not in listclean.REMOVE

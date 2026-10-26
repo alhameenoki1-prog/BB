@@ -743,6 +743,7 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
     from bb.mail.brain import BrainError, BrainRefusal
     from bb.mail.drafting import draft_reconnect, draft_reply
     from bb.mail.sending import AnsweredElsewhere, SendRefused, StaleFollowUp, send_draft, sent_today
+    from harvey import listclean
 
     run = await db.one("SELECT * FROM reply_runs WHERE id = ?", (run_id,))
     mailbox = await db.mailbox(mailbox_id)
@@ -825,6 +826,14 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
             if owner:
                 await mark(item, "skipped", f"{contact} is a lead of the outreach campaign \"{owner.get('name') or owner['id']}\" "
                                             "on this account, which answers its own leads")
+                continue
+        if contact:
+            # A free address check (syntax, live mail server, disposable) so a
+            # scan never drafts to a provably-dead address. Only the certain
+            # cases skip; an unprovable or catch-all one is drafted as before.
+            verdict = (await listclean.sweep([contact])).get(contact.strip().lower())
+            if verdict is not None and verdict.status in listclean.REMOVE:
+                await mark(item, "skipped", f"{contact}: {verdict.reason}; not drafted")
                 continue
         if led is not None:
             try:

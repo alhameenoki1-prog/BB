@@ -1376,3 +1376,18 @@ def test_recipients_verify_and_clean_and_restore(client, monkeypatch):
     val = sqlite3.connect(str(ws.db_path)).execute(
         "SELECT COALESCE(excluded, 0) FROM prospects WHERE email = 'ghost@dead.tld'").fetchone()[0]
     assert val == 0
+
+
+def test_outbox_reject_all(client):
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    _seed_outbox(ws)   # o0, o1 pending_review; o2 approved
+    r = client.post("/outbox/reject-all", data={"status": "pending_review"})
+    assert r.status_code == 303 and "Rejected%202" in r.headers["location"]
+    db = sqlite3.connect(str(ws.db_path))
+    assert dict(db.execute("SELECT id, status FROM outbox")) == {"o0": "rejected", "o1": "rejected", "o2": "approved"}
+    # The scheduled (approved) one can be cancelled in bulk too.
+    r = client.post("/outbox/reject-all", data={"status": "approved"})
+    assert "Cancelled%201" in r.headers["location"]
+    assert db.execute("SELECT status FROM outbox WHERE id = 'o2'").fetchone()[0] == "rejected"

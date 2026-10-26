@@ -21,7 +21,19 @@ minor versions can still change behaviour.
   unprovable mailboxes are kept, since free checks cannot test a single
   mailbox on Gmail/Microsoft 365 — a verifier key (`REOON_API_KEY` etc.)
   still does that (`harvey/listclean.py`; `state.exclude_prospect` /
-  `restore_prospect`; the Excluded list gates the writer and sender).
+  `restore_prospect`; the Excluded list gates the writer and sender). The
+  same free check also runs in the mail command center — a reply or
+  reconnect scan skips any contact whose address is provably dead before
+  it drafts (`bb/mail/runs.py`) — and from the CLI, `harvey verify --csv
+  <file>` / `harvey clean --csv <file>` cleans a CSV in place, writing
+  `<name>.cleaned.csv` and `<name>.invalid.csv` with the original columns.
+
+- **"Reject all" next to every "Approve all".** The Outbox and the mail
+  command center's Pending-review page each had an "Approve all" with no
+  bulk counterpart; both now have a matching "Reject all" (on the Outbox's
+  Scheduled view it reads "Cancel all"), so a batch of held emails or drafts
+  can be cleared in one click instead of one at a time
+  (`state.reject_all_outbox`; `/outbox/reject-all`, `/mail/review/reject-all`).
 
 - **Deliverability check now covers the sending server, not just the
   domain.** On top of SPF/DKIM/DMARC/MX, the Mailbox page's deliverability

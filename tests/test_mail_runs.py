@@ -280,3 +280,67 @@ async def test_a_model_refusal_is_left_for_a_person_not_marked_failed(tmp_path, 
     assert out["sent"] == 0 and out.get("failed", 0) == 0 and SentBox.sent == []
     item = await db.one("SELECT status, detail FROM run_items WHERE id = 'i1'")
     assert item["status"] == "skipped" and "declined" in item["detail"] and "by hand" in item["detail"]
+
+
+@pytest.mark.asyncio
+async def test_reply_run_skips_a_dead_domain_contact(tmp_path, monkeypatch):
+    """A scan never drafts to a provably-dead address (no mail server); a
+    live-domain contact in the same run is still drafted."""
+    monkeypatch.setenv("BB_MAIL_PACE_SECONDS", "0")
+
+    async def fake_lookup(domains):
+        table = {"deadco.co": ("none", None), "live.co": ("mx", "mail.live.co")}
+        return {d: table.get(d, ("error", None)) for d in dict.fromkeys(domains)}
+    monkeypatch.setattr("harvey.listclean._lookup_many", fake_lookup)
+
+    db = MailDB(tmp_path / "mail.db"); await db.init()
+    ready = MailboxSettings(display_name="Jane", signature_html="Jane", project_link="https://acme.test").model_dump()
+    mid = await db.add_mailbox(address="me@mine.example", provider="imap", creds=crypto.seal_json("s", {}), status="ok", settings=ready)
+    box = await db.mailbox(mid)
+    await Ingest(db, box).store_batch([
+        RawMessage(provider_id="d1", thread_key="d1", message_id="<d1@x>", from_email="ghost@deadco.co",
+                   from_name="Ghost", subject="Old thread", body="Are you still around?",
+                   sent_at="2026-02-01T10:00:00Z", to=[{"name": "", "email": box["address"]}]),
+        RawMessage(provider_id="l1", thread_key="l1", message_id="<l1@x>", from_email="real@live.co",
+                   from_name="Real", subject="Live thread", body="Can we talk Tuesday?",
+                   sent_at="2026-02-02T10:00:00Z", to=[{"name": "", "email": box["address"]}]),
+    ])
+    threads = [r["id"] for r in await db.query("SELECT id FROM threads WHERE mailbox_id = ?", (mid,))]
+    run = await runs.create_run(db, await db.mailboxes(), threads, mode="review", created_by="me")
+    brain = FakeBrain([GOOD] * 5)
+    out = await runs.process_mailbox(db, "s", {}, brain, None, "", run["id"], mid)
+
+    assert out["skipped"] == 1 and out["needs_review"] == 1
+    skipped = await db.one("SELECT detail FROM run_items WHERE run_id = ? AND status = 'skipped'", (run["id"],))
+    assert "deadco.co" in skipped["detail"] and "no mail server" in skipped["detail"]
+    assert len(await db.query("SELECT * FROM drafts WHERE run_id = ?", (run["id"],))) == 1
+
+
+def test_mail_review_reject_all(mail_client, monkeypatch):
+    client = mail_client
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    monkeypatch.setattr("bb.app.check_anthropic_key", _accept_key)
+    monkeypatch.setattr(Workspace, "mail_worker_running", lambda self: 1)
+    monkeypatch.setattr(Workspace, "start_mail_worker", lambda self: (True, "started"))
+    client.post("/apikey", data={"api_key": "sk-ant-abcdefghijklmnop"})
+    client.post("/mail/accounts/imap", data={"email": A, "password": "pw"})
+    db = ws.mail_db()
+    mid = asyncio.run(db.mailboxes())[0]["id"]
+
+    async def seed():
+        now = "2026-01-01T00:00:00Z"
+        for i in range(3):
+            await db.execute("INSERT INTO drafts (id, mailbox_id, status, body, subject, created_at, updated_at) "
+                             "VALUES (?, ?, 'pending_review', 'hi', ?, ?, ?)", (f"d{i}", mid, f"Subject {i}", now, now))
+        await db.execute("INSERT INTO drafts (id, mailbox_id, status, created_at, updated_at) "
+                         "VALUES ('dsent', ?, 'sent', ?, ?)", (mid, now, now))
+    asyncio.run(seed())
+
+    assert "Reject all" in client.get("/mail/review").text
+
+    r = client.post("/mail/review/reject-all")
+    assert r.status_code == 303 and "Discarded%203" in r.headers["location"]
+    statuses = {x["id"]: x["status"] for x in asyncio.run(db.query("SELECT id, status FROM drafts"))}
+    assert statuses == {"d0": "rejected", "d1": "rejected", "d2": "rejected", "dsent": "sent"}

@@ -60,6 +60,11 @@ ROLE_LOCAL_PARTS = {
     "frontdesk", "hi", "ask", "newsletter", "subscribe", "unsubscribe", "notifications",
 }
 
+# Reserved / special-use TLDs (RFC 2606, RFC 6761): never real deliverable
+# domains, but synthetic placeholders, not addresses to "remove" — a list
+# that uses them is a test or a sample. Left as-is rather than called dead.
+RESERVED_TLDS = {"example", "invalid", "test", "localhost"}
+
 # Disposable / throwaway providers: a burner address, never a real lead.
 # Not exhaustive (there are thousands) — the common ones that actually show
 # up in bought or scraped lists. Extend freely.
@@ -106,6 +111,8 @@ def verdict_for(email: str, where: str) -> Verdict:
     if not EMAIL_RE.match(email):
         return Verdict("invalid", "not a valid email address")
     local, _, domain = email.partition("@")
+    if domain.rsplit(".", 1)[-1] in RESERVED_TLDS:
+        return Verdict("unknown", "a reserved or test domain (RFC 6761); left as-is")
     if domain in DISPOSABLE_DOMAINS:
         return Verdict("invalid", "disposable / throwaway email domain")
     if where == "none":

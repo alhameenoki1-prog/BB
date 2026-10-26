@@ -1121,6 +1121,21 @@ class StateManager:
             await db.commit()
             return cursor.rowcount
 
+    async def reject_all_outbox(self, status: str = "pending_review") -> int:
+        """Reject every outbox item in a status (the counterpart of
+        approve-all): 'pending_review' held emails, or 'approved' ones still
+        scheduled to send. Sent emails are never touched."""
+        if status not in ("pending_review", "approved"):
+            return 0
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "UPDATE outbox SET status = 'rejected', error = 'rejected in the web app', updated_at = ? "
+                "WHERE status = ?",
+                (_utcnow().isoformat(), status),
+            )
+            await db.commit()
+            return cursor.rowcount
+
     async def cancel_pending_outbox_for_prospect(
         self, prospect_id: str, reason: str = "stop_on_reply"
     ) -> int:

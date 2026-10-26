@@ -4,7 +4,7 @@
 {% block title %}Review{% endblock %}
 {% block content %}
 <div class="page-head"><div><div class="eyebrow">Mail</div><h1>Pending review</h1><p class="lead">Replies the AI has drafted and is waiting for you to approve. Open one to edit it, or approve them all.</p></div>
-  <div class="actions">{% if drafts %}<form class="inline" method="post" action="/mail/review/approve-all" onsubmit="return confirm('Send all {{ drafts|length }} drafts as they are?')"><button type="submit">{{ icon('check', 15) }} Approve all {{ drafts|length }}</button></form>{% endif %}</div></div>
+  <div class="actions">{% if drafts %}<form class="inline" method="post" action="/mail/review/approve-all" onsubmit="return confirm('Send all {{ drafts|length }} drafts as they are?')"><button type="submit">{{ icon('check', 15) }} Approve all {{ drafts|length }}</button></form><form class="inline" method="post" action="/mail/review/reject-all" onsubmit="return confirm('Discard all {{ drafts|length }} drafts? None will be sent.')"><button type="submit" class="secondary danger">{{ icon('x', 15) }} Reject all {{ drafts|length }}</button></form>{% endif %}</div></div>
 {% include "_mail_scope.html" %}
 {% for d in drafts %}
 <div class="card">
