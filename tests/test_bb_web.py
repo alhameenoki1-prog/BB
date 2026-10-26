@@ -1340,3 +1340,39 @@ def test_workers_on_old_code_are_restarted_when_the_site_starts(client, monkeypa
     monkeypatch.setattr(ws_mod, "code_version", lambda: "v2")
     assert asyncio.run(ws.restart_workers_on_old_code()) == ["worker"]   # new code: restarted
     assert len(starts) == 2 and ws.pid_file.with_suffix(".version").read_text() == "v2"
+
+
+def test_recipients_verify_and_clean_and_restore(client, monkeypatch):
+    """The free Verify & Clean sweep moves provably-dead addresses to the
+    Excluded list (reversibly) and the page offers Restore."""
+    _as_user(client)
+    # good · role (kept) · dead domain (invalid) · disposable (invalid)
+    client.post("/recipients", data={"pasted":
+        "jane@acme.com\ninfo@acme.com\nghost@dead.tld\nburner@mailinator.com\n"})
+
+    async def fake_lookup(domains):
+        table = {"acme.com": ("mx", "mail.acme.com"), "dead.tld": ("none", None),
+                 "mailinator.com": ("mx", "m.mailinator.com")}
+        return {d: table.get(d, ("error", None)) for d in dict.fromkeys(domains)}
+    monkeypatch.setattr("harvey.listclean._lookup_many", fake_lookup)
+
+    r = client.post("/recipients/clean")
+    assert r.status_code == 303
+
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    db = sqlite3.connect(str(ws.db_path))
+    excluded = [row[0] for row in db.execute(
+        "SELECT email FROM prospects WHERE COALESCE(excluded, 0) = 1").fetchall()]
+    assert set(excluded) == {"ghost@dead.tld", "burner@mailinator.com"}
+
+    # The page shows the Excluded card; the dead one is not in "Recently added".
+    page = client.get("/recipients").text
+    assert "Excluded" in page and "ghost@dead.tld" in page
+
+    # Restore returns it to the sending pool.
+    pid = db.execute("SELECT id FROM prospects WHERE email = 'ghost@dead.tld'").fetchone()[0]
+    assert client.post(f"/recipients/{pid}/restore").status_code == 303
+    val = sqlite3.connect(str(ws.db_path)).execute(
+        "SELECT COALESCE(excluded, 0) FROM prospects WHERE email = 'ghost@dead.tld'").fetchone()[0]
+    assert val == 0

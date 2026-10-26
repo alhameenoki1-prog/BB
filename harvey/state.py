@@ -421,6 +421,14 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE usage_log ADD COLUMN openai_calls INTEGER DEFAULT 0;
     """,
+    # ── v14: Excluded list — the free list-hygiene sweep moves provably-dead
+    # addresses out of the sending pool. 'excluded' gates writing and sending
+    # without touching email_status, so restoring is a clean reversal. ──
+    """
+    ALTER TABLE prospects ADD COLUMN excluded INTEGER DEFAULT 0;
+    ALTER TABLE prospects ADD COLUMN excluded_reason TEXT DEFAULT '';
+    CREATE INDEX IF NOT EXISTS idx_prospects_excluded ON prospects(excluded);
+    """,
 ]
 
 BRAIN_PROVIDERS = ("claude", "codex", "openai")
@@ -654,6 +662,7 @@ class StateManager:
         d["email_verified"] = bool(d.get("email_verified", 0))
         d["phone_verified"] = bool(d.get("phone_verified", 0))
         d["email_status"] = d.get("email_status") or ""
+        d["excluded"] = bool(d.get("excluded", 0))
         return Prospect(**d)
 
     async def add_prospect(self, prospect: Prospect) -> str:
@@ -717,12 +726,16 @@ class StateManager:
                 return self._prospect_from_row(row) if row else None
 
     async def get_prospects_by_status(self, status: str, limit: int | None = None,
-                                      email_statuses: tuple | None = None) -> list[Prospect]:
+                                      email_statuses: tuple | None = None,
+                                      include_excluded: bool = False) -> list[Prospect]:
         """Prospects in a status, newest first. ``email_statuses`` narrows to
         deliverable addresses in SQL, so a page limit never stalls on rows
-        the writer would skip anyway."""
+        the writer would skip anyway. Prospects moved to the Excluded list are
+        left out unless ``include_excluded`` is set."""
         params: list = [status]
         where = "status = ?"
+        if not include_excluded:
+            where += " AND COALESCE(excluded, 0) = 0"
         if email_statuses:
             where += f" AND COALESCE(NULLIF(email_status, ''), 'guess') IN ({','.join('?' for _ in email_statuses)})"
             params += list(email_statuses)
@@ -743,6 +756,61 @@ class StateManager:
                 (status, _utcnow().isoformat(), prospect_id),
             )
             await db.commit()
+
+    async def exclude_prospect(self, prospect_id: str, reason: str = "") -> None:
+        """Move a prospect to the Excluded list: out of the sending and
+        writing pool, reversibly. email_status is left untouched, so a later
+        restore returns the prospect exactly as it was."""
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE prospects SET excluded = 1, excluded_reason = ?, updated_at = ? WHERE id = ?",
+                (reason or "", _utcnow().isoformat(), prospect_id),
+            )
+            await db.commit()
+
+    async def restore_prospect(self, prospect_id: str) -> None:
+        """Undo an exclusion: the prospect rejoins the sending pool."""
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE prospects SET excluded = 0, excluded_reason = '', updated_at = ? WHERE id = ?",
+                (_utcnow().isoformat(), prospect_id),
+            )
+            await db.commit()
+
+    async def get_excluded_prospects(self, limit: int | None = None) -> list[Prospect]:
+        """The Excluded list: prospects pulled from sending, newest first."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM prospects WHERE COALESCE(excluded, 0) = 1 ORDER BY updated_at DESC"
+                + (f" LIMIT {int(limit)}" if limit else "")
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [self._prospect_from_row(r) for r in rows]
+
+    async def count_prospects_excluded(self) -> int:
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM prospects WHERE COALESCE(excluded, 0) = 1"
+            ) as cur:
+                row = await cur.fetchone()
+                return int(row[0]) if row else 0
+
+    async def get_prospects_with_email(self, limit: int | None = None,
+                                       include_excluded: bool = False) -> list[Prospect]:
+        """Every prospect that has an email address, any status — the input to
+        a list-hygiene sweep. Excluded ones are skipped unless asked for."""
+        where = "email != ''"
+        if not include_excluded:
+            where += " AND COALESCE(excluded, 0) = 0"
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                f"SELECT * FROM prospects WHERE {where} ORDER BY created_at DESC"
+                + (f" LIMIT {int(limit)}" if limit else "")
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [self._prospect_from_row(r) for r in rows]
 
     async def update_prospect_name(self, prospect_id: str, first_name: str, last_name: str,
                                    note: str = "", title: str = ""):

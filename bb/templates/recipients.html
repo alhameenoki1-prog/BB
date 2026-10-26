@@ -19,6 +19,15 @@
     </form>
   </div>
   <div class="card">
+    <h2>Verify &amp; clean the list</h2>
+    <p class="muted small">A free check of every recipient — no credits spent, no mail sent. It reads each address's format, looks up whether its domain has a live mail server, and spots burner/disposable domains and shared role inboxes (<code>info@</code>, <code>sales@</code>).</p>
+    <p class="small" style="margin-top:-4px"><span class="tag">Moved to Excluded</span> Only the provably dead — bad syntax, a domain with no mail server, or a disposable domain. Everything else is kept; a role inbox is flagged, not removed. Exclusions are reversible — nothing is deleted.</p>
+    {% if not verifier %}<p class="tiny muted" style="margin-top:-4px">Free checks can't tell if a specific Gmail or Microsoft 365 mailbox is still in use (those accept every name from outside). For that, the site owner can add a verifier key (<code>REOON_API_KEY</code>) to the server.</p>{% endif %}
+    <form method="post" action="/recipients/clean" onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Checking the whole list…'">
+      <p class="actions" style="margin-top:12px"><button type="submit">{{ icon('check', 15) }} Verify &amp; clean</button></p>
+    </form>
+  </div>
+  <div class="card">
     <h2>Sectors and roles</h2>
     {% if sectors.rows %}
     <p class="muted small">Sorted by the AI from each company and title. One email is written per sector and role, phrased for who reads it.</p>
@@ -53,5 +62,22 @@
     <p class="tiny" style="margin-top:10px">Showing the latest {{ recent | length }}. Totals are on the dashboard.</p>
     {% else %}<div class="empty">{{ icon('users') }}<div>Nobody yet. Upload a CSV to begin.</div></div>{% endif %}
   </div>
+  {% if excluded %}
+  <div class="card">
+    <h2>Excluded <span class="muted" style="font-weight:400">({{ excluded | length }})</span></h2>
+    <p class="muted small">Moved out of every send by the list check. Restore any that were pulled by mistake — they rejoin the sending list.</p>
+    <table>
+      <thead><tr><th>Name</th><th>Email</th><th>Why</th><th></th></tr></thead>
+      <tbody>{% for e in excluded %}
+      <tr>
+        <td><b>{{ e.name }}</b>{% if e.company %}<div class="tiny">{{ e.company }}</div>{% endif %}</td>
+        <td class="muted">{{ e.email }}</td>
+        <td class="tiny">{{ e.reason }}</td>
+        <td><form method="post" action="/recipients/{{ e.id }}/restore" style="margin:0"><button type="submit" class="secondary small">Restore</button></form></td>
+      </tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+  {% endif %}
 </div>
 {% endblock %}

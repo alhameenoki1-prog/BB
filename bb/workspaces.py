@@ -1569,6 +1569,32 @@ class Workspace:
             "SELECT first_name, last_name, email, company, title, status, email_status, created_at "
             "FROM prospects ORDER BY created_at DESC LIMIT ?", (limit,))
 
+    async def clean_list(self) -> dict:
+        """Verify every recipient with free checks (syntax, live domain,
+        disposable, role) and move the provably-invalid ones to the Excluded
+        list. Reversible — nothing is deleted. Returns the sweep report."""
+        from harvey import listclean
+        st = self.state()
+        await st.init_db()
+        return await listclean.clean_prospects(st, apply=True)
+
+    async def excluded_recipients(self, limit: int = 500) -> list[dict]:
+        """Recipients the list check moved to the Excluded list: out of every
+        send, kept so they can be restored."""
+        if not await self._table_exists("prospects"):
+            return []
+        st = self.state()
+        await st.init_db()
+        return [{"id": p.id, "name": p.full_name() or "—", "email": p.email,
+                 "company": p.company, "reason": p.excluded_reason}
+                for p in await st.get_excluded_prospects(limit)]
+
+    async def restore_recipient(self, prospect_id: str) -> None:
+        """Undo one exclusion: the recipient rejoins the sending list."""
+        st = self.state()
+        await st.init_db()
+        await st.restore_prospect(prospect_id)
+
     async def rewrite_item(self, item: dict, instruction: str) -> dict:
         """Rewrite one queued email with the user's own AI provider, to their
         instruction (or simply better when none is given), keeping the facts,

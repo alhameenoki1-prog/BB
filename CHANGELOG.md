@@ -9,6 +9,20 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Verify & clean your lead list for free — no API key, no credits.** A
+  new sweep checks every recipient's address (syntax, whether the domain
+  has a live mail server, disposable/throwaway domains, and shared role
+  inboxes like `info@`) and moves the provably-dead ones — bad syntax, dead
+  domains, disposable providers — to an **Excluded** list that is kept out
+  of every send. It is reversible: nothing is deleted, and any address can
+  be restored. In the web app it is the "Verify & clean" button on the
+  Recipients page (with an Excluded card and per-row Restore); from the CLI,
+  `harvey verify` reports and `harvey clean` applies. Catch-all and
+  unprovable mailboxes are kept, since free checks cannot test a single
+  mailbox on Gmail/Microsoft 365 — a verifier key (`REOON_API_KEY` etc.)
+  still does that (`harvey/listclean.py`; `state.exclude_prospect` /
+  `restore_prospect`; the Excluded list gates the writer and sender).
+
 - **Deliverability check now covers the sending server, not just the
   domain.** On top of SPF/DKIM/DMARC/MX, the Mailbox page's deliverability
   card checks whether the sending domain is on a domain blocklist, and for

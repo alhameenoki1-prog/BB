@@ -373,6 +373,59 @@ def cmd_export(args):
     asyncio.run(_export())
 
 
+def _print_clean_report(report: dict, applied: bool) -> None:
+    c = report["counts"]
+    print(f"\n  Checked {report['checked']} lead(s):")
+    print(f"    valid (domain accepts mail):  {c.get('ok', 0)}")
+    print(f"    risky (role / shared mailbox): {c.get('risky', 0)}")
+    print(f"    invalid (dead / disposable):   {c.get('invalid', 0)}")
+    print(f"    unverifiable (lookup failed):  {c.get('unknown', 0)}")
+    removed = report.get("removed", [])
+    if removed:
+        print(f"\n  {'Moved to Excluded' if applied else 'Would exclude'}: {len(removed)} invalid lead(s)")
+        for r in removed[:10]:
+            print(f"    - {r['email']}  ({r['reason']})")
+        if len(removed) > 10:
+            print(f"    ... and {len(removed) - 10} more")
+    else:
+        print("\n  No invalid addresses found. Nothing to clean.")
+    if applied:
+        print(f"\n  Excluded {report['excluded']} lead(s). They stay out of every send; "
+              "undo any of them on the Contacts page.")
+    else:
+        print("\n  Report only — nothing changed. Run `harvey clean` to move the invalid ones to Excluded.")
+    print("  Note: free checks remove the provably-dead (bad syntax, no mail server, disposable).")
+    print("  A specific mailbox being 'in use' needs a verifier key (REOON_API_KEY etc.).\n")
+
+
+def cmd_verify(args):
+    """Report list health without changing anything (free checks)."""
+    from harvey import listclean
+    from harvey.state import StateManager
+
+    async def _verify():
+        state = StateManager()
+        await state.init_db()
+        report = await listclean.clean_prospects(state, apply=False, limit=(args.limit or None))
+        _print_clean_report(report, applied=False)
+
+    asyncio.run(_verify())
+
+
+def cmd_clean(args):
+    """Verify, then move provably-invalid leads to the Excluded list (reversible)."""
+    from harvey import listclean
+    from harvey.state import StateManager
+
+    async def _clean():
+        state = StateManager()
+        await state.init_db()
+        report = await listclean.clean_prospects(state, apply=True, limit=(args.limit or None))
+        _print_clean_report(report, applied=True)
+
+    asyncio.run(_clean())
+
+
 def cmd_gmail(args):
     """Gmail provider utilities (auth / test)."""
     from harvey.config import load_env
@@ -729,6 +782,19 @@ def main():
     sub.add_argument("--status", default="", help="Comma-separated pipeline statuses (e.g. new,queued)")
     sub.add_argument("--all", action="store_true", help="Export everything, no filters")
     sub.set_defaults(func=cmd_export)
+
+    # harvey verify / harvey clean — free list hygiene (no verifier key needed)
+    sub = subparsers.add_parser(
+        "verify", help="Check every lead's email (syntax, live domain, disposable, role) — report only"
+    )
+    sub.add_argument("--limit", type=int, default=0, help="Only check the newest N leads (default: all)")
+    sub.set_defaults(func=cmd_verify)
+
+    sub = subparsers.add_parser(
+        "clean", help="Verify, then move provably-invalid leads to the Excluded list (reversible)"
+    )
+    sub.add_argument("--limit", type=int, default=0, help="Only check the newest N leads (default: all)")
+    sub.set_defaults(func=cmd_clean)
 
     # harvey gmail auth|test
     sub = subparsers.add_parser("gmail", help="Gmail provider setup")

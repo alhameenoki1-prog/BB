@@ -30,6 +30,10 @@ class Prospect(BaseModel):
     status: str = "new"        # new/contacted/replied/meeting/closed/lost
     score: int = 0
     personalization_notes: str = ""
+    # Excluded from sending by the free list-hygiene sweep. Reversible, and
+    # separate from email_status so restoring returns the prospect as it was.
+    excluded: bool = False
+    excluded_reason: str = ""
     # legacy fields kept for backwards compat with existing code
     company: str = ""
     industry: str = ""

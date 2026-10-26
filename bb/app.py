@@ -1078,8 +1078,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/recipients", response_class=HTMLResponse)
     async def recipients_page(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
-        return await render(request, "recipients.html", user, verifier=bool(os.environ.get("REOON_API_KEY") or os.environ.get("ZEROBOUNCE_API_KEY") or os.environ.get("HUNTER_API_KEY")), recent=await ws.recent_recipients(),
-                            sectors=await ws.sector_breakdown(), max_rows=recipients_mod.MAX_ROWS)
+        excluded = await ws.excluded_recipients()
+        gone = {e["email"] for e in excluded}
+        recent = [r for r in await ws.recent_recipients() if r["email"] not in gone]
+        return await render(request, "recipients.html", user, verifier=bool(os.environ.get("REOON_API_KEY") or os.environ.get("ZEROBOUNCE_API_KEY") or os.environ.get("HUNTER_API_KEY")), recent=recent,
+                            excluded=excluded, sectors=await ws.sector_breakdown(), max_rows=recipients_mod.MAX_ROWS)
+
+    @app.post("/recipients/clean")
+    async def recipients_clean(user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        report = await ws.clean_list()
+        checked, moved = report.get("checked", 0), report.get("excluded", 0)
+        if moved:
+            msg = (f"Checked {checked} and moved {moved} invalid address(es) to the Excluded list "
+                   "(dead domains, disposable or malformed). Undo any below.")
+        else:
+            msg = f"Checked {checked}. No invalid addresses found — nothing to clean."
+        return _redirect("/recipients", msg=msg)
+
+    @app.post("/recipients/{prospect_id}/restore")
+    async def recipients_restore(prospect_id: str, user: dict = Depends(current_user)):
+        ws = workspace_for(user)
+        await ws.restore_recipient(prospect_id)
+        return _redirect("/recipients", msg="Restored to the sending list.")
 
     @app.post("/recipients")
     async def recipients_upload(user: dict = Depends(current_user),
