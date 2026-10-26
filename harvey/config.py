@@ -358,6 +358,9 @@ class OutreachConfig(BaseModel):
     # email ({{first_name}} allowed; the greeting line is added if missing),
     # and optional follow-ups 3 and 7 days later (blank = none).
     use_template: bool = False
+    # In an AI writing mode: when the model cannot write (a rate limit, no
+    # credit), send the message below to that batch instead of waiting.
+    template_fallback: bool = False
     template_subject: str = ""
     template_body: str = ""
     template_followup_1: str = ""

@@ -9,6 +9,17 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Sending never stops when the AI can't write.** In an AI writing mode,
+  tick "If the AI can't write, send my general message instead of waiting"
+  on the profile and the writer sends your general message to any batch the
+  model cannot write (a rate limit, no credit) rather than leaving it
+  waiting; the AI writes again as soon as it can. "Write a general message
+  for me" has the AI draft that message once — one direct email and subject
+  that works for every lead, not tied to any industry — from your profile;
+  edit it, save it, and it is used from then on with no AI calls at all
+  (`outreach.template_fallback`, `Writer.template_fallback`,
+  `Workspace.generate_general_message`, `/profile/general-message`).
+
 - **Your email signature builds itself.** Leave the signature HTML box on
   the profile blank and BB composes a clean signature from your name, role,
   company and LinkedIn, with your uploaded image underneath — scaled to fit

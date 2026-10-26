@@ -316,3 +316,36 @@ def test_custom_signature_is_kept(client):  # noqa: F811
     ws = Workspace(client.settings, user)
     assert HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach.signature_html == "<b>My own sig</b>"
     assert "My own sig" in client.get("/profile").text   # shown back for editing
+
+
+def test_general_message_is_written_by_the_ai_and_becomes_the_fallback(client, monkeypatch):  # noqa: F811
+    class _Fake:
+        def __init__(self, env):
+            self.configured = True
+
+        async def complete_json(self, system, user, **kw):
+            assert "every recipient" in system and "Towson" in user       # built from the profile
+            return {"subject": "A builder for a 24-unit block in Towson",
+                    "body": "Hi {{first_name}},\n\nWe're building a 24-unit residential block in Towson and need a "
+                            "builder to start in April. Could you take on a job like this?\n\nJane"}
+    monkeypatch.setattr("bb.mail.brain.MailBrain", _Fake)
+    _as_user(client)
+    r = client.post("/profile/general-message", data={**NEEDS_FORM, "writing": "segment"})
+    assert r.status_code == 303 and "error=" not in r.headers["location"], r.headers["location"]
+
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    o = HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach
+    assert o.template_subject == "A builder for a 24-unit block in Towson" and "24-unit" in o.template_body
+    assert o.template_fallback is True and o.use_template is False       # an AI mode keeps it as the fallback
+    page = client.get("/profile").text
+    assert "A builder for a 24-unit block in Towson" in page
+    assert 'name="template_fallback" value="1" id="template_fallback" checked' in page
+
+    # Saving again keeps it, and so does the rewrite a mailbox change triggers.
+    r = client.post("/profile", data={**NEEDS_FORM, "writing": "segment", "template_fallback": "1",
+                                      "template_subject": o.template_subject, "template_body": o.template_body})
+    assert r.status_code == 303, r.text
+    ws.rewrite_config()
+    again = HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach
+    assert again.template_fallback is True and again.template_subject == o.template_subject

@@ -151,7 +151,8 @@ def _profile_form(prof: dict) -> dict:
             "require_approval": "on" if prof.get("require_approval") else "",
             "quiet_form": "1", "quiet_enabled": "on" if prof.get("quiet_enabled") else "",
             "warmup_ramp": "on" if prof.get("warmup_ramp") else "",
-            "plain_first_email": "on" if prof.get("plain_first_email", True) else "", "rewrite": "1"}
+            "plain_first_email": "on" if prof.get("plain_first_email", True) else "",
+            "template_fallback": "on" if prof.get("template_fallback") else "", "rewrite": "1"}
     _flatten_rows(form, "sm", prof.get("sector_messages"),
                   {"subject": "subject", "body": "body", "followup_1": "followup_1", "followup_2": "followup_2"})
     _flatten_rows(form, "sn", prof.get("sector_needs"),
@@ -721,6 +722,7 @@ class Workspace:
                         "person" if outreach.get("personalize_each", False) else "segment"),
             "template_subject": outreach.get("template_subject", ""),
             "template_body": outreach.get("template_body", ""),
+            "template_fallback": bool(outreach.get("template_fallback")),
             "template_followup_1": outreach.get("template_followup_1", ""),
             "template_followup_2": outreach.get("template_followup_2", ""),
             "sector_messages": [
@@ -977,6 +979,8 @@ class Workspace:
                 # Web default: one email per sector × role segment, sent in bulk.
                 "personalize_each": text("writing") == "person",
                 "use_template": text("writing") == "template",
+                # Only meaningful in an AI mode: the message is the reserve, not the rule.
+                "template_fallback": flag("template_fallback") and text("writing") != "template",
                 "template_subject": text("template_subject")[:120],
                 "template_body": str(form.get("template_body", "") or "").strip(),
                 "template_followup_1": str(form.get("template_followup_1", "") or "").strip(),
@@ -1624,6 +1628,62 @@ class Workspace:
         st = self.state()
         await st.init_db()
         await st.restore_prospect(prospect_id)
+
+    async def generate_general_message(self) -> dict:
+        """Ask the user's own model for ONE direct first email + subject that
+        works for every lead, whatever their industry, from the profile, and
+        save it as the message (in an AI mode: the fallback the writer sends
+        when the model cannot). Returns {subject, body}."""
+        from bb.mail.brain import MailBrain
+        from harvey import enquiry
+
+        brain = MailBrain(self.mail_brain_env())
+        if not brain.configured:
+            raise ValueError("no AI provider is set up for your account yet (AI provider page)")
+        prof = self.profile()
+        name = (prof.get("name") or "").strip() or "the sender"
+        first = name.split()[0]
+        inquiry = (prof.get("mode") or "inquiry") == "inquiry"
+        facts = []
+        if prof.get("intent"):
+            facts.append(f"WHAT {name.upper()} NEEDS (the reason for writing): {prof['intent']}")
+        if prof.get("sender_line"):
+            facts.append(f"ABOUT {name.upper()}: {prof['sender_line']}")
+        if prof.get("campaign_goal"):
+            facts.append(f"CAMPAIGN GOAL, in {name}'s words: {prof['campaign_goal']}")
+        if not inquiry and prof.get("offer_description"):
+            facts.append(f"WHAT IS OFFERED: {prof['offer_description']}")
+        if prof.get("ask_detail"):
+            facts.append(f"CLOSING ASK: {prof['ask_detail']}")
+        who = (f"You write one first email for {name}, who is the prospective customer or partner of the recipient "
+               "(nothing is sold)." if inquiry else
+               f"You write one first email for {name}, {prof.get('role') or ''} at {prof.get('company') or 'their company'}, "
+               "writing to a prospective customer.")
+        system = (who + " It is ONE general message that must work for every recipient, whatever their industry: "
+                  "direct, concrete and about the actual thing, with no sector-specific wording. Plain words a person "
+                  "would type, first person, contractions, no marketing vocabulary, no capitals for emphasis, no "
+                  "exclamation marks, no links, no bullet points, 50 to 90 words. Start with the greeting line "
+                  "\"Hi {{first_name}},\" exactly, make one clear request, and end with a plain sign-off of the first "
+                  "name. The subject names the thing the email is about in the email's own words, 3 to 10 words, "
+                  "sentence case; never \"quick question\", \"opportunity\", \"proposal\", \"partnership\", "
+                  "\"following up\" or anything about the act of writing."
+                  "\n\nReturn ONLY JSON: {\"subject\": \"...\", \"body\": \"...\"}")
+        user = "\n\n".join(facts) or f"{name} is writing to businesses they want to work with."
+        data = await brain.complete_json(system, user)
+        if not isinstance(data, dict) or not str(data.get("body") or "").strip():
+            raise ValueError("the model did not return a message; try again in a moment")
+        body = str(data["body"]).strip()
+        if not body.lower().startswith(("hi ", "hello ", "dear ")):
+            body = "Hi {{first_name}},\n\n" + body
+        if inquiry:
+            body = enquiry.plain_signoff(body, first)
+        subject = str(data.get("subject") or "").strip()[:120] or "A question about working together"
+        form = _profile_form(prof)
+        form["template_subject"], form["template_body"] = subject, body
+        if form.get("writing") != "template":
+            form["template_fallback"] = "on"     # in an AI mode a general message is there to fall back on
+        self.write_profile(form)
+        return {"subject": subject, "body": body}
 
     async def rewrite_item(self, item: dict, instruction: str) -> dict:
         """Rewrite one queued email with the user's own AI provider, to their

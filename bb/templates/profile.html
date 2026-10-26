@@ -60,7 +60,12 @@
   <label class="choice"><input type="radio" name="writing" value="segment" {{ 'checked' if profile.writing != 'person' else '' }}><span><b>One email per sector and role, sent to everyone in it</b><span class="small muted">Fast and cheap: one AI call writes the email for, say, “construction · executives”, then it goes to all of them with their name and company filled in.</span></span></label>
   <label class="choice"><input type="radio" name="writing" value="person" {{ 'checked' if profile.writing == 'person' else '' }}><span><b>One email per person</b><span class="small muted">Slower and uses more AI calls: each first email is written from that company's website and your notes. Follow-ups are still per segment.</span></span></label>
   <label class="choice"><input type="radio" name="writing" value="template" {{ 'checked' if profile.writing == 'template' else '' }}><span><b>Use my own message</b><span class="small muted">No AI writing. Everyone gets the message below, with their first name in the greeting. Replies are still read and answered for you.</span></span></label>
-  <div id="template-wrap" style="margin-top:12px;{{ '' if profile.writing == 'template' else 'display:none' }}">
+  <div id="fallback-wrap" style="margin-top:12px;{{ 'display:none' if profile.writing == 'template' else '' }}">
+    <label class="check"><input type="checkbox" name="template_fallback" value="1" id="template_fallback" {{ 'checked' if profile.template_fallback else '' }}> <b>If the AI can't write</b> (a rate limit, or out of credit), send my general message below instead of waiting <span class="muted">— sending never stops; the AI writes again as soon as it can</span></label>
+  </div>
+  <div id="template-wrap" style="margin-top:12px;{{ '' if profile.writing == 'template' or profile.template_fallback else 'display:none' }}">
+    <p class="small muted" style="margin-top:0">One direct message that works for every lead, not tied to any industry. Let the AI draft it from your profile, then edit it as you like — it is saved and used from then on with no further AI calls, even when the API is gone.</p>
+    <p style="margin-top:0"><button type="submit" class="secondary small" formaction="/profile/general-message" formmethod="post">{{ icon('spark', 13) }} Write a general message for me</button></p>
     <label>Subject</label>
     <input type="text" name="template_subject" value="{{ profile.template_subject }}" placeholder="Kitchen extension in Lekki, looking for quotes" maxlength="120">
     <label>Message</label>
@@ -108,11 +113,17 @@
   </div>
 </div>
 <script>
-  document.querySelectorAll('input[name=writing]').forEach(r => r.addEventListener('change', () => {
-    const template = r.value === 'template' && r.checked;
-    document.getElementById('template-wrap').style.display = template ? '' : 'none';
+  function syncWriting() {
+    const chosen = document.querySelector('input[name=writing]:checked');
+    const template = !!chosen && chosen.value === 'template';
+    const fallback = document.getElementById('template_fallback');
+    document.getElementById('fallback-wrap').style.display = template ? 'none' : '';
+    document.getElementById('template-wrap').style.display = (template || (fallback && fallback.checked)) ? '' : 'none';
     document.getElementById('needs-wrap').style.display = template ? 'none' : '';
-  }));
+  }
+  document.querySelectorAll('input[name=writing]').forEach(r => r.addEventListener('change', syncWriting));
+  const fallbackBox = document.getElementById('template_fallback');
+  if (fallbackBox) fallbackBox.addEventListener('change', syncWriting);
   function rowList(listId, tplId, addId, rowClass, removeClass, max) {
     const list = document.getElementById(listId), tpl = document.getElementById(tplId);
     function renumber() {

@@ -436,3 +436,47 @@ async def test_segment_sequences_are_reused_within_a_day(state):
     assert len([p for p in brain.prompts if "3-email" in p]) == seq_calls          # reused
     drafts = await state.get_campaigns_by_status("draft")
     assert len(drafts) == 2 and drafts[0].sequence[0].subject == drafts[1].sequence[0].subject
+
+
+class _DownBrain(_Brain):
+    """A model that cannot answer right now: rate-limited, or out of credit."""
+
+    async def think_json(self, prompt, **kw):
+        raise RuntimeError("429 rate limit reached")
+
+
+@pytest.mark.asyncio
+async def test_writer_falls_back_to_the_general_message_when_the_model_cannot_write(state):
+    cfg = _config(mode="inquiry", intent="get a quote for a two-storey extension", personalize_each=False,
+                  template_fallback=True, template_subject="Two-storey extension, looking for a builder",
+                  template_body="Hi {{first_name}},\n\nWe are planning a two-storey extension and want to start in "
+                                "March. Do you take on work like this?\n\nJane")
+    writer = Writer(_DownBrain(), state, cfg, EnvConfig())
+    assert writer.template_fallback and not writer.use_template
+    for i in range(2):
+        await state.add_prospect(Prospect(id=f"p{i}", first_name=f"P{i}", last_name="X", email=f"p{i}@build{i}.co",
+                                          email_status="provided", title="Owner", company=f"Build {i}"))
+    await writer.run()
+    # The batch the model could not write got the general message as its
+    # sequence; everyone in it is queued. (As in segment mode, the sender
+    # stages the outbox rows on its own cycle, so nothing is staged yet.)
+    campaigns = await state.get_campaigns_by_status("draft")
+    assert len(campaigns) == 1
+    step = campaigns[0].sequence[0]
+    assert step.subject == "Two-storey extension, looking for a builder" and "two-storey extension" in step.body
+    assert (await state.count_prospects_by_status()).get("queued") == 2
+    assert await state.count_outbox_queued() == 0
+
+
+@pytest.mark.asyncio
+async def test_without_the_fallback_nothing_goes_out_while_the_model_is_down(state):
+    cfg = _config(mode="inquiry", intent="get a quote for a two-storey extension", personalize_each=False,
+                  template_body="Hi {{first_name}},\n\nA message long enough to count.\n\nJane")   # fallback off
+    writer = Writer(_DownBrain(), state, cfg, EnvConfig())
+    assert not writer.template_fallback
+    await state.add_prospect(Prospect(id="p0", first_name="P0", last_name="X", email="p0@build0.co",
+                                      email_status="provided", title="Owner", company="Build 0"))
+    await writer.run()
+    # No campaign and nobody queued: they wait for the model, as before.
+    assert await state.get_campaigns_by_status("draft") == []
+    assert not (await state.count_prospects_by_status()).get("queued")

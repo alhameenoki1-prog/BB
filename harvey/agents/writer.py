@@ -237,6 +237,7 @@ class Writer:
 
         todo = [(name, ps) for name, ps in batches.items() if ps]
         gate = asyncio.Semaphore(self._concurrency)
+        fell_back: set = set()    # batches sent the general message because the model could not write
 
         async def write(ps, name):
             # A segment written in the last day keeps its sequence: the next
@@ -252,6 +253,13 @@ class Writer:
                 try:
                     return await self._write_sequence(ps)
                 except Exception as e:
+                    if self.template_fallback:
+                        # The model is unavailable (rate-limited, out of credit):
+                        # the general message goes out instead, so nothing waits.
+                        logger.warning(f"Writer: the model could not write '{name}' ({e}); "
+                                       "sending your general message to them instead.")
+                        fell_back.add(name)
+                        return self.template_steps()
                     logger.warning(f"Writer: sequence failed: {e}")
                     return []
 
@@ -267,7 +275,7 @@ class Writer:
             # Create the campaign. While first emails are being personalised
             # it is 'writing', invisible to the sender, so the sender cannot
             # stage the segment template over the personal drafts.
-            personalising = self.is_native and self.personalize_each
+            personalising = self.is_native and self.personalize_each and batch_name not in fell_back
             campaign = Campaign(
                 id="",
                 name=batch_name,
@@ -496,6 +504,15 @@ class Writer:
     def use_template(self) -> bool:
         outreach = getattr(self.config, "outreach", None)
         return bool(getattr(outreach, "use_template", False)
+                    and (getattr(outreach, "template_body", "") or "").strip())
+
+    @property
+    def template_fallback(self) -> bool:
+        """An AI writing mode with the operator's own message kept in reserve:
+        when the model cannot write a batch (a rate limit, no credit), that
+        batch gets the message instead of waiting for the model."""
+        outreach = self.config.outreach
+        return bool(getattr(outreach, "template_fallback", False) and not self.use_template
                     and (getattr(outreach, "template_body", "") or "").strip())
 
     def template_steps(self, message=None) -> list[EmailStep]:

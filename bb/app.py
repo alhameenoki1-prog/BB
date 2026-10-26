@@ -562,6 +562,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/profile", msg=msg, error=warning)
         return _redirect("/profile", msg=msg)
 
+    @app.post("/profile/general-message")
+    async def profile_general_message(request: Request, user: dict = Depends(current_user)):
+        """The AI writes one direct, industry-agnostic first email + subject
+        from the profile and saves it as the message (the fallback in an AI
+        mode). The whole profile form comes along so nothing typed is lost."""
+        ws = workspace_for(user)
+        raw = await request.form()
+        form = dict(raw)
+        for key in {k for k in raw.keys() if k.startswith(("sm_sectors_", "sn_sectors_"))}:
+            form[key] = raw.getlist(key)
+        try:
+            ws.write_profile(form)      # keep what is on the page, the fallback box included
+        except ValidationError as e:
+            first = e.errors()[0]
+            return _redirect("/profile", error=f"Fix the profile first — {'.'.join(str(p) for p in first['loc'])}: {first['msg']}")
+        except ValueError as e:
+            return _redirect("/profile", error=f"Fix the profile first — {e}")
+        try:
+            out = await ws.generate_general_message()
+        except Exception as e:
+            return _redirect("/profile", error=f"Could not write the message: {str(e)[:200]}")
+        await ws.restart_worker_if_running("the general message")
+        return _redirect("/profile", msg=f"Wrote a general message: “{out['subject']}”. It is saved — check it below and edit it if you like.")
+
     # ── the user's own Anthropic key ──
 
     @app.get("/apikey", response_class=HTMLResponse)
