@@ -46,6 +46,12 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **Groq's default model is current again.** Groq retired
+  `llama-3.3-70b-versatile`, so the Groq preset on the AI provider page now
+  defaults to `openai/gpt-oss-120b` (`bb/workspaces.py` `LLM_PRESETS`). When a
+  chosen model is not on the account, BB already lists the available ones to
+  pick from, so a stale name never fails silently.
+
 - **A refusal now shows the model's reason.** When the model declines to
   draft a reply, BB asks it in one line why, and puts that in the skip note
   ("… It said: this reads like an advance-fee scam …") and the log, so the

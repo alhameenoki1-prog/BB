@@ -41,7 +41,7 @@ LLM_PRESETS = {
                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
                "model": "gemini-2.5-flash", "key_url": "https://aistudio.google.com/apikey", "free": True},
     "groq": {"label": "Groq", "note": "Free tier, very fast open models.",
-             "base_url": "https://api.groq.com/openai/v1", "model": "llama-3.3-70b-versatile",
+             "base_url": "https://api.groq.com/openai/v1", "model": "openai/gpt-oss-120b",
              "key_url": "https://console.groq.com/keys", "free": True},
     "openrouter": {"label": "OpenRouter", "note": "Hundreds of models; the ones ending in :free cost nothing.",
                    "base_url": "https://openrouter.ai/api/v1",
