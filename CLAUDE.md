@@ -147,7 +147,13 @@ the sender (`SENDER_BLOCKED`, `SENDER_BLOCK_KINDS`: 5.1.8 bad outbound sender
 and the rest) stop sending with the kill switch and the Restricted-entities
 fix in its text (`Handler._stop_after_sender_block`), and ten bounces in
 fifteen minutes against the last hour's sends stop it too
-(`Handler._bounce_burst`). `harvey/names.py` resolves missing recipient
+(`Handler._bounce_burst`, timed by the reports' arrival, `MIN_SENDS_FOR_BURST`). The read position moves as the
+handler consumes (`advance_to`); a reply left for the model is kept by id in
+`replies_deferred` and fetched back with `fetch_message`; `is_delay_notice`
+keeps delay warnings out of `_handle_bounce`; a blocked first email is queued
+again (`state.requeue_first_email`) and `sending_resumed_at` (written by
+Resume) makes older block reports inert; `Sender._record_bad_address` stops
+the same way on a sender block at send time. `harvey/names.py` resolves missing recipient
 names (LinkedIn slug, first.last address, team page) and puts the greeting
 line on every email (`outreach.greeting`); a worker that dies is revived
 on the next dashboard view; the dashboard has Pause for edits / Resume /

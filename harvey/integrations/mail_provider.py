@@ -86,6 +86,14 @@ BOUNCE_SUBJECTS = (
 # What a bounce means and what to do about it, from the SMTP code or the
 # wording in the report. Order matters: the first match wins.
 SENDER_BLOCKED = "your mailbox is blocked from sending"
+
+
+def _code(*codes: str) -> str:
+    """An enhanced status code as a whole token: "5.1.8" must not match
+    inside an IP address like 45.1.8.22 quoted in a report."""
+    return "|".join(r"(?<![\d.])" + c + r"(?![\d.])" for c in codes)
+
+
 SENDER_BLOCK_HINT = (
     "Your own mail provider has stopped this mailbox from sending (Microsoft 365 does this when a mailbox looks "
     "like it is sending spam or bulk mail): every email bounces until an admin unblocks it. In Microsoft 365: "
@@ -100,17 +108,27 @@ BOUNCE_HINTS = (
     # The sender's own provider refusing to send for it at all (Microsoft
     # 365's restricted entities, a banned sender, a tenant over its limit):
     # before the generic 5.1.x rule, because 5.1.8 is about the sender.
-    (r"5\.1\.8\b|bad outbound sender|not allowed to send (?:messages|email)|suspected of sending spam|"
-     r"restricted from sending|recognized as a valid sender|5\.7\.750\b|5\.7\.705\b|5\.7\.708\b|"
-     r"5\.7\.50[123]\b|5\.7\.511\b|5\.7\.800\b|spam abuse detected|tenant has exceeded threshold|"
-     r"client blocked from sending from unregistered domain|traffic not accepted from this ip",
+    (_code(r"5\.1\.8", r"5\.7\.750", r"5\.7\.705", r"5\.7\.50[123]")
+     + r"|bad outbound sender|not allowed to send (?:messages|email)|suspected of sending spam|"
+     r"restricted from sending|recognized as a valid sender|spam abuse detected|tenant has exceeded threshold|"
+     r"client blocked from sending from unregistered domain",
      SENDER_BLOCKED, SENDER_BLOCK_HINT),
+    # Microsoft, as the RECEIVING side, refusing a foreign sending server or
+    # domain (its ban list): a spam verdict on us at one provider, so a
+    # pause, not a stop, and the fix is Microsoft's delisting, not Defender.
+    (_code(r"5\.7\.511", r"5\.7\.708", r"5\.7\.800", r"5\.7\.6[0-4]\d")
+     + r"|banned sender|banned sending ip|traffic not accepted from this ip",
+     "judged as unsolicited mail",
+     "Microsoft's receiving filters have blocked your sending server or domain as a source of spam. Slow down "
+     "(Gentle speed), send from a domain with SPF, DKIM and DMARC, and if you run your own mail server ask "
+     "Microsoft to delist it at sender.office.com (or delist@microsoft.com for a 5.7.511)."),
     # The sender's own provider's limits for the day (Exchange's 10,000
     # recipients a day, a tenant's external recipient limit, a temporary
     # restriction while it looks at the traffic): wait, then slow down.
-    (r"5\.7\.23[236]\b|tenant external recipient rate limit|5\.1\.90\b|daily limit for message recipients|"
-     r"submission quota was exceeded|submissionquotaexceeded|4\.7\.[5-8]\d\d\b|5\.7\.8[5-9]\d\b|"
-     r"please try again later|recipient rate limit|message rate limit",
+    (_code(r"5\.7\.23[236]", r"5\.1\.90", r"4\.7\.[5-8]\d\d", r"5\.7\.8[5-9]\d")
+     + r"|tenant external recipient rate limit|daily limit for message recipients|"
+     r"submission quota was exceeded|submissionquotaexceeded|please try again later|"
+     r"recipient rate limit|message rate limit",
      "sending too fast or too much",
      "Your mailbox provider throttled you. Switch the profile to the Gentle speed, keep the warm-up "
      "ramp on, and lower the daily maximum (30 to 50 a day for a mailbox under a month old)."),
@@ -305,6 +323,22 @@ def looks_automated(from_email: str, subject: str = "", headers: dict | None = N
     if "list-id" in h or "list-unsubscribe" in h or h.get("x-auto-response-suppress"):
         return True
     return False
+
+
+DELAY_SUBJECTS = ("delivery delayed", "delayed mail", "delivery status notification (delay)",
+                  "delivery has been delayed", "delivery is delayed")
+DELAY_BODIES = ("delivery is delayed to these recipients", "this is a warning message only",
+                "will keep trying", "action: delayed", "has been delayed", "temporarily delayed",
+                "delivery of this message has been delayed")
+
+
+def is_delay_notice(subject: str, body: str) -> bool:
+    """A mail system saying it is still trying (Exchange's "Delivery is
+    delayed", a DSN with Action: delayed): not a bounce, the address is
+    fine, and a final report follows if it gives up."""
+    s = (subject or "").lower()
+    b = (body or "").lower()
+    return any(m in s for m in DELAY_SUBJECTS) or any(m in b for m in DELAY_BODIES)
 
 
 def looks_like_bounce(from_email: str, subject: str) -> bool:

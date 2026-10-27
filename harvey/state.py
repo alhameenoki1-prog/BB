@@ -1280,6 +1280,51 @@ class StateManager:
             ) as cursor:
                 return (await cursor.fetchone())[0]
 
+    async def count_outbox_sent_between(self, start: datetime, end: datetime) -> int:
+        """Emails sent with ``start`` <= sent_at <= ``end`` (naive UTC)."""
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM outbox WHERE status = 'sent' AND sent_at >= ? AND sent_at <= ?",
+                (start.isoformat(), end.isoformat()),
+            ) as cursor:
+                return (await cursor.fetchone())[0]
+
+    async def requeue_first_email(self, item_id: str, note: str) -> bool:
+        """A first email that bounced because the mailbox was blocked from
+        sending goes again once sending resumes: the row is approved again
+        for now, and the person's later steps move by the same delay, so the
+        spacing between the emails is kept."""
+        item = await self.get_outbox_item(item_id)
+        if not item or item.get("status") != "sent":
+            return False
+        now = _utcnow()
+        was = None
+        for key in ("sent_at", "send_at"):
+            try:
+                was = datetime.fromisoformat(str(item.get(key) or "").replace("Z", "")) if item.get(key) else None
+            except ValueError:
+                was = None
+            if was:
+                break
+        shift = (now - was) if was else timedelta(0)
+        await self.update_outbox_item(item_id, status="approved", send_at=now.isoformat(), sent_at=None, error=note[:600])
+        if item.get("campaign_id") and item.get("prospect_id") and shift > timedelta(0):
+            async with self._connect() as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT id, send_at FROM outbox WHERE campaign_id = ? AND prospect_id = ? AND kind = 'sequence' "
+                    "AND step > ? AND status IN ('approved', 'pending_review')",
+                    (item["campaign_id"], item["prospect_id"], int(item.get("step") or 1)),
+                ) as cur:
+                    later = [dict(r) for r in await cur.fetchall()]
+            for row in later:
+                try:
+                    at = datetime.fromisoformat(str(row["send_at"] or "").replace("Z", ""))
+                except ValueError:
+                    continue
+                await self.update_outbox_item(row["id"], send_at=(at + shift).isoformat())
+        return True
+
     async def count_outbox_sent_today(self, kind: str = "") -> int:
         """Emails sent today (UTC); ``kind`` counts only that kind ("sequence":
         the first emails and follow-ups the daily limit is for)."""

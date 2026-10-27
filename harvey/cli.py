@@ -785,6 +785,9 @@ def cmd_sending(args):
             print("\n  Sending paused. Nothing will leave the outbox.\n")
         elif args.sending_action == "resume":
             await state.set_setting("sending_paused", "")
+            await state.set_setting("bounce_burst", "")
+            from datetime import datetime, timezone
+            await state.set_setting("sending_resumed_at", datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
             await state.set_setting("bounce_count", "0")
             print("\n  Sending resumed (bounce counter reset).\n")
         else:

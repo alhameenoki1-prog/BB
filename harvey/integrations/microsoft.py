@@ -73,6 +73,10 @@ MAX_INBOX_PAGES = 40
 # (the handler skips what it has already processed).
 CURSOR_FILE = DATA_DIR / "graph_cursor.json"
 CURSOR_OVERLAP = timedelta(minutes=10)
+# Once this often a pass reads the whole week instead of from the position:
+# a reply the junk filter held and the person moved to the Inbox hours
+# later carries its old receivedDateTime, which the position would skip.
+FULL_SWEEP_EVERY = timedelta(hours=1)
 LOGIN = "https://login.microsoftonline.com"
 SCOPE = (
     "offline_access https://graph.microsoft.com/Mail.ReadWrite "
@@ -345,30 +349,64 @@ class MicrosoftProvider(MailProvider):
         me = await self._check_identity()
         now = datetime.now(timezone.utc)
         since = now - timedelta(days=REPLY_WINDOW_DAYS)
-        cursor = self._load_cursor()
-        if cursor:
+        cursor, swept = self._load_cursor(), self._load_swept()
+        sweep = cursor is not None and (swept is None or now - swept >= FULL_SWEEP_EVERY)
+        if cursor and not sweep:
             since = max(since, cursor - CURSOR_OVERLAP)
         seen_ids: set = set()
         out: list[InboundMessage] = []
         self.backlog_pending = False
-        newest = await self._read_folder(INBOX_MESSAGES, since, me, limit, seen_ids, out)
+        newest = await self._read_folder(INBOX_MESSAGES, since, me, limit, seen_ids, out, sweep=sweep)
         # Delivery reports moved to Junk Email (an inbox rule, the junk
         # filter): read as well, so a bounce never goes unseen. Only reports
         # are taken from there, and a Junk folder that cannot be read does
         # not fail the inbox read.
         try:
-            junk_newest = await self._read_folder(JUNK_MESSAGES, since, me, limit, seen_ids, out, reports_only=True)
+            junk_newest = await self._read_folder(JUNK_MESSAGES, since, me, limit, seen_ids, out,
+                                                  reports_only=True, sweep=sweep)
         except GraphError as e:
             logger.warning(f"Microsoft: the Junk Email folder could not be read for delivery reports ({e}); "
                            "the inbox was read.")
             junk_newest = None
-        stamps = [t for t in (newest, junk_newest) if t is not None]
-        if stamps:
-            self._save_cursor(max(stamps))
+        if sweep:
+            self._save_swept(now)
+        # The position moves as the handler consumes messages (advance_to),
+        # so a worker stopped mid-batch starts again where it left off. With
+        # nothing to hand over, it moves to the newest thing seen.
+        if not out:
+            stamps = [t for t in (newest, junk_newest) if t is not None]
+            if stamps:
+                self._save_cursor(max(stamps))
         return out
 
+    async def fetch_message(self, provider_id: str) -> InboundMessage | None:
+        """One message by its Graph id (a reply the handler put aside for
+        the model and comes back for); None when it is gone."""
+        if not provider_id or "/" in provider_id or "?" in provider_id:
+            return None
+        try:
+            data = await self._request(
+                "GET", f"{self._user_path}/messages/{provider_id}",
+                params={"$select": _SELECT}, headers={"Prefer": 'outlook.body-content-type="text"'},
+            )
+        except GraphError as e:
+            if "Graph 404" in str(e):
+                return None
+            raise
+        return self._parse_message(data)
+
+    def advance_to(self, message: InboundMessage) -> None:
+        """The handler has dealt with this message (or put it aside by id):
+        the position moves up to it, never back."""
+        when = _parse_time(getattr(message, "date", ""))
+        if when is None:
+            return
+        cursor = self._load_cursor()
+        if cursor is None or when > cursor:
+            self._save_cursor(when)
+
     async def _read_folder(self, folder: str, since: datetime, me: str, limit: int, seen_ids: set,
-                           out: list, reports_only: bool = False) -> datetime | None:
+                           out: list, reports_only: bool = False, sweep: bool = False) -> datetime | None:
         """Read one folder from ``since``, oldest first, at most
         MAX_INBOX_PAGES pages (backlog_pending when more waits), appending
         to ``out`` (only delivery reports with ``reports_only``). Returns the
@@ -411,9 +449,15 @@ class MicrosoftProvider(MailProvider):
                 raise GraphError(f"inbox page {page}: @odata.nextLink repeats an earlier page")
             seen_urls.add(url)
         else:
-            self.backlog_pending = True
-            logger.warning(f"Microsoft: {folder.split('/')[2]} has more than {MAX_INBOX_PAGES} pages of new mail; "
-                           f"{taken} read this pass, the rest next pass.")
+            if sweep:
+                # The hourly look back over the week hit the cap: the usual
+                # position still covers new mail, so this is not a backlog.
+                logger.info(f"Microsoft: the hourly sweep of {folder.split('/')[2]} stopped after "
+                            f"{MAX_INBOX_PAGES} pages; new mail is read from the position as usual.")
+            else:
+                self.backlog_pending = True
+                logger.warning(f"Microsoft: {folder.split('/')[2]} has more than {MAX_INBOX_PAGES} pages of new mail; "
+                               f"{taken} read this pass, the rest next pass.")
         return newest
 
     def _cursor_key(self) -> str:
@@ -422,22 +466,34 @@ class MicrosoftProvider(MailProvider):
     def _cursor_path(self) -> Path:
         return CURSOR_FILE
 
-    def _load_cursor(self) -> datetime | None:
+    def _cursor_data(self) -> dict:
         try:
-            raw = (json.loads(self._cursor_path().read_text()) or {}).get(self._cursor_key())
+            data = json.loads(self._cursor_path().read_text())
         except (OSError, ValueError):
-            return None
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _load_cursor(self) -> datetime | None:
+        raw = self._cursor_data().get(self._cursor_key())
+        return _parse_time(raw) if isinstance(raw, str) else None
+
+    def _load_swept(self) -> datetime | None:
+        raw = self._cursor_data().get(self._cursor_key() + ":swept")
         return _parse_time(raw) if isinstance(raw, str) else None
 
     def _save_cursor(self, when: datetime) -> None:
+        self._save_stamp(self._cursor_key(), when)
+        if self._load_swept() is None:
+            # The first position counts as a sweep: the next one is due in an hour.
+            self._save_swept(datetime.now(timezone.utc))
+
+    def _save_swept(self, when: datetime) -> None:
+        self._save_stamp(self._cursor_key() + ":swept", when)
+
+    def _save_stamp(self, key: str, when: datetime) -> None:
         path = self._cursor_path()
-        try:
-            data = json.loads(path.read_text()) if path.exists() else {}
-        except (OSError, ValueError):
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        data[self._cursor_key()] = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        data = self._cursor_data()
+        data[key] = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(data))

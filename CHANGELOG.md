@@ -42,6 +42,25 @@ minor versions can still change behaviour.
   recognised by Exchange's own `X-MS-Exchange-Message-Is-Ndr` header and
   its system sender (`MicrosoftExchange329e…@<domain>`) as well as by its
   subject.
+  From review: the read position now moves as the handler deals with each
+  message (`advance_to`), so a worker stopped mid-batch starts again where
+  it was; a reply put aside for the model is kept by id and fetched back
+  (`fetch_message`, `replies_deferred`) instead of holding the position, so
+  the bounces behind it are still handled; once an hour the whole week is
+  looked at again for mail moved into the Inbox late (`FULL_SWEEP_EVERY`);
+  Exchange's "Delivery is delayed" warnings are not bounces
+  (`is_delay_notice`); the burst rule is timed by when reports arrived and
+  needs real sending in the hour before them (`MIN_SENDS_FOR_BURST`), so a
+  morning catch-up after quiet hours is no burst; a first email that bounced
+  because the mailbox was blocked is queued again, follow-ups moved by the
+  same delay (`requeue_first_email`), and a block report older than the
+  last Resume (`sending_resumed_at`) cannot stop sending again; Microsoft's
+  own ban-list refusals of a foreign server (`5.7.511`, `5.7.708`,
+  `5.7.800`) are a pause with the delisting hint, not a stop; status codes
+  are matched as whole tokens (not inside an IP address); the sender's own
+  refusal at send time (`550 5.1.8` on the SMTP session) stops sending the
+  same way instead of marking addresses invalid one by one; and the
+  dashboard words an inbox backlog as such.
 
 - **First emails keep going out when the AI is rate-limited.** Sending
   used to wait whenever replies could not be read and handled — which is

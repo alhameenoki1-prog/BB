@@ -158,3 +158,20 @@ def test_microsofts_blocked_sender_is_a_verdict_on_the_mailbox_not_the_address()
     # The report's own sender inside the organisation is Exchange's system address.
     from harvey.integrations.mail_provider import looks_like_bounce
     assert looks_like_bounce("MicrosoftExchange329e71ec88ae4615bbc36ab6ce41109e@gocalgaryshuttles.com", "")
+
+
+
+def test_a_code_inside_an_ip_address_is_not_a_verdict():
+    from harvey.integrations.mail_provider import is_delay_notice
+    text = ("Delivery has failed to these recipients or groups:\njane@acme.com\n\nDiagnostic information for "
+            "administrators:\nReceiving server: mail.acme.com (45.1.8.22)\njane@acme.com\n"
+            "Remote Server returned '550 5.1.1 User unknown'\n")
+    assert bounce_kind(text) == "no such address"
+    # Microsoft refusing a foreign server as the RECEIVER: a spam verdict on us there, not our provider's block.
+    assert bounce_kind("550 5.7.511 Access denied, banned sender[203.0.113.5]") == "judged as unsolicited mail"
+    assert bounce_kind("550 5.7.708 Service unavailable. Access denied, traffic not accepted from this IP") == "judged as unsolicited mail"
+    assert bounce_kind("550 5.7.708 ...") not in SENDER_BLOCK_KINDS
+    # A delay warning is not a bounce at all.
+    assert is_delay_notice("Delivery delayed: Service Inquiry", "")
+    assert is_delay_notice("Undeliverable: x", "Delivery is delayed to these recipients or groups:\njane@acme.com")
+    assert not is_delay_notice("Undeliverable: x", EXCHANGE_NEW)

@@ -23,7 +23,8 @@ from harvey.brain import Brain
 from harvey.config import HarveyConfig, EnvConfig
 from harvey.gate import pre_send_check
 from harvey.integrations.instantly import InstantlyClient
-from harvey.integrations.mail_provider import NATIVE_PROVIDERS, bounce_kind, bounce_reason, get_mail_provider
+from harvey.integrations.mail_provider import (NATIVE_PROVIDERS, SENDER_BLOCK_KINDS, bounce_kind, bounce_reason,
+                                               get_mail_provider)
 from harvey.integrations.precleared import PreclearedClient
 from harvey.spamcheck import REVIEW as SPAM_REVIEW, describe, spam_risk
 from harvey.state import StateManager
@@ -1021,6 +1022,22 @@ class Sender:
         company's other first emails, and the bounce rate counts it."""
         reason_text, hint = bounce_reason(error)
         kind = bounce_kind(error) or "no such address (refused by the mail server)"
+        if kind in SENDER_BLOCK_KINDS:
+            # Our own provider refusing to send for us (Microsoft's "bad
+            # outbound sender" at SMTP time): the address is fine, the row
+            # waits, the pass ends, and sending stops until a person unblocks
+            # the mailbox and presses Resume.
+            await self.state.update_outbox_item(item["id"], status="approved",
+                                                error=f"waiting: {kind} ({error[:160]})")
+            self._throttled = True
+            current = await self.state.get_setting(KILL_SWITCH_KEY) or ""
+            if not current.startswith(kind):
+                await self.state.set_setting(KILL_SWITCH_KEY, f"{kind} ({reason_text[:140]}). {hint}"[:900])
+                logger.error(f"Sender: SENDING STOPPED — {kind} ({reason_text[:160]}). {hint}")
+                await self.state.log_action(action_type="sender_blocked", agent="sender",
+                                            details={"prospect": item["to_email"], "kind": kind,
+                                                     "reason": reason_text[:200], "at": "send"})
+            return
         await self.state.update_outbox_item(item["id"], status="failed", error=f"Bounced: {error[:220]}. {hint}"[:600])
         if prospect:
             try:

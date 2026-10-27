@@ -891,7 +891,8 @@ async def test_a_burst_of_bounces_stops_sending_before_the_daily_rate_does(state
     monkeypatch.setattr(handler_mod, "MIN_SENDS_FOR_KILL_SWITCH", 100000)     # the daily-rate rule out of the way
     provider = FakeProvider()
     handler = make_handler(state, provider)
-    for i in range(12):
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i in range(25):
         pid = await seed_prospect(state, email=f"p{i}@acme.com", status="contacted")
         item = await state.add_outbox_item(prospect_id=pid, to_email=f"p{i}@acme.com", subject="s", body="b",
                                            send_at=_now_iso(), status="approved", campaign_id="c1", step=1)
@@ -903,7 +904,17 @@ async def test_a_burst_of_bounces_stops_sending_before_the_daily_rate_does(state
     provider.inbound = [_ndr("p9@acme.com", mid="<m9@x.co>", pid="n9")]
     await handler._run_native()
     paused = await state.get_setting("sending_paused")
-    assert paused.startswith("10 bounces within 15 minutes") and "12 sent in the last hour" in paused
+    assert paused.startswith("10 bounces within 15 minutes") and "25 sent in the hour before" in paused
+    # Reports are timed by when they ARRIVED: a night's reports read in one
+    # catch-up pass after quiet hours are no burst, and neither are reports
+    # about an hour in which little was sent.
+    await state.set_setting("sending_paused", ""); await state.set_setting("bounce_burst", "")
+    for i in range(10, 22):
+        at = (now - timedelta(hours=6, minutes=i)).strftime("%Y-%m-%dT%H:%M:%SZ")      # arrived hours ago, spread out
+        m = _ndr(f"p{i}@acme.com", mid=f"<m{i}@x.co>", pid=f"n{i}"); m.date = at
+        provider.inbound = [m]
+        await handler._run_native()
+    assert await state.get_setting("sending_paused") == ""
 
 
 @pytest.mark.asyncio
@@ -923,3 +934,142 @@ async def test_a_backlog_in_the_inbox_holds_follow_ups_and_counts_waiting_replie
     assert await handler._run_native(model=False) is False
     assert await state.get_setting("replies_waiting") == "1"
     assert await handler._run_native() is True and await state.get_setting("replies_waiting") == ""
+
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_delay_notice_is_not_a_bounce(state):
+    """Exchange's "Delivery is delayed" warnings come from the same system
+    address as its bounces: the address stays valid and nothing is cancelled."""
+    pid = await seed_prospect(state, email="jane@acme.com", status="contacted")
+    item = await state.add_outbox_item(prospect_id=pid, to_email="jane@acme.com", subject="s", body="b",
+                                       send_at=_now_iso(), status="approved", campaign_id="c1", step=1)
+    await state.update_outbox_item(item, status="sent", message_id="<m1@x.co>", sent_at=_now_iso())
+    await state.add_outbox_item(prospect_id=pid, to_email="jane@acme.com", subject="again", body="b",
+                                send_at=_now_iso(), status="approved", campaign_id="c1", step=2)
+    provider = FakeProvider()
+    provider.inbound = [InboundMessage(
+        provider_id="d1", from_email="postmaster@x.co", subject="Delivery delayed: hello",
+        body="Delivery is delayed to these recipients or groups:\n\njane@acme.com\n\nTHIS IS A WARNING MESSAGE ONLY. "
+             "YOU DO NOT NEED TO RESEND YOUR MESSAGE.\n\nDiagnostic information for administrators:\njane@acme.com\n"
+             "Remote Server returned '400 4.4.7 Message delayed'\n\nOriginal message headers:\nMessage-ID: <m1@x.co>\n",
+        is_bounce=True)]
+    handler = make_handler(state, provider)
+    assert await handler._run_native() is True
+    assert (await state.get_prospect(pid)).email_status == "verified"
+    assert await state.get_outbox(status="cancelled") == [] and await state.is_reply_processed("d1")
+    assert (await state.get_setting("bounce_count") or "0") == "0"
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_first_email_is_queued_again_and_old_reports_do_not_undo_a_resume(state):
+    """The first email never arrived: once sending resumes it goes again,
+    with its follow-ups moved by the same delay. A report from before Resume
+    was pressed is about the block already dealt with."""
+    pid = await seed_prospect(state, email="jane@acme.com", status="contacted")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    sent_at = (now - timedelta(days=2)).isoformat()
+    first = await state.add_outbox_item(prospect_id=pid, to_email="jane@acme.com", subject="s", body="b",
+                                        send_at=sent_at, status="approved", campaign_id="c1", step=1)
+    await state.update_outbox_item(first, status="sent", message_id="<m1@x.co>", sent_at=sent_at)
+    second = await state.add_outbox_item(prospect_id=pid, to_email="jane@acme.com", subject="again", body="b",
+                                         send_at=(now + timedelta(days=1)).isoformat(), status="approved", campaign_id="c1", step=2)
+    provider = FakeProvider()
+    report = _ndr("jane@acme.com", mid="<m1@x.co>", code="550 5.1.8 Access denied, bad outbound sender AS(42003)")
+    report.date = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    provider.inbound = [report]
+    handler = make_handler(state, provider)
+    await handler._run_native()
+    assert (await state.get_setting("sending_paused")).startswith("your mailbox is blocked from sending")
+    row1, row2 = await state.get_outbox_item(first), await state.get_outbox_item(second)
+    assert row1["status"] == "approved" and row1["error"].startswith("Queued again") and row1["send_at"] >= now.isoformat()
+    # The follow-up keeps its three-day gap after the re-sent first email.
+    gap = datetime.fromisoformat(row2["send_at"]) - datetime.fromisoformat(row1["send_at"])
+    assert timedelta(days=2, hours=23) < gap < timedelta(days=3, hours=1)
+    # Resume pressed; a second report about the same old block arrives later: no stop.
+    await state.set_setting("sending_paused", "")
+    await state.set_setting("sending_resumed_at", (now + timedelta(minutes=1)).isoformat())
+    old = _ndr("jane@acme.com", mid="<m1@x.co>", pid="n2", code="550 5.1.8 Access denied, bad outbound sender")
+    old.date = (now - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    provider.inbound = [old]
+    await handler._run_native()
+    assert await state.get_setting("sending_paused") == ""
+    # A report from after the Resume is a new block.
+    fresh = _ndr("jane@acme.com", mid="<m1@x.co>", pid="n3", code="550 5.1.8 Access denied, bad outbound sender")
+    fresh.date = (now + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    provider.inbound = [fresh]
+    await handler._run_native()
+    assert (await state.get_setting("sending_paused")).startswith("your mailbox is blocked from sending")
+
+
+class _ByIdProvider(FakeProvider):
+    """A provider that can fetch a message back by id and keeps a read
+    position (the Microsoft provider's shape)."""
+    def __init__(self):
+        super().__init__()
+        self.by_id = {}
+        self.advanced = []
+
+    async def fetch_message(self, pid):
+        return self.by_id.get(pid)
+
+    def advance_to(self, msg):
+        self.advanced.append(msg.provider_id)
+
+
+@pytest.mark.asyncio
+async def test_a_reply_put_aside_for_the_model_comes_back_by_id_while_the_position_moves_on(state):
+    """With the model down, a human reply is put aside by id rather than
+    holding the read position: the bounces behind it are handled, the
+    position moves past all of them, and the reply is fetched back and
+    answered when the model returns."""
+    pid = await seed_prospect(state, email="jane@acme.com", status="contacted")
+    dead = await seed_prospect(state, email="gone@acme.com", status="contacted")
+    item = await state.add_outbox_item(prospect_id=dead, to_email="gone@acme.com", subject="s", body="b",
+                                       send_at=_now_iso(), status="approved", campaign_id="c1", step=1)
+    await state.update_outbox_item(item, status="sent", message_id="<m1@x.co>", sent_at=_now_iso())
+    reply = InboundMessage(provider_id="r1", from_email="jane@acme.com", subject="Re: hi", body="Tell me more?",
+                           date="2026-10-27T09:00:00Z")
+    bounce = _ndr("gone@acme.com", mid="<m1@x.co>", pid="b1"); bounce.date = "2026-10-27T09:05:00Z"
+    provider = _ByIdProvider()
+    provider.by_id = {"r1": reply}
+    provider.inbound = [reply, bounce]
+    handler = make_handler(state, provider)
+    assert await handler._run_native(model=False) is False
+    assert provider.advanced == ["r1", "b1"]                        # the position passed the parked reply
+    assert (await state.get_prospect(dead)).email_status == "invalid"
+    assert not await state.is_reply_processed("r1")
+    import json as _json
+    assert _json.loads(await state.get_setting("replies_deferred")) == {"r1": "2026-10-27T09:00:00Z"}
+    assert await state.get_setting("replies_waiting") == "1"
+    # The model is back: the reply is fetched by id and answered, nothing left aside.
+    provider.inbound = []
+    assert await handler._run_native() is True
+    assert await state.is_reply_processed("r1") and (await state.get_prospect(pid)).status == "replied"
+    assert await state.get_setting("replies_deferred") == "" and await state.get_setting("replies_waiting") == ""
+    # A reply that was deleted meanwhile is simply dropped.
+    await state.set_setting("replies_deferred", _json.dumps({"gone": ""}))
+    assert await handler._run_native() is True and await state.get_setting("replies_deferred") == ""
+
+
+@pytest.mark.asyncio
+async def test_a_sender_block_at_send_time_stops_the_pass_and_keeps_the_address(state):
+    """Microsoft's "bad outbound sender" answered on the SMTP session: not a
+    bad address. The row waits, the pass ends, and sending stops until a
+    person unblocks the mailbox and presses Resume."""
+    ids = [await seed_prospect(state, email=f"p{i}@acme.com") for i in range(3)]
+    await seed_campaign(state, ids)
+
+    class _Blocked(FakeProvider):
+        async def send_email(self, to_email, subject, body, thread_ref="", in_reply_to="", **kw):
+            return SendResult(ok=False, error="550 5.1.8 Access denied, bad outbound sender AS(42003)", bad_address=True)
+    provider = _Blocked()
+    sender = make_sender(state, provider, require_approval=False)
+    await sender.run()
+    paused = await state.get_setting("sending_paused")
+    assert paused.startswith("your mailbox is blocked from sending") and "Restricted entities" in paused
+    for p in ids:
+        assert (await state.get_prospect(p)).email_status == "verified"
+    rows = await state.get_outbox(status="approved")
+    assert len(rows) == 6 and sum(1 for r in rows if (r["error"] or "").startswith("waiting: your mailbox")) == 1
+    assert await state.get_outbox(status="failed") == [] and await state.get_outbox(status="cancelled") == []

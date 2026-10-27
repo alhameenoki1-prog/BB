@@ -9,6 +9,7 @@ sending domain while nobody's watching.
 
 import asyncio
 import logging
+import json
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -17,7 +18,7 @@ from harvey.brain import Brain, BrainUnavailable
 from harvey.config import HarveyConfig, EnvConfig
 from harvey.integrations.instantly import InstantlyClient
 from harvey.integrations.mail_provider import (BLOCK_KINDS, NATIVE_PROVIDERS, SENDER_BLOCK_KINDS, bounce_kind,
-                                               bounce_reason, bounced_recipient, get_mail_provider,
+                                               bounce_reason, bounced_recipient, get_mail_provider, is_delay_notice,
                                                looks_automated, looks_like_bounce, original_message_ids)
 from harvey.models.prospect import Prospect
 from harvey.names import looks_like_domain
@@ -34,10 +35,14 @@ COOLOFF_HOURS = (6, 6, 24)            # after the 1st, 2nd, 3rd+ block of the da
 INBOX_REPLY_COOLDOWN_DAYS = 3
 INBOX_BACKLOG_PER_CYCLE = 5
 BOUNCE_COUNT_KEY = "bounce_count"
-BOUNCE_BURST_KEY = "bounce_burst"     # "<window start>:<count>"
+BOUNCE_BURST_KEY = "bounce_burst"     # JSON list of when recent reports arrived
 BOUNCE_BURST_MINUTES = 15
-BOUNCE_BURST = 10                     # this many bounces in the window, at 5% of the last hour's sends: stop
+BOUNCE_BURST = 10                     # this many reports within the window, at the bounce rate of the hour's sends: stop
+MIN_SENDS_FOR_BURST = 20              # ...and only when that hour saw real sending (a quiet catch-up is not a burst)
+BOUNCE_BURST_KEEP = 200               # report times remembered
 REPLIES_WAITING_KEY = "replies_waiting"   # human replies read but left for the model (the dashboard shows it)
+DEFERRED_KEY = "replies_deferred"     # {provider id: received} of replies put aside for the model, fetched back by id
+RESUMED_KEY = "sending_resumed_at"    # when a person last pressed Resume: older block reports cannot stop sending again
 # Kill switch only engages after this many sends (a tiny sample lies).
 MIN_SENDS_FOR_KILL_SWITCH = 50
 
@@ -500,19 +505,35 @@ class Handler:
         except Exception as e:
             logger.error(f"Handler: fetching replies failed: {e}")
             self.last_problem = f"the mailbox could not be read: {str(e)[:160]}"
+            try:
+                await self.state.set_setting(REPLIES_WAITING_KEY, "")   # unknown now; not yesterday's number
+            except Exception:
+                pass
             return False
+        # Replies put aside for the model on an earlier pass come back by id
+        # (the read position has moved past them).
+        deferred = await self._load_deferred()
+        if deferred:
+            inbound = await self._fetch_deferred(deferred) + list(inbound)
 
         handled = 0
         left = 0
         complete = True
+        hold_cursor = False   # a reply was left in place (no fetch by id): the position must not pass it
         for msg in inbound:
             dedup_key = msg.provider_id or msg.message_id
             if not dedup_key or await self.state.is_reply_processed(dedup_key):
                 continue
             consumed = True
+            parked = False
             try:
                 if msg.is_bounce:
-                    await self._handle_bounce(msg)
+                    if is_delay_notice(msg.subject, msg.body):
+                        # Still trying, not failed: the address is fine. A final
+                        # report follows if it gives up.
+                        logger.info(f"Handler: a delivery delay notice ({msg.subject[:60]}); nothing to do yet.")
+                    else:
+                        await self._handle_bounce(msg)
                 elif msg.body.strip():
                     known = await self.state.get_prospect_by_email(msg.from_email)
                     if known is not None and known.source == "inbox" and await self._reply_campaign_runs():
@@ -523,7 +544,10 @@ class Handler:
                         consumed = False
                         complete = False
                         left += 1
-                        self._rewind(msg)
+                        parked = self._park(msg, deferred)
+                        if not parked:
+                            hold_cursor = True
+                            self._rewind(msg)
                         continue
                     elif self.inbox_autoreply and (known is None or known.source == "inbox"):
                         await self._auto_reply_inbox(msg)
@@ -547,7 +571,10 @@ class Handler:
                 consumed = False
                 complete = False
                 left += 1
-                self._rewind(msg)
+                parked = self._park(msg, deferred)
+                if not parked:
+                    hold_cursor = True
+                    self._rewind(msg)
                 self.last_problem = f"the AI can't answer right now: {str(e)[:160]}"
                 logger.error(f"Handler: replies are left for later ({e}); bounces are still read.")
                 model_down = True   # the rest: bounces handled, replies left, no more calls
@@ -558,6 +585,16 @@ class Handler:
             finally:
                 if consumed:
                     await self.state.mark_reply_processed(dedup_key)
+                    deferred.pop(msg.provider_id, None)
+                if (consumed or parked) and not hold_cursor:
+                    # The read position follows what has been dealt with, so
+                    # a worker stopped mid-batch picks up where it was.
+                    advance = getattr(self.provider, "advance_to", None)
+                    if advance is not None:
+                        try:
+                            advance(msg)
+                        except Exception as e:
+                            logger.debug(f"Handler: read position not moved: {e}")
 
         if handled:
             logger.info(f"Handler: processed {handled} inbound message(s).")
@@ -567,8 +604,10 @@ class Handler:
             logger.info(f"Handler: {left} repl{'ies wait' if left != 1 else 'y waits'} for the AI budget; bounces were read.")
         if left and not self.last_problem:
             self.last_problem = "the AI budget is used up, so replies wait for it"
+        waiting = max(left, len(deferred))
         try:
-            await self.state.set_setting(REPLIES_WAITING_KEY, str(left) if left else "")
+            await self.state.set_setting(REPLIES_WAITING_KEY, str(waiting) if waiting else "")
+            await self.state.set_setting(DEFERRED_KEY, json.dumps(deferred) if deferred else "")
         except Exception:
             pass
         if getattr(self.provider, "backlog_pending", False):
@@ -681,6 +720,60 @@ class Handler:
             return bool(enquiry.need_for(outreach, getattr(prospect, "industry", "") or "")["url"])
         except Exception:
             return False
+
+    def _park(self, msg, deferred: dict) -> bool:
+        """Put a reply aside for the model by id, when the provider can
+        fetch it back later (so the read position may move on). False when
+        it cannot: the caller then rewinds the position instead."""
+        if getattr(self.provider, "fetch_message", None) is None or not msg.provider_id:
+            return False
+        deferred[msg.provider_id] = msg.date or ""
+        return True
+
+    async def _load_deferred(self) -> dict:
+        raw = await self.state.get_setting(DEFERRED_KEY) or ""
+        try:
+            data = json.loads(raw) if raw else {}
+        except ValueError:
+            data = {}
+        return {str(k): str(v or "") for k, v in data.items()} if isinstance(data, dict) else {}
+
+    async def _fetch_deferred(self, deferred: dict) -> list:
+        """The replies put aside earlier, fetched back by id. One that is
+        gone (deleted) is dropped; one that cannot be fetched now stays
+        aside for the next pass."""
+        fetch = getattr(self.provider, "fetch_message", None)
+        if fetch is None:
+            return []
+        out = []
+        for pid in list(deferred):
+            try:
+                msg = await fetch(pid)
+            except Exception as e:
+                logger.debug(f"Handler: a reply put aside could not be fetched back ({e}); next pass.")
+                continue
+            if msg is None:
+                deferred.pop(pid, None)
+                continue
+            out.append(msg)
+        return out
+
+    @staticmethod
+    def _when(msg) -> datetime:
+        """When a report arrived (its own date), falling back to now."""
+        raw = (getattr(msg, "date", "") or "").strip()
+        if raw:
+            try:
+                when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                return when.astimezone(timezone.utc).replace(tzinfo=None) if when.tzinfo else when
+            except ValueError:
+                try:
+                    from email.utils import parsedate_to_datetime
+                    when = parsedate_to_datetime(raw)
+                    return when.astimezone(timezone.utc).replace(tzinfo=None) if when.tzinfo else when
+                except Exception:
+                    pass
+        return datetime.now(timezone.utc).replace(tzinfo=None)
 
     def _rewind(self, msg) -> None:
         """A reply that was read but not handled is read again next time:
@@ -923,7 +1016,7 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
             # A report that matches none of our emails and comes from no
             # mail system is the one case ignored (a stray or forged notice).
             if outbox_item or prospect or looks_like_bounce(msg.from_email, ""):
-                await self._stop_after_sender_block(kind, reason, hint, prospect)
+                await self._stop_after_sender_block(kind, reason, hint, prospect, msg, outbox_item)
             else:
                 logger.warning(f"Handler: a notice that our mailbox is blocked ({reason}) matches none of our "
                                "sent emails and comes from no mail system; ignored.")
@@ -982,46 +1075,77 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
             await self.state.set_setting(KILL_SWITCH_KEY, reason)
             logger.error(f"Handler: KILL SWITCH ENGAGED — {reason}")
             return
-        # A burst: many bounces in a few minutes, whatever the day's rate so
-        # far (a bad list, or a mailbox that was just blocked in words this
-        # code does not know). Measured against the last hour's sends, since
-        # reports lag the sends they answer.
+        # A burst: many reports arriving within a few minutes of each other,
+        # whatever the day's rate so far (a dead list, or a mailbox blocked in
+        # words this code does not know). Timed by when the reports arrived,
+        # not when they were read (a catch-up after quiet hours reads a
+        # night's reports in one go), and measured against the sends of the
+        # hour before them; an hour with little sending has no burst.
         if max_rate > 0:
-            burst = await self._bounce_burst()
+            when = self._when(msg)
+            burst = await self._bounce_burst(when)
             if burst >= BOUNCE_BURST:
-                recent = await self.state.count_outbox_sent_since(60)
-                if burst >= max_rate * recent:
-                    reason = (f"{burst} bounces within {BOUNCE_BURST_MINUTES} minutes ({recent} sent in the last hour) — "
+                recent = await self.state.count_outbox_sent_between(when - timedelta(minutes=60), when)
+                if recent >= MIN_SENDS_FOR_BURST and burst >= max_rate * recent:
+                    reason = (f"{burst} bounces within {BOUNCE_BURST_MINUTES} minutes ({recent} sent in the hour before) — "
                               "read the Outbox's Bounced view: a dead list, or your mailbox blocked from sending, "
                               "before resuming")
                     await self.state.set_setting(KILL_SWITCH_KEY, reason)
                     logger.error(f"Handler: KILL SWITCH ENGAGED — {reason}")
 
-    async def _bounce_burst(self) -> int:
-        """Bounces in the current BOUNCE_BURST_MINUTES window, this one included."""
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+    async def _bounce_burst(self, when: datetime) -> int:
+        """Record when this report arrived; return how many arrived in the
+        BOUNCE_BURST_MINUTES up to it, this one included."""
         raw = await self.state.get_setting(BOUNCE_BURST_KEY) or ""
-        start, _, count = raw.rpartition(":")
-        try:
-            started = datetime.fromisoformat(start) if start else None
-        except ValueError:
-            started = None
-        if started is None or now - started > timedelta(minutes=BOUNCE_BURST_MINUTES):
-            started, n = now, 1
-        else:
-            n = (int(count) if count.isdigit() else 0) + 1
-        await self.state.set_setting(BOUNCE_BURST_KEY, f"{started.isoformat()}:{n}")
+        stamps: list[str] = []
+        if raw.startswith("["):
+            try:
+                stamps = [s for s in json.loads(raw) if isinstance(s, str)]
+            except ValueError:
+                stamps = []
+        stamps.append(when.isoformat())
+        stamps = sorted(stamps)[-BOUNCE_BURST_KEEP:]
+        await self.state.set_setting(BOUNCE_BURST_KEY, json.dumps(stamps))
+        window = when - timedelta(minutes=BOUNCE_BURST_MINUTES)
+        n = 0
+        for s in stamps:
+            try:
+                at = datetime.fromisoformat(s)
+            except ValueError:
+                continue
+            if window <= at <= when:
+                n += 1
         return n
 
-    async def _stop_after_sender_block(self, kind: str, reason: str, hint: str, prospect) -> None:
+    async def _stop_after_sender_block(self, kind: str, reason: str, hint: str, prospect, msg=None,
+                                       outbox_item: dict | None = None) -> None:
         """Our own provider has blocked the mailbox from sending: stop until a
-        person unblocks it and presses Resume (the follow-ups to whoever this
-        report names stay queued: the address is fine)."""
+        person unblocks it and presses Resume. The first email this report is
+        about never arrived, so it is queued again (with its follow-ups moved
+        by the same delay) and goes once sending resumes. A report older than
+        the last Resume is about the block already dealt with: nothing stops."""
+        if outbox_item and (outbox_item.get("kind") or "sequence") == "sequence" and int(outbox_item.get("step") or 1) == 1:
+            try:
+                await self.state.requeue_first_email(
+                    outbox_item["id"], f"Queued again: it bounced while {kind} ({reason[:120]}). It goes once sending resumes.")
+            except Exception as e:
+                logger.debug(f"Handler: could not queue the bounced first email again: {e}")
         current = await self.state.get_setting(KILL_SWITCH_KEY) or ""
+        if current.startswith(kind):
+            return
+        resumed_raw = await self.state.get_setting(RESUMED_KEY) or ""
+        try:
+            resumed = datetime.fromisoformat(resumed_raw) if resumed_raw else None
+        except ValueError:
+            resumed = None
+        when = self._when(msg) if msg is not None else None
+        if resumed and when and msg is not None and (msg.date or "") and when <= resumed:
+            logger.info(f"Handler: a report that the mailbox was blocked ({reason[:80]}) is from before sending was "
+                        "resumed; not stopping again for it.")
+            return
         text = f"{kind} ({reason[:140]}). {hint}"
-        if not current.startswith(kind):
-            await self.state.set_setting(KILL_SWITCH_KEY, text[:900])
-            logger.error(f"Handler: SENDING STOPPED — {text}")
+        await self.state.set_setting(KILL_SWITCH_KEY, text[:900])
+        logger.error(f"Handler: SENDING STOPPED — {text}")
         who = prospect.email if prospect else "a recipient"
         await self.state.log_action(action_type="sender_blocked", agent="handler",
                                     details={"prospect": who, "kind": kind, "reason": reason[:200]})

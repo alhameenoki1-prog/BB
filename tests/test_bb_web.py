@@ -1325,6 +1325,12 @@ def test_dashboard_says_first_emails_go_while_replies_wait_for_the_model(client)
     s = asyncio.run(ws._sending_status(dict(base, outbox_scheduled=2)))
     assert s["state"] == "sending" and s["link"] == "/mailbox" and "IMAP login refused" in s["text"]
     assert "until the inbox can be read again" in s["text"] and "the AI" not in s["text"]
+    # A backlog in the inbox being worked through: an inbox cause, not the AI.
+    asyncio.run(sm.set_setting("sender_skip_reason", "replies couldn't all be read and handled (the inbox has more new "
+                               "mail than one pass reads; catching up pass by pass); follow-ups wait, first emails still go out"))
+    s = asyncio.run(ws._sending_status(dict(base, outbox_scheduled=2)))
+    assert "catches up on a backlog in the inbox" in s["text"] and "the AI" not in s["text"]
+    asyncio.run(sm.set_setting("sender_skip_reason", ai))
     # Replies read from the mailbox but not yet answered: said on the card.
     asyncio.run(sm.set_setting("replies_waiting", "3"))
     s = asyncio.run(ws._sending_status(dict(base, outbox_scheduled=2)))
@@ -1338,6 +1344,24 @@ def test_dashboard_says_first_emails_go_while_replies_wait_for_the_model(client)
     asyncio.run(sm.set_setting("sender_skip_reason", "the mailbox refused the login: 535 bad credentials"))
     s = asyncio.run(ws._sending_status(dict(base)))
     assert s["state"] == "stuck" and "skipping its passes" in s["text"]
+
+
+def test_resume_sending_forgets_old_bounce_reports(client):
+    """Pressing Resume records when, clears the burst window and the bounce
+    count, so a report about an email sent before the unblock cannot stop
+    sending again."""
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    sm = StateManager(str(ws.db_path))
+    asyncio.run(sm.init_db())
+    asyncio.run(sm.set_setting("sending_paused", "your mailbox is blocked from sending (...)"))
+    asyncio.run(sm.set_setting("bounce_burst", '["2026-10-27T09:00:00"]'))
+    asyncio.run(sm.set_setting("bounce_count", "40"))
+    asyncio.run(ws.set_sending_paused(False))
+    assert asyncio.run(sm.get_setting("sending_paused")) == "" and asyncio.run(sm.get_setting("bounce_burst")) == ""
+    assert asyncio.run(sm.get_setting("bounce_count")) == "0"
+    assert asyncio.run(sm.get_setting("sending_resumed_at")).startswith("20")
 
 
 def test_gmail_mailboxes_get_their_own_daily_ceiling(client):

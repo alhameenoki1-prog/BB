@@ -1495,6 +1495,9 @@ class Workspace:
                 low = cause.lower()
                 if "mailbox could not be read" in low:
                     note, note_link = f" Replies and follow-ups wait until the inbox can be read again: {cause}.", "/mailbox"
+                elif "more new mail than one pass reads" in low:
+                    note = (" Replies and follow-ups wait while the worker catches up on a backlog in the inbox "
+                            "(a few passes, bounces included).")
                 else:
                     note = f" Replies and follow-ups wait until the AI can answer again: {cause}."
                     if "spend cap" in low:
@@ -1878,8 +1881,13 @@ class Workspace:
         if paused:
             await state.set_setting("sending_paused", "paused from the web app")
         else:
+            from datetime import datetime, timezone
             await state.set_setting("sending_paused", "")
             await state.set_setting("bounce_count", "0")
+            await state.set_setting("bounce_burst", "")
+            # A report about an email sent before this moment is old news:
+            # it cannot stop sending again (handler._stop_after_sender_block).
+            await state.set_setting("sending_resumed_at", datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
 
     # ── worker process ──
 

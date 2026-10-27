@@ -63,6 +63,12 @@ class Graph:
             return httpx.Response(202)
         if path == "/v1.0/me/mailFolders/inbox/messages":
             return self._inbox_page(request)
+        if path.startswith("/v1.0/me/messages/") and method == "GET":
+            wanted = path.rsplit("/", 1)[1]
+            for item in self.inbox + self.junk:
+                if item.get("id") == wanted:
+                    return httpx.Response(200, json=item)
+            return httpx.Response(404, json={"error": {"code": "ErrorItemNotFound"}})
         if path == "/v1.0/me/mailFolders/junkemail/messages":
             if self.junk_fail:
                 return httpx.Response(self.junk_fail, json={"error": {"code": "boom"}})
@@ -462,18 +468,33 @@ async def test_a_flood_is_read_a_few_pages_at_a_time_from_where_the_last_pass_st
     assert [m.provider_id for m in first] == [f"m{i}" for i in range(9)] and p.backlog_pending
     assert len(graph.inbox_requests()) == 3
     assert graph.inbox_requests()[0].url.params["$orderby"] == "receivedDateTime asc"
-    # The position: the newest message read, re-read with a little overlap next time.
-    assert json.loads(microsoft.CURSOR_FILE.read_text()) == {"/me": stamp(8)}
+    # Nothing handled yet: the position has not moved (a worker stopped now loses nothing).
+    assert not microsoft.CURSOR_FILE.exists()
+    for m in first:
+        p.advance_to(m)                                               # what the handler does as it goes
+    assert json.loads(microsoft.CURSOR_FILE.read_text())["/me"] == stamp(8)
     graph.requests.clear()
     again = await p.get_replies(limit=3)
     overlap = (base + timedelta(minutes=15 * 8 - 10)).strftime("%Y-%m-%dT%H:%M:%SZ")
     assert graph.inbox_requests()[0].url.params["$filter"] == f"receivedDateTime ge {overlap}"
     assert [m.provider_id for m in again] == ["m8", "m9"] and not p.backlog_pending
-    assert json.loads(microsoft.CURSOR_FILE.read_text()) == {"/me": stamp(9)}
+    for m in again:
+        p.advance_to(m)
+    assert json.loads(microsoft.CURSOR_FILE.read_text())["/me"] == stamp(9)
     # Nothing new since: only the overlap comes back and the position stays.
     graph.requests.clear()
     assert [m.provider_id for m in await p.get_replies(limit=3)] == ["m9"]
-    assert json.loads(microsoft.CURSOR_FILE.read_text()) == {"/me": stamp(9)}
+    assert json.loads(microsoft.CURSOR_FILE.read_text())["/me"] == stamp(9)
+    # Once an hour the whole week is looked at again (mail moved into the
+    # Inbox late keeps its old date): a capped sweep is not a backlog.
+    data = json.loads(microsoft.CURSOR_FILE.read_text())
+    data["/me:swept"] = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    microsoft.CURSOR_FILE.write_text(json.dumps(data))
+    graph.requests.clear()
+    swept = await p.get_replies(limit=3)
+    since = graph.inbox_requests()[0].url.params["$filter"].split("ge ")[1]
+    assert since < stamp(0) and len(swept) == 9 and not p.backlog_pending
+    assert json.loads(microsoft.CURSOR_FILE.read_text())["/me:swept"] > data["/me:swept"]
 
 
 @pytest.mark.asyncio
@@ -483,11 +504,18 @@ async def test_a_message_left_for_later_is_read_again(graph):
     graph.inbox = [{**message(i), "receivedDateTime": f"2026-10-14T15:{i:02d}:00Z"} for i in range(3)]
     p = provider(graph)
     replies = await p.get_replies()
+    for m in replies:
+        p.advance_to(m)
     assert json.loads(microsoft.CURSOR_FILE.read_text())["/me"] == "2026-10-14T15:02:00Z"
     p.rewind_to(replies[1])
     assert json.loads(microsoft.CURSOR_FILE.read_text())["/me"] == "2026-10-14T15:00:59Z"
     p.rewind_to(replies[2])                                           # never forward
     assert json.loads(microsoft.CURSOR_FILE.read_text())["/me"] == "2026-10-14T15:00:59Z"
+    # A message can be fetched back by id (a reply put aside for the model); a deleted one is None.
+    again = await p.fetch_message("m1")
+    assert again is not None and again.provider_id == "m1" and again.from_email == "someone@elsewhere.example"
+    assert await p.fetch_message("gone") is None
+    assert await p.fetch_message("../me") is None
     # A week-old position never pulls the window back past the week.
     microsoft.CURSOR_FILE.write_text(json.dumps({"/me": "2020-01-01T00:00:00Z"}))
     graph.requests.clear()
