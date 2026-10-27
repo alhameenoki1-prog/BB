@@ -1177,7 +1177,12 @@ def test_dashboard_explains_the_warm_up_cap(client):
     client.post("/profile", data={**PROFILE, "speed": "fast", "max_daily_sends": "500"})   # ramp off
     s = _a.run(ws.summary())
     assert not s["allowance"]["warming"] and s["allowance"]["allowed"] == 500
-    assert "0 of 500 first emails and follow-ups sent today (your daily limit)" in client.get("/").text
+    page = client.get("/").text
+    assert "0 of 500 first emails and follow-ups sent today (your daily limit)" in page
+    # A limit far above a safe cold-email pace: the card says what happens at that volume.
+    assert "gets it blocked" in page and "30 to 50 a day per mailbox" in page
+    client.post("/profile", data={**PROFILE, "speed": "gentle", "max_daily_sends": "40"})
+    assert "gets it blocked" not in client.get("/").text
 
 
 def test_cli_make_admin(tmp_path, monkeypatch, capsys):
@@ -1320,6 +1325,11 @@ def test_dashboard_says_first_emails_go_while_replies_wait_for_the_model(client)
     s = asyncio.run(ws._sending_status(dict(base, outbox_scheduled=2)))
     assert s["state"] == "sending" and s["link"] == "/mailbox" and "IMAP login refused" in s["text"]
     assert "until the inbox can be read again" in s["text"] and "the AI" not in s["text"]
+    # Replies read from the mailbox but not yet answered: said on the card.
+    asyncio.run(sm.set_setting("replies_waiting", "3"))
+    s = asyncio.run(ws._sending_status(dict(base, outbox_scheduled=2)))
+    assert "3 replies came in and wait for the AI to answer" in s["text"]
+    asyncio.run(sm.set_setting("replies_waiting", ""))
     # The daily spend cap: the profile, where the cap is set.
     asyncio.run(sm.set_setting("sender_skip_reason", "the daily AI spend cap is reached; replies wait for tomorrow; "
                                "follow-ups wait, first emails still go out"))

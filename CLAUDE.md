@@ -135,7 +135,19 @@ draft, `main._first_emails_pass` reads bounces with no model
 makes no model call at all, the over-budget heartbeat still runs
 `health.run_check` (the stall alert counts first emails only and holds off
 when the day's allowance is used), and `Sender.auth_refused` keeps a refused
-login on the dashboard. `harvey/names.py` resolves missing recipient
+login on the dashboard. The Microsoft providers (`harvey/integrations/microsoft.py`,
+`microsoft` sign-in and `microsoft_app` admin app) read the inbox from a saved
+position (`graph_cursor.json`, oldest first, `MAX_INBOX_PAGES` a pass,
+`backlog_pending` when more waits, `rewind_to` for a message the model could
+not handle) so a bounce flood is worked through rather than failing every
+read. A delivery report is matched through its In-Reply-To, the Message-ID it
+quotes, or the address it names (`mail_provider.bounced_recipient`,
+`original_message_ids`, `state.find_outbox_sent_to`); Microsoft's verdicts on
+the sender (`SENDER_BLOCKED`, `SENDER_BLOCK_KINDS`: 5.1.8 bad outbound sender
+and the rest) stop sending with the kill switch and the Restricted-entities
+fix in its text (`Handler._stop_after_sender_block`), and ten bounces in
+fifteen minutes against the last hour's sends stop it too
+(`Handler._bounce_burst`). `harvey/names.py` resolves missing recipient
 names (LinkedIn slug, first.last address, team page) and puts the greeting
 line on every email (`outreach.greeting`); a worker that dies is revived
 on the next dashboard view; the dashboard has Pause for edits / Resume /

@@ -72,7 +72,8 @@ class InboundMessage:
     uid: int = 0             # IMAP UID when read by position (0 elsewhere)
 
 
-BOUNCE_SENDERS = ("mailer-daemon", "postmaster", "mail delivery subsystem")
+BOUNCE_SENDERS = ("mailer-daemon", "postmaster", "mail delivery subsystem",
+                  "microsoftexchange329e71ec88ae4615bbc36ab6ce41109e")   # Exchange's own reports, inside the org
 BOUNCE_SUBJECTS = (
     "delivery status notification", "undeliverable", "returned mail",
     "delivery failure", "failure notice", "could not be delivered",
@@ -84,11 +85,35 @@ BOUNCE_SUBJECTS = (
 
 # What a bounce means and what to do about it, from the SMTP code or the
 # wording in the report. Order matters: the first match wins.
+SENDER_BLOCKED = "your mailbox is blocked from sending"
+SENDER_BLOCK_HINT = (
+    "Your own mail provider has stopped this mailbox from sending (Microsoft 365 does this when a mailbox looks "
+    "like it is sending spam or bulk mail): every email bounces until an admin unblocks it. In Microsoft 365: "
+    "security.microsoft.com → Email & collaboration → Review → Restricted entities → unblock the mailbox. Then "
+    "send far fewer a day (30 to 50 per mailbox, warm-up on, Gentle speed) and press Resume sending.")
+
 BOUNCE_HINTS = (
     # Order matters: the first match wins. The verdicts on the SENDER (a
     # block) come before "authentication", because a real DSN quotes the
     # original message's headers (DKIM-Signature, ARC-Authentication-Results)
     # further down, and those words must not turn a block into something else.
+    # The sender's own provider refusing to send for it at all (Microsoft
+    # 365's restricted entities, a banned sender, a tenant over its limit):
+    # before the generic 5.1.x rule, because 5.1.8 is about the sender.
+    (r"5\.1\.8\b|bad outbound sender|not allowed to send (?:messages|email)|suspected of sending spam|"
+     r"restricted from sending|recognized as a valid sender|5\.7\.750\b|5\.7\.705\b|5\.7\.708\b|"
+     r"5\.7\.50[123]\b|5\.7\.511\b|5\.7\.800\b|spam abuse detected|tenant has exceeded threshold|"
+     r"client blocked from sending from unregistered domain|traffic not accepted from this ip",
+     SENDER_BLOCKED, SENDER_BLOCK_HINT),
+    # The sender's own provider's limits for the day (Exchange's 10,000
+    # recipients a day, a tenant's external recipient limit, a temporary
+    # restriction while it looks at the traffic): wait, then slow down.
+    (r"5\.7\.23[236]\b|tenant external recipient rate limit|5\.1\.90\b|daily limit for message recipients|"
+     r"submission quota was exceeded|submissionquotaexceeded|4\.7\.[5-8]\d\d\b|5\.7\.8[5-9]\d\b|"
+     r"please try again later|recipient rate limit|message rate limit",
+     "sending too fast or too much",
+     "Your mailbox provider throttled you. Switch the profile to the Gentle speed, keep the warm-up "
+     "ramp on, and lower the daily maximum (30 to 50 a day for a mailbox under a month old)."),
     # The sender's own provider refusing the recipient (Vade Secure filters
     # OVH, Open-Xchange and other hosted mail): 407 is a domain that does
     # not exist, 406 a malformed address, 402 an address it will not deliver to.
@@ -145,7 +170,68 @@ BOUNCE_HINTS = (
 # Bounce kinds that are a verdict on the SENDER, not the address: the
 # receiving side (or the sender's own provider) treated the email as spam.
 # The address is fine; sending more right away makes it worse.
-BLOCK_KINDS = ("judged as unsolicited mail", "content blocked", "sending too fast or too much")
+BLOCK_KINDS = ("judged as unsolicited mail", "content blocked", "sending too fast or too much", SENDER_BLOCKED)
+# The kinds where the sender's OWN provider refuses to send for it: nothing
+# leaves until a person unblocks the mailbox, so sending stops rather than
+# pausing (the kill switch, with the fix in its text).
+SENDER_BLOCK_KINDS = (SENDER_BLOCKED,)
+
+_ADDRESS = r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})"
+_RECIPIENT_PATTERNS = (
+    # Exchange Online / Outlook.com: the newest layout, the "Original
+    # Message Details" of the admin section, and the classic layout (the
+    # line after the heading may be "Name (address)")
+    r"(?i)your message to\s+<?" + _ADDRESS + r">?\s+(?:couldn't|could not|wasn't|was not) be delivered",
+    r"(?im)^\s*recipient address:\s*<?" + _ADDRESS,
+    r"(?im)delivery has failed to these recipients or groups:\s*\n+[^\n]*?\(?" + _ADDRESS + r"\)?\s*$",
+    # A DSN's machine-readable part (every provider)
+    r"(?im)^\s*final-recipient:\s*rfc822;\s*<?" + _ADDRESS,
+    r"(?im)^\s*original-recipient:\s*rfc822;\s*<?" + _ADDRESS,
+    # Exchange's "Diagnostic information for administrators" block: the
+    # address on its own line, the server's answer within two lines
+    # ("Remote server returned '...'", or "<time> - Server at ... returned")
+    r"(?im)^\s*<?" + _ADDRESS + r">?\s*\n(?:[^\n]*\n){0,2}?[^\n]*?\bserver (?:at [^\n]*?)?returned",
+    # Gmail
+    r"(?i)wasn't delivered to\s+<?" + _ADDRESS,
+    r"(?i)message (?:wasn't|was not) delivered to\s+<?" + _ADDRESS,
+    # Anything else that names who it failed for
+    r"(?i)(?:failed|undeliverable|rejected|could not be delivered|couldn't be delivered)[^\n]{0,60}?"
+    r"\b(?:to|for|recipient)\s*:?\s*<?" + _ADDRESS + r">?",
+    r"(?im)^\s*(?:to|recipient):\s*(?:[^\n<]*<)?" + _ADDRESS,
+)
+
+
+def bounced_recipient(body: str, headers: dict | None = None, exclude: str = "") -> str:
+    """The address a delivery report says it failed for ("" when it does not
+    say). Headers first (X-Failed-Recipients), then the wording providers
+    use, then the DSN's machine-readable lines, then the quoted original's
+    To:. ``exclude`` is the sender's own address, never the answer."""
+    own = (exclude or "").strip().lower()
+    h = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+    for key in ("x-failed-recipients", "x-original-to"):
+        m = re.search(_ADDRESS, h.get(key, ""))
+        if m and m.group(1).lower() != own:
+            return m.group(1).lower()
+    text = body or ""
+    for pat in _RECIPIENT_PATTERNS:
+        for m in re.finditer(pat, text):
+            found = m.group(1).lower()
+            if found != own:
+                return found
+    return ""
+
+
+def original_message_ids(body: str) -> list[str]:
+    """The Message-IDs a delivery report quotes from the original email
+    (Exchange's "Original message headers", folded onto the next line or
+    not; a DSN's message/rfc822 part; the InternetMessageId some
+    diagnostics carry): what matches the report to the email that bounced
+    when the report has no In-Reply-To of its own."""
+    text = body or ""
+    found = re.findall(r"(?im)^\s*message-id:\s*\r?\n?\s*(<[^>\s]+>)", text)
+    found += re.findall(r"(?i)internetmessageid\s+(<[^>\s]+>)", text)
+    found += re.findall(r"(?im)^\s*x-ms-tnef-correlator:\s*(<[^>\s]+>)", text)
+    return list(dict.fromkeys(found))
 
 
 def bounce_kind(body: str) -> str:
@@ -174,7 +260,7 @@ def bounce_reason(body: str) -> tuple[str, str]:
                 r"(?i)(address not found[^\n]*|user unknown[^\n]*|does not exist[^\n]*)"):
         m = _re.search(pat, text)
         if m:
-            diag = _re.sub(r"\s+", " ", m.group(1)).strip(" .")[:220]
+            diag = _re.sub(r"\s+", " ", m.group(1)).strip(" .'\"")[:220]
             break
     low = text.lower()
     for pat, what, hint in BOUNCE_HINTS:

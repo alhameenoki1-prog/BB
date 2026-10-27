@@ -12,7 +12,7 @@ upgrade cleanly in place.
 import json
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -1271,6 +1271,15 @@ class StateManager:
                 row = await cursor.fetchone()
                 return row[0] if row and row[0] else None
 
+    async def count_outbox_sent_since(self, minutes: int) -> int:
+        """Emails sent in the last ``minutes`` (first emails, follow-ups and replies)."""
+        since = (_utcnow() - timedelta(minutes=max(1, int(minutes)))).isoformat()
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM outbox WHERE status = 'sent' AND sent_at >= ?", (since,)
+            ) as cursor:
+                return (await cursor.fetchone())[0]
+
     async def count_outbox_sent_today(self, kind: str = "") -> int:
         """Emails sent today (UTC); ``kind`` counts only that kind ("sequence":
         the first emails and follow-ups the daily limit is for)."""
@@ -1281,6 +1290,21 @@ class StateManager:
                 (kind,) if kind else (),
             ) as cursor:
                 return (await cursor.fetchone())[0]
+
+    async def find_outbox_sent_to(self, email: str) -> dict | None:
+        """The most recent email sent to this address (a bounce that names
+        the recipient but carries no Message-ID is matched through it)."""
+        email = (email or "").strip().lower()
+        if not email:
+            return None
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM outbox WHERE status = 'sent' AND lower(to_email) = ? "
+                "ORDER BY sent_at DESC, created_at DESC LIMIT 1", (email,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
 
     async def find_outbox_by_message_id(self, message_id: str) -> dict | None:
         if not message_id:

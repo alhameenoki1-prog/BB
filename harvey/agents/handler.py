@@ -16,9 +16,9 @@ from harvey import enquiry, names
 from harvey.brain import Brain, BrainUnavailable
 from harvey.config import HarveyConfig, EnvConfig
 from harvey.integrations.instantly import InstantlyClient
-from harvey.integrations.mail_provider import (BLOCK_KINDS, NATIVE_PROVIDERS, bounce_kind, bounce_reason,
-                                               get_mail_provider,
-                                               looks_automated)
+from harvey.integrations.mail_provider import (BLOCK_KINDS, NATIVE_PROVIDERS, SENDER_BLOCK_KINDS, bounce_kind,
+                                               bounce_reason, bounced_recipient, get_mail_provider,
+                                               looks_automated, looks_like_bounce, original_message_ids)
 from harvey.models.prospect import Prospect
 from harvey.names import looks_like_domain
 from harvey.models.conversation import Conversation, Message
@@ -34,6 +34,10 @@ COOLOFF_HOURS = (6, 6, 24)            # after the 1st, 2nd, 3rd+ block of the da
 INBOX_REPLY_COOLDOWN_DAYS = 3
 INBOX_BACKLOG_PER_CYCLE = 5
 BOUNCE_COUNT_KEY = "bounce_count"
+BOUNCE_BURST_KEY = "bounce_burst"     # "<window start>:<count>"
+BOUNCE_BURST_MINUTES = 15
+BOUNCE_BURST = 10                     # this many bounces in the window, at 5% of the last hour's sends: stop
+REPLIES_WAITING_KEY = "replies_waiting"   # human replies read but left for the model (the dashboard shows it)
 # Kill switch only engages after this many sends (a tiny sample lies).
 MIN_SENDS_FOR_KILL_SWITCH = 50
 
@@ -563,6 +567,16 @@ class Handler:
             logger.info(f"Handler: {left} repl{'ies wait' if left != 1 else 'y waits'} for the AI budget; bounces were read.")
         if left and not self.last_problem:
             self.last_problem = "the AI budget is used up, so replies wait for it"
+        try:
+            await self.state.set_setting(REPLIES_WAITING_KEY, str(left) if left else "")
+        except Exception:
+            pass
+        if getattr(self.provider, "backlog_pending", False):
+            # A flood (a bounce storm): one pass reads part of it; the rest
+            # next pass. Follow-ups wait until it is all read.
+            complete = False
+            if not self.last_problem:
+                self.last_problem = "the inbox has more new mail than one pass reads; catching up pass by pass"
         if backlog and complete and not model_down and self.inbox_autoreply and self.inbox_backlog_days > 0:
             complete = await self._scan_unanswered() and complete
             if not complete and not self.last_problem:
@@ -875,19 +889,46 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
 
     async def _handle_bounce(self, msg):
         """A bounce is a data bug AND a reputation threat. Fix both."""
+        body = msg.body or ""
         outbox_item = await self.state.find_outbox_by_message_id(msg.in_reply_to)
+        if not outbox_item:
+            # Exchange and most providers quote the original's Message-ID
+            # and name the failed address in the report itself; the report's
+            # own In-Reply-To is often missing.
+            for mid in original_message_ids(body):
+                outbox_item = await self.state.find_outbox_by_message_id(mid)
+                if outbox_item:
+                    break
+        own = (getattr(getattr(self.config, "persona", None), "email", "") or "")
+        failed = bounced_recipient(body, msg.headers, exclude=own)
+        if not outbox_item and failed:
+            outbox_item = await self.state.find_outbox_sent_to(failed)
         prospect = None
         if outbox_item:
             prospect = await self.state.get_prospect(outbox_item["prospect_id"])
-        reason, hint = bounce_reason(msg.body)
-        kind = bounce_kind(msg.body)
+        elif failed:
+            prospect = await self.state.get_prospect_by_email(failed)
+        reason, hint = bounce_reason(body)
+        kind = bounce_kind(body)
         if outbox_item:
             # The sent item keeps its status (it was sent) and carries the
             # verdict, so the Outbox's Bounced view can say why.
             await self.state.update_outbox_item(
                 outbox_item["id"], error=f"Bounced: {reason}. {hint}"[:600])
 
-        if kind in BLOCK_KINDS and outbox_item:
+        if kind in SENDER_BLOCK_KINDS:
+            # Our own provider refuses to send for us: every email bounces
+            # until a person unblocks the mailbox. Sending stops (the kill
+            # switch, with the fix in its text), it does not merely pause.
+            # A report that matches none of our emails and comes from no
+            # mail system is the one case ignored (a stray or forged notice).
+            if outbox_item or prospect or looks_like_bounce(msg.from_email, ""):
+                await self._stop_after_sender_block(kind, reason, hint, prospect)
+            else:
+                logger.warning(f"Handler: a notice that our mailbox is blocked ({reason}) matches none of our "
+                               "sent emails and comes from no mail system; ignored.")
+            return
+        if kind in BLOCK_KINDS and (outbox_item or prospect):
             # A spam verdict on us, not a bad address: the address stays
             # valid, the follow-ups to this person are dropped, and the
             # sender stands down for a while so the next batch does not
@@ -940,6 +981,50 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
             )
             await self.state.set_setting(KILL_SWITCH_KEY, reason)
             logger.error(f"Handler: KILL SWITCH ENGAGED — {reason}")
+            return
+        # A burst: many bounces in a few minutes, whatever the day's rate so
+        # far (a bad list, or a mailbox that was just blocked in words this
+        # code does not know). Measured against the last hour's sends, since
+        # reports lag the sends they answer.
+        if max_rate > 0:
+            burst = await self._bounce_burst()
+            if burst >= BOUNCE_BURST:
+                recent = await self.state.count_outbox_sent_since(60)
+                if burst >= max_rate * recent:
+                    reason = (f"{burst} bounces within {BOUNCE_BURST_MINUTES} minutes ({recent} sent in the last hour) — "
+                              "read the Outbox's Bounced view: a dead list, or your mailbox blocked from sending, "
+                              "before resuming")
+                    await self.state.set_setting(KILL_SWITCH_KEY, reason)
+                    logger.error(f"Handler: KILL SWITCH ENGAGED — {reason}")
+
+    async def _bounce_burst(self) -> int:
+        """Bounces in the current BOUNCE_BURST_MINUTES window, this one included."""
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        raw = await self.state.get_setting(BOUNCE_BURST_KEY) or ""
+        start, _, count = raw.rpartition(":")
+        try:
+            started = datetime.fromisoformat(start) if start else None
+        except ValueError:
+            started = None
+        if started is None or now - started > timedelta(minutes=BOUNCE_BURST_MINUTES):
+            started, n = now, 1
+        else:
+            n = (int(count) if count.isdigit() else 0) + 1
+        await self.state.set_setting(BOUNCE_BURST_KEY, f"{started.isoformat()}:{n}")
+        return n
+
+    async def _stop_after_sender_block(self, kind: str, reason: str, hint: str, prospect) -> None:
+        """Our own provider has blocked the mailbox from sending: stop until a
+        person unblocks it and presses Resume (the follow-ups to whoever this
+        report names stay queued: the address is fine)."""
+        current = await self.state.get_setting(KILL_SWITCH_KEY) or ""
+        text = f"{kind} ({reason[:140]}). {hint}"
+        if not current.startswith(kind):
+            await self.state.set_setting(KILL_SWITCH_KEY, text[:900])
+            logger.error(f"Handler: SENDING STOPPED — {text}")
+        who = prospect.email if prospect else "a recipient"
+        await self.state.log_action(action_type="sender_blocked", agent="handler",
+                                    details={"prospect": who, "kind": kind, "reason": reason[:200]})
 
     async def _guard_domain(self, prospect) -> int:
         """One nonexistent address at a company usually means the address

@@ -29,3 +29,12 @@ def _beat_in_tmp(monkeypatch, tmp_path):
     yield
     wake._pending.clear()
     wake._folder["path"] = None
+
+
+@pytest.fixture(autouse=True)
+def _graph_cursor_in_tmp(monkeypatch, tmp_path):
+    """The Microsoft provider's read position goes to the test's own folder,
+    never the repository's data/ (one test's position must not become the
+    next test's starting point)."""
+    from harvey.integrations import microsoft
+    monkeypatch.setattr(microsoft, "CURSOR_FILE", tmp_path / "graph_cursor.json")

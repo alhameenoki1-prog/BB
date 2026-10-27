@@ -796,3 +796,130 @@ async def test_instantly_deploys_nothing_while_replies_cannot_be_read(state):
         assert deployed == []
     finally:
         sender.config.channels.email.provider = "smtp"
+
+
+EXCHANGE_NDR = """Your message to {to} couldn't be delivered.
+
+Diagnostic information for administrators:
+Generating server: DB8PR05MB6012.eurprd05.prod.outlook.com
+{to}
+Remote Server returned '{code}'
+
+Original message headers:
+From: Harvey <harvey@x.co>
+To: {to}
+Message-ID: {mid}
+"""
+
+
+def _ndr(to, mid="<none@x.co>", code="550 5.1.1 RESOLVER.ADR.RecipNotFound; not found", pid="n1",
+         sender="postmaster@x.co", in_reply_to=""):
+    return InboundMessage(provider_id=pid, from_email=sender, subject=f"Undeliverable: hello",
+                          body=EXCHANGE_NDR.format(to=to, mid=mid, code=code), in_reply_to=in_reply_to, is_bounce=True)
+
+
+@pytest.mark.asyncio
+async def test_an_exchange_report_without_in_reply_to_is_matched_through_its_text(state):
+    """Exchange's reports carry no In-Reply-To: the quoted Message-ID, else
+    the address the report names, finds the email that bounced."""
+    pid = await seed_prospect(state, email="jane@acme.com", status="contacted")
+    item = await state.add_outbox_item(prospect_id=pid, to_email="jane@acme.com", subject="s", body="b",
+                                       send_at=_now_iso(), status="approved", campaign_id="c1", step=1)
+    await state.update_outbox_item(item, status="sent", message_id="<m1@x.co>", sent_at=_now_iso())
+    await state.add_outbox_item(prospect_id=pid, to_email="jane@acme.com", subject="again", body="b",
+                                send_at=_now_iso(), status="approved", campaign_id="c1", step=2)
+    provider = FakeProvider()
+    provider.inbound = [_ndr("jane@acme.com", mid="<m1@x.co>")]
+    handler = make_handler(state, provider)
+    assert await handler._run_native() is True
+    assert (await state.get_prospect(pid)).email_status == "invalid"
+    assert (await state.get_outbox_item(item))["error"].startswith("Bounced: 550 5.1.1")
+    assert len(await state.get_outbox(status="cancelled")) == 1
+    # No Message-ID either: the named address is enough.
+    other = await seed_prospect(state, email="bob@acme.com", status="contacted")
+    sent = await state.add_outbox_item(prospect_id=other, to_email="bob@acme.com", subject="s", body="b",
+                                       send_at=_now_iso(), status="approved", campaign_id="c1", step=1)
+    await state.update_outbox_item(sent, status="sent", sent_at=_now_iso())
+    provider.inbound = [_ndr("bob@acme.com", pid="n2")]
+    assert await handler._run_native() is True
+    assert (await state.get_prospect(other)).email_status == "invalid"
+    assert (await state.get_outbox_item(sent))["error"].startswith("Bounced:")
+
+
+@pytest.mark.asyncio
+async def test_a_mailbox_blocked_from_sending_stops_sending_until_resumed(state):
+    """Microsoft's "bad outbound sender" is a verdict on our mailbox: every
+    email bounces until an admin unblocks it. Sending stops (the kill
+    switch) with the fix in its text; the recipient is not marked invalid."""
+    pid = await seed_prospect(state, email="jane@acme.com", status="contacted")
+    item = await state.add_outbox_item(prospect_id=pid, to_email="jane@acme.com", subject="s", body="b",
+                                       send_at=_now_iso(), status="approved", campaign_id="c1", step=1)
+    await state.update_outbox_item(item, status="sent", message_id="<m1@x.co>", sent_at=_now_iso())
+    provider = FakeProvider()
+    provider.inbound = [_ndr("jane@acme.com", mid="<m1@x.co>",
+                             code="550 5.1.8 Access denied, bad outbound sender AS(42003)")]
+    handler = make_handler(state, provider)
+    assert await handler._run_native() is True
+    paused = await state.get_setting("sending_paused")
+    assert paused.startswith("your mailbox is blocked from sending") and "Restricted entities" in paused
+    assert (await state.get_prospect(pid)).email_status == "verified"         # the address is fine
+    # The sender respects it.
+    sender = make_sender(state, provider, require_approval=False)
+    await state.add_outbox_item(prospect_id=pid, to_email="jane@acme.com", subject="again", body="b",
+                                send_at=_now_iso(), status="approved", campaign_id="c1", step=2)
+    await sender.run()
+    assert provider.sent == []
+    # A notice from a mail system that matches nothing we sent still stops it (a forged one
+    # costs a press of Resume; two thousand more bounces cost the mailbox).
+    await state.set_setting("sending_paused", "")
+    provider.inbound = [_ndr("nobody@else.example", pid="n9", code="550 5.1.8 Access denied, bad outbound sender")]
+    await handler._run_native()
+    assert (await state.get_setting("sending_paused")).startswith("your mailbox is blocked")
+    # ...but not one from a plain address that names nobody we wrote to.
+    await state.set_setting("sending_paused", "")
+    provider.inbound = [_ndr("nobody@else.example", pid="n10", sender="prankster@else.example",
+                             code="550 5.1.8 Access denied, bad outbound sender")]
+    await handler._run_native()
+    assert await state.get_setting("sending_paused") == ""
+
+
+@pytest.mark.asyncio
+async def test_a_burst_of_bounces_stops_sending_before_the_daily_rate_does(state, monkeypatch):
+    """Ten bounces in fifteen minutes against few sends: stop now, not after
+    five percent of everything ever sent."""
+    import harvey.agents.handler as handler_mod
+    monkeypatch.setattr(handler_mod, "MIN_SENDS_FOR_KILL_SWITCH", 100000)     # the daily-rate rule out of the way
+    provider = FakeProvider()
+    handler = make_handler(state, provider)
+    for i in range(12):
+        pid = await seed_prospect(state, email=f"p{i}@acme.com", status="contacted")
+        item = await state.add_outbox_item(prospect_id=pid, to_email=f"p{i}@acme.com", subject="s", body="b",
+                                           send_at=_now_iso(), status="approved", campaign_id="c1", step=1)
+        await state.update_outbox_item(item, status="sent", message_id=f"<m{i}@x.co>", sent_at=_now_iso())
+    for i in range(9):
+        provider.inbound = [_ndr(f"p{i}@acme.com", mid=f"<m{i}@x.co>", pid=f"n{i}")]
+        await handler._run_native()
+    assert await state.get_setting("sending_paused") in ("", None)
+    provider.inbound = [_ndr("p9@acme.com", mid="<m9@x.co>", pid="n9")]
+    await handler._run_native()
+    paused = await state.get_setting("sending_paused")
+    assert paused.startswith("10 bounces within 15 minutes") and "12 sent in the last hour" in paused
+
+
+@pytest.mark.asyncio
+async def test_a_backlog_in_the_inbox_holds_follow_ups_and_counts_waiting_replies(state):
+    """A provider that read only part of a flood says so: the pass is
+    incomplete (follow-ups wait) and the dashboard learns how many replies
+    were read but not answered."""
+    await seed_prospect(state, email="jane@acme.com", status="contacted")
+    provider = FakeProvider()
+    provider.backlog_pending = True
+    provider.inbound = []
+    handler = make_handler(state, provider)
+    assert await handler._run_native() is False
+    assert handler.last_problem.startswith("the inbox has more new mail than one pass reads")
+    provider.backlog_pending = False
+    provider.inbound = [InboundMessage(provider_id="r1", from_email="jane@acme.com", subject="Re: hi", body="More?")]
+    assert await handler._run_native(model=False) is False
+    assert await state.get_setting("replies_waiting") == "1"
+    assert await handler._run_native() is True and await state.get_setting("replies_waiting") == ""

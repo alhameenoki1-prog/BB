@@ -9,6 +9,35 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **A Microsoft 365 mailbox that gets blocked now stops sending, and a
+  bounce flood no longer blinds the worker.** Three things went wrong
+  together when ~2,000 emails left an admin-app mailbox and Microsoft
+  restricted it: (1) every later email bounced with `550 5.1.8 Access
+  denied, bad outbound sender`, which the bounce table read as "no such
+  address" (the generic 5.1.x rule), so each report marked a good address
+  invalid instead of stopping the mailbox; (2) Exchange's reports carry no
+  In-Reply-To, so none matched the email it answered, nothing showed as
+  bounced in the Outbox, and an unmatched block was ignored; (3) the
+  thousands of reports pushed the inbox past the 40 pages one read allows,
+  so every read failed, no reply or bounce was handled at all, and the
+  dashboard said "replies couldn't all be read and handled" for hours.
+  Now: Microsoft's verdicts on the sender (`5.1.8`, `5.7.750`, `5.7.705`,
+  `5.7.708`, `5.7.511`, "bad outbound sender", "restricted from sending",
+  `mail_provider.SENDER_BLOCKED`) stop sending with the kill switch, whose
+  text says where to unblock (Defender → Review → Restricted entities) and
+  to send far fewer a day; a report is matched through the Message-ID it
+  quotes or the address it names (`bounced_recipient`,
+  `original_message_ids`, `StateManager.find_outbox_sent_to`), so bounced
+  emails show in the Outbox and dead addresses are marked; ten bounces in
+  fifteen minutes (against the last hour's sends) stop sending on their
+  own (`Handler._bounce_burst`); and the Graph provider reads from a saved
+  position, oldest first, forty pages a pass (`graph_cursor.json`,
+  `backlog_pending`, `rewind_to`), so a flood is worked through pass by
+  pass with follow-ups waiting until it is read. Exchange's own throttling
+  codes (`5.7.850`–`5.7.854`, `5.2.121`, `5.2.122`) pause sending as
+  "sending too fast or too much". The dashboard card also says how many
+  replies were read but wait for the AI (`replies_waiting`).
+
 - **First emails keep going out when the AI is rate-limited.** Sending
   used to wait whenever replies could not be read and handled — which is
   exactly what a rate-limited or paused model causes, every cycle — so even

@@ -88,6 +88,9 @@ SPEEDS = {
 # 30 messages a minute over SMTP, Google about 2,000 a day. This is the
 # ceiling Fast, Relay and Custom are held to on them.
 BUSINESS_PACE = {"per_cycle": 20, "send_every": 60, "concurrency": 2, "jitter": 2.0}
+# Above this many cold emails a day from one mailbox, the dashboard says so:
+# a provider's technical maximum (9,000 on Microsoft 365) is not a safe pace.
+SAFE_COLD_PER_DAY = 100
 CUSTOM_LIMITS = {"per_cycle": (1, 100), "send_every": (10, 3600), "jitter": (0.0, 120.0), "concurrency": (1, 16)}
 # Mail hosts that belong to a personal or office mailbox, not a sending
 # service: they throttle or lock an account that opens several connections
@@ -1500,6 +1503,12 @@ class Workspace:
                         note_link = "/apikey"
             elif skip and "quiet" not in skip:
                 return {"state": "stuck", "text": f"The sender is skipping its passes: {skip}.", "link": ""}
+            rows = await self._query("SELECT value FROM settings WHERE key = 'replies_waiting'")
+            waiting = int((rows[0]["value"] or 0) if rows and str(rows[0]["value"] or "").isdigit() else 0)
+            if waiting:
+                # Read from the mailbox, not yet answered: they are there, the model is not.
+                note = (f" {waiting} repl{'ies' if waiting != 1 else 'y'} came in and wait for the AI to answer "
+                        f"(the worker reads them again every pass).") + note
         for line in ([] if note else reversed(self.log_tail(80))):
             low = line.lower()
             if "harvey is paused" in low or "usage limit reached" in low or "not sending" in low:
@@ -1603,6 +1612,16 @@ class Workspace:
                            + replies)
         else:
             out["text"] = f"{sent_today} sent today, no daily limit set."
+        if (not warming and (allowed == 0 or allowed > SAFE_COLD_PER_DAY)
+                and (self.config() or {}).get("outreach", {}).get("use_template") is not None):
+            # The mailbox's own maximum is a technical limit, not a safe pace:
+            # Microsoft 365 and Google restrict a mailbox they see sending
+            # bulk mail long before it, and then every email bounces.
+            out["caution"] = (f"Cold email at more than {SAFE_COLD_PER_DAY} a day from one mailbox gets it blocked: "
+                              "Microsoft 365 and Google restrict mailboxes they see sending bulk mail, and then every "
+                              "email bounces until an admin unblocks it. 30 to 50 a day per mailbox, with the warm-up "
+                              "ramp on, is the pace that lasts.")
+            out["text"] += " " + out["caution"]
         return out
 
     async def sector_breakdown(self) -> dict:

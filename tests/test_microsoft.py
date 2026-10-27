@@ -26,6 +26,7 @@ class Graph:
         self.drafts = 0
         self.pages = {}         # inbox page number -> httpx.Response, or a dict
                                 # merged into that page's normal JSON body
+        self.filters = False    # honour $filter receivedDateTime ge (the read position)
 
     def __call__(self, request: httpx.Request):
         self.requests.append(request)
@@ -69,8 +70,14 @@ class Graph:
         top = int(params.get("$top") or params.get("t") or 50)
         skip = int(params.get("$skip", 0))
         page = skip // top + 1
-        body = {"value": self.inbox[skip:skip + top]}
-        if skip + top < len(self.inbox):
+        inbox = self.inbox
+        since = params.get("$filter", "")
+        if since.startswith("receivedDateTime ge ") and self.filters:
+            # Like Graph: only mail received at or after the date asked for
+            # (the fake's messages carry plain "...Z" stamps, so strings compare).
+            inbox = [m for m in inbox if (m.get("receivedDateTime") or "") >= since.split("ge ", 1)[1]]
+        body = {"value": inbox[skip:skip + top]}
+        if skip + top < len(inbox):
             body["@odata.nextLink"] = (
                 "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
                 f"?%24skip={skip + top}&t={top}&%24skiptoken=opaque{page}"
@@ -100,6 +107,7 @@ def graph(tmp_path, monkeypatch):
     token_file = tmp_path / "m365_token.json"
     token_file.write_text(json.dumps({"refresh_token": "rt-1", "tenant": "tenant-abc"}))
     monkeypatch.setattr(microsoft, "TOKEN_FILE", token_file)
+    monkeypatch.setattr(microsoft, "CURSOR_FILE", tmp_path / "graph_cursor.json")
     return Graph()
 
 
@@ -432,16 +440,61 @@ async def test_next_link_back_to_the_first_page_is_refused(graph):
 
 
 @pytest.mark.asyncio
-async def test_too_many_pages_fails_closed(graph, monkeypatch):
+async def test_a_flood_is_read_a_few_pages_at_a_time_from_where_the_last_pass_stopped(graph, monkeypatch):
+    """A bounce storm puts thousands of messages in the inbox: each pass
+    reads MAX_INBOX_PAGES of them, oldest first, says more waits
+    (backlog_pending), and the next pass carries on from the position the
+    last one reached instead of starting over."""
+    from datetime import datetime, timedelta, timezone
     monkeypatch.setattr(microsoft, "MAX_INBOX_PAGES", 3)
-    graph.inbox = [message(i) for i in range(10)]
-    with pytest.raises(GraphError, match="more than 3 pages"):
-        await provider(graph).get_replies(limit=3)
+    graph.filters = True
+    base = (datetime.now(timezone.utc) - timedelta(days=1)).replace(minute=0, second=0, microsecond=0)
+    stamp = lambda i: (base + timedelta(minutes=15 * i)).strftime("%Y-%m-%dT%H:%M:%SZ")   # yesterday, 15 min apart
+    graph.inbox = [{**message(i), "receivedDateTime": stamp(i)} for i in range(10)]
+    p = provider(graph)
+    first = await p.get_replies(limit=3)
+    assert [m.provider_id for m in first] == [f"m{i}" for i in range(9)] and p.backlog_pending
     assert len(graph.inbox_requests()) == 3
-
+    assert graph.inbox_requests()[0].url.params["$orderby"] == "receivedDateTime asc"
+    # The position: the newest message read, re-read with a little overlap next time.
+    assert json.loads(microsoft.CURSOR_FILE.read_text()) == {"/me": stamp(8)}
     graph.requests.clear()
-    graph.inbox = graph.inbox[:9]  # exactly 3 pages is fine
-    assert len(await provider(graph).get_replies(limit=3)) == 9
+    again = await p.get_replies(limit=3)
+    overlap = (base + timedelta(minutes=15 * 8 - 10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert graph.inbox_requests()[0].url.params["$filter"] == f"receivedDateTime ge {overlap}"
+    assert [m.provider_id for m in again] == ["m8", "m9"] and not p.backlog_pending
+    assert json.loads(microsoft.CURSOR_FILE.read_text()) == {"/me": stamp(9)}
+    # Nothing new since: only the overlap comes back and the position stays.
+    graph.requests.clear()
+    assert [m.provider_id for m in await p.get_replies(limit=3)] == ["m9"]
+    assert json.loads(microsoft.CURSOR_FILE.read_text()) == {"/me": stamp(9)}
+
+
+@pytest.mark.asyncio
+async def test_a_message_left_for_later_is_read_again(graph):
+    """The handler could not process a message (the model was down): the
+    position goes back to just before it, so it comes back next pass."""
+    graph.inbox = [{**message(i), "receivedDateTime": f"2026-10-14T15:{i:02d}:00Z"} for i in range(3)]
+    p = provider(graph)
+    replies = await p.get_replies()
+    assert json.loads(microsoft.CURSOR_FILE.read_text())["/me"] == "2026-10-14T15:02:00Z"
+    p.rewind_to(replies[1])
+    assert json.loads(microsoft.CURSOR_FILE.read_text())["/me"] == "2026-10-14T15:00:59Z"
+    p.rewind_to(replies[2])                                           # never forward
+    assert json.loads(microsoft.CURSOR_FILE.read_text())["/me"] == "2026-10-14T15:00:59Z"
+    # A week-old position never pulls the window back past the week.
+    microsoft.CURSOR_FILE.write_text(json.dumps({"/me": "2020-01-01T00:00:00Z"}))
+    graph.requests.clear()
+    await p.get_replies()
+    since = graph.inbox_requests()[0].url.params["$filter"].split("ge ")[1]
+    assert since.startswith("202") and since > "2026-01-01T00:00:00Z"
+
+
+def test_graph_times_are_read_with_seven_decimals_and_offsets():
+    from datetime import datetime, timezone
+    assert microsoft._parse_time("2026-10-14T15:00:00.1234567Z") == datetime(2026, 10, 14, 15, 0, 0, 123456, tzinfo=timezone.utc)
+    assert microsoft._parse_time("2026-10-14T15:00:00+02:00").utcoffset().total_seconds() == 7200
+    assert microsoft._parse_time("") is None and microsoft._parse_time("yesterday") is None
 
 
 @pytest.mark.asyncio

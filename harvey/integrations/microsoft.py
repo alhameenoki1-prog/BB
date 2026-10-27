@@ -59,9 +59,17 @@ INBOX_MESSAGES = "/mailFolders/inbox/messages"
 APP_SCOPE = "https://graph.microsoft.com/.default"
 # Graph refuses file attachments above 3 MB on a single POST.
 MAX_GRAPH_ATTACHMENT = 3 * 1024 * 1024
-# Inbox pages read per cycle (limit messages each). More than this and the
-# read fails, and sending is held, rather than acting on a partial inbox.
+# Inbox pages read per pass (limit messages each). A flood (a bounce storm
+# after a blocked send) is read this much at a time, oldest first, from the
+# position the last pass reached; the rest waits for the next pass and the
+# handler is told there is more (backlog_pending), so follow-ups wait.
 MAX_INBOX_PAGES = 40
+# The read position per mailbox (the newest receivedDateTime handled), kept
+# in a small file like the IMAP cursor. Each pass re-reads this much before
+# it, so a message that arrived while a page was being read is not missed
+# (the handler skips what it has already processed).
+CURSOR_FILE = DATA_DIR / "graph_cursor.json"
+CURSOR_OVERLAP = timedelta(minutes=10)
 LOGIN = "https://login.microsoftonline.com"
 SCOPE = (
     "offline_access https://graph.microsoft.com/Mail.ReadWrite "
@@ -105,6 +113,28 @@ def _save_token(data: dict):
 
 def _token_url(tenant: str) -> str:
     return f"{LOGIN}/{tenant or 'organizations'}/oauth2/v2.0/token"
+
+
+def _parse_time(value) -> datetime | None:
+    """A Graph receivedDateTime (ISO 8601, Z or an offset) as an aware
+    datetime; None when it is missing or unreadable."""
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    # Graph gives seven fractional digits; fromisoformat takes at most six.
+    if "." in text:
+        head, _, rest = text.partition(".")
+        digits = ""
+        while rest and rest[0].isdigit():
+            digits += rest[0]; rest = rest[1:]
+        text = head + ("." + digits[:6] if digits else "") + rest
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
 class MicrosoftProvider(MailProvider):
@@ -295,23 +325,37 @@ class MicrosoftProvider(MailProvider):
         except GraphError as e:
             logger.warning(f"Microsoft: couldn't delete unsent draft {draft_id}: {e}")
 
+    # True after a read that stopped at MAX_INBOX_PAGES with more to come:
+    # the handler then reports the pass incomplete (follow-ups wait) and the
+    # next pass carries on from the position this one reached.
+    backlog_pending: bool = False
+
     async def get_replies(self, limit: int = 50) -> list[InboundMessage]:
-        """The last week of the inbox, newest first, minus your own mail.
-        Every page is read (``limit`` is only the page size), following
-        Graph's @odata.nextLink as-is. Raises on any failure, including a
-        later page: the heartbeat then holds sends, because an unread reply
-        can't have stopped its follow-ups. Never returns a partial inbox."""
+        """New inbox mail since the last read position (at most the last
+        week), oldest first, minus your own mail. Pages are followed as
+        Graph gives them (``limit`` is only the page size). Raises on any
+        failure, including a later page: the heartbeat then holds sends,
+        because an unread reply can't have stopped its follow-ups. A flood
+        is read MAX_INBOX_PAGES pages at a time: what was read is returned,
+        ``backlog_pending`` says more waits, and the position moves on so
+        the next pass continues rather than starting over."""
         me = await self._check_identity()
-        since = (datetime.now(timezone.utc) - timedelta(days=REPLY_WINDOW_DAYS))
+        now = datetime.now(timezone.utc)
+        since = now - timedelta(days=REPLY_WINDOW_DAYS)
+        cursor = self._load_cursor()
+        if cursor:
+            since = max(since, cursor - CURSOR_OVERLAP)
         url = str(httpx.URL(f"{GRAPH}{self._user_path}{INBOX_MESSAGES}", params={
             "$filter": f"receivedDateTime ge {since.strftime('%Y-%m-%dT%H:%M:%SZ')}",
-            "$orderby": "receivedDateTime desc",
+            "$orderby": "receivedDateTime asc",
             "$top": str(max(1, int(limit))),
             "$select": _SELECT,
         }))
         seen_urls = {url}
         seen_ids = set()
         out = []
+        self.backlog_pending = False
+        newest = None
         for page in range(1, MAX_INBOX_PAGES + 1):
             data = await self._request_url(
                 "GET", url, headers={"Prefer": 'outlook.body-content-type="text"'},
@@ -321,20 +365,69 @@ class MicrosoftProvider(MailProvider):
                 raise GraphError(f"inbox page {page}: 'value' is missing or not a list")
             for item in items:
                 msg = self._parse_message(item)
+                if msg is None:
+                    continue
+                when = _parse_time(msg.date)
+                if when and (newest is None or when > newest):
+                    newest = when
                 # A message can repeat across pages if mail arrives mid-read.
-                if msg and msg.from_email != me and msg.provider_id not in seen_ids:
+                if msg.from_email != me and msg.provider_id not in seen_ids:
                     seen_ids.add(msg.provider_id)
                     out.append(msg)
             next_link = data.get("@odata.nextLink")
             if next_link is None:
-                return out
+                break
             url = _checked_next_link(next_link, self._user_path)
             if url in seen_urls:
                 raise GraphError(f"inbox page {page}: @odata.nextLink repeats an earlier page")
             seen_urls.add(url)
-        raise GraphError(
-            f"inbox has more than {MAX_INBOX_PAGES} pages; refusing a partial read"
-        )
+        else:
+            self.backlog_pending = True
+            logger.warning(f"Microsoft: the inbox has more than {MAX_INBOX_PAGES} pages of new mail; "
+                           f"{len(out)} read this pass, the rest next pass.")
+        if newest is not None:
+            self._save_cursor(newest)
+        return out
+
+    def _cursor_key(self) -> str:
+        return self._user_path
+
+    def _cursor_path(self) -> Path:
+        return CURSOR_FILE
+
+    def _load_cursor(self) -> datetime | None:
+        try:
+            raw = (json.loads(self._cursor_path().read_text()) or {}).get(self._cursor_key())
+        except (OSError, ValueError):
+            return None
+        return _parse_time(raw) if isinstance(raw, str) else None
+
+    def _save_cursor(self, when: datetime) -> None:
+        path = self._cursor_path()
+        try:
+            data = json.loads(path.read_text()) if path.exists() else {}
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data[self._cursor_key()] = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data))
+        except OSError as e:
+            logger.debug(f"Microsoft: read position not saved: {e}")
+
+    def rewind_to(self, message: InboundMessage) -> None:
+        """A message the handler could not process (the model was down, the
+        worker was stopped) is read again next time: the position goes back
+        to just before it. Messages come oldest first, so later ones in the
+        same batch are re-read too (the handler skips what it has done)."""
+        when = _parse_time(getattr(message, "date", ""))
+        if when is None:
+            return
+        cursor = self._load_cursor()
+        if cursor is None or cursor > when:
+            self._save_cursor(when - timedelta(seconds=1))
 
     async def get_unanswered(self, days: int = 30, limit: int = 100) -> list[InboundMessage]:
         """Inbox mail from the last ``days`` days whose conversation has no
@@ -415,7 +508,7 @@ class MicrosoftProvider(MailProvider):
             # The Graph id: what createReply needs to answer this message.
             thread_ref=msg_id,
             date=text(item.get("receivedDateTime"), "receivedDateTime"),
-            is_bounce=looks_like_bounce(from_email, subject),
+            is_bounce=looks_like_bounce(from_email, subject) or "x-ms-exchange-message-is-ndr" in headers,
             headers=headers,
         )
 
