@@ -287,14 +287,16 @@
     </ol>
     <p class="small muted">Personal outlook.com / hotmail.com accounts have no tenant admin and can't use this. For those, see the Outlook instructions under Option B.</p>
   </details>
-  {% if m365_configured %}<p style="margin-top:10px"><span class="tag good">{{ icon('check', 13) }} Saved</span> {{ m365.m365_mailbox }} · tenant <code>{{ m365.m365_tenant_id }}</code> · secret <code>{{ m365_masked }}</code></p>{% endif %}
+  {% if m365_configured %}<p style="margin-top:10px"><span class="tag good">{{ icon('check', 13) }} Saved</span> {{ m365.m365_mailbox }}{% if m365_reply_to %} · replies to {{ m365_reply_to }}{% endif %} · tenant <code>{{ m365.m365_tenant_id }}</code> · secret <code>{{ m365_masked }}</code></p>{% endif %}
   <form method="post" action="/mailbox/m365">
     <div class="row">
       <div><label>Directory (tenant) ID *</label><input type="text" name="m365_tenant_id" value="{{ m365.m365_tenant_id }}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required></div>
       <div><label>Application (client) ID *</label><input type="text" name="m365_client_id" value="{{ m365.m365_client_id }}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required></div>
       <div><label>Client secret value {{ '(blank keeps the saved one)' if m365_configured else '*' }}</label><input type="password" name="m365_client_secret" autocomplete="off" {{ '' if m365_configured else 'required' }}></div>
       <div><label>Mailbox to send from *</label><input type="email" name="m365_mailbox" value="{{ m365.m365_mailbox }}" placeholder="outreach@yourcompany.com" required></div>
+      <div><label>Reply-To <span class="muted" style="font-weight:400">(optional)</span></label><input type="email" name="m365_reply_to" value="{{ m365_reply_to }}" placeholder="you@yourcompany.com"></div>
     </div>
+    <p class="hint">Replies go to this address instead of the sending mailbox. When it is a mailbox in the same tenant, the worker reads its inbox too: a reply still stops that person's follow-ups and is answered from there, in the thread. Only replies from people on your list are taken from it; the rest of that inbox is left alone. An outside address works, but then the worker can't see who replied, so follow-ups wait.</p>
     <p style="margin-top:12px"><button type="submit">{{ icon('check', 15) }} Test and save</button> <span class="muted small">The connection is tested before anything is saved.</span></p>
   </form>
   {% if m365_configured %}

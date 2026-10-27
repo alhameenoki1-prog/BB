@@ -827,3 +827,96 @@ def test_next_link_check_follows_the_mailbox_path():
     assert microsoft._checked_next_link(link, "/users/outreach@corp.example") == link
     with pytest.raises(GraphError):
         microsoft._checked_next_link(link)  # the /me provider must not follow it
+
+
+class ReplyToGraph(AppGraph):
+    """The admin-app fake plus a second mailbox in the tenant, the Reply-To."""
+
+    OTHER = "/v1.0/users/replies@corp.example"
+
+    def __init__(self, readable=True):
+        super().__init__()
+        self.other_inbox = []
+        self.readable = readable
+        self.other_sent = []
+
+    def __call__(self, request):
+        path = request.url.path
+        if path.startswith(self.OTHER):
+            self.original_paths.append(path)
+            self.requests.append(request)
+            if not self.readable:
+                return httpx.Response(404, json={"error": {"code": "ErrorInvalidUser"}})
+            rest = path[len(self.OTHER):]
+            if rest == "/mailFolders/inbox/messages":
+                return httpx.Response(200, json={"value": self.other_inbox})
+            if rest.endswith("/createReply"):
+                return httpx.Response(201, json={"id": "rtdraft", "internetMessageId": "<rtdraft@corp.example>",
+                                                 "conversationId": "rtconv"})
+            if request.method == "PATCH":
+                return httpx.Response(200, json={})
+            if rest.endswith("/send"):
+                self.other_sent.append(rest)
+                return httpx.Response(202)
+            if rest.startswith("/messages/") and request.method == "GET":
+                wanted = rest.rsplit("/", 1)[1]
+                for item in self.other_inbox:
+                    if item.get("id") == wanted:
+                        return httpx.Response(200, json=item)
+                return httpx.Response(404, json={"error": {"code": "ErrorItemNotFound"}})
+            return httpx.Response(404, json={"error": {"code": "notFound"}})
+        return super().__call__(request)
+
+
+class ReplyToEnv(AppEnv):
+    m365_reply_to = "Replies@Corp.example"
+
+
+@pytest.mark.asyncio
+async def test_admin_app_sends_with_reply_to_and_reads_that_inbox(tmp_path, monkeypatch):
+    """Every email carries the Reply-To; the Reply-To mailbox's inbox is read
+    too, its messages tagged and their ids routed back to it; a reply to one
+    of them is drafted there, in its thread."""
+    monkeypatch.setattr(microsoft, "CURSOR_FILE", tmp_path / "graph_cursor.json")
+    graph = ReplyToGraph()
+    p = MicrosoftAppProvider(config=_Config(), env=ReplyToEnv(), transport=httpx.MockTransport(graph))
+    assert p.reply_to == "replies@corp.example"
+    result = await p.send_email("jane@acme.example", "Hello", "Hi Jane,\n\nA question.\n\nJo")
+    assert result.ok
+    draft = [r for r in graph.requests if r.method == "POST" and r.url.path.endswith("/me/messages")][0]
+    assert json.loads(draft.content)["replyTo"] == [{"emailAddress": {"address": "replies@corp.example"}}]
+    graph.other_inbox = [{**message(7, sender="jane@acme.example"), "receivedDateTime": "2026-10-27T09:00:00Z"},
+                         {**message(8, sender="replies@corp.example"), "receivedDateTime": "2026-10-27T09:05:00Z"}]
+    replies = await p.get_replies()
+    theirs = [m for m in replies if m.headers.get(microsoft.REPLY_TO_HEADER)]
+    assert [m.provider_id for m in theirs] == ["rt|m7"] and theirs[0].thread_ref == "rt|m7"
+    assert p.read_problem == ""
+    # Fetched back by id from the right mailbox.
+    again = await p.fetch_message("rt|m7")
+    assert again.provider_id == "rt|m7" and again.headers[microsoft.REPLY_TO_HEADER] == "/users/replies@corp.example"
+    # Answered from the Reply-To mailbox, in its thread.
+    result = await p.send_email("jane@acme.example", "Re: Hello", "Thanks, Tuesday works.", thread_ref="rt|m7")
+    assert result.ok and graph.other_sent == ["/messages/rtdraft/send"]
+    assert any(r.url.path == "/v1.0/users/replies@corp.example/messages/m7/createReply" for r in graph.requests)
+    # Its position is kept apart from the sending mailbox's.
+    p.advance_to(theirs[0])
+    data = json.loads((tmp_path / "graph_cursor.json").read_text())
+    assert data["/users/replies@corp.example"] == "2026-10-27T09:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_a_reply_to_the_app_cannot_read_holds_follow_ups(tmp_path, monkeypatch):
+    """An outside Reply-To (or one the app is not allowed to read): sending
+    works, the connection test says so, and every read reports the problem
+    so the handler holds follow-ups."""
+    monkeypatch.setattr(microsoft, "CURSOR_FILE", tmp_path / "graph_cursor.json")
+    graph = ReplyToGraph(readable=False)
+    p = MicrosoftAppProvider(config=_Config(), env=ReplyToEnv(), transport=httpx.MockTransport(graph))
+    ok, detail = await p.test_connection()
+    assert ok and "cannot read that mailbox" in detail and "follow-ups wait" in detail
+    await p.get_replies()
+    assert p.read_problem.startswith("the mailbox could not be read: replies go to replies@corp.example")
+    # The same address as the sender: no Reply-To at all.
+    class Same(AppEnv):
+        m365_reply_to = "outreach@corp.example"
+    assert MicrosoftAppProvider(config=_Config(), env=Same(), transport=httpx.MockTransport(AppGraph())).reply_to == ""

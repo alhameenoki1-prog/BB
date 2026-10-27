@@ -72,6 +72,10 @@ MAX_INBOX_PAGES = 40
 # it, so a message that arrived while a page was being read is not missed
 # (the handler skips what it has already processed).
 CURSOR_FILE = DATA_DIR / "graph_cursor.json"
+# A message read from the Reply-To mailbox: its id carries this prefix, so a
+# reply to it is drafted there (createReply) and it is fetched back from there.
+REPLY_TO_REF = "rt|"
+REPLY_TO_HEADER = "x-bb-reply-to-mailbox"
 CURSOR_OVERLAP = timedelta(minutes=10)
 # Once this often a pass reads the whole week instead of from the position:
 # a reply the junk filter held and the person moved to the Inbox hours
@@ -290,34 +294,43 @@ class MicrosoftProvider(MailProvider):
                      else {"contentType": "Text", "content": plain}),
             "toRecipients": [{"emailAddress": {"address": to_email}}],
         }
+        reply_to = getattr(self, "reply_to", "") or ""
+        if reply_to:
+            content["replyTo"] = [{"emailAddress": {"address": reply_to}}]
         graph_attachments = _graph_attachments(image_path if html else None, attachments)
         draft = None
+        # A message that came into the Reply-To mailbox is answered from
+        # there, in its thread (that is where the conversation lives).
+        user_path, ref = self._user_path, thread_ref
+        if thread_ref.startswith(REPLY_TO_REF) and reply_to:
+            user_path, ref = f"/users/{reply_to}", thread_ref[len(REPLY_TO_REF):]
         try:
             await self._check_identity()
-            if thread_ref:
+            if ref:
                 try:
                     draft = await self._request(
-                        "POST", f"{self._user_path}/messages/{thread_ref}/createReply"
+                        "POST", f"{user_path}/messages/{ref}/createReply"
                     )
                     await self._request(
-                        "PATCH", f"{self._user_path}/messages/{draft['id']}", json=content)
+                        "PATCH", f"{user_path}/messages/{draft['id']}", json=content)
                 except GraphError as e:
                     # Their message is gone (deleted/moved): send unthreaded.
                     logger.warning(f"Microsoft: createReply failed ({e}); sending as new.")
                     if draft and draft.get("id"):
-                        await self._delete_draft(draft["id"])
+                        await self._delete_draft(draft["id"], user_path)
                     draft = None
+                    user_path = self._user_path
             if draft is None:
                 draft = await self._request(
-                    "POST", f"{self._user_path}/messages", json=content)
+                    "POST", f"{user_path}/messages", json=content)
             for attachment in graph_attachments:
                 await self._request(
-                    "POST", f"{self._user_path}/messages/{draft['id']}/attachments",
+                    "POST", f"{user_path}/messages/{draft['id']}/attachments",
                     json=attachment)
-            await self._request("POST", f"{self._user_path}/messages/{draft['id']}/send")
+            await self._request("POST", f"{user_path}/messages/{draft['id']}/send")
         except (GraphError, KeyError) as e:
             if draft and draft.get("id"):
-                await self._delete_draft(draft["id"])
+                await self._delete_draft(draft["id"], user_path)
             logger.error(f"Microsoft send failed to {to_email}: {e}")
             return SendResult(ok=False, error=str(e)[:300])
         return SendResult(
@@ -326,9 +339,9 @@ class MicrosoftProvider(MailProvider):
             thread_ref=draft.get("conversationId", ""),
         )
 
-    async def _delete_draft(self, draft_id: str):
+    async def _delete_draft(self, draft_id: str, user_path: str = ""):
         try:
-            await self._request("DELETE", f"{self._user_path}/messages/{draft_id}")
+            await self._request("DELETE", f"{user_path or self._user_path}/messages/{draft_id}")
         except GraphError as e:
             logger.warning(f"Microsoft: couldn't delete unsent draft {draft_id}: {e}")
 
@@ -377,6 +390,43 @@ class MicrosoftProvider(MailProvider):
             stamps = [t for t in (newest, junk_newest) if t is not None]
             if stamps:
                 self._save_cursor(max(stamps))
+        self.read_problem = ""
+        if getattr(self, "reply_to", ""):
+            out += await self._read_reply_to_mailbox(me, limit, now)
+        return out
+
+    # A part of the mail that could not be read (the Reply-To mailbox): the
+    # handler reports the pass incomplete with this cause, so follow-ups wait.
+    read_problem: str = ""
+
+    async def _read_reply_to_mailbox(self, me: str, limit: int, now: datetime) -> list[InboundMessage]:
+        """The Reply-To mailbox's inbox, from its own position: the human
+        replies to our emails land there. Each message is tagged so the
+        handler takes only replies from people on the list (that inbox is
+        someone's ordinary mail too), and so a reply goes back from there."""
+        path = f"/users/{self.reply_to}"
+        since = now - timedelta(days=REPLY_WINDOW_DAYS)
+        cursor = self._load_cursor(path)
+        if cursor:
+            since = max(since, cursor - CURSOR_OVERLAP)
+        got: list[InboundMessage] = []
+        try:
+            newest = await self._read_folder(INBOX_MESSAGES, since, self.reply_to, limit, set(), got, user_path=path)
+        except GraphError as e:
+            self.read_problem = (f"the mailbox could not be read: replies go to {self.reply_to}, whose inbox this app "
+                                 f"cannot read ({str(e)[:120]})")
+            logger.warning(f"Microsoft: {self.read_problem}")
+            return []
+        out = []
+        for msg in got:
+            if msg.from_email in (me, self.reply_to):
+                continue
+            msg.headers[REPLY_TO_HEADER] = path
+            msg.provider_id = REPLY_TO_REF + msg.provider_id
+            msg.thread_ref = msg.provider_id
+            out.append(msg)
+        if not out and newest is not None:
+            self._save_cursor(newest, path)
         return out
 
     async def fetch_message(self, provider_id: str) -> InboundMessage | None:
@@ -384,16 +434,31 @@ class MicrosoftProvider(MailProvider):
         the model and comes back for); None when it is gone."""
         if not provider_id or "/" in provider_id or "?" in provider_id:
             return None
+        path, graph_id = self._user_path, provider_id
+        foreign = provider_id.startswith(REPLY_TO_REF)
+        if foreign:
+            if not getattr(self, "reply_to", ""):
+                return None
+            path, graph_id = f"/users/{self.reply_to}", provider_id[len(REPLY_TO_REF):]
         try:
             data = await self._request(
-                "GET", f"{self._user_path}/messages/{provider_id}",
+                "GET", f"{path}/messages/{graph_id}",
                 params={"$select": _SELECT}, headers={"Prefer": 'outlook.body-content-type="text"'},
             )
         except GraphError as e:
             if "Graph 404" in str(e):
                 return None
             raise
-        return self._parse_message(data)
+        msg = self._parse_message(data)
+        if msg is not None and foreign:
+            msg.headers[REPLY_TO_HEADER] = path
+            msg.provider_id = msg.thread_ref = provider_id
+        return msg
+
+    @staticmethod
+    def _key_of(message) -> str:
+        """Which mailbox's position a message belongs to ("" = the sending one)."""
+        return str((getattr(message, "headers", None) or {}).get(REPLY_TO_HEADER) or "")
 
     def advance_to(self, message: InboundMessage) -> None:
         """The handler has dealt with this message (or put it aside by id):
@@ -401,17 +466,20 @@ class MicrosoftProvider(MailProvider):
         when = _parse_time(getattr(message, "date", ""))
         if when is None:
             return
-        cursor = self._load_cursor()
+        key = self._key_of(message)
+        cursor = self._load_cursor(key)
         if cursor is None or when > cursor:
-            self._save_cursor(when)
+            self._save_cursor(when, key)
 
     async def _read_folder(self, folder: str, since: datetime, me: str, limit: int, seen_ids: set,
-                           out: list, reports_only: bool = False, sweep: bool = False) -> datetime | None:
+                           out: list, reports_only: bool = False, sweep: bool = False,
+                           user_path: str = "") -> datetime | None:
         """Read one folder from ``since``, oldest first, at most
         MAX_INBOX_PAGES pages (backlog_pending when more waits), appending
         to ``out`` (only delivery reports with ``reports_only``). Returns the
         newest receivedDateTime seen, or None."""
-        url = str(httpx.URL(f"{GRAPH}{self._user_path}{folder}", params={
+        user_path = user_path or self._user_path
+        url = str(httpx.URL(f"{GRAPH}{user_path}{folder}", params={
             "$filter": f"receivedDateTime ge {since.strftime('%Y-%m-%dT%H:%M:%SZ')}",
             "$orderby": "receivedDateTime asc",
             "$top": str(max(1, int(limit))),
@@ -444,7 +512,7 @@ class MicrosoftProvider(MailProvider):
             next_link = data.get("@odata.nextLink")
             if next_link is None:
                 break
-            url = _checked_next_link(next_link, self._user_path, folder)
+            url = _checked_next_link(next_link, user_path, folder)
             if url in seen_urls:
                 raise GraphError(f"inbox page {page}: @odata.nextLink repeats an earlier page")
             seen_urls.add(url)
@@ -473,16 +541,18 @@ class MicrosoftProvider(MailProvider):
             return {}
         return data if isinstance(data, dict) else {}
 
-    def _load_cursor(self) -> datetime | None:
-        raw = self._cursor_data().get(self._cursor_key())
+    def _load_cursor(self, key: str = "") -> datetime | None:
+        raw = self._cursor_data().get(key or self._cursor_key())
         return _parse_time(raw) if isinstance(raw, str) else None
 
     def _load_swept(self) -> datetime | None:
         raw = self._cursor_data().get(self._cursor_key() + ":swept")
         return _parse_time(raw) if isinstance(raw, str) else None
 
-    def _save_cursor(self, when: datetime) -> None:
-        self._save_stamp(self._cursor_key(), when)
+    def _save_cursor(self, when: datetime, key: str = "") -> None:
+        self._save_stamp(key or self._cursor_key(), when)
+        if key:
+            return
         if self._load_swept() is None:
             # The first position counts as a sweep: the next one is due in an hour.
             self._save_swept(datetime.now(timezone.utc))
@@ -508,9 +578,10 @@ class MicrosoftProvider(MailProvider):
         when = _parse_time(getattr(message, "date", ""))
         if when is None:
             return
-        cursor = self._load_cursor()
+        key = self._key_of(message)
+        cursor = self._load_cursor(key)
         if cursor is None or cursor > when:
-            self._save_cursor(when - timedelta(seconds=1))
+            self._save_cursor(when - timedelta(seconds=1), key)
 
     async def get_unanswered(self, days: int = 30, limit: int = 100) -> list[InboundMessage]:
         """Inbox mail from the last ``days`` days whose conversation has no
@@ -630,6 +701,8 @@ class MicrosoftAppProvider(MicrosoftProvider):
         self.mailbox = (getattr(env, "m365_mailbox", "") or "").strip().lower()
         self.tenant = getattr(env, "m365_tenant_id", "") or ""
         self._user_path = f"/users/{self.mailbox}"
+        reply_to = (getattr(env, "m365_reply_to", "") or "").strip().lower()
+        self.reply_to = reply_to if reply_to and reply_to != self.mailbox else ""
 
     def is_configured(self) -> bool:
         return bool(self.client_id and self.client_secret and self.tenant and self.mailbox)
@@ -702,6 +775,15 @@ class MicrosoftAppProvider(MicrosoftProvider):
             elif "Graph 404" in text:
                 text += " — no mailbox with that address in this tenant (check M365_MAILBOX)."
             return False, text[:500]
+        if self.reply_to:
+            try:
+                await self._request("GET", f"/users/{self.reply_to}{INBOX_MESSAGES}",
+                                    params={"$top": "1", "$select": "id"})
+            except GraphError:
+                return True, (f"Connected as {self.mailbox} (admin app). Replies go to {self.reply_to}, but this app "
+                              "cannot read that mailbox, so the worker cannot see who answered: follow-ups wait and "
+                              "replies are not answered for you. Use a mailbox in this tenant to have them read.")
+            return True, f"Connected as {self.mailbox} (admin app); replies go to {self.reply_to}, read too"
         return True, f"Connected as {self.mailbox} (admin app)"
 
 

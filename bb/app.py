@@ -27,6 +27,7 @@ from bb.mail_autoconfig import guess_settings
 from bb.mail_paste import parse_pasted_login, to_smtp_fields
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
+from harvey.listclean import EMAIL_RE
 from bb.workspaces import (_template_variants_from_form, ASKS, ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
                            MAX_INBOX_LINKS, MAX_SECTOR_MESSAGES, MAX_TEMPLATE_VARIANTS, MAX_TEST_SEND, OUTREACH_MODES, MAX_SECTOR_NEEDS,
                            SECTOR_LABELS, SPEEDS, TEMPLATE_VARIANTS,
@@ -148,7 +149,8 @@ async def test_m365(settings_dict: dict) -> tuple[bool, str]:
 
     env = SimpleNamespace(m365_tenant_id=settings_dict["m365_tenant_id"], m365_client_id=settings_dict["m365_client_id"],
                           m365_client_secret=settings_dict["m365_client_secret"],
-                          m365_mailbox=settings_dict["m365_mailbox"])
+                          m365_mailbox=settings_dict["m365_mailbox"],
+                          m365_reply_to=settings_dict.get("m365_reply_to", ""))
     try:
         return await MicrosoftAppProvider(None, env).test_connection()
     except Exception as e:
@@ -766,7 +768,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             smtp_configured=ws.smtp_configured(),
                             smtp_masked=ws.mask(smtp["smtp_password"]),
                             m365={**m365, "m365_client_secret": ""}, m365_configured=ws.m365_configured(),
-                            m365_masked=ws.mask(m365["m365_client_secret"]),
+                            m365_reply_to=ws.m365_reply_to(), m365_masked=ws.mask(m365["m365_client_secret"]),
                             sending=sending, report=report, host_report=host_report, health=health,
                             redirect_uri=gmail_oauth.redirect_uri(settings))
 
@@ -816,10 +818,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/mailbox", error=f"Not saved: that mailbox already sends for the campaign {taken} (one campaign per account).")
         if not all(m365.values()):
             return _redirect("/mailbox", error="Tenant ID, client ID, client secret and mailbox are all required.")
-        ok, detail = await test_m365(m365)
+        reply_to = str(form.get("m365_reply_to", "") or "").strip().strip("<>").lower()
+        if reply_to == m365["m365_mailbox"]:
+            reply_to = ""
+        if reply_to and not EMAIL_RE.match(reply_to):
+            return _redirect("/mailbox", error=f"Not saved: the Reply-To {reply_to!r} is not an email address.")
+        ok, detail = await test_m365({**m365, "m365_reply_to": reply_to})
         if not ok:
             return _redirect("/mailbox", error=f"Not saved: {detail}")
-        ws.save_secrets(**m365)
+        ws.save_secrets(**m365, m365_reply_to=reply_to)
         ws.set_mail_provider("microsoft_app")
         ws.clear_mailbox_problem()
         ws.rewrite_config()
@@ -831,7 +838,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace_for(user)
         if not ws.m365_configured():
             return _redirect("/mailbox", error="No Microsoft 365 app settings saved yet.")
-        ok, detail = await test_m365(ws.m365_settings())
+        ok, detail = await test_m365({**ws.m365_settings(), "m365_reply_to": ws.m365_reply_to()})
         return _redirect("/mailbox", msg=detail if ok else "", error="" if ok else detail)
 
     @app.post("/mailbox/m365/remove")
@@ -839,7 +846,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace_for(user)
         if ws.worker_running() and ws.mail_provider() == "microsoft_app":
             await ws.stop_worker("the Microsoft 365 settings were removed")
-        ws.save_secrets(**{k: "" for k in ws.m365_settings()})
+        ws.save_secrets(**{k: "" for k in ws.m365_settings()}, m365_reply_to="")
         ws.set_mail_provider("gmail" if ws.gmail_connected() else ("microsoft" if ws.microsoft_connected() else "smtp"))
         ws.rewrite_config()
         await ws.restart_worker_if_running("the new mailbox settings")

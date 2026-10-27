@@ -528,7 +528,13 @@ class Handler:
             consumed = True
             parked = False
             try:
-                if msg.is_bounce:
+                if (msg.headers or {}).get("x-bb-reply-to-mailbox") and (
+                        msg.is_bounce or not await self._is_reply_from_the_list(msg)):
+                    # The Reply-To mailbox is someone's ordinary inbox too: only
+                    # replies from people on the list are ours (its own bounces
+                    # and other mail are not).
+                    pass
+                elif msg.is_bounce:
                     if is_delay_notice(msg.subject, msg.body):
                         # Still trying, not failed: the address is fine. A final
                         # report follows if it gives up.
@@ -611,6 +617,13 @@ class Handler:
             await self.state.set_setting(DEFERRED_KEY, json.dumps(deferred) if deferred else "")
         except Exception:
             pass
+        problem = getattr(self.provider, "read_problem", "") or ""
+        if isinstance(problem, str) and problem:
+            # A part of the mail could not be read (the Reply-To mailbox): a
+            # reply there may be unseen, so follow-ups wait.
+            complete = False
+            if not self.last_problem:
+                self.last_problem = problem
         if getattr(self.provider, "backlog_pending", False):
             # A flood (a bounce storm): one pass reads part of it; the rest
             # next pass. Follow-ups wait until it is all read.
@@ -721,6 +734,10 @@ class Handler:
             return bool(enquiry.need_for(outreach, getattr(prospect, "industry", "") or "")["url"])
         except Exception:
             return False
+
+    async def _is_reply_from_the_list(self, msg) -> bool:
+        known = await self.state.get_prospect_by_email(msg.from_email)
+        return known is not None and (known.source or "") != "inbox"
 
     def _park(self, msg, deferred: dict) -> bool:
         """Put a reply aside for the model by id, when the provider can

@@ -606,6 +606,9 @@ class Workspace:
     def m365_configured(self) -> bool:
         return all(self.m365_settings().values())
 
+    def m365_reply_to(self) -> str:
+        return str(self.secrets().get("m365_reply_to", "") or "").strip().lower()
+
     def mailbox_connected(self) -> bool:
         provider = self.mail_provider()
         if provider == "gmail":
@@ -2111,12 +2114,14 @@ class Workspace:
             })
             if s.get("reply_to"):
                 env["SMTP_REPLY_TO"] = s["reply_to"]
-        for key in ("M365_TENANT_ID", "M365_CLIENT_ID", "M365_CLIENT_SECRET", "M365_MAILBOX"):
+        for key in ("M365_TENANT_ID", "M365_CLIENT_ID", "M365_CLIENT_SECRET", "M365_MAILBOX", "M365_REPLY_TO"):
             env.pop(key, None)
         if self.mail_provider() == "microsoft_app":
             m = self.m365_settings()
             env.update({"M365_TENANT_ID": m["m365_tenant_id"], "M365_CLIENT_ID": m["m365_client_id"],
                         "M365_CLIENT_SECRET": m["m365_client_secret"], "M365_MAILBOX": m["m365_mailbox"]})
+            if self.m365_reply_to():
+                env["M365_REPLY_TO"] = self.m365_reply_to()
         elif self.mail_provider() == "microsoft":
             # The signed-in user's mailbox through the site's own app registration.
             env.update({"M365_TENANT_ID": getattr(self.settings, "ms_tenant", "") or "common",
@@ -2342,7 +2347,8 @@ class Workspace:
             self.set_mail_provider("microsoft")
         elif provider == "graph":
             self.save_secrets(m365_tenant_id=creds.get("tenant_id", ""), m365_client_id=creds.get("client_id", ""),
-                              m365_client_secret=creds.get("client_secret", ""), m365_mailbox=address)
+                              m365_client_secret=creds.get("client_secret", ""), m365_mailbox=address,
+                              m365_reply_to=reply_to.lower() if reply_to.lower() != address else "")
             self.set_mail_provider("microsoft_app")
         else:
             return f"{address} has no usable sign-in; reconnect it on the Accounts page"

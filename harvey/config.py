@@ -658,6 +658,9 @@ class EnvConfig(BaseModel):
     m365_tenant_id: str = ""
     m365_client_secret: str = ""
     m365_mailbox: str = ""
+    # Admin app only: replies go to this mailbox (in the same tenant, so the
+    # app reads its inbox too and stop-on-reply still works).
+    m365_reply_to: str = ""
     # Optional: only used when compliance.precleared.enabled is true.
     precleared_api_key: str = ""
 
@@ -778,6 +781,7 @@ def load_env() -> EnvConfig:
         m365_tenant_id=os.getenv("M365_TENANT_ID", "").strip(),
         m365_client_secret=os.getenv("M365_CLIENT_SECRET", "").strip(),
         m365_mailbox=os.getenv("M365_MAILBOX", "").strip().lower(),
+        m365_reply_to=os.getenv("M365_REPLY_TO", "").strip().lower(),
         precleared_api_key=os.getenv("PRECLEARED_API_KEY", "").strip(),
     )
     return env

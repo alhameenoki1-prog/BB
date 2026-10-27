@@ -97,7 +97,11 @@ is built automatically from the name/role/company/LinkedIn fields with the
 image underneath — `build_auto_signature`, `AUTO_SIG_MARKER`, placed by
 `render_parts` — and rebuilt on every profile save), and a Microsoft 365
 admin-app mailbox (`channels.email.provider: microsoft_app`, Graph client
-credentials), or one-click Microsoft sign-in for Outlook, Hotmail and
+credentials; an optional Reply-To, `M365_REPLY_TO` / `Workspace.m365_reply_to`, goes on
+every email and, when it is a mailbox in the tenant, its inbox is read too:
+`MicrosoftAppProvider._read_reply_to_mailbox`, ids prefixed `REPLY_TO_REF`,
+answered from there; only replies from the list are taken, `read_problem`
+holds follow-ups when it can't be read), or one-click Microsoft sign-in for Outlook, Hotmail and
 Microsoft 365 (`channels.email.provider: microsoft`; `bb/microsoft_oauth.py`,
 site settings `MS_CLIENT_ID/MS_CLIENT_SECRET/MS_TENANT`, token in the
 workspace's `data/m365_token.json`; the command center's `providers/graph.py`

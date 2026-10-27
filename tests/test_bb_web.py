@@ -1516,3 +1516,36 @@ def test_outbox_reject_all(client):
     r = client.post("/outbox/reject-all", data={"status": "approved"})
     assert "Cancelled%201" in r.headers["location"]
     assert db.execute("SELECT status FROM outbox WHERE id = 'o2'").fetchone()[0] == "rejected"
+
+
+
+def test_mailbox_admin_app_reply_to(client, monkeypatch):
+    """The admin app's optional Reply-To: checked, saved apart from the four
+    required fields, shown on the page, handed to the worker, and cleared
+    when it is the sending address itself or the settings are removed."""
+    monkeypatch.setattr(ws_mod, "STOP_GRACE_SECONDS", 0.5)
+    _as_user(client)
+    client.post("/profile", data=PROFILE)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    seen = []
+    async def _ok(settings_dict):
+        seen.append(settings_dict.get("m365_reply_to"))
+        return True, f"Connected as {settings_dict['m365_mailbox']} (admin app)"
+    monkeypatch.setattr("bb.app.test_m365", _ok)
+    form = {"m365_tenant_id": "tenant-1", "m365_client_id": "client-1",
+            "m365_client_secret": "secret-1", "m365_mailbox": "outreach@corp.example"}
+    bad = client.post("/mailbox/m365", data={**form, "m365_reply_to": "not an address"})
+    assert "Not%20saved" in bad.headers["location"] and not ws.m365_configured()
+    ok = client.post("/mailbox/m365", data={**form, "m365_reply_to": " Replies@Corp.Example "})
+    assert "Microsoft%20365%20saved" in ok.headers["location"] and seen[-1] == "replies@corp.example"
+    assert ws.m365_configured() and ws.m365_reply_to() == "replies@corp.example"
+    page = client.get("/mailbox").text
+    assert "replies to replies@corp.example" in page and 'name="m365_reply_to" value="replies@corp.example"' in page
+    assert ws.worker_env().get("M365_REPLY_TO") == "replies@corp.example"
+    # The sending address itself is no Reply-To.
+    client.post("/mailbox/m365", data={**form, "m365_reply_to": "outreach@corp.example"})
+    assert ws.m365_reply_to() == "" and "M365_REPLY_TO" not in ws.worker_env()
+    client.post("/mailbox/m365", data={**form, "m365_reply_to": "replies@corp.example"})
+    client.post("/mailbox/m365/remove")
+    assert ws.m365_reply_to() == ""

@@ -7,6 +7,21 @@ minor versions can still change behaviour.
 
 ## [Unreleased]
 
+### Added
+
+- **Reply-To for the Microsoft 365 admin-app mailbox.** The Mailbox page's
+  admin-app form takes an optional Reply-To; every email the worker sends
+  carries it (`M365_REPLY_TO`, `MicrosoftAppProvider.reply_to`). When it is
+  a mailbox in the same tenant, the app reads its inbox too (its own read
+  position): a reply from someone on the list stops their follow-ups and is
+  answered from that mailbox, in its thread (`REPLY_TO_REF`,
+  `_read_reply_to_mailbox`, `fetch_message`); the rest of that inbox
+  (other mail, its own bounces) is left alone (`Handler._is_reply_from_the_list`).
+  An address the app cannot read still saves, with a warning, and the
+  worker holds follow-ups (`read_problem`), since it cannot see who
+  replied; first emails still go. A campaign bound to an admin-app account
+  takes the account's Reply-To.
+
 ### Fixed
 
 - **Re-sending and test copies, made safe.** "Send the last emails again"

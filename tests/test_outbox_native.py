@@ -1249,3 +1249,33 @@ async def test_a_late_cap_report_never_drops_an_email_already_queued_again(state
     assert (await state.get_outbox_item(first))["status"] == "approved"
     assert (await state.get_outbox_item(second))["status"] == "approved"
     assert (await state.get_prospect(pid)).email_status == "verified"
+
+
+@pytest.mark.asyncio
+async def test_the_reply_to_mailbox_gives_only_replies_from_the_list(state):
+    """Messages read from the Reply-To mailbox (someone's ordinary inbox too):
+    a reply from a prospect is handled (stop-on-reply), a stranger's mail and
+    that mailbox's own bounces are left alone; a Reply-To that cannot be read
+    leaves the pass incomplete so follow-ups wait."""
+    pid = await seed_prospect(state, email="jane@acme.com", status="contacted")
+    await state.add_outbox_item(prospect_id=pid, to_email="jane@acme.com", subject="again", body="b",
+                                send_at=_now_iso(), status="approved", campaign_id="c1", step=2)
+    tag = {"x-bb-reply-to-mailbox": "/users/replies@x.co"}
+    provider = FakeProvider()
+    provider.inbound = [
+        InboundMessage(provider_id="rt|1", from_email="jane@acme.com", subject="Re: hi", body="unsubscribe please",
+                       headers=dict(tag)),
+        InboundMessage(provider_id="rt|2", from_email="friend@else.example", subject="Lunch?", body="Lunch on Friday?",
+                       headers=dict(tag)),
+        InboundMessage(provider_id="rt|3", from_email="postmaster@x.co", subject="Undeliverable: x",
+                       body="550 5.1.8 Access denied, bad outbound sender", is_bounce=True, headers=dict(tag)),
+    ]
+    handler = make_handler(state, provider)
+    assert await handler._run_native() is True
+    assert (await state.get_prospect(pid)).status == "opted_out"           # Jane's reply was handled
+    assert await state.get_setting("sending_paused") in ("", None)         # that inbox's bounce was not ours
+    assert await state.get_conversations_by_status("open") == []           # the stranger was not answered
+    provider.inbound = []
+    provider.read_problem = "the mailbox could not be read: replies go to replies@x.co, whose inbox this app cannot read"
+    assert await handler._run_native() is False
+    assert handler.last_problem.startswith("the mailbox could not be read: replies go to")
