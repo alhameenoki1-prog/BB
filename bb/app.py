@@ -28,7 +28,8 @@ from bb.mail_paste import parse_pasted_login, to_smtp_fields
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
 from bb.workspaces import (ASKS, ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
-                           MAX_INBOX_LINKS, MAX_SECTOR_MESSAGES, OUTREACH_MODES, MAX_SECTOR_NEEDS, SECTOR_LABELS, SPEEDS,
+                           MAX_INBOX_LINKS, MAX_SECTOR_MESSAGES, MAX_TEMPLATE_VARIANTS, MAX_TEST_SEND, OUTREACH_MODES, MAX_SECTOR_NEEDS,
+                           SECTOR_LABELS, SPEEDS, TEMPLATE_VARIANTS,
                            STYLES, TONES, Workspace, _sector_messages_from_form, _sector_needs_from_form,
                            all_workspaces)
 
@@ -455,7 +456,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace_for(user)
         revived = ws.revive_worker()
         health = await ws.mailbox_health()
-        return await render(request, "dashboard.html", user, logs=ws.log_tail(40), activity=ws.recent_activity(30),
+        return await render(request, "dashboard.html", user, max_test_send=MAX_TEST_SEND, logs=ws.log_tail(40), activity=ws.recent_activity(30),
                             bounces=await ws.bounce_summary(), stale=await ws.stale_queued(), health=health,
                             reconnect=ws.needs_reconnect(health),
                             problems=settings.problems() if user["role"] == "admin" else [],
@@ -466,6 +467,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace_for(user)
         ws.revive_worker()
         return await ws.summary()
+
+    @app.post("/worker/test-send")
+    async def worker_test_send(request: Request, user: dict = Depends(current_user)):
+        """While sending is paused: the next few first emails go once, as a
+        test that the mailbox delivers; then it holds again. Resume carries
+        on from where the queue stopped."""
+        ws = workspace_for(user)
+        form = await request.form()
+        try:
+            count = max(1, min(int(form.get("count") or 3), MAX_TEST_SEND))
+        except ValueError:
+            count = 3
+        summary = await ws.summary()
+        if not summary.get("sending_paused"):
+            return _redirect("/", error="Pause sending first; a test batch goes out while the rest holds.")
+        ws.request_test_send(count)
+        ok, detail = await ws.wake_worker("a test batch")
+        note = ("" if ok else f" ({detail})")
+        return _redirect("/", msg=f"The worker sends the next {count} first email{'s' if count != 1 else ''} as a test on "
+                                  f"its next pass, then holds again; the rest go when you press Resume sending.{note}")
 
     @app.post("/worker/{action}")
     async def worker(action: str, user: dict = Depends(current_user)):
@@ -496,6 +517,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await workspace_for(user).set_sending_paused(action == "pause")
         return _redirect("/", msg="Sending paused." if action == "pause" else "Sending resumed.")
 
+    @app.post("/outbox/resend-last")
+    async def outbox_resend_last(request: Request, user: dict = Depends(current_user)):
+        """The last N first emails sent go again (a run that went out while
+        the mailbox was blocked or capped), their follow-ups moved along."""
+        ws = workspace_for(user)
+        form = await request.form()
+        try:
+            count = max(0, min(int(form.get("count") or 0), 100000))
+        except ValueError:
+            count = 0
+        if not count:
+            return _redirect("/", error="Say how many of the most recent first emails to send again.")
+        n = await ws.resend_last(count)
+        if not n:
+            return _redirect("/", error="No sent first emails to queue again.")
+        await ws.wake_worker("emails queued again")
+        return _redirect("/", msg=f"{n} first email{'s' if n != 1 else ''} queued again. They go out at your daily limit "
+                                  "(or after Resume if sending is paused), with their follow-ups moved along.")
+
     # ── profile ──
 
     def _form_view(ws: Workspace, form: dict) -> dict:
@@ -518,7 +558,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return dict(profile=profile, link_names=ws.link_names(), tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES,
                     modes=OUTREACH_MODES, policies=ATTACH_POLICIES, attachments=ws.attachments(),
                     speeds=SPEEDS, styles=STYLES, greetings=GREETINGS, asks=ASKS, sector_labels=SECTOR_LABELS, max_sector_needs=MAX_SECTOR_NEEDS,
-                    max_sector_messages=MAX_SECTOR_MESSAGES, signature_image=ws.signature_image(),
+                    max_sector_messages=MAX_SECTOR_MESSAGES, template_variants=TEMPLATE_VARIANTS, max_template_variants=MAX_TEMPLATE_VARIANTS, signature_image=ws.signature_image(),
                     pace_held=ws.pace_held_reason(SPEEDS.get(profile.get("speed") or "normal", SPEEDS["normal"])))
 
     @app.get("/profile", response_class=HTMLResponse)
@@ -584,7 +624,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception as e:
             return _redirect("/profile", error=f"Could not write the message: {str(e)[:200]}")
         await ws.restart_worker_if_running("the general message")
-        return _redirect("/profile", msg=f"Wrote a general message: “{out['subject']}”. It is saved — check it below and edit it if you like.")
+        n = out.get("variants", 0)
+        extra = f" and {n} other wording{'s' if n != 1 else ''} of it, rotated over the list" if n else ""
+        return _redirect("/profile", msg=f"Wrote a general message: “{out['subject']}”{extra}. It is saved — check it below and edit it if you like.")
+
+    @app.post("/profile/general-message/variants")
+    async def profile_general_message_variants(request: Request, user: dict = Depends(current_user)):
+        """The AI writes other wordings of the general message on the page
+        (yours or its own), so no two neighbours on the list get the same
+        email. The whole form comes along so nothing typed is lost."""
+        ws = workspace_for(user)
+        raw = await request.form()
+        form = dict(raw)
+        for key in {k for k in raw.keys() if k.startswith(("sm_sectors_", "sn_sectors_"))}:
+            form[key] = raw.getlist(key)
+        try:
+            ws.write_profile(form)
+        except ValidationError as e:
+            first = e.errors()[0]
+            return _redirect("/profile", error=f"Fix the profile first — {'.'.join(str(p) for p in first['loc'])}: {first['msg']}")
+        except ValueError as e:
+            return _redirect("/profile", error=f"Fix the profile first — {e}")
+        try:
+            n = await ws.generate_template_variants()
+        except Exception as e:
+            return _redirect("/profile", error=f"Could not write the wordings: {str(e)[:200]}")
+        await ws.restart_worker_if_running("the general message's wordings")
+        return _redirect("/profile", msg=f"Wrote {n} other wording{'s' if n != 1 else ''} of your message. Each recipient gets one of them; edit any below.")
 
     # ── the user's own Anthropic key ──
 

@@ -601,3 +601,48 @@ async def test_without_the_fallback_nothing_goes_out_while_the_model_is_down(sta
     # No campaign and nobody queued: they wait for the model, as before.
     assert await state.get_campaigns_by_status("draft") == []
     assert not (await state.count_prospects_by_status()).get("queued")
+
+
+
+def test_wordings_pair_subject_with_body_and_spread_over_a_list():
+    """Each other wording keeps its own subject (or the original's when it
+    has none); a wording that repeats another is dropped; the pick is stable
+    per recipient and every wording is used over a list."""
+    from harvey.models.campaign import EmailStep
+    step = EmailStep(step=1, subject="A builder for the block", body="Hi {{first_name}},\n\nFirst wording.\n\nJane",
+                     subjects=["", "Builder wanted, 24 units", "A builder for the block"],
+                     bodies=["Hi {{first_name}},\n\nSecond wording.\n\nJane", "Hi {{first_name}},\n\nThird wording.\n\nJane",
+                             "Hi {{first_name}},\n\nFirst wording.\n\nJane"])
+    pairs = step.wordings()
+    assert [s for s, _ in pairs] == ["A builder for the block", "A builder for the block", "Builder wanted, 24 units"]
+    assert [b.split("\n\n")[1] for _, b in pairs] == ["First wording.", "Second wording.", "Third wording."]
+    picks = {step.variant(f"prospect-{i}") for i in range(60)}
+    assert picks == set(pairs)                                    # all three used over sixty people
+    assert step.variant("prospect-7") == step.variant("prospect-7")   # and stable per person
+    assert EmailStep(step=1, subject="s", body="b").variant("x") == ("s", "b")
+
+
+@pytest.mark.asyncio
+async def test_the_general_message_is_sent_in_its_wordings_without_the_model(state):
+    """The saved wordings ride on the template's first email and the sender
+    rotates them over the list; follow-ups and sector versions keep one."""
+    cfg = _config(mode="inquiry", intent="get a quote", use_template=True, template_subject="Two-storey extension",
+                  template_body="Hi {{first_name}},\n\nWe are planning a two-storey extension. Could you quote for it?\n\nJane",
+                  template_followup_1="Hi {{first_name}},\n\nStill looking for a quote on the extension.\n\nJane",
+                  template_variants=[{"subject": "Quote for a two-storey extension", "body": "Hi {{first_name}},\n\nCould you quote for a two-storey extension we are planning?\n\nJane"},
+                                     {"subject": "", "body": "Hi {{first_name}},\n\nWe need a quote: a two-storey extension, start in March.\n\nJane"},
+                                     {"subject": "x", "body": "   "}],
+                  sector_messages=[{"sectors": ["construction"], "subject": "Builders", "body": "Hi {{first_name}},\n\nThe builders' version, long enough to count.\n\nJane"}])
+    writer = Writer(_ForbiddenBrain(), state, cfg, EnvConfig())
+    steps = writer.template_steps()
+    assert steps[0].subjects == ["Quote for a two-storey extension", "Two-storey extension"]
+    assert len(steps[0].bodies) == 2 and steps[1].bodies == []
+    assert writer.template_steps(cfg.outreach.sector_messages[0])[0].bodies == []     # sector versions: one wording
+    for i in range(30):
+        await state.add_prospect(Prospect(id=f"w{i}", first_name=f"P{i}", last_name="X", email=f"p{i}@build{i}.co",
+                                          email_status="provided", title="Owner", company=f"Build {i}"))
+    await writer.run(use_model=False)
+    campaign = (await state.get_campaigns_by_status("draft"))[0]
+    assert len(campaign.sequence[0].bodies) == 2
+    sent = {campaign.sequence[0].variant(f"w{i}")[1] for i in range(30)}
+    assert len(sent) == 3                                          # three wordings over thirty people, no model

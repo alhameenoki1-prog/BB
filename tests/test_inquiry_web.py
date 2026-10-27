@@ -318,12 +318,30 @@ def test_custom_signature_is_kept(client):  # noqa: F811
     assert "My own sig" in client.get("/profile").text   # shown back for editing
 
 
+WORDINGS = [
+    {"subject": "Builder wanted for 24 units in Towson",
+     "body": "Hi {{first_name}},\n\nWe need a builder for a 24-unit residential block in Towson, starting in April. "
+             "Is that the kind of job you take on?\n\nJane"},
+    {"subject": "",
+     "body": "Hi {{first_name}},\n\nA 24-unit block in Towson, work from April: could your firm build it?\n\nJane"},
+    {"subject": "ACT NOW!!! FREE $$$ GUARANTEED", "body": "Hi {{first_name}},\n\nBUY NOW!!! 100% FREE, CLICK HERE, RISK FREE, ACT NOW!!!\n\nJane"},
+    {"subject": "Dup", "body": "Hi {{first_name}},\n\nA 24-unit block in Towson, work from April: could your firm build it?\n\nJane"},
+    {"subject": "Short", "body": "Hi"},
+]
+
+
 def test_general_message_is_written_by_the_ai_and_becomes_the_fallback(client, monkeypatch):  # noqa: F811
     class _Fake:
+        calls = []
+
         def __init__(self, env):
             self.configured = True
 
         async def complete_json(self, system, user, **kw):
+            _Fake.calls.append(system)
+            if "other wordings" in system:
+                assert "THE ORIGINAL" in user and "24-unit" in user
+                return {"versions": WORDINGS}
             assert "every recipient" in system and "Towson" in user       # built from the profile
             return {"subject": "A builder for a 24-unit block in Towson",
                     "body": "Hi {{first_name}},\n\nWe're building a 24-unit residential block in Towson and need a "
@@ -332,15 +350,40 @@ def test_general_message_is_written_by_the_ai_and_becomes_the_fallback(client, m
     _as_user(client)
     r = client.post("/profile/general-message", data={**NEEDS_FORM, "writing": "segment"})
     assert r.status_code == 303 and "error=" not in r.headers["location"], r.headers["location"]
+    assert "2+other+wordings" in r.headers["location"] or "2%20other%20wordings" in r.headers["location"]
 
     user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
     ws = Workspace(client.settings, user)
     o = HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach
     assert o.template_subject == "A builder for a 24-unit block in Towson" and "24-unit" in o.template_body
     assert o.template_fallback is True and o.use_template is False       # an AI mode keeps it as the fallback
+    # The other wordings: the spammy one, the repeat and the stub are dropped.
+    assert [v.subject for v in o.template_variants] == ["Builder wanted for 24 units in Towson", ""]
+    assert all("24-unit" in v.body and v.body.startswith("Hi {{first_name}},") for v in o.template_variants)
     page = client.get("/profile").text
     assert "A builder for a 24-unit block in Towson" in page
     assert 'name="template_fallback" value="1" id="template_fallback" checked' in page
+    assert 'name="tv_subject_0" value="Builder wanted for 24 units in Towson"' in page and "tv_body_1" in page
+    assert "Write 5 other wordings of my message" in page
+    # The rows round-trip through a profile save (edited, one removed), and reach the worker's config.
+    form = {**NEEDS_FORM, "writing": "segment", "template_fallback": "1", "template_subject": o.template_subject,
+            "template_body": o.template_body, "tv_subject_0": "Edited subject", "tv_body_0": o.template_variants[0].body}
+    assert client.post("/profile", data=form).status_code == 303
+    o2 = HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach
+    assert [v.subject for v in o2.template_variants] == ["Edited subject"]
+    ws.rewrite_config()
+    assert HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach.template_variants == o2.template_variants
+    # The wordings of a hand-written message, on their own.
+    r = client.post("/profile/general-message/variants", data={**NEEDS_FORM, "writing": "template",
+                                                                 "template_subject": "My own subject",
+                                                                 "template_body": "Hi {{first_name}},\n\nMy own message about the 24-unit block, long enough.\n\nJane"})
+    assert r.status_code == 303 and "error=" not in r.headers["location"], r.headers["location"]
+    o3 = HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach
+    assert o3.use_template and len(o3.template_variants) == 2 and o3.template_subject == "My own subject"
+    # No message yet: a plain refusal, nothing saved.
+    r = client.post("/profile/general-message/variants", data={**NEEDS_FORM, "writing": "template", "template_body": ""})
+    assert "error=" in r.headers["location"]
+    assert HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach.template_variants == o3.template_variants
 
     # Saving again keeps it, and so does the rewrite a mailbox change triggers.
     r = client.post("/profile", data={**NEEDS_FORM, "writing": "segment", "template_fallback": "1",

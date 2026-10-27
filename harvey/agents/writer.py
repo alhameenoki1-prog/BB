@@ -557,6 +557,14 @@ class Writer:
             followups = (message.followup_1, message.followup_2)
         subject = (subject or "").strip() or "Following up"
         steps = [EmailStep(step=1, subject=subject, body=(body or "").strip(), delay_days=0)]
+        if message is None:
+            # The other wordings of the general message: the sender gives
+            # each recipient one, so a list does not get one identical email.
+            others = [(v.subject.strip(), v.body.strip()) for v in (getattr(outreach, "template_variants", None) or [])
+                      if (v.body or "").strip()]
+            if others:
+                steps[0].subjects = [s or subject for s, _ in others]
+                steps[0].bodies = [b for _, b in others]
         for delay, text in zip((3, 4), followups):
             text = (text or "").strip()
             if text:

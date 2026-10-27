@@ -113,7 +113,10 @@ mail via each provider's `get_unanswered`; web Inbox page). The Mailbox
 page's "Log in with your email" derives SMTP/IMAP servers from the
 address (`bb/mail_autoconfig.py`); its "paste the whole login" box reads a login in any shape (a provider's settings block, an `imap://`/`smtp://` URL, JSON, or one `address password` line) into those fields (`bb/mail_paste.py`, `/mailbox/paste`, `/mail/accounts/paste`). `harvey/spamcheck.py` scores every draft like a filter would (rewrite once,
 then hold for review; `vague_risk` adds the campaign-phrasing score in inquiry mode); first emails go as plain text with a links-free signature (`channels.email.plain_first_email`), segment mode rotates three wordings (`EmailStep.variant`, `Writer._add_variants`), and a spam-block bounce pauses the sender (`Handler._stand_down_after_block`, `Sender._in_cooloff`) instead of marking the address invalid; `outreach.use_template` sends the user's own message
-instead of AI text; in an AI mode `outreach.template_fallback` sends that
+instead of AI text (`outreach.template_variants`, other wordings the AI writes
+once via "Write a general message for me" or `/profile/general-message/variants`
+(`Workspace._write_variants`, `TEMPLATE_VARIANTS` = 5), are rotated per
+recipient by `EmailStep.variant` with no AI call at sending time); in an AI mode `outreach.template_fallback` sends that
 message to any batch the model cannot write (rate limit, no credit) instead
 of waiting (`Writer.template_fallback`), and "Write a general message for me"
 (`Workspace.generate_general_message`, `/profile/general-message`) has the AI
@@ -188,7 +191,10 @@ maximum stops a reply (`limits.hard` via `service.set_ledger_limit`, `mailbox_da
 everything; first emails stop a tenth short of it. A send pass takes nothing new after `PASS_SECONDS`. Accounts can be added in bulk (`/mail/accounts/bulk`,
 `/mail/accounts/graph/bulk`). **Wake up now** (`/worker/wake`,
 `/campaigns/outreach/<id>/wake`; `Workspace.wake_worker`) reaches a
-running worker through `data/worker.wake`; the worker's `harvey/wake.py`
+running worker through `data/worker.wake` (and a paused sender takes a
+one-off test batch from `data/send_test.json`, `wake.request_test_send` /
+`take_test_send`, `/worker/test-send`; `/outbox/resend-last` queues the last
+N sent first emails again via `state.requeue_last_first_emails`); the worker's `harvey/wake.py`
 beat (`data/worker.beat`, every 10 s) feeds `Workspace.worker_doing` and
 the site's stuck-worker restart (`restart_if_stuck`, `restart_mail_if_stuck`
 in `keep_workers_alive`). Every worker sleep goes through `wake.sleep`

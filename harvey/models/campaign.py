@@ -22,17 +22,29 @@ class EmailStep(BaseModel):
     subjects: list[str] = Field(default_factory=list)
     bodies: list[str] = Field(default_factory=list)
 
+    def wordings(self) -> list[tuple[str, str]]:
+        """(subject, body) pairs: the original first, then each other
+        wording with its own subject (or the original's when it has none).
+        A wording whose body repeats one already listed is dropped."""
+        out = [(self.subject, self.body)]
+        seen = {(self.body or "").strip()}
+        for i, body in enumerate(self.bodies):
+            text = (body or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            subject = (self.subjects[i] if i < len(self.subjects) else "") or self.subject
+            out.append((subject, body))
+        return out
+
     def variant(self, key: str) -> tuple[str, str]:
         """(subject, body) for one recipient: a stable pick among the
-        variants, the original included, keyed by the recipient id."""
-        subjects = [self.subject] + [s for s in self.subjects if s and s != self.subject]
-        bodies = [self.body] + [b for b in self.bodies if b and b != self.body]
-        n = max(len(subjects), len(bodies))
-        if n <= 1:
+        wordings, the original included, keyed by the recipient id."""
+        pairs = self.wordings()
+        if len(pairs) <= 1:
             return self.subject, self.body
         import zlib
-        i = zlib.crc32((key or "").encode()) % n
-        return subjects[i % len(subjects)], bodies[i % len(bodies)]
+        return pairs[zlib.crc32((key or "").encode()) % len(pairs)]
 
 
 class Campaign(BaseModel):

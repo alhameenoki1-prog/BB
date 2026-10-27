@@ -73,12 +73,25 @@
           <form class="inline" method="post" action="/sending/pause"><button class="danger small" type="submit">{{ icon('pause', 14) }} Pause all sending</button></form>
         {% endif %}
       </div>
-      {% if summary.sending_paused %}<p class="tiny" style="margin-top:8px">Reason: {{ summary.sending_paused }}</p>{% endif %}
+      {% if summary.sending_paused %}<p class="tiny" style="margin-top:8px">Reason: {{ summary.sending_paused }}</p>
+      <form class="inline" method="post" action="/worker/test-send" style="margin-top:8px">
+        <label class="small" style="display:inline">While paused, send the next <input type="number" name="count" value="3" min="1" max="{{ max_test_send }}" style="width:64px;display:inline"> first emails now as a test</label>
+        <button class="secondary small" type="submit">{{ icon('play', 13) }} Send the test batch</button>
+        <span class="tiny muted">The rest keep waiting; Resume sending carries on from where it stopped.</span>
+      </form>{% endif %}
       {% if summary.sending %}
       <div class="card flat" id="sending-status" style="margin-top:12px;{{ 'border-color:var(--warn)' if summary.sending.state == 'stuck' else ('border-color:var(--good)' if summary.sending.state == 'sending' else '') }}">
         <b>{{ {'sending': 'Sending now.', 'waiting': 'Nothing to send yet.', 'stuck': 'Not sending.'}[summary.sending.state] }}</b> <span id="sending-status-text">{{ summary.sending.text }}</span>{% if summary.sending.link %} <a href="{{ summary.sending.link }}">Open</a>{% endif %}
       </div>
       {% endif %}
+      <details style="margin-top:16px">
+        <summary class="small muted" style="cursor:pointer">Send the last emails again</summary>
+        <p class="small muted" style="margin-top:8px">{{ summary.sent_first }} first email{{ 's' if summary.sent_first != 1 else '' }} have been sent. If a run went out while the mailbox was blocked or over its daily cap (so nobody received it), queue the most recent ones again: they go out once more at your daily limit, with their follow-ups moved along.</p>
+        <form class="inline" method="post" action="/outbox/resend-last" onsubmit="return confirm('Queue the most recent first emails again? Each goes out once more.')">
+          <label class="small" style="display:inline">Send the last <input type="number" name="count" value="" min="1" max="{{ summary.sent_first or 1 }}" placeholder="how many" style="width:90px;display:inline"> first emails again</label>
+          <button class="secondary small" type="submit">{{ icon('play', 13) }} Queue them again</button>
+        </form>
+      </details>
       <details style="margin-top:16px">
         <summary class="small muted" style="cursor:pointer">Start over with a new list</summary>
         <p class="small muted" style="margin-top:8px">Clears every recipient, every written and sent email, all replies and the counters, so you can upload a fresh list and begin again. Your profile, mailbox, AI provider, attachments and signature are kept. This cannot be undone.</p>

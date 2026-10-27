@@ -297,6 +297,15 @@ ASK_THEMES = {
 }
 
 
+class MessageVariant(BaseModel):
+    """Another wording of the operator's general message: same facts and
+    request, different words and subject. The sender rotates through them
+    so a long list does not receive one identical email."""
+
+    subject: str = ""
+    body: str = ""
+
+
 class OutreachConfig(BaseModel):
     """What kind of email this is, and how replies are answered.
 
@@ -365,6 +374,10 @@ class OutreachConfig(BaseModel):
     template_body: str = ""
     template_followup_1: str = ""
     template_followup_2: str = ""
+    # Other wordings of the first email above (the AI writes them once, or
+    # you do): the sender gives each recipient one of them, so no two
+    # neighbours on a list get the same email. Needs no AI call to send.
+    template_variants: list[MessageVariant] = Field(default_factory=list)
     # Different versions of your own message for particular sectors; the
     # fields above are the default for everyone else.
     sector_messages: list[SectorMessage] = Field(default_factory=list)

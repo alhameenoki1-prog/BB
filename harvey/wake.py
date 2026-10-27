@@ -61,6 +61,38 @@ def request_wake(folder: Path, by: str = "the dashboard") -> None:
     tmp.replace(folder / WAKE_FILE)
 
 
+TEST_SEND_FILE = "send_test.json"
+
+
+def request_test_send(folder: Path, count: int, by: str = "the dashboard") -> None:
+    """While sending is paused: ask the worker to send the next ``count``
+    first emails once, then hold again (a test that the mailbox delivers)."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    tmp = folder / (TEST_SEND_FILE + ".tmp")
+    tmp.write_text(json.dumps({"count": int(count), "at": time.time(), "by": by}))
+    tmp.replace(folder / TEST_SEND_FILE)
+
+
+def test_send_pending(folder: Path) -> int:
+    """How many test emails a request still waiting for the worker asks for (0: none)."""
+    try:
+        return max(0, int(json.loads((Path(folder) / TEST_SEND_FILE).read_text()).get("count") or 0))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return 0
+
+
+def take_test_send(folder: Path) -> int:
+    """The worker's side: the pending request's count, and the request is gone."""
+    path = Path(folder) / TEST_SEND_FILE
+    count = test_send_pending(folder)
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return count
+
+
 def wake_pending(folder: Path) -> bool:
     """Is a wake still waiting for the worker to pick it up?"""
     return (Path(folder) / WAKE_FILE).exists()

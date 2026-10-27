@@ -121,6 +121,24 @@ SECTOR_LABELS = {
 }
 MAX_SECTOR_MESSAGES = 12
 MAX_INBOX_LINKS = 12
+# Other wordings of the general message: how many the AI writes at a time,
+# and how many the profile keeps. Six wordings over a list (the original
+# included) is enough that no two neighbours get the same email.
+TEMPLATE_VARIANTS = 5
+MAX_TEMPLATE_VARIANTS = 8
+# The most first emails one test batch sends while sending is paused.
+MAX_TEST_SEND = 20
+
+
+def _template_variants_from_form(form) -> list[dict]:
+    """Rows tv_subject_N + tv_body_N. Empty rows are dropped."""
+    out = []
+    for i in range(MAX_TEMPLATE_VARIANTS):
+        body = str(form.get(f"tv_body_{i}", "") or "").strip()
+        if not body:
+            continue
+        out.append({"subject": str(form.get(f"tv_subject_{i}", "") or "").strip()[:120], "body": body})
+    return out
 
 
 def _sector_messages_from_form(form) -> list[dict]:
@@ -158,6 +176,8 @@ def _profile_form(prof: dict) -> dict:
             "template_fallback": "on" if prof.get("template_fallback") else "", "rewrite": "1"}
     _flatten_rows(form, "sm", prof.get("sector_messages"),
                   {"subject": "subject", "body": "body", "followup_1": "followup_1", "followup_2": "followup_2"})
+    for i, row in enumerate(prof.get("template_variants") or []):
+        form[f"tv_subject_{i}"], form[f"tv_body_{i}"] = row.get("subject", "") or "", row.get("body", "") or ""
     _flatten_rows(form, "sn", prof.get("sector_needs"),
                   {"need": "need", "question": "question", "url": "details_url", "label": "details_label"})
     return form
@@ -728,6 +748,9 @@ class Workspace:
             "template_fallback": bool(outreach.get("template_fallback")),
             "template_followup_1": outreach.get("template_followup_1", ""),
             "template_followup_2": outreach.get("template_followup_2", ""),
+            "template_variants": [
+                {"subject": m.get("subject", ""), "body": m.get("body", "")}
+                for m in (outreach.get("template_variants") or []) if isinstance(m, dict) and m.get("body")],
             "sector_messages": [
                 {"sectors": list(m.get("sectors") or []), "subject": m.get("subject", ""),
                  "body": m.get("body", ""), "followup_1": m.get("followup_1", ""),
@@ -988,6 +1011,7 @@ class Workspace:
                 "template_body": str(form.get("template_body", "") or "").strip(),
                 "template_followup_1": str(form.get("template_followup_1", "") or "").strip(),
                 "template_followup_2": str(form.get("template_followup_2", "") or "").strip(),
+                "template_variants": _template_variants_from_form(form),
                 "sector_messages": _sector_messages_from_form(form),
                 "style": text("style") if text("style") in STYLES else "engaging",
                 "greeting": text("greeting") if text("greeting") in GREETINGS else "Hi",
@@ -1225,7 +1249,7 @@ class Workspace:
     async def summary(self) -> dict:
         """The numbers on the banner and the dashboard."""
         out = {
-            "recipients": 0, "waiting": 0, "queued": 0, "sent": 0, "replied": 0,
+            "recipients": 0, "waiting": 0, "queued": 0, "sent": 0, "replied": 0, "sent_first": 0,
             "bounced": 0, "outbox_pending": 0, "outbox_scheduled": 0, "outbox_sent": 0,
             "outbox_failed": 0, "outbox_rejected": 0, "replies": 0, "open_replies": 0,
             "sent_today": 0, "sending_paused": "", "worker_running": bool(self.worker_running()),
@@ -1264,6 +1288,10 @@ class Workspace:
             rows = await self._query(
                 "SELECT COUNT(*) AS n FROM outbox WHERE status = 'sent' AND date(sent_at) = date('now')")
             out["sent_today"] = rows[0]["n"] if rows else 0
+            rows = await self._query(
+                "SELECT COUNT(*) AS n FROM outbox WHERE status = 'sent' AND COALESCE(kind, 'sequence') = 'sequence' "
+                "AND COALESCE(step, 1) = 1")
+            out["sent_first"] = rows[0]["n"] if rows else 0
         if await self._table_exists("conversations"):
             rows = await self._query(
                 "SELECT COUNT(*) AS n, SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open FROM conversations")
@@ -1300,7 +1328,7 @@ class Workspace:
     # written before it stale. Speed, caps, the mailbox and the like do not.
     BRIEF_KEYS = ("mode", "intent", "goal", "sender_line", "sector_needs", "style", "ask", "ask_detail", "greeting",
                   "use_template", "template_subject", "template_body", "template_followup_1", "template_followup_2",
-                  "sector_messages", "personalize_each")
+                  "template_variants", "sector_messages", "personalize_each")
     PERSONA_BRIEF_KEYS = ("name", "role", "company", "tone")
 
     def link_names(self) -> dict:
@@ -1734,8 +1762,93 @@ class Workspace:
         form["template_subject"], form["template_body"] = subject, body
         if form.get("writing") != "template":
             form["template_fallback"] = "on"     # in an AI mode a general message is there to fall back on
+        # The other wordings, so the list is not sent one identical email;
+        # the message is saved even if these cannot be written now.
+        try:
+            variants = await self._write_variants(brain, prof, subject, body)
+        except Exception as e:
+            logger.warning("the general message was written but not its other wordings: %s", e)
+            variants = []
+        for i in range(MAX_TEMPLATE_VARIANTS):
+            form.pop(f"tv_subject_{i}", None); form.pop(f"tv_body_{i}", None)
+        for i, v in enumerate(variants):
+            form[f"tv_subject_{i}"], form[f"tv_body_{i}"] = v["subject"], v["body"]
         self.write_profile(form)
-        return {"subject": subject, "body": body}
+        return {"subject": subject, "body": body, "variants": len(variants)}
+
+    async def generate_template_variants(self) -> int:
+        """Ask the user's own model for other wordings of the general message
+        on the profile (yours or the AI's) and save them. Returns how many."""
+        from bb.mail.brain import MailBrain
+
+        brain = MailBrain(self.mail_brain_env())
+        if not brain.configured:
+            raise ValueError("no AI provider is set up for your account yet (AI provider page)")
+        prof = self.profile()
+        subject, body = (prof.get("template_subject") or "").strip(), (prof.get("template_body") or "").strip()
+        if len(body) < 20:
+            raise ValueError("write (or have the AI write) the general message first")
+        variants = await self._write_variants(brain, prof, subject, body)
+        if not variants:
+            raise ValueError("the model did not return usable wordings; try again in a moment")
+        form = _profile_form(prof)
+        for i in range(MAX_TEMPLATE_VARIANTS):
+            form.pop(f"tv_subject_{i}", None); form.pop(f"tv_body_{i}", None)
+        for i, v in enumerate(variants):
+            form[f"tv_subject_{i}"], form[f"tv_body_{i}"] = v["subject"], v["body"]
+        self.write_profile(form)
+        return len(variants)
+
+    async def _write_variants(self, brain, prof: dict, subject: str, body: str) -> list[dict]:
+        """TEMPLATE_VARIANTS other wordings of one message: the same facts and
+        request, different opening, order, phrasing and subject. Each is
+        checked like every email (spam words, a usable subject) and the ones
+        that fail, repeat the original or another, are dropped."""
+        from harvey import enquiry
+        from harvey.spamcheck import REVIEW, spam_risk
+
+        name = (prof.get("name") or "").strip() or "the sender"
+        first = name.split()[0]
+        inquiry = (prof.get("mode") or "inquiry") == "inquiry"
+        system = (f"You rewrite one first email for {name} in {TEMPLATE_VARIANTS} other wordings, so that a long list of "
+                  "recipients does not receive one identical email. Every wording keeps the same facts, the same "
+                  "request and the same meaning, and adds nothing new; each differs from the original and from the "
+                  "others in its opening sentence, the order of its points and its phrasing, and has its own subject. "
+                  "Plain words a person would type, first person, contractions, no marketing vocabulary, no capitals "
+                  "for emphasis, no exclamation marks, no links, no bullet points, 50 to 90 words. Each starts with the "
+                  "greeting line \"Hi {{first_name}},\" exactly and ends with the same plain sign-off as the original. "
+                  "Each subject names the thing the email is about in its own words, 3 to 10 words, sentence case; never "
+                  "\"quick question\", \"opportunity\", \"proposal\", \"partnership\", \"following up\" or "
+                  "anything about the act of writing."
+                  "\n\nReturn ONLY JSON: {\"versions\": [{\"subject\": \"...\", \"body\": \"...\"}, ...]}")
+        user = f"THE ORIGINAL\nSubject: {subject}\n\n{body}"
+        data = await brain.complete_json(system, user, max_tokens=2400)
+        versions = data.get("versions") if isinstance(data, dict) else data
+        if not isinstance(versions, list):
+            return []
+        out, seen = [], {" ".join(body.lower().split())}
+        for item in versions:
+            if not isinstance(item, dict):
+                continue
+            v_body = str(item.get("body") or "").strip()
+            v_subject = str(item.get("subject") or "").strip()[:120]
+            if len(v_body) < 20:
+                continue
+            if not v_body.lower().startswith(("hi ", "hello ", "dear ")):
+                v_body = "Hi {{first_name}},\n\n" + v_body
+            if inquiry:
+                v_body = enquiry.plain_signoff(v_body, first)
+            key = " ".join(v_body.lower().split())
+            if key in seen:
+                continue
+            score, _why = spam_risk(v_subject or subject, v_body)
+            if score >= REVIEW:
+                continue
+            seen.add(key)
+            out.append({"subject": v_subject, "body": v_body})
+            if len(out) >= TEMPLATE_VARIANTS:
+                break
+        return out
 
     async def rewrite_item(self, item: dict, instruction: str) -> dict:
         """Rewrite one queued email with the user's own AI provider, to their
@@ -1874,6 +1987,24 @@ class Workspace:
             row["last_message"] = (theirs[-1].get("content", "") if theirs else "")[:400]
             row["messages"] = len(thread)
         return rows
+
+    async def resend_last(self, count: int) -> int:
+        """Queue the ``count`` most recently sent first emails again (their
+        follow-ups move along with them). Returns how many."""
+        state = self.state()
+        await state.init_db()
+        return await state.requeue_last_first_emails(
+            count, "Queued again from the dashboard: it goes once more, at your daily limit.")
+
+    def request_test_send(self, count: int) -> None:
+        """While sending is paused: the worker sends the next ``count`` first
+        emails once on its next pass, then holds again."""
+        from harvey import wake
+        wake.request_test_send(self.data_dir, max(1, min(int(count), MAX_TEST_SEND)))
+
+    def test_send_pending(self) -> int:
+        from harvey import wake
+        return wake.test_send_pending(self.data_dir)
 
     async def set_sending_paused(self, paused: bool):
         state = self.state()

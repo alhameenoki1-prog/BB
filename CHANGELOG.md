@@ -9,6 +9,31 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **The general message is sent in several wordings, with no AI call at
+  sending time.** A long list that receives one identical email reads as
+  bulk mail and gets the mailbox blocked sooner. "Write a general message
+  for me" now also writes five other wordings of it (same facts and
+  request; a different opening, order, phrasing and subject each), and
+  "Write 5 other wordings of my message" does the same for a message you
+  wrote yourself; each is checked like every email and the ones that read
+  like spam or repeat another are dropped. They are saved on the profile
+  (`outreach.template_variants`, editable rows), and the sender gives each
+  recipient one of the six, chosen by their address, so neighbours on the
+  list get different emails (`Writer.template_steps`, `EmailStep.wordings`
+  and `variant`, which now pair subject and body by index). Sector versions
+  keep their single wording.
+
+- **Send the last emails again, and test while paused.** On the dashboard,
+  "Send the last emails again" queues the most recent N first emails once
+  more (for a run that went out while the mailbox was blocked or over its
+  daily cap, so nobody received it), each with its follow-ups moved along
+  (`/outbox/resend-last`, `state.requeue_last_first_emails`). While
+  sending is paused, "send the next N first emails now as a test" makes
+  the worker send that many once on its next pass, the pause, cool-off and
+  day's count aside, then hold again; Resume carries on from where the
+  queue stopped (`/worker/test-send`, `wake.request_test_send`, the sender's
+  `_drain_due(limit=, force=)`).
+
 - **A second Microsoft admin app connects with the mailbox permissions
   alone.** The admin-app connection test read the mailbox's directory
   record, which needs `User.Read.All`, a directory permission the Mail

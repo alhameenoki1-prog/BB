@@ -76,6 +76,27 @@
       <div><label>Second follow-up, 4 days later <span class="muted" style="font-weight:400">(optional)</span></label><textarea name="template_followup_2" id="tpl-template_followup_2" data-rich rows="4" placeholder="Hi {{ '{{first_name}}' }},&#10;&#10;Last note from me on this. If it is not something you handle, no need to reply.">{{ profile.template_followup_2 | on_words(link_names) }}</textarea></div>
     </div>
 
+    <h3 style="margin:22px 0 4px;font-size:15px">Other wordings of this message <span class="muted" style="font-weight:400">(rotated over the list)</span></h3>
+    <p class="muted small">A long list that receives one identical email reads as bulk mail and gets the mailbox blocked sooner. Each recipient gets one of these wordings instead, chosen by their address, with no AI call at sending time. Same facts and request, different words and subject.</p>
+    <p style="margin-top:0"><button type="submit" class="secondary small" formaction="/profile/general-message/variants" formmethod="post">{{ icon('spark', 13) }} Write {{ template_variants }} other wordings of my message</button></p>
+    <div id="variants">
+      {% for v in (profile.template_variants or []) %}
+      <div class="card flat tv-row" style="margin:10px 0">
+        <label>Subject</label><input type="text" name="tv_subject_{{ loop.index0 }}" value="{{ v.subject }}" maxlength="120" placeholder="Blank = the subject above">
+        <label>Message</label><textarea name="tv_body_{{ loop.index0 }}" rows="5">{{ v.body }}</textarea>
+        <p style="margin:8px 0 0"><button type="button" class="small danger tv-remove">Remove this wording</button></p>
+      </div>
+      {% endfor %}
+    </div>
+    <template id="tv-template">
+      <div class="card flat tv-row" style="margin:10px 0">
+        <label>Subject</label><input type="text" name="tv_subject_IDX" maxlength="120" placeholder="Blank = the subject above">
+        <label>Message</label><textarea name="tv_body_IDX" rows="5" placeholder="Hi {{ '{{first_name}}' }},&#10;&#10;The same request in other words."></textarea>
+        <p style="margin:8px 0 0"><button type="button" class="small danger tv-remove">Remove this wording</button></p>
+      </div>
+    </template>
+    <p><button type="button" class="secondary small" id="tv-add">+ Add a wording</button></p>
+
     <h3 style="margin:22px 0 4px;font-size:15px">Different versions for particular sectors <span class="muted" style="font-weight:400">(optional)</span></h3>
     <p class="muted small">Contacts are sorted by what their company does (one AI call per 25, no writing). Anyone in a sector you list below gets that version; everyone else gets the message above. Hold ⌘ or Ctrl to pick several sectors.</p>
     <div id="sector-messages">
@@ -140,6 +161,7 @@
     });
   }
   rowList('sector-messages', 'sm-template', 'sm-add', 'sm-row', 'sm-remove', {{ max_sector_messages }});
+  rowList('variants', 'tv-template', 'tv-add', 'tv-row', 'tv-remove', {{ max_template_variants }});
   rowList('sector-needs', 'sn-template', 'sn-add', 'sn-row', 'sn-remove', {{ max_sector_needs }});
 </script>
 <div class="card">

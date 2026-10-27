@@ -1119,3 +1119,71 @@ async def test_the_tenants_daily_limit_pauses_a_day_and_the_bounced_first_emails
     sender = make_sender(state, provider, require_approval=False)
     await sender.run()
     assert provider.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_test_batch_goes_out_while_sending_is_paused(state, monkeypatch, tmp_path):
+    """Sending is paused (the kill switch, a cool-off): a request from the
+    dashboard sends the next N first emails once, then it holds again. The
+    request is consumed; follow-ups stay; the pause stays."""
+    from harvey import wake
+    import harvey.agents.sender as sender_mod
+    monkeypatch.setattr("harvey.paths.DATA_DIR", tmp_path)
+    ids = [await seed_prospect(state, email=f"p{i}@acme.com") for i in range(5)]
+    await seed_campaign(state, ids)
+    provider = FakeProvider()
+    sender = make_sender(state, provider, require_approval=False)
+    await sender.run()                                        # staged, then sent: 5 first emails
+    assert len(provider.sent) == 5
+    provider.sent.clear()
+    # Paused and cooling off: nothing goes.
+    await state.set_setting("sending_paused", "your mailbox is blocked from sending (...)")
+    await state.set_setting("sender_cooloff_until", (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=20)).isoformat())
+    for i, pid in enumerate(ids):
+        await state.add_outbox_item(prospect_id=pid, to_email=f"p{i}@acme.com", subject="x", body="Fine body. Question?",
+                                    send_at=_now_iso(), status="approved", campaign_id="c9", step=1)
+    await sender.run()
+    assert provider.sent == []
+    # A test batch of 2: exactly two first emails, follow-ups untouched, the request gone, still paused.
+    wake.request_test_send(tmp_path, 2)
+    assert wake.test_send_pending(tmp_path) == 2
+    await sender.run()
+    assert len(provider.sent) == 2 and all(s["subject"] == "x" for s in provider.sent)
+    assert wake.test_send_pending(tmp_path) == 0 and not (tmp_path / wake.TEST_SEND_FILE).exists()
+    assert (await state.get_setting("sending_paused")).startswith("your mailbox is blocked")
+    assert len(await state.get_outbox(status="approved")) == 3 + 5          # three first emails left, five follow-ups
+    await sender.run()
+    assert len(provider.sent) == 2                                             # holds again
+    # A first-only pass (the send loop with the model down) does not spend a request.
+    wake.request_test_send(tmp_path, 1)
+    await sender.run(first_only=True)
+    assert len(provider.sent) == 2 and wake.test_send_pending(tmp_path) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_last_first_emails_sent_can_be_queued_again(state):
+    """The most recent N sent first emails go again, follow-ups moved along;
+    older ones and follow-ups are left alone."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    rows = []
+    for i in range(4):
+        pid = await seed_prospect(state, email=f"p{i}@acme.com", status="contacted")
+        at = (now - timedelta(hours=10 - i)).isoformat()                       # p3 the most recent
+        first = await state.add_outbox_item(prospect_id=pid, to_email=f"p{i}@acme.com", subject="s", body="b",
+                                            send_at=at, status="approved", campaign_id="c1", step=1)
+        await state.update_outbox_item(first, status="sent", sent_at=at, message_id=f"<m{i}@x>")
+        second = await state.add_outbox_item(prospect_id=pid, to_email=f"p{i}@acme.com", subject="again", body="b",
+                                             send_at=(now + timedelta(days=3) - timedelta(hours=10 - i)).isoformat(),
+                                             status="approved", campaign_id="c1", step=2)
+        rows.append((first, second))
+    reply = await state.add_outbox_item(prospect_id="x", to_email="z@acme.com", subject="Re", body="b", send_at=now.isoformat(),
+                                        status="approved", kind="reply")
+    await state.update_outbox_item(reply, status="sent", sent_at=now.isoformat())
+    assert await state.requeue_last_first_emails(2, "again") == 2
+    statuses = [(await state.get_outbox_item(f))["status"] for f, _ in rows]
+    assert statuses == ["sent", "sent", "approved", "approved"]
+    f3, s3 = rows[3]
+    gap = datetime.fromisoformat((await state.get_outbox_item(s3))["send_at"]) - datetime.fromisoformat((await state.get_outbox_item(f3))["send_at"])
+    assert timedelta(days=2, hours=23) < gap < timedelta(days=3, hours=1)
+    assert (await state.get_outbox_item(reply))["status"] == "sent"             # a reply is never resent
+    assert await state.requeue_last_first_emails(0, "x") == 0

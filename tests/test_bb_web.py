@@ -1364,6 +1364,42 @@ def test_resume_sending_forgets_old_bounce_reports(client):
     assert asyncio.run(sm.get_setting("sending_resumed_at")).startswith("20")
 
 
+def test_dashboard_can_queue_the_last_emails_again_and_send_a_test_batch_while_paused(client, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from harvey import wake
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    sm = StateManager(str(ws.db_path))
+    asyncio.run(sm.init_db())
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i in range(3):
+        at = (now - timedelta(hours=3 - i)).isoformat()
+        item = asyncio.run(sm.add_outbox_item(prospect_id=f"p{i}", to_email=f"p{i}@x.example", subject="s", body="b",
+                                              send_at=at, status="approved", campaign_id="c1", step=1))
+        asyncio.run(sm.update_outbox_item(item, status="sent", sent_at=at))
+    woken = []
+    async def fake_wake(self, by="x"):
+        woken.append(by); return True, ""
+    monkeypatch.setattr(Workspace, "wake_worker", fake_wake)
+    page = client.get("/").text
+    assert "3 first emails have been sent" in page and "Send the last emails again" in page
+    assert "Send the test batch" not in page                       # only while paused
+    r = client.post("/outbox/resend-last", data={"count": "2"})
+    assert r.status_code == 303 and "2+first+emails+queued+again" in r.headers["location"].replace("%20", "+")
+    assert len(asyncio.run(sm.get_outbox(status="approved"))) == 2 and woken == ["emails queued again"]
+    assert "error=" in client.post("/outbox/resend-last", data={"count": "0"}).headers["location"]
+    # The test batch needs the pause.
+    r = client.post("/worker/test-send", data={"count": "2"})
+    assert "Pause+sending+first" in r.headers["location"].replace("%20", "+")
+    asyncio.run(ws.set_sending_paused(True))
+    page = client.get("/").text
+    assert "Send the test batch" in page
+    r = client.post("/worker/test-send", data={"count": "50"})
+    assert r.status_code == 303 and "next+20+first+emails+as+a+test" in r.headers["location"].replace("%20", "+")
+    assert wake.test_send_pending(ws.data_dir) == 20 and woken[-1] == "a test batch"
+
+
 def test_gmail_mailboxes_get_their_own_daily_ceiling(client):
     _as_user(client)
     user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])

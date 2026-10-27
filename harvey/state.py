@@ -1289,6 +1289,25 @@ class StateManager:
             ) as cursor:
                 return (await cursor.fetchone())[0]
 
+    async def requeue_last_first_emails(self, count: int, note: str) -> int:
+        """The ``count`` most recently sent first emails go again (each with
+        its follow-ups moved along): for a run that went out while the
+        mailbox was blocked or capped. Returns how many were queued again."""
+        count = max(0, int(count))
+        if not count:
+            return 0
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT id FROM outbox WHERE status = 'sent' AND COALESCE(kind, 'sequence') = 'sequence' "
+                "AND COALESCE(step, 1) = 1 ORDER BY sent_at DESC, created_at DESC LIMIT ?", (count,)
+            ) as cur:
+                ids = [row[0] for row in await cur.fetchall()]
+        done = 0
+        for item_id in ids:
+            if await self.requeue_first_email(item_id, note):
+                done += 1
+        return done
+
     async def requeue_first_email(self, item_id: str, note: str) -> bool:
         """A first email that bounced because the mailbox was blocked from
         sending goes again once sending resumes: the row is approved again

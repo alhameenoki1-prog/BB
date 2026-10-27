@@ -418,6 +418,19 @@ class Sender:
         """Stage new campaigns into the outbox, then drain what's due."""
         paused = await self.state.get_setting(KILL_SWITCH_KEY)
         if paused:
+            # A test batch asked for from the dashboard: the next few first
+            # emails go once (the pause, the cool-off and the day's count
+            # aside, since they are what is being tested), then it holds again.
+            from harvey import wake
+            from harvey.paths import DATA_DIR
+            count = wake.test_send_pending(DATA_DIR) if not first_only else 0
+            if count:
+                wake.take_test_send(DATA_DIR)
+                logger.warning(f"Sender: sending is paused ({paused}); sending the next {count} first email(s) "
+                               "as a test, then holding again.")
+                await self._drain_due(first_only=True, limit=count, force=True)
+                await self.state.log_action(action_type="test_send", agent="sender", details={"count": count})
+                return
             logger.warning(
                 f"Sender: SENDING PAUSED ({paused}). Resume from the dashboard "
                 "or `harvey sending resume` once the cause is fixed."
@@ -583,10 +596,12 @@ class Sender:
                 details={"campaign": campaign.name, "staged": staged, "mode": mode},
             )
 
-    async def _drain_due(self, first_only: bool = False):
+    async def _drain_due(self, first_only: bool = False, limit: int | None = None, force: bool = False):
         """Send due, approved outbox items through the provider. With
         ``first_only``, follow-ups (step 2 and on) are left for a pass that
-        can read replies first; first emails and answers still go."""
+        can read replies first; first emails and answers still go. ``limit``
+        caps the first emails this pass; with ``force`` (a test batch) that
+        many go whatever the cool-off, the day's count or the ceiling."""
         # (allowance and per-cycle size come from channels.email)
         if not self.provider.is_configured():
             logger.warning(
@@ -596,7 +611,7 @@ class Sender:
             return
 
         email_cfg = self.config.channels.email
-        if await self._in_cooloff():
+        if await self._in_cooloff() and not force:
             return
         max_daily = email_cfg.max_daily_sends
         # Every limit below is for first emails and follow-ups. Replies (an
@@ -656,6 +671,9 @@ class Sender:
                     await self.state.set_setting(SKIP_REASON_KEY, "")
                 if pic["limited"]:
                     budget = min(budget, pic["room"])
+
+        if limit is not None:
+            budget = max(1, int(limit)) if force else min(budget, max(0, int(limit)))
 
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         stale = await self.state.release_stale_sending()
