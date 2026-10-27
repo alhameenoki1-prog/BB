@@ -416,8 +416,9 @@ class Sender:
 
     async def _run_native(self, first_only: bool = False):
         """Stage new campaigns into the outbox, then drain what's due."""
-        if not first_only:
-            await self._send_test_copies()
+        # Copies to the person's own addresses touch no queue and need no
+        # model, so they go on every pass, paused or not.
+        await self._send_test_copies()
         paused = await self.state.get_setting(KILL_SWITCH_KEY)
         if paused:
             logger.warning(
@@ -613,6 +614,8 @@ class Sender:
                 if queued:
                     break
         if not queued:
+            queued = await self._test_items_from_drafts(len(to))
+        if not queued:
             text = "nothing is written yet, so there was no email to send a test copy of"
             logger.warning(f"Sender: test copies asked for, but {text}.")
             await self.state.set_setting(self.TEST_SEND_LAST_KEY, text)
@@ -642,6 +645,27 @@ class Sender:
                                     details={"to": sent, "failed": failed, "subject": queued[0]["subject"][:120]})
         logger.info(f"Sender: test copies: {text}")
         return len(sent)
+
+    async def _test_items_from_drafts(self, n: int) -> list[dict]:
+        """First emails of a written campaign that is not in the outbox yet
+        (sending paused before it was staged), rendered as the sender would
+        for its first recipients, one wording each."""
+        out: list[dict] = []
+        for campaign in await self.state.get_campaigns_by_status("draft"):
+            if not campaign.sequence:
+                continue
+            step = campaign.sequence[0]
+            for prospect_id in campaign.prospect_ids:
+                prospect = await self.state.get_prospect(prospect_id)
+                if not prospect or not prospect.email:
+                    continue
+                raw_subject, raw_body = step.variant(prospect.id)
+                out.append({"subject": self._render(raw_subject, prospect),
+                            "body": self._render(raw_body, prospect, body=True),
+                            "kind": "sequence", "step": 1, "attachments_json": ""})
+                if len(out) >= max(1, n):
+                    return out
+        return out
 
     async def _drain_due(self, first_only: bool = False, limit: int | None = None, force: bool = False):
         """Send due, approved outbox items through the provider. With
@@ -1130,7 +1154,7 @@ class Sender:
                                         details={"prospect": item["to_email"], "bounces": bounces, "reason": reason_text,
                                                  "at": "send"})
             # The same bad-list switch the handler trips on bounces that travelled.
-            total_sent = await self.state.count_outbox_sent()
+            total_sent = await self.state.count_outbox_sent(include_requeued=True)
             max_rate = getattr(self.config.channels.email, "max_bounce_rate", 0.05)
             if max_rate > 0 and total_sent >= 50 and bounces / max(total_sent, 1) > max_rate:
                 reason = f"bounce rate {bounces}/{total_sent} exceeded {max_rate:.0%} — check list quality before resuming"

@@ -1055,7 +1055,7 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
             )
 
         bounces = await self.state.increment_setting(BOUNCE_COUNT_KEY)
-        total_sent = await self.state.count_outbox_sent()
+        total_sent = await self.state.count_outbox_sent(include_requeued=True)
         await self.state.log_action(
             action_type="bounce",
             agent="handler",
@@ -1209,6 +1209,11 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
         if requeued:
             logger.warning(f"Handler: {kind} ({reason[:120]}); the first email to {who} goes again after the "
                            f"{hours}h pause, its follow-ups moved with it.")
+        elif kind in RETRY_KINDS:
+            # Our own side's limit, not a verdict on the email or the person:
+            # nothing queued for them is dropped (a late report about an email
+            # already queued again leaves it queued).
+            logger.warning(f"Handler: {kind} ({reason[:120]}); sending pauses for {hours}h. Nothing queued is dropped.")
         elif prospect:
             cancelled = await self.state.cancel_pending_outbox_for_prospect(prospect.id, reason="blocked")
             logger.warning(f"Handler: BLOCKED as spam for {prospect.email} ({reason}); the address stays valid, "

@@ -392,3 +392,49 @@ def test_general_message_is_written_by_the_ai_and_becomes_the_fallback(client, m
     ws.rewrite_config()
     again = HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach
     assert again.template_fallback is True and again.template_subject == o.template_subject
+
+
+
+def test_typed_wordings_get_the_same_checks_as_the_message(client, monkeypatch):  # noqa: F811
+    """A wording typed on the page is sent in place of the message to some
+    recipients: a stub is refused, a spammy one is warned about, and a
+    rejected save keeps what was typed."""
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user)
+    body = "Hi {{first_name}},\n\nWe are planning a 24-unit block in Towson and need a builder from April.\n\nJane"
+    base = {**NEEDS_FORM, "writing": "template", "template_subject": "A builder for Towson", "template_body": body}
+    r = client.post("/profile", data={**base, "tv_subject_0": "", "tv_body_0": "todo"})
+    assert r.status_code == 200 and "Wording 1 of your message is too short" in r.text
+    assert 'name="tv_body_0" rows="5">todo</textarea>' in r.text           # what was typed is still there
+    assert not HarveyConfig(**yaml.safe_load(ws.config_file.read_text())).outreach.template_variants if ws.config_file.exists() else True
+    spammy = "Hi {{first_name}},\n\nFREE!!! ACT NOW!!! 100% GUARANTEED, BUY TODAY, LIMITED TIME OFFER!!!\n\nJane"
+    r = client.post("/profile", data={**base, "tv_subject_0": "", "tv_body_0": spammy})
+    assert r.status_code == 303
+    assert ws.template_warning().startswith("Wording 1 of your message may land in junk folders")
+
+
+def test_new_wordings_rewrite_the_first_emails_already_written(client, monkeypatch):  # noqa: F811
+    """Writing new wordings changes the words of the emails: with "rewrite
+    scheduled" ticked, first emails written before and not sent yet are
+    written again, so the backlog goes out rotated too."""
+    class _Fake:
+        def __init__(self, env):
+            self.configured = True
+
+        async def complete_json(self, system, user, **kw):
+            return {"versions": WORDINGS[:2]}
+    monkeypatch.setattr("bb.mail.brain.MailBrain", _Fake)
+    calls = []
+    async def fake_rewrite(self, why=""):
+        calls.append(why); return {"cancelled": 4, "prospects": 4}, True
+    monkeypatch.setattr(Workspace, "rewrite_unsent_now", fake_rewrite)
+    _as_user(client)
+    body = "Hi {{first_name}},\n\nMy own message about the 24-unit block in Towson, long enough.\n\nJane"
+    form = {**NEEDS_FORM, "writing": "template", "template_subject": "My own subject", "template_body": body}
+    assert client.post("/profile", data=form).status_code == 303
+    r = client.post("/profile/general-message/variants", data={**form, "rewrite_scheduled": "on"})
+    assert r.status_code == 303 and "4+unsent+email" in r.headers["location"].replace("%20", "+") and calls
+    calls.clear()
+    r = client.post("/profile/general-message/variants", data=form)               # box unticked: no rewrite
+    assert r.status_code == 303 and not calls

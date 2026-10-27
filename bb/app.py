@@ -27,7 +27,7 @@ from bb.mail_autoconfig import guess_settings
 from bb.mail_paste import parse_pasted_login, to_smtp_fields
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
-from bb.workspaces import (ASKS, ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
+from bb.workspaces import (_template_variants_from_form, ASKS, ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
                            MAX_INBOX_LINKS, MAX_SECTOR_MESSAGES, MAX_TEMPLATE_VARIANTS, MAX_TEST_SEND, OUTREACH_MODES, MAX_SECTOR_NEEDS,
                            SECTOR_LABELS, SPEEDS, TEMPLATE_VARIANTS,
                            STYLES, TONES, Workspace, _sector_messages_from_form, _sector_needs_from_form,
@@ -526,12 +526,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             count = 0
         if not count:
             return _redirect("/", error="Say how many of the most recent first emails to send again.")
-        n = await ws.resend_last(count)
-        if not n:
+        n, already = await ws.resend_last(count)
+        if not n and not already:
             return _redirect("/", error="No sent first emails to queue again.")
-        await ws.wake_worker("emails queued again")
+        if n:
+            await ws.wake_worker("emails queued again")
+        waiting = (f" {already} of the last {count} were already waiting to go again after bouncing and were left as they are."
+                   if already else "")
         return _redirect("/", msg=f"{n} first email{'s' if n != 1 else ''} queued again. They go out at your daily limit "
-                                  "(or after Resume if sending is paused), with their follow-ups moved along.")
+                                  f"(or after Resume if sending is paused), with their follow-ups moved along.{waiting}")
 
     # ── profile ──
 
@@ -549,7 +552,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             merged["sector_needs"] = _sector_needs_from_form(form)
         if any(k.startswith("sm_") for k in form):
             merged["sector_messages"] = _sector_messages_from_form(form)
+        if "template_body" in form or any(k.startswith("tv_") for k in form):
+            merged["template_variants"] = _template_variants_from_form(form)
         return merged
+
+    async def _after_brief_change(ws: Workspace, before, form: dict, why: str) -> str:
+        """The words of the emails changed (a new general message, new
+        wordings): with the profile's "rewrite scheduled" box ticked, first
+        emails written before and not sent yet are written again; otherwise
+        the worker restarts on the new profile. Returns a sentence for the page."""
+        if before and ws.writing_brief() != before and str(form.get("rewrite_scheduled", "")).lower() in ("1", "on", "true", "yes"):
+            done, _restarted = await ws.rewrite_unsent_now(why)
+            if done["cancelled"] or done["prospects"]:
+                return (f" {done['cancelled']} unsent email(s) to {done['prospects']} recipient(s) will be written again "
+                        "with it.")
+            return ""
+        await ws.restart_worker_if_running(why)
+        return ""
 
     def _profile_ctx(ws: Workspace, profile: dict) -> dict:
         return dict(profile=profile, link_names=ws.link_names(), tones=TONES, goals=GOALS, timezones=COMMON_TIMEZONES,
@@ -609,6 +628,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form = dict(raw)
         for key in {k for k in raw.keys() if k.startswith(("sm_sectors_", "sn_sectors_"))}:
             form[key] = raw.getlist(key)
+        before = ws.writing_brief()
         try:
             ws.write_profile(form)      # keep what is on the page, the fallback box included
         except ValidationError as e:
@@ -620,10 +640,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             out = await ws.generate_general_message()
         except Exception as e:
             return _redirect("/profile", error=f"Could not write the message: {str(e)[:200]}")
-        await ws.restart_worker_if_running("the general message")
+        rewritten = await _after_brief_change(ws, before, form, "the general message")
         n = out.get("variants", 0)
         extra = f" and {n} other wording{'s' if n != 1 else ''} of it, rotated over the list" if n else ""
-        return _redirect("/profile", msg=f"Wrote a general message: “{out['subject']}”{extra}. It is saved — check it below and edit it if you like.")
+        return _redirect("/profile", msg=f"Wrote a general message: “{out['subject']}”{extra}. It is saved — check it below and edit it if you like.{rewritten}")
 
     @app.post("/profile/general-message/variants")
     async def profile_general_message_variants(request: Request, user: dict = Depends(current_user)):
@@ -635,6 +655,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form = dict(raw)
         for key in {k for k in raw.keys() if k.startswith(("sm_sectors_", "sn_sectors_"))}:
             form[key] = raw.getlist(key)
+        before = ws.writing_brief()
         try:
             ws.write_profile(form)
         except ValidationError as e:
@@ -646,8 +667,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             n = await ws.generate_template_variants()
         except Exception as e:
             return _redirect("/profile", error=f"Could not write the wordings: {str(e)[:200]}")
-        await ws.restart_worker_if_running("the general message's wordings")
-        return _redirect("/profile", msg=f"Wrote {n} other wording{'s' if n != 1 else ''} of your message. Each recipient gets one of them; edit any below.")
+        rewritten = await _after_brief_change(ws, before, form, "the general message's wordings")
+        return _redirect("/profile", msg=f"Wrote {n} other wording{'s' if n != 1 else ''} of your message. Each recipient gets one of them; edit any below.{rewritten}")
 
     # ── the user's own Anthropic key ──
 

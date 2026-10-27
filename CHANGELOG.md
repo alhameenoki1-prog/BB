@@ -7,6 +7,22 @@ minor versions can still change behaviour.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Re-sending and test copies, made safe.** "Send the last emails again"
+  now counts emails a bounce report already queued again toward the
+  number, so it never reaches back to people who received theirs; a late
+  report about the original send no longer cancels an email that was
+  queued again, nor its follow-ups (a limit on our side drops nothing
+  queued); re-queued emails stay in the bounce-rate count, so re-sending
+  cannot trip the bad-list stop. Test copies now go on every pass, the AI
+  down or not, and work before anything is staged (rendered from the
+  written campaign). A wording typed on the profile gets the same checks
+  as the message (too short is refused, spammy is warned about), a
+  rejected save keeps the wordings typed, and writing new wordings rewrites
+  first emails already written but not sent when "rewrite scheduled" is
+  ticked. Start over clears a waiting test request.
+
 ### Added
 
 - **The general message is sent in several wordings, with no AI call at

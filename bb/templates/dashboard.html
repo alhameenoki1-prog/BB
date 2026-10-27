@@ -91,7 +91,7 @@
       {% endif %}
       <details style="margin-top:16px">
         <summary class="small muted" style="cursor:pointer">Send the last emails again</summary>
-        <p class="small muted" style="margin-top:8px">{{ summary.sent_first }} first email{{ 's' if summary.sent_first != 1 else '' }} have been sent. If a run went out while the mailbox was blocked or over its daily cap (so nobody received it), queue the most recent ones again: they go out once more at your daily limit, with their follow-ups moved along.</p>
+        <p class="small muted" style="margin-top:8px">{{ summary.sent_first }} first email{{ 's' if summary.sent_first != 1 else '' }} have been sent{% if summary.requeued_waiting %}, and {{ summary.requeued_waiting }} that bounced while the mailbox was capped or blocked are already queued to go again{% endif %}. If a run went out while the mailbox was blocked or over its daily cap (so nobody received it), queue the most recent ones again: they go out once more at your daily limit, with their follow-ups moved along. Emails already queued again count toward the number, so it never reaches back to people who received theirs.</p>
         <form class="inline" method="post" action="/outbox/resend-last" onsubmit="return confirm('Queue the most recent first emails again? Each goes out once more.')">
           <label class="small" style="display:inline">Send the last <input type="number" name="count" value="" min="1" max="{{ summary.sent_first or 1 }}" placeholder="how many" style="width:90px;display:inline"> first emails again</label>
           <button class="secondary small" type="submit">{{ icon('play', 13) }} Queue them again</button>

@@ -1152,10 +1152,11 @@ async def test_test_copies_of_the_next_queued_email_go_to_the_pasted_addresses(s
     assert wake.test_send_pending(tmp_path) == [] and not (tmp_path / wake.TEST_SEND_FILE).exists()
     assert "went to me@gmail.com, me@outlook.com" in await state.get_setting("test_send_last")
     assert (await state.get_setting("sending_paused")).startswith("your mailbox is blocked")
-    # A first-only pass (the send loop with the model down) leaves the request for a full pass.
+    # A first-only pass (the send loop with the model down) sends them too: no queue, no model.
     wake.request_test_send(tmp_path, ["me@gmail.com"])
     await sender.run(first_only=True)
-    assert len(provider.sent) == 2 and wake.test_send_pending(tmp_path) == ["me@gmail.com"]
+    assert len(provider.sent) == 3 and wake.test_send_pending(tmp_path) == []
+    provider.sent.pop()
     # A stale request (a day old) is dropped.
     import json as _json, time as _time
     (tmp_path / wake.TEST_SEND_FILE).write_text(_json.dumps({"to": ["old@x.example"], "at": _time.time() - 2 * 86400}))
@@ -1190,11 +1191,61 @@ async def test_the_last_first_emails_sent_can_be_queued_again(state):
     reply = await state.add_outbox_item(prospect_id="x", to_email="z@acme.com", subject="Re", body="b", send_at=now.isoformat(),
                                         status="approved", kind="reply")
     await state.update_outbox_item(reply, status="sent", sent_at=now.isoformat())
-    assert await state.requeue_last_first_emails(2, "again") == 2
+    assert await state.requeue_last_first_emails(2, "Queued again") == (2, 0)
     statuses = [(await state.get_outbox_item(f))["status"] for f, _ in rows]
     assert statuses == ["sent", "sent", "approved", "approved"]
+    # Asking for the last 3 now: the two already waiting count toward it, so only one more is taken.
+    assert await state.requeue_last_first_emails(3, "Queued again") == (1, 2)
+    assert [(await state.get_outbox_item(f))["status"] for f, _ in rows] == ["sent", "approved", "approved", "approved"]
+    # The bounce rate counts them once, sent or waiting to go again.
+    assert await state.count_outbox_sent() == 2 and await state.count_outbox_sent(include_requeued=True) == 5
     f3, s3 = rows[3]
     gap = datetime.fromisoformat((await state.get_outbox_item(s3))["send_at"]) - datetime.fromisoformat((await state.get_outbox_item(f3))["send_at"])
     assert timedelta(days=2, hours=23) < gap < timedelta(days=3, hours=1)
     assert (await state.get_outbox_item(reply))["status"] == "sent"             # a reply is never resent
-    assert await state.requeue_last_first_emails(0, "x") == 0
+    assert await state.requeue_last_first_emails(0, "x") == (0, 0)
+
+
+
+@pytest.mark.asyncio
+async def test_test_copies_from_a_written_campaign_not_yet_staged(state, monkeypatch, tmp_path):
+    """Sending was paused before the campaign was ever staged: the copy is
+    rendered from the written campaign, as the sender would for its first
+    recipient (their name in the greeting)."""
+    from harvey import wake
+    monkeypatch.setattr("harvey.paths.DATA_DIR", tmp_path)
+    pid = await seed_prospect(state, email="jane@acme.com")
+    await seed_campaign(state, [pid])
+    await state.set_setting("sending_paused", "paused from the web app")
+    provider = FakeProvider()
+    sender = make_sender(state, provider, require_approval=False)
+    wake.request_test_send(tmp_path, ["me@gmail.com"])
+    await sender.run()
+    assert [m["to"] for m in provider.sent] == ["me@gmail.com"]
+    assert provider.sent[0]["subject"] == "hi Jane" and provider.sent[0]["body"].startswith("Hi Jane,")
+    assert await state.get_outbox() == []                                   # still nothing staged
+
+
+@pytest.mark.asyncio
+async def test_a_late_cap_report_never_drops_an_email_already_queued_again(state):
+    """The tenant's daily cap bounced an email; it was queued again (by a
+    report, or from the dashboard). Another report about the same original
+    send arrives later: the email stays queued, and so do its follow-ups."""
+    pid = await seed_prospect(state, email="jane@acme.com", status="contacted")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    first = await state.add_outbox_item(prospect_id=pid, to_email="jane@acme.com", subject="s", body="b",
+                                        send_at=now.isoformat(), status="approved", campaign_id="c1", step=1)
+    await state.update_outbox_item(first, status="sent", sent_at=now.isoformat(), message_id="<m1@x.co>")
+    second = await state.add_outbox_item(prospect_id=pid, to_email="jane@acme.com", subject="again", body="b",
+                                         send_at=(now + timedelta(days=3)).isoformat(), status="approved",
+                                         campaign_id="c1", step=2)
+    assert await state.requeue_last_first_emails(1, "Queued again from the dashboard") == (1, 0)
+    provider = FakeProvider()
+    provider.inbound = [_ndr("jane@acme.com", mid="<m1@x.co>", pid="late1",
+                             code="550 5.7.233 Your message can't be sent because your tenant has exceeded its daily "
+                                  "limit for sending email to external recipients (tenant external recipient rate limit)")]
+    handler = make_handler(state, provider)
+    await handler._run_native()
+    assert (await state.get_outbox_item(first))["status"] == "approved"
+    assert (await state.get_outbox_item(second))["status"] == "approved"
+    assert (await state.get_prospect(pid)).email_status == "verified"

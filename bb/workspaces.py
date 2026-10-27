@@ -851,12 +851,20 @@ class Workspace:
         from harvey.spamcheck import REVIEW, describe, spam_risk
 
         prof = self.profile()
-        if prof.get("writing") != "template" or not prof.get("template_body"):
+        if not prof.get("template_body") or not (prof.get("writing") == "template" or prof.get("template_fallback")):
             return ""
-        score, reasons = spam_risk(prof.get("template_subject", ""), prof.get("template_body", ""))
+        subject = prof.get("template_subject", "")
+        score, reasons = spam_risk(subject, prof.get("template_body", ""))
+        which = "Your message"
+        if score < REVIEW:
+            for i, v in enumerate(prof.get("template_variants") or [], 1):
+                score, reasons = spam_risk(v.get("subject") or subject, v.get("body", ""))
+                if score >= REVIEW:
+                    which = f"Wording {i} of your message"
+                    break
         if score < REVIEW:
             return ""
-        return ("Your message may land in junk folders. A filter would flag: " + describe(reasons)
+        return (f"{which} may land in junk folders. A filter would flag: " + describe(reasons)
                 + ". Plain, specific words about the actual job pass; marketing words, capitals, "
                 "links and exclamation marks do not.")
 
@@ -882,6 +890,10 @@ class Workspace:
         mode = text("mode") or "inquiry"
         if text("writing") == "template" and len(str(form.get("template_body", "") or "").strip()) < 20:
             raise ValueError("Write the message you want sent (at least a few lines), or pick one of the AI options.")
+        for i, row in enumerate(_template_variants_from_form(form), 1):
+            if len(row["body"]) < 20:
+                raise ValueError(f"Wording {i} of your message is too short to send as an email: write it out "
+                                 "(at least a few lines) or remove that row.")
         if mode == "inquiry" and text("writing") != "template" and len(text("intent")) < 15:
             raise ValueError(
                 "Say what you want from the people you write to, in a sentence or two (for example "
@@ -1249,7 +1261,7 @@ class Workspace:
     async def summary(self) -> dict:
         """The numbers on the banner and the dashboard."""
         out = {
-            "recipients": 0, "waiting": 0, "queued": 0, "sent": 0, "replied": 0, "sent_first": 0,
+            "recipients": 0, "waiting": 0, "queued": 0, "sent": 0, "replied": 0, "sent_first": 0, "requeued_waiting": 0,
             "bounced": 0, "outbox_pending": 0, "outbox_scheduled": 0, "outbox_sent": 0,
             "outbox_failed": 0, "outbox_rejected": 0, "replies": 0, "open_replies": 0,
             "sent_today": 0, "sending_paused": "", "worker_running": bool(self.worker_running()),
@@ -1292,6 +1304,10 @@ class Workspace:
                 "SELECT COUNT(*) AS n FROM outbox WHERE status = 'sent' AND COALESCE(kind, 'sequence') = 'sequence' "
                 "AND COALESCE(step, 1) = 1")
             out["sent_first"] = rows[0]["n"] if rows else 0
+            rows = await self._query(
+                "SELECT COUNT(*) AS n FROM outbox WHERE status IN ('approved', 'pending_review', 'sending') "
+                "AND error LIKE 'Queued again%' AND COALESCE(kind, 'sequence') = 'sequence' AND COALESCE(step, 1) = 1")
+            out["requeued_waiting"] = rows[0]["n"] if rows else 0
         out["test_send_last"] = await self.last_test_send()
         out["test_send_pending"] = self.test_send_pending()
         if await self._table_exists("conversations"):
@@ -1990,9 +2006,12 @@ class Workspace:
             row["messages"] = len(thread)
         return rows
 
-    async def resend_last(self, count: int) -> int:
-        """Queue the ``count`` most recently sent first emails again (their
-        follow-ups move along with them). Returns how many."""
+    async def resend_last(self, count: int) -> tuple[int, int]:
+        """Queue the ``count`` most recent first emails again (their follow-ups
+        move along with them). Ones already waiting to go again (a bounce
+        report re-queued them) count toward the ``count`` and are left as
+        they are, so this never reaches back to emails that arrived.
+        Returns (queued again now, already waiting)."""
         state = self.state()
         await state.init_db()
         return await state.requeue_last_first_emails(
@@ -2603,7 +2622,7 @@ class Workspace:
         self.paused_file.unlink(missing_ok=True)
         removed = 0
         for path in (self.db_path, Path(str(self.db_path) + "-wal"), Path(str(self.db_path) + "-shm"),
-                     self.data_dir / "analytics.json"):
+                     self.data_dir / "analytics.json", self.data_dir / "send_test.json"):
             try:
                 path.unlink()
                 removed += 1

@@ -1254,11 +1254,14 @@ class StateManager:
             ) as cursor:
                 return (await cursor.fetchone())[0]
 
-    async def count_outbox_sent(self) -> int:
+    async def count_outbox_sent(self, include_requeued: bool = False) -> int:
+        """Emails sent. ``include_requeued``: also the ones queued to go again
+        (they were sent once; the bounce rate counts them once)."""
+        sql = "SELECT COUNT(*) FROM outbox WHERE status = 'sent'"
+        if include_requeued:
+            sql += (" OR (status IN ('approved', 'pending_review', 'sending') AND error LIKE 'Queued again%')")
         async with self._connect() as db:
-            async with db.execute(
-                "SELECT COUNT(*) FROM outbox WHERE status = 'sent'"
-            ) as cursor:
+            async with db.execute(sql) as cursor:
                 return (await cursor.fetchone())[0]
 
     async def first_outbox_sent_at(self) -> str | None:
@@ -1289,24 +1292,30 @@ class StateManager:
             ) as cursor:
                 return (await cursor.fetchone())[0]
 
-    async def requeue_last_first_emails(self, count: int, note: str) -> int:
+    async def requeue_last_first_emails(self, count: int, note: str) -> tuple[int, int]:
         """The ``count`` most recently sent first emails go again (each with
         its follow-ups moved along): for a run that went out while the
         mailbox was blocked or capped. Returns how many were queued again."""
         count = max(0, int(count))
         if not count:
-            return 0
+            return 0, 0
+        # The most recent first emails: the sent ones, and the ones a bounce
+        # report already queued again (they are the latest run's, and count
+        # toward ``count`` so the selection never reaches further back).
         async with self._connect() as db:
             async with db.execute(
-                "SELECT id FROM outbox WHERE status = 'sent' AND COALESCE(kind, 'sequence') = 'sequence' "
-                "AND COALESCE(step, 1) = 1 ORDER BY sent_at DESC, created_at DESC LIMIT ?", (count,)
+                "SELECT id, status FROM outbox WHERE COALESCE(kind, 'sequence') = 'sequence' AND COALESCE(step, 1) = 1 "
+                "AND (status = 'sent' OR (status IN ('approved', 'pending_review', 'sending') AND error LIKE 'Queued again%')) "
+                "ORDER BY COALESCE(sent_at, updated_at) DESC, created_at DESC LIMIT ?", (count,)
             ) as cur:
-                ids = [row[0] for row in await cur.fetchall()]
-        done = 0
-        for item_id in ids:
-            if await self.requeue_first_email(item_id, note):
+                rows = [(row[0], row[1]) for row in await cur.fetchall()]
+        done = already = 0
+        for item_id, status in rows:
+            if status != "sent":
+                already += 1
+            elif await self.requeue_first_email(item_id, note):
                 done += 1
-        return done
+        return done, already
 
     async def requeue_first_email(self, item_id: str, note: str) -> bool:
         """A first email that bounced because the mailbox was blocked from
