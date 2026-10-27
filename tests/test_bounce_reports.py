@@ -146,13 +146,18 @@ def test_microsofts_blocked_sender_is_a_verdict_on_the_mailbox_not_the_address()
     assert bounce_kind(EXCHANGE_NEW) == "no such address"
     assert bounce_kind(EXCHANGE_TENANT) == SENDER_BLOCKED
     assert bounce_kind("550 5.7.501 Access denied, spam abuse detected") == SENDER_BLOCKED
-    # The mailbox's or tenant's limit for the day, a temporary restriction: slow down, not stop.
-    for text in ("550 5.7.233 Your message can't be sent because your tenant has exceeded its daily limit for sending "
-                 "email to external recipients (tenant external recipient rate limit).",
+    # The tenant's or mailbox's limit for the DAY: a day's pause, then the bounced emails go again.
+    from harvey.integrations.mail_provider import DAILY_LIMIT_HIT, RETRY_KINDS
+    for text in ("550 5.7.233 - Your message can't be sent because your tenant has exceeded its daily limit for sending "
+                 "email to external recipients (tenant external recipient rate limit). For more information see "
+                 "https://aka.ms/EXONdrs.",
                  "550 5.1.90 Your message can't be sent because you've reached your daily limit for message recipients.",
-                 "The message can't be submitted because the sender's submission quota was exceeded.",
-                 "451 4.7.650 Access denied, please try again later"):
-        assert bounce_kind(text) == "sending too fast or too much", text
+                 "The message can't be submitted because the sender's submission quota was exceeded."):
+        assert bounce_kind(text) == DAILY_LIMIT_HIT, text
+    assert DAILY_LIMIT_HIT in BLOCK_KINDS and DAILY_LIMIT_HIT in RETRY_KINDS and DAILY_LIMIT_HIT not in SENDER_BLOCK_KINDS
+    assert "paid licences" in bounce_reason("550 5.7.233 tenant external recipient rate limit")[1]
+    # A temporary restriction while the provider looks at the traffic: slow down, not stop.
+    assert bounce_kind("451 4.7.650 Access denied, please try again later") == "sending too fast or too much"
     # A recipient's own receive limit is neither: the address is fine and we are not blocked.
     assert bounce_kind("550 5.2.122 Recipient's per hour message receive limit exceeded") not in BLOCK_KINDS
     # The report's own sender inside the organisation is Exchange's system address.

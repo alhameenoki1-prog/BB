@@ -86,6 +86,7 @@ BOUNCE_SUBJECTS = (
 # What a bounce means and what to do about it, from the SMTP code or the
 # wording in the report. Order matters: the first match wins.
 SENDER_BLOCKED = "your mailbox is blocked from sending"
+DAILY_LIMIT_HIT = "your provider's daily sending limit is reached"
 
 
 def _code(*codes: str) -> str:
@@ -125,10 +126,20 @@ BOUNCE_HINTS = (
     # The sender's own provider's limits for the day (Exchange's 10,000
     # recipients a day, a tenant's external recipient limit, a temporary
     # restriction while it looks at the traffic): wait, then slow down.
-    (_code(r"5\.7\.23[236]", r"5\.1\.90", r"4\.7\.[5-8]\d\d", r"5\.7\.8[5-9]\d")
+    # Microsoft 365's limits for the DAY: the whole tenant's cap on email to
+    # outside recipients (it grows with the licences the tenant has), one
+    # mailbox's 10,000 recipients. Everything bounces until the 24-hour
+    # window moves on, so sending pauses a day.
+    (_code(r"5\.7\.23[236]", r"5\.1\.90")
      + r"|tenant external recipient rate limit|daily limit for message recipients|"
-     r"submission quota was exceeded|submissionquotaexceeded|please try again later|"
-     r"recipient rate limit|message rate limit",
+     r"submission quota was exceeded|submissionquotaexceeded",
+     DAILY_LIMIT_HIT,
+     "Microsoft 365 has stopped the tenant (every mailbox in it) sending to outside addresses until the day's "
+     "window moves on; the cap grows with the number of paid licences and cannot be raised by request. Sending "
+     "pauses 24 hours, then the bounced first emails go again. To send more a day, add licensed mailboxes, "
+     "or send from another provider; Microsoft says Exchange Online is not for bulk mail."),
+    (_code(r"4\.7\.[5-8]\d\d", r"5\.7\.8[5-9]\d")
+     + r"|please try again later|recipient rate limit|message rate limit",
      "sending too fast or too much",
      "Your mailbox provider throttled you. Switch the profile to the Gentle speed, keep the warm-up "
      "ramp on, and lower the daily maximum (30 to 50 a day for a mailbox under a month old)."),
@@ -188,7 +199,11 @@ BOUNCE_HINTS = (
 # Bounce kinds that are a verdict on the SENDER, not the address: the
 # receiving side (or the sender's own provider) treated the email as spam.
 # The address is fine; sending more right away makes it worse.
-BLOCK_KINDS = ("judged as unsolicited mail", "content blocked", "sending too fast or too much", SENDER_BLOCKED)
+BLOCK_KINDS = ("judged as unsolicited mail", "content blocked", "sending too fast or too much", SENDER_BLOCKED,
+               DAILY_LIMIT_HIT)
+# Our own side's limits: the email never left, so it goes again after the
+# pause (a recipient's spam verdict is not retried: that makes it worse).
+RETRY_KINDS = ("sending too fast or too much", DAILY_LIMIT_HIT)
 # The kinds where the sender's OWN provider refuses to send for it: nothing
 # leaves until a person unblocks the mailbox, so sending stops rather than
 # pausing (the kill switch, with the fix in its text).

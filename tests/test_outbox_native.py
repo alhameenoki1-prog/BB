@@ -1073,3 +1073,49 @@ async def test_a_sender_block_at_send_time_stops_the_pass_and_keeps_the_address(
     rows = await state.get_outbox(status="approved")
     assert len(rows) == 6 and sum(1 for r in rows if (r["error"] or "").startswith("waiting: your mailbox")) == 1
     assert await state.get_outbox(status="failed") == [] and await state.get_outbox(status="cancelled") == []
+
+
+
+@pytest.mark.asyncio
+async def test_the_tenants_daily_limit_pauses_a_day_and_the_bounced_first_emails_go_again(state):
+    """Microsoft's "tenant has exceeded its daily limit for sending email to
+    external recipients" (5.7.233): every email bounces until the day's
+    window moves on. Sending pauses 24 hours, the address stays valid, the
+    bounced first email is queued again with its follow-up moved along."""
+    pid = await seed_prospect(state, email="arosich@quickmedclaims.com", status="contacted")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    sent_at = (now - timedelta(hours=4)).isoformat()
+    first = await state.add_outbox_item(prospect_id=pid, to_email="arosich@quickmedclaims.com", subject="Service Inquiry",
+                                        body="b", send_at=sent_at, status="approved", campaign_id="c1", step=1)
+    await state.update_outbox_item(first, status="sent", sent_at=sent_at,
+                                   message_id="<YT4P288MB0312316F4CF4E2A96606B833D6602@YT4P288MB0312.CANP288.PROD.OUTLOOK.COM>")
+    second = await state.add_outbox_item(prospect_id=pid, to_email="arosich@quickmedclaims.com", subject="again", body="b",
+                                         send_at=(now + timedelta(days=3) - timedelta(hours=4)).isoformat(),
+                                         status="approved", campaign_id="c1", step=2)
+    provider = FakeProvider()
+    provider.inbound = [InboundMessage(
+        provider_id="t1", from_email="microsoftexchange329e71ec88ae4615bbc36ab6ce41109e@gocalgaryshuttles.com",
+        subject="Undeliverable: Service Inquiry",
+        body="Delivery has failed to these recipients or groups:\n\narosich@quickmedclaims.com (arosich@quickmedclaims.com)\n"
+             "Your message wasn't delivered. Please try resending the message.\n\nDiagnostic information for administrators:\n\n"
+             "Generating server: YQ1P288MB1010.CANP288.PROD.OUTLOOK.COM\n\narosich@quickmedclaims.com\n"
+             "Remote server returned '550 5.7.233 - Your message can't be sent because your tenant has exceeded its daily "
+             "limit for sending email to external recipients (tenant external recipient rate limit). For more information "
+             "see https://aka.ms/EXONdrs.'\n\nOriginal message headers:\n\nMessage-ID: "
+             "<YT4P288MB0312316F4CF4E2A96606B833D6602@YT4P288MB0312.CANP288.PROD.OUTLOOK.COM>\n", is_bounce=True)]
+    handler = make_handler(state, provider)
+    assert await handler._run_native() is True
+    assert (await state.get_prospect(pid)).email_status == "verified"
+    until = datetime.fromisoformat(await state.get_setting("sender_cooloff_until"))
+    assert timedelta(hours=23) < until - now < timedelta(hours=25)
+    skip = await state.get_setting("sender_skip_reason")
+    assert skip.startswith("your provider's daily sending limit is reached") and "paid licences" in skip
+    assert await state.get_setting("sending_paused") in ("", None)             # a pause, not the kill switch
+    row1, row2 = await state.get_outbox_item(first), await state.get_outbox_item(second)
+    assert row1["status"] == "approved" and row1["error"].startswith("Queued again") and row2["status"] == "approved"
+    gap = datetime.fromisoformat(row2["send_at"]) - datetime.fromisoformat(row1["send_at"])
+    assert timedelta(days=2, hours=23) < gap < timedelta(days=3, hours=1)
+    # The sender honours the pause.
+    sender = make_sender(state, provider, require_approval=False)
+    await sender.run()
+    assert provider.sent == []

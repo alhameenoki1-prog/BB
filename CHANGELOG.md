@@ -57,7 +57,10 @@ minor versions can still change behaviour.
   last Resume (`sending_resumed_at`) cannot stop sending again; Microsoft's
   own ban-list refusals of a foreign server (`5.7.511`, `5.7.708`,
   `5.7.800`) are a pause with the delisting hint, not a stop; status codes
-  are matched as whole tokens (not inside an IP address); the sender's own
+  are matched as whole tokens (not inside an IP address); Microsoft's
+  tenant-wide daily cap on email to outside recipients (`550 5.7.233`,
+  `DAILY_LIMIT_HIT`) pauses sending 24 hours and queues the bounced first
+  emails again afterwards (`RETRY_KINDS`), since they never left; the sender's own
   refusal at send time (`550 5.1.8` on the SMTP session) stops sending the
   same way instead of marking addresses invalid one by one; and the
   dashboard words an inbox backlog as such.

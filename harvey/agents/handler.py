@@ -17,9 +17,10 @@ from harvey import enquiry, names
 from harvey.brain import Brain, BrainUnavailable
 from harvey.config import HarveyConfig, EnvConfig
 from harvey.integrations.instantly import InstantlyClient
-from harvey.integrations.mail_provider import (BLOCK_KINDS, NATIVE_PROVIDERS, SENDER_BLOCK_KINDS, bounce_kind,
-                                               bounce_reason, bounced_recipient, get_mail_provider, is_delay_notice,
-                                               looks_automated, looks_like_bounce, original_message_ids)
+from harvey.integrations.mail_provider import (BLOCK_KINDS, DAILY_LIMIT_HIT, NATIVE_PROVIDERS, RETRY_KINDS,
+                                               SENDER_BLOCK_KINDS, bounce_kind, bounce_reason, bounced_recipient,
+                                               get_mail_provider, is_delay_notice, looks_automated, looks_like_bounce,
+                                               original_message_ids)
 from harvey.models.prospect import Prospect
 from harvey.names import looks_like_domain
 from harvey.models.conversation import Conversation, Message
@@ -1028,7 +1029,7 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
             # dig the hole deeper. Not counted toward the bad-list switch.
             # Only a bounce of an email we sent counts: a stray or forged
             # notice cannot pause the mailbox.
-            await self._stand_down_after_block(kind, reason, prospect)
+            await self._stand_down_after_block(kind, reason, prospect, hint=hint, outbox_item=outbox_item)
             return
         if kind in BLOCK_KINDS:
             logger.warning(f"Handler: a block notice ({reason}) arrived that matches none of our sent emails; ignored.")
@@ -1172,26 +1173,43 @@ Return ONLY JSON: {{"action": "reply" | "ignore", "reason": "...", "reply": "...
                                         details={"domain": domain, "held": held, "bounced": prospect.email})
         return held
 
-    async def _stand_down_after_block(self, kind: str, reason: str, prospect) -> None:
+    async def _stand_down_after_block(self, kind: str, reason: str, prospect, hint: str = "",
+                                      outbox_item: dict | None = None) -> None:
         """A receiving server (or our own provider) blocked an email as
         spam. Pause sending for a few hours, longer after the third block
-        of the day, and say so where the dashboard reads it."""
+        of the day, and say so where the dashboard reads it. Our own side's
+        daily limit (Microsoft's tenant cap) pauses a full day, and the
+        first emails it bounced go again after the pause: they never left."""
         today = datetime.now(timezone.utc).date().isoformat()
         raw = await self.state.get_setting(BLOCKS_KEY) or ""
         day, _, count = raw.partition(":")
         n = (int(count) if day == today and count.isdigit() else 0) + 1
         await self.state.set_setting(BLOCKS_KEY, f"{today}:{n}")
-        hours = COOLOFF_HOURS[min(n, len(COOLOFF_HOURS)) - 1]
+        hours = 24 if kind == DAILY_LIMIT_HIT else COOLOFF_HOURS[min(n, len(COOLOFF_HOURS)) - 1]
         until = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=hours)
         current = await self.state.get_setting(COOLOFF_KEY) or ""
         if not current or current < until.isoformat():
             await self.state.set_setting(COOLOFF_KEY, until.isoformat())
         who = prospect.email if prospect else "a recipient"
-        text = (f"an email to {who} was {kind} ({reason[:120]}); block {n} today, so sending pauses for {hours} hours. "
-                "Keep first emails plain, slow the pace, and check SPF, DKIM and DMARC on the Mailbox page")
-        await self.state.set_setting(COOLOFF_REASON_KEY, text)
-        await self.state.set_setting("sender_skip_reason", text)
-        if prospect:
+        if kind == DAILY_LIMIT_HIT:
+            text = f"{kind} ({reason[:120]}); sending pauses for {hours} hours. {hint}".strip()
+        else:
+            text = (f"an email to {who} was {kind} ({reason[:120]}); block {n} today, so sending pauses for {hours} hours. "
+                    "Keep first emails plain, slow the pace, and check SPF, DKIM and DMARC on the Mailbox page")
+        await self.state.set_setting(COOLOFF_REASON_KEY, text[:900])
+        await self.state.set_setting("sender_skip_reason", text[:900])
+        requeued = False
+        if kind in RETRY_KINDS and outbox_item and (outbox_item.get("kind") or "sequence") == "sequence" \
+                and int(outbox_item.get("step") or 1) == 1:
+            try:
+                requeued = await self.state.requeue_first_email(
+                    outbox_item["id"], f"Queued again: it bounced because {kind} ({reason[:120]}). It goes after the pause.")
+            except Exception as e:
+                logger.debug(f"Handler: could not queue the bounced first email again: {e}")
+        if requeued:
+            logger.warning(f"Handler: {kind} ({reason[:120]}); the first email to {who} goes again after the "
+                           f"{hours}h pause, its follow-ups moved with it.")
+        elif prospect:
             cancelled = await self.state.cancel_pending_outbox_for_prospect(prospect.id, reason="blocked")
             logger.warning(f"Handler: BLOCKED as spam for {prospect.email} ({reason}); the address stays valid, "
                            f"{cancelled} queued email(s) to them dropped, sending pauses for {hours}h.")

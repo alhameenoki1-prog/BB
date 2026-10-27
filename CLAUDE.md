@@ -150,7 +150,9 @@ fifteen minutes against the last hour's sends stop it too
 (`Handler._bounce_burst`, timed by the reports' arrival, `MIN_SENDS_FOR_BURST`). The read position moves as the
 handler consumes (`advance_to`); a reply left for the model is kept by id in
 `replies_deferred` and fetched back with `fetch_message`; `is_delay_notice`
-keeps delay warnings out of `_handle_bounce`; a blocked first email is queued
+keeps delay warnings out of `_handle_bounce`; Microsoft's tenant daily cap
+(`DAILY_LIMIT_HIT`, 5.7.233) is a 24-hour pause with the first emails queued
+again (`RETRY_KINDS`); a blocked first email is queued
 again (`state.requeue_first_email`) and `sending_resumed_at` (written by
 Resume) makes older block reports inert; `Sender._record_bad_address` stops
 the same way on a sender block at send time. `harvey/names.py` resolves missing recipient
