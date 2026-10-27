@@ -684,7 +684,10 @@ class MicrosoftAppProvider(MicrosoftProvider):
             return False, "Missing: " + ", ".join(missing)
         try:
             await self._check_identity()
-            await self._request("GET", self._user_path, params={"$select": "mail"})
+            # The inbox itself, not the user's directory record: reading that
+            # needs User.Read.All, a directory permission the mailbox
+            # permissions do not include, and the mailbox is proven by its
+            # inbox (an unknown address answers 404 here too).
             await self._request(
                 "GET", f"{self._user_path}{INBOX_MESSAGES}",
                 params={"$top": "1", "$select": "id"},
@@ -692,11 +695,13 @@ class MicrosoftAppProvider(MicrosoftProvider):
         except GraphError as e:
             text = str(e)
             if "Graph 403" in text or "Graph 401" in text:
-                text += (" — grant the app Mail.Send and Mail.ReadWrite as APPLICATION "
-                         "permissions in Entra and press 'Grant admin consent'.")
+                text += (" — in the Entra tenant this mailbox belongs to, the app registration needs Mail.ReadWrite "
+                         "and Mail.Send as APPLICATION permissions with 'Grant admin consent' pressed (each tenant "
+                         "registers and consents the app itself), and the tenant ID, client ID and secret must be "
+                         "that tenant's.")
             elif "Graph 404" in text:
                 text += " — no mailbox with that address in this tenant (check M365_MAILBOX)."
-            return False, text[:400]
+            return False, text[:500]
         return True, f"Connected as {self.mailbox} (admin app)"
 
 

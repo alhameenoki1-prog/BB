@@ -806,12 +806,20 @@ async def test_app_provider_test_connection_explains_failures():
     graph = AppGraph()
     graph.fail[("GET", "/inbox/messages")] = 403
     ok, detail = await app_provider(graph, _Config()).test_connection()
-    assert not ok and "Grant admin consent" in detail
+    assert not ok and "Grant admin consent" in detail and "Mail.ReadWrite" in detail and "each tenant" in detail
 
     graph = AppGraph()
-    graph.fail[("GET", "/me")] = 404  # the fake sees the rewritten /me path
+    graph.fail[("GET", "/inbox/messages")] = 404
     ok, detail = await app_provider(graph, _Config()).test_connection()
     assert not ok and "M365_MAILBOX" in detail
+
+    # A tenant that granted only the mailbox permissions (no User.Read.All):
+    # the user's directory record is not readable, and that is fine.
+    graph = AppGraph()
+    graph.fail[("GET", "/me")] = 403  # the fake sees the rewritten /me path
+    ok, detail = await app_provider(graph, _Config()).test_connection()
+    assert ok and "outreach@corp.example" in detail
+    assert not any(r.url.path == "/v1.0/me" for r in graph.requests)
 
 
 def test_next_link_check_follows_the_mailbox_path():

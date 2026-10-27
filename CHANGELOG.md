@@ -9,6 +9,15 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **A second Microsoft admin app connects with the mailbox permissions
+  alone.** The admin-app connection test read the mailbox's directory
+  record, which needs `User.Read.All`, a directory permission the Mail
+  permissions do not include; a tenant that granted only `Mail.ReadWrite`
+  and `Mail.Send` was refused with "Graph 403 on GET /users/<address>" and
+  a hint about the wrong permissions. The test now reads the inbox only
+  (`MicrosoftAppProvider.test_connection`), and the hint says the app must
+  be registered and consented in the mailbox's own tenant.
+
 - **A Microsoft 365 mailbox that gets blocked now stops sending, and a
   bounce flood no longer blinds the worker.** Three things went wrong
   together when ~2,000 emails left an admin-app mailbox and Microsoft
