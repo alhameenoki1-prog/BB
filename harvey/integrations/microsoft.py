@@ -53,6 +53,9 @@ TOKEN_FILE = DATA_DIR / "m365_token.json"
 GRAPH = "https://graph.microsoft.com/v1.0"
 GRAPH_HOST = "graph.microsoft.com"
 INBOX_MESSAGES = "/mailFolders/inbox/messages"
+# Delivery reports that an inbox rule or the junk filter moved out of the
+# inbox are read from here too (reports only; nothing else in Junk is).
+JUNK_MESSAGES = "/mailFolders/junkemail/messages"
 # Application (admin-consented) access: one token for the tenant, mailbox
 # named in the path. Needs Mail.Send + Mail.ReadWrite *application*
 # permissions with admin consent.
@@ -345,17 +348,40 @@ class MicrosoftProvider(MailProvider):
         cursor = self._load_cursor()
         if cursor:
             since = max(since, cursor - CURSOR_OVERLAP)
-        url = str(httpx.URL(f"{GRAPH}{self._user_path}{INBOX_MESSAGES}", params={
+        seen_ids: set = set()
+        out: list[InboundMessage] = []
+        self.backlog_pending = False
+        newest = await self._read_folder(INBOX_MESSAGES, since, me, limit, seen_ids, out)
+        # Delivery reports moved to Junk Email (an inbox rule, the junk
+        # filter): read as well, so a bounce never goes unseen. Only reports
+        # are taken from there, and a Junk folder that cannot be read does
+        # not fail the inbox read.
+        try:
+            junk_newest = await self._read_folder(JUNK_MESSAGES, since, me, limit, seen_ids, out, reports_only=True)
+        except GraphError as e:
+            logger.warning(f"Microsoft: the Junk Email folder could not be read for delivery reports ({e}); "
+                           "the inbox was read.")
+            junk_newest = None
+        stamps = [t for t in (newest, junk_newest) if t is not None]
+        if stamps:
+            self._save_cursor(max(stamps))
+        return out
+
+    async def _read_folder(self, folder: str, since: datetime, me: str, limit: int, seen_ids: set,
+                           out: list, reports_only: bool = False) -> datetime | None:
+        """Read one folder from ``since``, oldest first, at most
+        MAX_INBOX_PAGES pages (backlog_pending when more waits), appending
+        to ``out`` (only delivery reports with ``reports_only``). Returns the
+        newest receivedDateTime seen, or None."""
+        url = str(httpx.URL(f"{GRAPH}{self._user_path}{folder}", params={
             "$filter": f"receivedDateTime ge {since.strftime('%Y-%m-%dT%H:%M:%SZ')}",
             "$orderby": "receivedDateTime asc",
             "$top": str(max(1, int(limit))),
             "$select": _SELECT,
         }))
         seen_urls = {url}
-        seen_ids = set()
-        out = []
-        self.backlog_pending = False
         newest = None
+        taken = 0
         for page in range(1, MAX_INBOX_PAGES + 1):
             data = await self._request_url(
                 "GET", url, headers={"Prefer": 'outlook.body-content-type="text"'},
@@ -370,24 +396,25 @@ class MicrosoftProvider(MailProvider):
                 when = _parse_time(msg.date)
                 if when and (newest is None or when > newest):
                     newest = when
+                if reports_only and not msg.is_bounce:
+                    continue
                 # A message can repeat across pages if mail arrives mid-read.
                 if msg.from_email != me and msg.provider_id not in seen_ids:
                     seen_ids.add(msg.provider_id)
                     out.append(msg)
+                    taken += 1
             next_link = data.get("@odata.nextLink")
             if next_link is None:
                 break
-            url = _checked_next_link(next_link, self._user_path)
+            url = _checked_next_link(next_link, self._user_path, folder)
             if url in seen_urls:
                 raise GraphError(f"inbox page {page}: @odata.nextLink repeats an earlier page")
             seen_urls.add(url)
         else:
             self.backlog_pending = True
-            logger.warning(f"Microsoft: the inbox has more than {MAX_INBOX_PAGES} pages of new mail; "
-                           f"{len(out)} read this pass, the rest next pass.")
-        if newest is not None:
-            self._save_cursor(newest)
-        return out
+            logger.warning(f"Microsoft: {folder.split('/')[2]} has more than {MAX_INBOX_PAGES} pages of new mail; "
+                           f"{taken} read this pass, the rest next pass.")
+        return newest
 
     def _cursor_key(self) -> str:
         return self._user_path
@@ -658,7 +685,7 @@ def _graph_attachments(image_path, attachments) -> list[dict]:
     return out
 
 
-def _checked_next_link(link, user_path: str = "/me") -> str:
+def _checked_next_link(link, user_path: str = "/me", folder: str = INBOX_MESSAGES) -> str:
     """Graph's @odata.nextLink, used whole (Microsoft: don't rebuild or
     edit $skip). It gets the bearer token, so it must point back at the
     inbox listing on Graph itself: https, graph.microsoft.com, the same
@@ -678,7 +705,7 @@ def _checked_next_link(link, user_path: str = "/me") -> str:
         or url.port not in (None, 443)
         or url.userinfo
         or url.fragment
-        or path.lower() != ("/v1.0" + user_path + INBOX_MESSAGES).lower()
+        or path.lower() != ("/v1.0" + user_path + folder).lower()
         or not url.query
     ):
         raise GraphError("@odata.nextLink rejected: not the Graph inbox listing")

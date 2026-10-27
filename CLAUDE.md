@@ -139,8 +139,8 @@ login on the dashboard. The Microsoft providers (`harvey/integrations/microsoft.
 `microsoft` sign-in and `microsoft_app` admin app) read the inbox from a saved
 position (`graph_cursor.json`, oldest first, `MAX_INBOX_PAGES` a pass,
 `backlog_pending` when more waits, `rewind_to` for a message the model could
-not handle) so a bounce flood is worked through rather than failing every
-read. A delivery report is matched through its In-Reply-To, the Message-ID it
+not handle; delivery reports in Junk Email are read too, `JUNK_MESSAGES`)
+so a bounce flood is worked through rather than failing every read. A delivery report is matched through its In-Reply-To, the Message-ID it
 quotes, or the address it names (`mail_provider.bounced_recipient`,
 `original_message_ids`, `state.find_outbox_sent_to`); Microsoft's verdicts on
 the sender (`SENDER_BLOCKED`, `SENDER_BLOCK_KINDS`: 5.1.8 bad outbound sender

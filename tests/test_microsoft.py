@@ -27,6 +27,8 @@ class Graph:
         self.pages = {}         # inbox page number -> httpx.Response, or a dict
                                 # merged into that page's normal JSON body
         self.filters = False    # honour $filter receivedDateTime ge (the read position)
+        self.junk = []          # the Junk Email folder
+        self.junk_fail = None   # a status to answer the Junk folder with
 
     def __call__(self, request: httpx.Request):
         self.requests.append(request)
@@ -61,6 +63,10 @@ class Graph:
             return httpx.Response(202)
         if path == "/v1.0/me/mailFolders/inbox/messages":
             return self._inbox_page(request)
+        if path == "/v1.0/me/mailFolders/junkemail/messages":
+            if self.junk_fail:
+                return httpx.Response(self.junk_fail, json={"error": {"code": "boom"}})
+            return httpx.Response(200, json={"value": self.junk})
         return httpx.Response(404, json={"error": {"code": "notFound"}})
 
     def _inbox_page(self, request):
@@ -488,6 +494,29 @@ async def test_a_message_left_for_later_is_read_again(graph):
     await p.get_replies()
     since = graph.inbox_requests()[0].url.params["$filter"].split("ge ")[1]
     assert since.startswith("202") and since > "2026-01-01T00:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_delivery_reports_in_the_junk_folder_are_read_and_nothing_else_there_is(graph):
+    """An inbox rule (or the junk filter) that moves "Undeliverable:" reports
+    to Junk Email must not hide bounces: they are read from there too; a
+    stranger's mail in Junk is not, and a Junk folder that can't be read
+    does not fail the inbox read."""
+    graph.inbox = [message(1)]
+    graph.junk = [
+        {**message(2, sender="MicrosoftExchange329e71ec88ae4615bbc36ab6ce41109e@sender.example"),
+         "subject": "Undeliverable: Service Inquiry", "body": {"content": "Delivery has failed to these recipients"}},
+        {**message(3, sender="spammer@elsewhere.example"), "subject": "You won"},
+        {**message(4, sender="someone@acme.example"), "subject": "Re: booking",
+         "internetMessageHeaders": [{"name": "X-MS-Exchange-Message-Is-Ndr", "value": ""}]},
+    ]
+    replies = await provider(graph).get_replies()
+    assert [m.provider_id for m in replies] == ["m1", "m2", "m4"]
+    assert replies[1].is_bounce and replies[2].is_bounce         # the sender, and Exchange's own header
+    junk = [r for r in graph.requests if r.url.path.endswith("/junkemail/messages")]
+    assert len(junk) == 1 and junk[0].url.params["$orderby"] == "receivedDateTime asc"
+    graph.junk_fail = 403
+    assert [m.provider_id for m in await provider(graph).get_replies()] == ["m1"]
 
 
 def test_graph_times_are_read_with_seven_decimals_and_offsets():

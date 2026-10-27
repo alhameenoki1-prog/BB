@@ -36,7 +36,12 @@ minor versions can still change behaviour.
   pass with follow-ups waiting until it is read. Exchange's own throttling
   codes (`5.7.850`–`5.7.854`, `5.2.121`, `5.2.122`) pause sending as
   "sending too fast or too much". The dashboard card also says how many
-  replies were read but wait for the AI (`replies_waiting`).
+  replies were read but wait for the AI (`replies_waiting`). Delivery
+  reports that an inbox rule or the junk filter moved to **Junk Email** are
+  read from there too (reports only, `JUNK_MESSAGES`), and a report is
+  recognised by Exchange's own `X-MS-Exchange-Message-Is-Ndr` header and
+  its system sender (`MicrosoftExchange329e…@<domain>`) as well as by its
+  subject.
 
 - **First emails keep going out when the AI is rate-limited.** Sending
   used to wait whenever replies could not be read and handled — which is
