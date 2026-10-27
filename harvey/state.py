@@ -1379,6 +1379,20 @@ class StateManager:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
 
+    async def list_outbox_sent_to(self, email: str, limit: int = 20) -> list[dict]:
+        """The emails sent to this address, newest first (subject and
+        sent_at say whether a message answers one of them)."""
+        email = (email or "").strip().lower()
+        if not email:
+            return []
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM outbox WHERE status = 'sent' AND lower(to_email) = ? "
+                "ORDER BY sent_at DESC, created_at DESC LIMIT ?", (email, int(limit))
+            ) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
     async def find_outbox_by_message_id(self, message_id: str) -> dict | None:
         if not message_id:
             return None

@@ -15,12 +15,25 @@ minor versions can still change behaviour.
   a mailbox in the same tenant, the app reads its inbox too (its own read
   position): a reply from someone on the list stops their follow-ups and is
   answered from that mailbox, in its thread (`REPLY_TO_REF`,
-  `_read_reply_to_mailbox`, `fetch_message`); the rest of that inbox
-  (other mail, its own bounces) is left alone (`Handler._is_reply_from_the_list`).
-  An address the app cannot read still saves, with a warning, and the
-  worker holds follow-ups (`read_problem`), since it cannot see who
-  replied; first emails still go. A campaign bound to an admin-app account
-  takes the account's Reply-To.
+  `_read_reply_to_mailbox`, `fetch_message`). That inbox is someone's
+  ordinary mail, so only answers to the emails sent are taken: the message
+  names one of them (In-Reply-To, References) or comes from someone written
+  to, after the email went, under its subject (`Handler._answers_our_email`);
+  an invoice or newsletter from someone on the list, and that inbox's own
+  bounces, are left alone. A reply delivered to both mailboxes is handled
+  once (its Message-ID is kept, `MESSAGE_ID_KEY`). The Reply-To mailbox
+  gets its own hourly look back over the week, so a reply moved out of Junk
+  later is still seen. Changing the Reply-To keeps the old one read for 30
+  days (`REPLY_TO_KEPT_DAYS`, `M365_REPLY_TO_ALSO`), since emails already
+  sent send their replies there; its ids carry the mailbox, so a reply put
+  aside for the AI is not lost. An answer the Reply-To mailbox may not send
+  (Mail.Send scoped to the sending mailbox) goes from the sending mailbox
+  instead of failing. An address the app cannot read still saves, with a
+  warning, and the worker holds follow-ups (`read_problem`), since it cannot
+  see who replied; first emails and answers to the sending mailbox still go,
+  and the dashboard says so and what fixes it. A campaign bound to an
+  admin-app account takes the account's Reply-To, also one bound before
+  this version.
 
 ### Fixed
 

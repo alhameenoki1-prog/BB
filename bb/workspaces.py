@@ -128,6 +128,9 @@ TEMPLATE_VARIANTS = 5
 MAX_TEMPLATE_VARIANTS = 8
 # The most addresses one test sends copies to.
 MAX_TEST_SEND = 10
+# How long an admin-app mailbox's earlier Reply-To is still read after it
+# was changed: replies to the emails sent with it keep arriving there.
+REPLY_TO_KEPT_DAYS = 30
 
 
 def _template_variants_from_form(form) -> list[dict]:
@@ -608,6 +611,32 @@ class Workspace:
 
     def m365_reply_to(self) -> str:
         return str(self.secrets().get("m365_reply_to", "") or "").strip().lower()
+
+    def _earlier_reply_tos(self) -> list[dict]:
+        try:
+            rows = json.loads(self.secrets().get("m365_reply_to_earlier") or "[]")
+        except (TypeError, ValueError):
+            return []
+        now = time.time()
+        return [r for r in rows if isinstance(r, dict) and isinstance(r.get("address"), str) and r["address"]
+                and isinstance(r.get("until"), (int, float)) and r["until"] > now] if isinstance(rows, list) else []
+
+    def m365_reply_to_earlier(self) -> list[str]:
+        """Earlier Reply-To addresses the worker still reads: an email sent
+        while one was the Reply-To sends its replies there for weeks after."""
+        return [r["address"] for r in self._earlier_reply_tos()]
+
+    def set_m365_reply_to(self, reply_to: str) -> None:
+        """Save the admin-app mailbox's Reply-To. The one it replaces is
+        still read for REPLY_TO_KEPT_DAYS, so a reply to an email already
+        sent still stops that person's follow-ups."""
+        reply_to = (reply_to or "").strip().lower()
+        old, kept = self.m365_reply_to(), self._earlier_reply_tos()
+        if old and old != reply_to:
+            kept = [r for r in kept if r["address"] != old] + [
+                {"address": old, "until": int(time.time() + REPLY_TO_KEPT_DAYS * 86400)}]
+        kept = [r for r in kept if r["address"] != reply_to][-5:]
+        self.save_secrets(m365_reply_to=reply_to, m365_reply_to_earlier=json.dumps(kept) if kept else "")
 
     def mailbox_connected(self) -> bool:
         provider = self.mail_provider()
@@ -1542,7 +1571,15 @@ class Workspace:
             if skip and "first emails still go out" in skip:
                 cause = skip.rsplit("; follow-ups wait", 1)[0].strip()
                 low = cause.lower()
-                if "mailbox could not be read" in low:
+                if "reply-to mailbox could not be read" in low:
+                    # Replies to the sending mailbox are still read and answered;
+                    # only follow-ups wait, for as long as the Reply-To stays so.
+                    box = re.search(r"replies go to (\S+?),", cause)
+                    note, note_link = (f" Follow-ups wait: replies go to {box.group(1) if box else 'the Reply-To'}, "
+                                       "whose inbox this app cannot read, so it cannot see who answered. Use a "
+                                       "Reply-To mailbox in this tenant (or give the app access to it), or clear "
+                                       "the Reply-To."), "/mailbox"
+                elif "mailbox could not be read" in low:
                     note, note_link = f" Replies and follow-ups wait until the inbox can be read again: {cause}.", "/mailbox"
                 elif "more new mail than one pass reads" in low:
                     note = (" Replies and follow-ups wait while the worker catches up on a backlog in the inbox "
@@ -2114,7 +2151,8 @@ class Workspace:
             })
             if s.get("reply_to"):
                 env["SMTP_REPLY_TO"] = s["reply_to"]
-        for key in ("M365_TENANT_ID", "M365_CLIENT_ID", "M365_CLIENT_SECRET", "M365_MAILBOX", "M365_REPLY_TO"):
+        for key in ("M365_TENANT_ID", "M365_CLIENT_ID", "M365_CLIENT_SECRET", "M365_MAILBOX", "M365_REPLY_TO",
+                    "M365_REPLY_TO_ALSO"):
             env.pop(key, None)
         if self.mail_provider() == "microsoft_app":
             m = self.m365_settings()
@@ -2122,6 +2160,8 @@ class Workspace:
                         "M365_CLIENT_SECRET": m["m365_client_secret"], "M365_MAILBOX": m["m365_mailbox"]})
             if self.m365_reply_to():
                 env["M365_REPLY_TO"] = self.m365_reply_to()
+            if self.m365_reply_to_earlier():
+                env["M365_REPLY_TO_ALSO"] = ",".join(self.m365_reply_to_earlier())
         elif self.mail_provider() == "microsoft":
             # The signed-in user's mailbox through the site's own app registration.
             env.update({"M365_TENANT_ID": getattr(self.settings, "ms_tenant", "") or "common",
@@ -2325,8 +2365,15 @@ class Workspace:
             binding = json.loads(self.binding_file.read_text())
         except (OSError, ValueError):
             binding = {}
+        # An admin-app account's Reply-To is copied too (a campaign bound
+        # before Reply-To existed has the account's stamp but not its Reply-To).
+        app_reply_to = reply_to_now.strip().lower()
+        app_reply_to = "" if app_reply_to == (box.get("address") or "").lower() else app_reply_to
+        reply_to_behind = (box.get("provider") == "graph" and not creds.get("refresh_token")
+                           and self.m365_reply_to() != app_reply_to)
         if (binding.get("mailbox_id") == box["id"] and binding.get("stamp") == stamp and self.mailbox_connected()
-                and (self.sending_address() or "").lower() == (box.get("address") or "").lower()):
+                and (self.sending_address() or "").lower() == (box.get("address") or "").lower()
+                and not reply_to_behind):
             return ""          # unchanged, and still sending as the bound address
         self.ensure()
         address = (box.get("address") or "").lower()
@@ -2347,8 +2394,8 @@ class Workspace:
             self.set_mail_provider("microsoft")
         elif provider == "graph":
             self.save_secrets(m365_tenant_id=creds.get("tenant_id", ""), m365_client_id=creds.get("client_id", ""),
-                              m365_client_secret=creds.get("client_secret", ""), m365_mailbox=address,
-                              m365_reply_to=reply_to.lower() if reply_to.lower() != address else "")
+                              m365_client_secret=creds.get("client_secret", ""), m365_mailbox=address)
+            self.set_m365_reply_to(app_reply_to)
             self.set_mail_provider("microsoft_app")
         else:
             return f"{address} has no usable sign-in; reconnect it on the Accounts page"

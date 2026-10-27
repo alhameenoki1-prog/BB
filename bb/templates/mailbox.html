@@ -296,7 +296,7 @@
       <div><label>Mailbox to send from *</label><input type="email" name="m365_mailbox" value="{{ m365.m365_mailbox }}" placeholder="outreach@yourcompany.com" required></div>
       <div><label>Reply-To <span class="muted" style="font-weight:400">(optional)</span></label><input type="email" name="m365_reply_to" value="{{ m365_reply_to }}" placeholder="you@yourcompany.com"></div>
     </div>
-    <p class="hint">Replies go to this address instead of the sending mailbox. When it is a mailbox in the same tenant, the worker reads its inbox too: a reply still stops that person's follow-ups and is answered from there, in the thread. Only replies from people on your list are taken from it; the rest of that inbox is left alone. An outside address works, but then the worker can't see who replied, so follow-ups wait.</p>
+    <p class="hint">Replies go to this address instead of the sending mailbox. When it is a mailbox in the same tenant, the worker reads its inbox too: a reply still stops that person's follow-ups and is answered from there, in the thread. Only answers to the emails it sent are taken from it; the rest of that inbox is left alone. An outside address works, but then the worker can't see who replied, so follow-ups wait. Change it later and the old address is still read for 30 days, for replies to emails already sent.</p>
     <p style="margin-top:12px"><button type="submit">{{ icon('check', 15) }} Test and save</button> <span class="muted small">The connection is tested before anything is saved.</span></p>
   </form>
   {% if m365_configured %}

@@ -830,37 +830,51 @@ def test_next_link_check_follows_the_mailbox_path():
 
 
 class ReplyToGraph(AppGraph):
-    """The admin-app fake plus a second mailbox in the tenant, the Reply-To."""
+    """The admin-app fake plus other mailboxes in the tenant: the Reply-To
+    (replies@) and any earlier one put in ``inboxes``."""
 
-    OTHER = "/v1.0/users/replies@corp.example"
-
-    def __init__(self, readable=True):
+    def __init__(self, readable=True, unreadable=()):
         super().__init__()
-        self.other_inbox = []
-        self.readable = readable
+        self.inboxes = {"replies@corp.example": []}
+        self.unreadable = set(unreadable) | (set() if readable else {"replies@corp.example"})
         self.other_sent = []
+        self.filters = []          # (mailbox, $filter) of each inbox read of another mailbox
+        self.send_refused = False  # read allowed there, Mail.Send not
+
+    @property
+    def other_inbox(self):
+        return self.inboxes["replies@corp.example"]
+
+    @other_inbox.setter
+    def other_inbox(self, value):
+        self.inboxes["replies@corp.example"] = value
 
     def __call__(self, request):
         path = request.url.path
-        if path.startswith(self.OTHER):
+        box = next((b for b in sorted(self.inboxes.keys() | self.unreadable)
+                    if path.startswith(f"/v1.0/users/{b}/")), None)
+        if box:
             self.original_paths.append(path)
             self.requests.append(request)
-            if not self.readable:
+            if box in self.unreadable:
                 return httpx.Response(404, json={"error": {"code": "ErrorInvalidUser"}})
-            rest = path[len(self.OTHER):]
+            rest = path[len(f"/v1.0/users/{box}"):]
             if rest == "/mailFolders/inbox/messages":
-                return httpx.Response(200, json={"value": self.other_inbox})
+                self.filters.append((box, request.url.params.get("$filter", "")))
+                return httpx.Response(200, json={"value": self.inboxes[box]})
             if rest.endswith("/createReply"):
                 return httpx.Response(201, json={"id": "rtdraft", "internetMessageId": "<rtdraft@corp.example>",
                                                  "conversationId": "rtconv"})
             if request.method == "PATCH":
                 return httpx.Response(200, json={})
             if rest.endswith("/send"):
+                if self.send_refused:
+                    return httpx.Response(403, json={"error": {"code": "ErrorAccessDenied"}})
                 self.other_sent.append(rest)
                 return httpx.Response(202)
             if rest.startswith("/messages/") and request.method == "GET":
                 wanted = rest.rsplit("/", 1)[1]
-                for item in self.other_inbox:
+                for item in self.inboxes[box]:
                     if item.get("id") == wanted:
                         return httpx.Response(200, json=item)
                 return httpx.Response(404, json={"error": {"code": "ErrorItemNotFound"}})
@@ -889,13 +903,16 @@ async def test_admin_app_sends_with_reply_to_and_reads_that_inbox(tmp_path, monk
                          {**message(8, sender="replies@corp.example"), "receivedDateTime": "2026-10-27T09:05:00Z"}]
     replies = await p.get_replies()
     theirs = [m for m in replies if m.headers.get(microsoft.REPLY_TO_HEADER)]
-    assert [m.provider_id for m in theirs] == ["rt|m7"] and theirs[0].thread_ref == "rt|m7"
+    ref = "rt|replies@corp.example|m7"
+    assert [m.provider_id for m in theirs] == [ref] and theirs[0].thread_ref == ref
     assert p.read_problem == ""
-    # Fetched back by id from the right mailbox.
-    again = await p.fetch_message("rt|m7")
-    assert again.provider_id == "rt|m7" and again.headers[microsoft.REPLY_TO_HEADER] == "/users/replies@corp.example"
+    # Fetched back by id from the right mailbox (an id written before the
+    # mailbox was in it too).
+    again = await p.fetch_message(ref)
+    assert again.provider_id == ref and again.headers[microsoft.REPLY_TO_HEADER] == "/users/replies@corp.example"
+    assert (await p.fetch_message("rt|m7")).provider_id == "rt|m7"
     # Answered from the Reply-To mailbox, in its thread.
-    result = await p.send_email("jane@acme.example", "Re: Hello", "Thanks, Tuesday works.", thread_ref="rt|m7")
+    result = await p.send_email("jane@acme.example", "Re: Hello", "Thanks, Tuesday works.", thread_ref=ref)
     assert result.ok and graph.other_sent == ["/messages/rtdraft/send"]
     assert any(r.url.path == "/v1.0/users/replies@corp.example/messages/m7/createReply" for r in graph.requests)
     # Its position is kept apart from the sending mailbox's.
@@ -915,8 +932,89 @@ async def test_a_reply_to_the_app_cannot_read_holds_follow_ups(tmp_path, monkeyp
     ok, detail = await p.test_connection()
     assert ok and "cannot read that mailbox" in detail and "follow-ups wait" in detail
     await p.get_replies()
-    assert p.read_problem.startswith("the mailbox could not be read: replies go to replies@corp.example")
+    assert p.read_problem.startswith("the Reply-To mailbox could not be read: replies go to replies@corp.example")
     # The same address as the sender: no Reply-To at all.
     class Same(AppEnv):
         m365_reply_to = "outreach@corp.example"
     assert MicrosoftAppProvider(config=_Config(), env=Same(), transport=httpx.MockTransport(AppGraph())).reply_to == ""
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_reply_to_is_still_read_and_answered_from(tmp_path, monkeypatch):
+    """After the Reply-To changed, the old one is still read (replies to the
+    emails sent with it land there) and a reply to one of its messages goes
+    back from it. Once it is no longer read, a parked id from it is gone and
+    a reply to it goes out as a new email from the sending mailbox. An
+    earlier one the app cannot read is skipped without holding anything."""
+    monkeypatch.setattr(microsoft, "CURSOR_FILE", tmp_path / "graph_cursor.json")
+    graph = ReplyToGraph(unreadable={"gone@corp.example"})
+    graph.inboxes["old@corp.example"] = [{**message(5, sender="jane@acme.example"),
+                                          "receivedDateTime": "2026-10-27T08:00:00Z"}]
+
+    class Changed(ReplyToEnv):
+        m365_reply_to_also = "Old@corp.example, outreach@corp.example,replies@corp.example, gone@corp.example"
+    p = MicrosoftAppProvider(config=_Config(), env=Changed(), transport=httpx.MockTransport(graph))
+    assert p.reply_to_earlier == ["old@corp.example", "gone@corp.example"]
+    replies = await p.get_replies()
+    ref = "rt|old@corp.example|m5"
+    assert [m.provider_id for m in replies if m.headers.get(microsoft.REPLY_TO_HEADER)] == [ref]
+    assert p.read_problem == ""          # the unreadable earlier one holds nothing
+    assert (await p.fetch_message(ref)).headers[microsoft.REPLY_TO_HEADER] == "/users/old@corp.example"
+    assert (await p.send_email("jane@acme.example", "Re: x", "Thanks.", thread_ref=ref)).ok
+    assert any(r.url.path == "/v1.0/users/old@corp.example/messages/m5/createReply" for r in graph.requests)
+
+    later = MicrosoftAppProvider(config=_Config(), env=ReplyToEnv(), transport=httpx.MockTransport(graph))
+    assert await later.fetch_message(ref) is None
+    graph.requests.clear()
+    assert (await later.send_email("jane@acme.example", "Re: x", "Thanks.", thread_ref=ref)).ok
+    assert not any("/old@corp.example/" in r.url.path for r in graph.requests)
+    assert any(r.method == "POST" and r.url.path.endswith("/me/messages") for r in graph.requests)   # the sending mailbox
+
+
+@pytest.mark.asyncio
+async def test_an_answer_the_reply_to_mailbox_may_not_send_goes_from_the_sending_mailbox(tmp_path, monkeypatch):
+    """Mail.Send given for the sending mailbox only: the Reply-To mailbox
+    drafts the answer but refuses to send it, so the draft there is removed
+    and the answer goes out from the sending mailbox instead of failing."""
+    monkeypatch.setattr(microsoft, "CURSOR_FILE", tmp_path / "graph_cursor.json")
+    graph = ReplyToGraph()
+    graph.send_refused = True
+    graph.other_inbox = [{**message(7, sender="jane@acme.example"), "receivedDateTime": "2026-10-27T09:00:00Z"}]
+    p = MicrosoftAppProvider(config=_Config(), env=ReplyToEnv(), transport=httpx.MockTransport(graph))
+    result = await p.send_email("jane@acme.example", "Re: Hello", "Thanks, Tuesday works.",
+                                thread_ref="rt|replies@corp.example|m7")
+    assert result.ok and graph.other_sent == []
+    assert any(r.method == "DELETE" and r.url.path == "/v1.0/users/replies@corp.example/messages/rtdraft"
+               for r in graph.requests)
+    assert any(r.method == "POST" and r.url.path.endswith("/me/messages") for r in graph.requests)
+
+
+@pytest.mark.asyncio
+async def test_the_reply_to_mailbox_gets_its_own_hourly_look_back(tmp_path, monkeypatch):
+    """A reply the junk filter held, moved to the Reply-To inbox hours later,
+    keeps its old receivedDateTime: like the sending mailbox, the Reply-To
+    mailbox is read over the whole week once an hour, not only from its
+    position."""
+    from datetime import datetime, timedelta, timezone
+    monkeypatch.setattr(microsoft, "CURSOR_FILE", tmp_path / "graph_cursor.json")
+    graph = ReplyToGraph()
+    now = datetime.now(timezone.utc)
+    stamp = (now - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    graph.other_inbox = [{**message(1, sender="replies@corp.example"), "receivedDateTime": stamp}]
+    p = MicrosoftAppProvider(config=_Config(), env=ReplyToEnv(), transport=httpx.MockTransport(graph))
+
+    def since():
+        raw = graph.filters[-1][1].split("ge ", 1)[1]
+        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+    await p.get_replies()                       # no position yet: the week
+    assert now - since() > timedelta(days=6)
+    await p.get_replies()                       # from the position
+    assert now - since() < timedelta(hours=1)
+    data = json.loads((tmp_path / "graph_cursor.json").read_text())
+    data["/users/replies@corp.example:swept"] = (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (tmp_path / "graph_cursor.json").write_text(json.dumps(data))
+    await p.get_replies()                       # the hourly sweep: the week again
+    assert now - since() > timedelta(days=6)
+    await p.get_replies()
+    assert now - since() < timedelta(hours=1)

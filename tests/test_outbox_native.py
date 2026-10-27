@@ -1251,23 +1251,32 @@ async def test_a_late_cap_report_never_drops_an_email_already_queued_again(state
     assert (await state.get_prospect(pid)).email_status == "verified"
 
 
+async def _sent_to(state, pid, email, subject, message_id, step=1, minutes_ago=60):
+    item = await state.add_outbox_item(prospect_id=pid, to_email=email, subject=subject, body="b",
+                                       send_at=_now_iso(), status="approved", campaign_id="c1", step=step)
+    sent_at = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=minutes_ago)).isoformat()
+    await state.update_outbox_item(item, status="sent", sent_at=sent_at, message_id=message_id)
+    return item
+
+
 @pytest.mark.asyncio
-async def test_the_reply_to_mailbox_gives_only_replies_from_the_list(state):
+async def test_the_reply_to_mailbox_gives_only_answers_to_our_emails(state):
     """Messages read from the Reply-To mailbox (someone's ordinary inbox too):
-    a reply from a prospect is handled (stop-on-reply), a stranger's mail and
+    an answer to our email is handled (stop-on-reply), a stranger's mail and
     that mailbox's own bounces are left alone; a Reply-To that cannot be read
     leaves the pass incomplete so follow-ups wait."""
     pid = await seed_prospect(state, email="jane@acme.com", status="contacted")
+    await _sent_to(state, pid, "jane@acme.com", "hi", "<first1@corp.example>")
     await state.add_outbox_item(prospect_id=pid, to_email="jane@acme.com", subject="again", body="b",
                                 send_at=_now_iso(), status="approved", campaign_id="c1", step=2)
     tag = {"x-bb-reply-to-mailbox": "/users/replies@x.co"}
     provider = FakeProvider()
     provider.inbound = [
-        InboundMessage(provider_id="rt|1", from_email="jane@acme.com", subject="Re: hi", body="unsubscribe please",
-                       headers=dict(tag)),
-        InboundMessage(provider_id="rt|2", from_email="friend@else.example", subject="Lunch?", body="Lunch on Friday?",
-                       headers=dict(tag)),
-        InboundMessage(provider_id="rt|3", from_email="postmaster@x.co", subject="Undeliverable: x",
+        InboundMessage(provider_id="rt|replies@x.co|1", from_email="jane@acme.com", subject="Re: hi",
+                       body="unsubscribe please", in_reply_to="<first1@corp.example>", headers=dict(tag)),
+        InboundMessage(provider_id="rt|replies@x.co|2", from_email="friend@else.example", subject="Lunch?",
+                       body="Lunch on Friday?", headers=dict(tag)),
+        InboundMessage(provider_id="rt|replies@x.co|3", from_email="postmaster@x.co", subject="Undeliverable: x",
                        body="550 5.1.8 Access denied, bad outbound sender", is_bounce=True, headers=dict(tag)),
     ]
     handler = make_handler(state, provider)
@@ -1276,6 +1285,68 @@ async def test_the_reply_to_mailbox_gives_only_replies_from_the_list(state):
     assert await state.get_setting("sending_paused") in ("", None)         # that inbox's bounce was not ours
     assert await state.get_conversations_by_status("open") == []           # the stranger was not answered
     provider.inbound = []
-    provider.read_problem = "the mailbox could not be read: replies go to replies@x.co, whose inbox this app cannot read"
+    provider.read_problem = "the Reply-To mailbox could not be read: replies go to replies@x.co, whose inbox this app cannot read"
     assert await handler._run_native() is False
-    assert handler.last_problem.startswith("the mailbox could not be read: replies go to")
+    assert handler.last_problem.startswith("the Reply-To mailbox could not be read: replies go to")
+
+
+@pytest.mark.asyncio
+async def test_other_mail_from_people_on_the_list_is_left_alone_in_the_reply_to_mailbox(state):
+    """Someone on the list writing to the Reply-To owner about something else
+    (an invoice, a newsletter; or before we ever wrote to them) is not a
+    reply: nothing is cancelled and nothing is answered. A reply matched by
+    the subject we used, after we wrote, still counts."""
+    supplier = await seed_prospect(state, email="info@supplier.com", status="new")
+    first = await state.add_outbox_item(prospect_id=supplier, to_email="info@supplier.com", subject="A question",
+                                        body="b", send_at=_now_iso(), status="approved", campaign_id="c1", step=1)
+    jane = await seed_prospect(state, email="jane@acme.com", status="contacted")
+    await _sent_to(state, jane, "jane@acme.com", "Your kitchen project", "<k1@corp.example>")
+    follow_up = await state.add_outbox_item(prospect_id=jane, to_email="jane@acme.com", subject="again", body="b",
+                                            send_at=_now_iso(), status="approved", campaign_id="c1", step=2)
+    tag = {"x-bb-reply-to-mailbox": "/users/me@x.co"}
+    provider = FakeProvider()
+    provider.inbound = [
+        InboundMessage(provider_id="rt|me@x.co|9", from_email="info@supplier.com", subject="Your invoice #4411",
+                       body="Please find the invoice attached.", headers=dict(tag)),
+        InboundMessage(provider_id="rt|me@x.co|10", from_email="jane@acme.com", subject="Newsletter: October",
+                       body="Our October news.", headers=dict(tag)),
+    ]
+    handler = make_handler(state, provider)
+    assert await handler._run_native() is True
+    assert (await state.get_prospect(supplier)).status == "new"
+    assert (await state.get_outbox_item(first))["status"] == "approved"
+    assert (await state.get_outbox_item(follow_up))["status"] == "approved"
+    assert [i for i in await state.get_outbox() if i["kind"] == "reply"] == []
+    # Same person, our subject (her client dropped In-Reply-To): a reply.
+    provider.inbound = [InboundMessage(provider_id="rt|me@x.co|11", from_email="jane@acme.com",
+                                       subject="RE: Your kitchen project", body="unsubscribe please",
+                                       headers=dict(tag))]
+    assert await handler._run_native() is True
+    assert (await state.get_prospect(jane)).status == "opted_out"
+
+
+@pytest.mark.asyncio
+async def test_a_reply_delivered_to_both_mailboxes_is_handled_once(state):
+    """The same message (one Message-ID) read from the sending mailbox and
+    from the Reply-To mailbox, under a different id in each: one answer."""
+    pid = await seed_prospect(state, email="jane@acme.com", status="contacted")
+    await _sent_to(state, pid, "jane@acme.com", "hi", "<first1@corp.example>")
+    provider = FakeProvider()
+    provider.inbound = [
+        InboundMessage(provider_id="AAA1", from_email="jane@acme.com", subject="Re: hi", message_id="<r1@acme.com>",
+                       body="Sounds good, what does it cost?", in_reply_to="<first1@corp.example>"),
+        InboundMessage(provider_id="rt|replies@x.co|BBB2", from_email="jane@acme.com", subject="Re: hi",
+                       message_id="<r1@acme.com>", body="Sounds good, what does it cost?",
+                       in_reply_to="<first1@corp.example>", headers={"x-bb-reply-to-mailbox": "/users/replies@x.co"}),
+    ]
+    handler = make_handler(state, provider)
+    assert await handler._run_native() is True
+    replies = [i for i in await state.get_outbox() if i["kind"] == "reply"]
+    assert len(replies) == 1 and replies[0]["in_reply_to"] == "<r1@acme.com>"
+    # A copy read later (the Reply-To mailbox's first look back) is not answered again.
+    provider.inbound = [InboundMessage(provider_id="rt|replies@x.co|CCC3", from_email="jane@acme.com",
+                                       subject="Re: hi", message_id="<r1@acme.com>", body="Sounds good",
+                                       in_reply_to="<first1@corp.example>",
+                                       headers={"x-bb-reply-to-mailbox": "/users/replies@x.co"})]
+    assert await handler._run_native() is True
+    assert len([i for i in await state.get_outbox() if i["kind"] == "reply"]) == 1

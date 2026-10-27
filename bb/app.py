@@ -826,7 +826,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ok, detail = await test_m365({**m365, "m365_reply_to": reply_to})
         if not ok:
             return _redirect("/mailbox", error=f"Not saved: {detail}")
-        ws.save_secrets(**m365, m365_reply_to=reply_to)
+        ws.save_secrets(**m365)
+        ws.set_m365_reply_to(reply_to)
         ws.set_mail_provider("microsoft_app")
         ws.clear_mailbox_problem()
         ws.rewrite_config()
@@ -846,7 +847,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace_for(user)
         if ws.worker_running() and ws.mail_provider() == "microsoft_app":
             await ws.stop_worker("the Microsoft 365 settings were removed")
-        ws.save_secrets(**{k: "" for k in ws.m365_settings()}, m365_reply_to="")
+        ws.save_secrets(**{k: "" for k in ws.m365_settings()}, m365_reply_to="", m365_reply_to_earlier="")
         ws.set_mail_provider("gmail" if ws.gmail_connected() else ("microsoft" if ws.microsoft_connected() else "smtp"))
         ws.rewrite_config()
         await ws.restart_worker_if_running("the new mailbox settings")

@@ -29,6 +29,13 @@ from harvey.state import StateManager
 logger = logging.getLogger("harvey.handler")
 
 KILL_SWITCH_KEY = "sending_paused"
+# A message's RFC Message-ID, kept beside its provider id once handled: the
+# same message read from the sending mailbox and the Reply-To mailbox (it
+# was delivered to both) has a different id in each, and is handled once.
+MESSAGE_ID_KEY = "msgid:"
+# "Re:", "AW:", "SV:", "Fwd:" and the like, however many: what is left is
+# the subject the message answers.
+_REPLY_PREFIX = re.compile(r"^\s*(?:(?:re|aw|sv|vs|antw|fw|fwd|wg|tr|rv|ref)\s*(?:\[\d+\])?\s*[:：]\s*)+", re.I)
 COOLOFF_KEY = "sender_cooloff_until"
 COOLOFF_REASON_KEY = "sender_cooloff_reason"
 BLOCKS_KEY = "spam_blocks"            # "<date>:<count>"
@@ -528,11 +535,14 @@ class Handler:
             consumed = True
             parked = False
             try:
-                if (msg.headers or {}).get("x-bb-reply-to-mailbox") and (
-                        msg.is_bounce or not await self._is_reply_from_the_list(msg)):
+                from_reply_to = bool((msg.headers or {}).get("x-bb-reply-to-mailbox"))
+                if await self._handled_elsewhere(msg, from_reply_to):
+                    # The same message, already read from the other mailbox.
+                    pass
+                elif from_reply_to and (msg.is_bounce or not await self._answers_our_email(msg)):
                     # The Reply-To mailbox is someone's ordinary inbox too: only
-                    # replies from people on the list are ours (its own bounces
-                    # and other mail are not).
+                    # answers to our emails are ours (its own bounces, and other
+                    # mail, even from people on the list, are not).
                     pass
                 elif msg.is_bounce:
                     if is_delay_notice(msg.subject, msg.body):
@@ -592,6 +602,8 @@ class Handler:
             finally:
                 if consumed:
                     await self.state.mark_reply_processed(dedup_key)
+                    if msg.message_id:
+                        await self.state.mark_reply_processed(MESSAGE_ID_KEY + msg.message_id)
                     deferred.pop(msg.provider_id, None)
                 if (consumed or parked) and not hold_cursor:
                     # The read position follows what has been dealt with, so
@@ -735,9 +747,50 @@ class Handler:
         except Exception:
             return False
 
-    async def _is_reply_from_the_list(self, msg) -> bool:
+    async def _handled_elsewhere(self, msg, from_reply_to: bool) -> bool:
+        """Whether this message was already handled under another id (the
+        copy in the other mailbox)."""
+        mid = (msg.message_id or "").strip()
+        if not mid:
+            return False
+        if await self.state.is_reply_processed(MESSAGE_ID_KEY + mid):
+            return True
+        # Answered before Message-IDs were kept beside the ids.
+        return from_reply_to and await self.state.outbox_answers(mid)
+
+    async def _answers_our_email(self, msg) -> bool:
+        """Whether a message in the Reply-To mailbox answers an email we
+        sent. Being on the list is not enough there (that inbox is someone's
+        ordinary mail): the message names one of our emails (In-Reply-To,
+        References), or comes from someone we wrote to, after we wrote,
+        under the subject we used."""
         known = await self.state.get_prospect_by_email(msg.from_email)
-        return known is not None and (known.source or "") != "inbox"
+        if known is None or (known.source or "") == "inbox":
+            return False
+        quoted = f"{msg.in_reply_to or ''} {(msg.headers or {}).get('references', '')}"
+        for ref in dict.fromkeys(re.findall(r"<[^<>\s]+>", quoted)):
+            if await self.state.find_outbox_by_message_id(ref):
+                return True
+        topic = self._topic(msg.subject)
+        if not topic:
+            return False
+        when = self._when(msg)
+        for item in await self.state.list_outbox_sent_to(msg.from_email):
+            if self._topic(item.get("subject")) != topic:
+                continue
+            try:
+                sent = datetime.fromisoformat(str(item.get("sent_at") or ""))
+            except ValueError:
+                return True
+            if sent.tzinfo:
+                sent = sent.astimezone(timezone.utc).replace(tzinfo=None)
+            if sent <= when:
+                return True
+        return False
+
+    @staticmethod
+    def _topic(subject) -> str:
+        return " ".join(_REPLY_PREFIX.sub("", str(subject or "")).split()).lower()
 
     def _park(self, msg, deferred: dict) -> bool:
         """Put a reply aside for the model by id, when the provider can

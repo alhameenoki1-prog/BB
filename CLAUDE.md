@@ -99,8 +99,11 @@ image underneath — `build_auto_signature`, `AUTO_SIG_MARKER`, placed by
 admin-app mailbox (`channels.email.provider: microsoft_app`, Graph client
 credentials; an optional Reply-To, `M365_REPLY_TO` / `Workspace.m365_reply_to`, goes on
 every email and, when it is a mailbox in the tenant, its inbox is read too:
-`MicrosoftAppProvider._read_reply_to_mailbox`, ids prefixed `REPLY_TO_REF`,
-answered from there; only replies from the list are taken, `read_problem`
+`MicrosoftAppProvider._read_reply_to_mailbox`, ids `rt|<mailbox>|<id>` (`REPLY_TO_REF`),
+answered from there, with its own hourly look back; only answers to its emails are taken
+(`Handler._answers_our_email`: In-Reply-To/References, else our subject after we wrote), a message read
+from both mailboxes is handled once (`MESSAGE_ID_KEY`), an earlier Reply-To is still read for
+`REPLY_TO_KEPT_DAYS` (`M365_REPLY_TO_ALSO`, `Workspace.set_m365_reply_to`), `read_problem`
 holds follow-ups when it can't be read), or one-click Microsoft sign-in for Outlook, Hotmail and
 Microsoft 365 (`channels.email.provider: microsoft`; `bb/microsoft_oauth.py`,
 site settings `MS_CLIENT_ID/MS_CLIENT_SECRET/MS_TENANT`, token in the

@@ -72,8 +72,9 @@ MAX_INBOX_PAGES = 40
 # it, so a message that arrived while a page was being read is not missed
 # (the handler skips what it has already processed).
 CURSOR_FILE = DATA_DIR / "graph_cursor.json"
-# A message read from the Reply-To mailbox: its id carries this prefix, so a
-# reply to it is drafted there (createReply) and it is fetched back from there.
+# A message read from a Reply-To mailbox: its id is "rt|<mailbox>|<Graph
+# id>", so a reply to it is drafted there (createReply) and it is fetched
+# back from there, even after the Reply-To was changed.
 REPLY_TO_REF = "rt|"
 REPLY_TO_HEADER = "x-bb-reply-to-mailbox"
 CURSOR_OVERLAP = timedelta(minutes=10)
@@ -286,6 +287,7 @@ class MicrosoftProvider(MailProvider):
         """Draft, then send, so the RFC Message-ID is known (bounces and
         replies are matched on it). A reply is drafted with createReply on
         the prospect's message, which sets In-Reply-To/References."""
+        plain_requested = plain
         plain, html, image_path = render_parts(
             body, getattr(self.config, "outreach", None), plain=plain, booking=booking_url(self.config))
         content = {
@@ -302,8 +304,9 @@ class MicrosoftProvider(MailProvider):
         # A message that came into the Reply-To mailbox is answered from
         # there, in its thread (that is where the conversation lives).
         user_path, ref = self._user_path, thread_ref
-        if thread_ref.startswith(REPLY_TO_REF) and reply_to:
-            user_path, ref = f"/users/{reply_to}", thread_ref[len(REPLY_TO_REF):]
+        if thread_ref.startswith(REPLY_TO_REF):
+            # (a Reply-To mailbox no longer read: sent as a new email)
+            user_path, ref = self._reply_to_target(thread_ref) or (self._user_path, "")
         try:
             await self._check_identity()
             if ref:
@@ -331,6 +334,14 @@ class MicrosoftProvider(MailProvider):
         except (GraphError, KeyError) as e:
             if draft and draft.get("id"):
                 await self._delete_draft(draft["id"], user_path)
+            if user_path != self._user_path and "Graph 403" in str(e):
+                # The Reply-To mailbox can be read but not sent from (Mail.Send
+                # given for the sending mailbox only): the answer goes out
+                # from the sending mailbox instead, as a new email.
+                logger.warning(f"Microsoft: {user_path} refused the send ({str(e)[:160]}); "
+                               "sending from the sending mailbox instead.")
+                return await self.send_email(to_email, subject, body, in_reply_to=in_reply_to,
+                                             attachments=attachments, plain=plain_requested)
             logger.error(f"Microsoft send failed to {to_email}: {e}")
             return SendResult(ok=False, error=str(e)[:300])
         return SendResult(
@@ -391,38 +402,65 @@ class MicrosoftProvider(MailProvider):
             if stamps:
                 self._save_cursor(max(stamps))
         self.read_problem = ""
-        if getattr(self, "reply_to", ""):
-            out += await self._read_reply_to_mailbox(me, limit, now)
+        for box in self._reply_to_boxes():
+            out += await self._read_reply_to_mailbox(box, me, limit, now)
         return out
 
     # A part of the mail that could not be read (the Reply-To mailbox): the
     # handler reports the pass incomplete with this cause, so follow-ups wait.
     read_problem: str = ""
 
-    async def _read_reply_to_mailbox(self, me: str, limit: int, now: datetime) -> list[InboundMessage]:
-        """The Reply-To mailbox's inbox, from its own position: the human
-        replies to our emails land there. Each message is tagged so the
-        handler takes only replies from people on the list (that inbox is
-        someone's ordinary mail too), and so a reply goes back from there."""
-        path = f"/users/{self.reply_to}"
+    def _reply_to_boxes(self) -> list[str]:
+        """The Reply-To mailbox, then the earlier ones still read (an email
+        sent while one was the Reply-To sends its replies there)."""
+        boxes = [getattr(self, "reply_to", "") or ""] + list(getattr(self, "reply_to_earlier", None) or [])
+        return list(dict.fromkeys(b for b in boxes if b))
+
+    def _reply_to_target(self, ref: str) -> tuple[str, str] | None:
+        """(mailbox path, Graph id) of a message read from a Reply-To
+        mailbox, or None when that mailbox is no longer read."""
+        rest = ref[len(REPLY_TO_REF):]
+        box, sep, graph_id = rest.partition("|")
+        if not sep:      # an id from before the mailbox was written into it
+            box, graph_id = getattr(self, "reply_to", "") or "", rest
+        if not graph_id or box not in self._reply_to_boxes():
+            return None
+        return f"/users/{box}", graph_id
+
+    async def _read_reply_to_mailbox(self, box: str, me: str, limit: int, now: datetime) -> list[InboundMessage]:
+        """A Reply-To mailbox's inbox, from its own position, with its own
+        hourly look back over the week: the human replies to our emails land
+        there. Each message is tagged so the handler takes only answers to
+        our emails (that inbox is someone's ordinary mail too), and so a
+        reply goes back from there."""
+        path = f"/users/{box}"
         since = now - timedelta(days=REPLY_WINDOW_DAYS)
-        cursor = self._load_cursor(path)
-        if cursor:
+        cursor, swept = self._load_cursor(path), self._load_swept(path)
+        sweep = cursor is not None and (swept is None or now - swept >= FULL_SWEEP_EVERY)
+        if cursor and not sweep:
             since = max(since, cursor - CURSOR_OVERLAP)
         got: list[InboundMessage] = []
         try:
-            newest = await self._read_folder(INBOX_MESSAGES, since, self.reply_to, limit, set(), got, user_path=path)
+            newest = await self._read_folder(INBOX_MESSAGES, since, box, limit, set(), got, sweep=sweep,
+                                             user_path=path)
         except GraphError as e:
-            self.read_problem = (f"the mailbox could not be read: replies go to {self.reply_to}, whose inbox this app "
-                                 f"cannot read ({str(e)[:120]})")
+            if box != self.reply_to and ("Graph 403" in str(e) or "Graph 404" in str(e)):
+                # An earlier Reply-To this app cannot read (an outside
+                # address): there is nothing it could watch there.
+                logger.info(f"Microsoft: the earlier Reply-To {box} cannot be read ({str(e)[:120]}); skipped.")
+                return []
+            self.read_problem = (f"the Reply-To mailbox could not be read: replies go to {box}, whose inbox this "
+                                 f"app cannot read ({str(e)[:120]})")
             logger.warning(f"Microsoft: {self.read_problem}")
             return []
+        if sweep:
+            self._save_swept(now, path)
         out = []
         for msg in got:
-            if msg.from_email in (me, self.reply_to):
+            if msg.from_email in (me, box):
                 continue
             msg.headers[REPLY_TO_HEADER] = path
-            msg.provider_id = REPLY_TO_REF + msg.provider_id
+            msg.provider_id = f"{REPLY_TO_REF}{box}|{msg.provider_id}"
             msg.thread_ref = msg.provider_id
             out.append(msg)
         if not out and newest is not None:
@@ -437,9 +475,10 @@ class MicrosoftProvider(MailProvider):
         path, graph_id = self._user_path, provider_id
         foreign = provider_id.startswith(REPLY_TO_REF)
         if foreign:
-            if not getattr(self, "reply_to", ""):
+            target = self._reply_to_target(provider_id)
+            if target is None:
                 return None
-            path, graph_id = f"/users/{self.reply_to}", provider_id[len(REPLY_TO_REF):]
+            path, graph_id = target
         try:
             data = await self._request(
                 "GET", f"{path}/messages/{graph_id}",
@@ -545,20 +584,18 @@ class MicrosoftProvider(MailProvider):
         raw = self._cursor_data().get(key or self._cursor_key())
         return _parse_time(raw) if isinstance(raw, str) else None
 
-    def _load_swept(self) -> datetime | None:
-        raw = self._cursor_data().get(self._cursor_key() + ":swept")
+    def _load_swept(self, key: str = "") -> datetime | None:
+        raw = self._cursor_data().get((key or self._cursor_key()) + ":swept")
         return _parse_time(raw) if isinstance(raw, str) else None
 
     def _save_cursor(self, when: datetime, key: str = "") -> None:
         self._save_stamp(key or self._cursor_key(), when)
-        if key:
-            return
-        if self._load_swept() is None:
+        if self._load_swept(key) is None:
             # The first position counts as a sweep: the next one is due in an hour.
-            self._save_swept(datetime.now(timezone.utc))
+            self._save_swept(datetime.now(timezone.utc), key)
 
-    def _save_swept(self, when: datetime) -> None:
-        self._save_stamp(self._cursor_key() + ":swept", when)
+    def _save_swept(self, when: datetime, key: str = "") -> None:
+        self._save_stamp((key or self._cursor_key()) + ":swept", when)
 
     def _save_stamp(self, key: str, when: datetime) -> None:
         path = self._cursor_path()
@@ -703,6 +740,10 @@ class MicrosoftAppProvider(MicrosoftProvider):
         self._user_path = f"/users/{self.mailbox}"
         reply_to = (getattr(env, "m365_reply_to", "") or "").strip().lower()
         self.reply_to = reply_to if reply_to and reply_to != self.mailbox else ""
+        # Earlier Reply-To addresses, still read for a while (M365_REPLY_TO_ALSO).
+        earlier = (getattr(env, "m365_reply_to_also", "") or "").lower().split(",")
+        self.reply_to_earlier = [a for a in dict.fromkeys(x.strip() for x in earlier)
+                                 if a and a not in (self.mailbox, self.reply_to)]
 
     def is_configured(self) -> bool:
         return bool(self.client_id and self.client_secret and self.tenant and self.mailbox)

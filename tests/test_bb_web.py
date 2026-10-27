@@ -6,6 +6,7 @@ import asyncio
 import json
 import sqlite3
 import sys
+import time
 
 import pytest
 import yaml
@@ -1325,6 +1326,13 @@ def test_dashboard_says_first_emails_go_while_replies_wait_for_the_model(client)
     s = asyncio.run(ws._sending_status(dict(base, outbox_scheduled=2)))
     assert s["state"] == "sending" and s["link"] == "/mailbox" and "IMAP login refused" in s["text"]
     assert "until the inbox can be read again" in s["text"] and "the AI" not in s["text"]
+    # A Reply-To the app cannot read: only follow-ups wait, and what fixes it.
+    asyncio.run(sm.set_setting("sender_skip_reason", "replies couldn't all be read and handled (the Reply-To mailbox "
+                               "could not be read: replies go to me@gmail.example, whose inbox this app cannot read "
+                               "(Graph 404)); follow-ups wait, first emails still go out"))
+    s = asyncio.run(ws._sending_status(dict(base, outbox_scheduled=2)))
+    assert s["link"] == "/mailbox" and "Follow-ups wait: replies go to me@gmail.example" in s["text"]
+    assert "clear the Reply-To" in s["text"] and "until the inbox can be read again" not in s["text"]
     # A backlog in the inbox being worked through: an inbox cause, not the AI.
     asyncio.run(sm.set_setting("sender_skip_reason", "replies couldn't all be read and handled (the inbox has more new "
                                "mail than one pass reads; catching up pass by pass); follow-ups wait, first emails still go out"))
@@ -1543,9 +1551,47 @@ def test_mailbox_admin_app_reply_to(client, monkeypatch):
     page = client.get("/mailbox").text
     assert "replies to replies@corp.example" in page and 'name="m365_reply_to" value="replies@corp.example"' in page
     assert ws.worker_env().get("M365_REPLY_TO") == "replies@corp.example"
-    # The sending address itself is no Reply-To.
+    # The sending address itself is no Reply-To. The one it replaces is
+    # still read for a while (replies to emails already sent land there).
     client.post("/mailbox/m365", data={**form, "m365_reply_to": "outreach@corp.example"})
     assert ws.m365_reply_to() == "" and "M365_REPLY_TO" not in ws.worker_env()
+    assert ws.m365_reply_to_earlier() == ["replies@corp.example"]
+    assert ws.worker_env().get("M365_REPLY_TO_ALSO") == "replies@corp.example"
+    client.post("/mailbox/m365", data={**form, "m365_reply_to": "new@corp.example"})
     client.post("/mailbox/m365", data={**form, "m365_reply_to": "replies@corp.example"})
+    assert ws.m365_reply_to() == "replies@corp.example" and ws.m365_reply_to_earlier() == ["new@corp.example"]
+    # Kept REPLY_TO_KEPT_DAYS, then no longer read.
+    rows = json.loads(ws.secrets()["m365_reply_to_earlier"])
+    assert 29 * 86400 < rows[0]["until"] - time.time() <= ws_mod.REPLY_TO_KEPT_DAYS * 86400
+    ws.save_secrets(m365_reply_to_earlier=json.dumps([{"address": "new@corp.example", "until": time.time() - 1}]))
+    assert ws.m365_reply_to_earlier() == [] and "M365_REPLY_TO_ALSO" not in ws.worker_env()
     client.post("/mailbox/m365/remove")
-    assert ws.m365_reply_to() == ""
+    assert ws.m365_reply_to() == "" and ws.m365_reply_to_earlier() == []
+
+
+def test_a_bound_campaign_takes_the_admin_app_accounts_reply_to(client, monkeypatch):
+    """A campaign bound to an admin-app account before Reply-To existed has
+    the account's stamp but not its Reply-To: binding again copies it in
+    (and nothing else changes when it is already there)."""
+    import hashlib
+    from bb.mail import crypto
+    _as_user(client)
+    user = Accounts(client.settings.accounts_db).get_by_email(USER["email"])
+    ws = Workspace(client.settings, user, "c-rt")
+    creds = {"tenant_id": "tenant-1", "client_id": "client-1", "client_secret": "secret-1"}
+    box = {"id": 7, "address": "outreach@corp.example", "provider": "graph", "enabled": 1,
+           "creds": crypto.seal_json(client.settings.secret_key(), creds),
+           "settings": {"reply_to": "Replies@Corp.example"}}
+    monkeypatch.setattr(Workspace, "bound_mailbox", lambda self: box)
+    # Bound before this version: the account's files, the same stamp, no Reply-To.
+    ws.ensure()
+    ws.save_secrets(m365_tenant_id="tenant-1", m365_client_id="client-1", m365_client_secret="secret-1",
+                    m365_mailbox="outreach@corp.example")
+    ws.set_mail_provider("microsoft_app")
+    stamp = hashlib.sha256((box["creds"] + "|" + "Replies@Corp.example").encode()).hexdigest()
+    ws.binding_file.write_text(json.dumps({"mailbox_id": 7, "address": "outreach@corp.example", "stamp": stamp}))
+    assert ws.bind_account() == ""
+    assert ws.m365_reply_to() == "replies@corp.example"
+    assert ws.worker_env().get("M365_REPLY_TO") == "replies@corp.example"
+    before = ws.binding_file.read_text()
+    assert ws.bind_account() == "" and ws.binding_file.read_text() == before     # up to date: left alone
