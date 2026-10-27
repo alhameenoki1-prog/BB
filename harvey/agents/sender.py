@@ -416,21 +416,10 @@ class Sender:
 
     async def _run_native(self, first_only: bool = False):
         """Stage new campaigns into the outbox, then drain what's due."""
+        if not first_only:
+            await self._send_test_copies()
         paused = await self.state.get_setting(KILL_SWITCH_KEY)
         if paused:
-            # A test batch asked for from the dashboard: the next few first
-            # emails go once (the pause, the cool-off and the day's count
-            # aside, since they are what is being tested), then it holds again.
-            from harvey import wake
-            from harvey.paths import DATA_DIR
-            count = wake.test_send_pending(DATA_DIR) if not first_only else 0
-            if count:
-                wake.take_test_send(DATA_DIR)
-                logger.warning(f"Sender: sending is paused ({paused}); sending the next {count} first email(s) "
-                               "as a test, then holding again.")
-                await self._drain_due(first_only=True, limit=count, force=True)
-                await self.state.log_action(action_type="test_send", agent="sender", details={"count": count})
-                return
             logger.warning(
                 f"Sender: SENDING PAUSED ({paused}). Resume from the dashboard "
                 "or `harvey sending resume` once the cause is fixed."
@@ -595,6 +584,64 @@ class Sender:
                 agent="sender",
                 details={"campaign": campaign.name, "staged": staged, "mode": mode},
             )
+
+    TEST_SEND_LAST_KEY = "test_send_last"   # what the last test sent, for the dashboard
+
+    async def _send_test_copies(self) -> int:
+        """A test asked for from the dashboard: copies of the next queued
+        first emails, exactly as they would go (the same wording, greeting,
+        signature, plain text and files), to the person's own addresses.
+        The queue is not touched and nothing is counted; the pause and the
+        cool-off do not apply (what arrives is what is being tested)."""
+        from harvey import wake
+        from harvey.paths import DATA_DIR
+        to = wake.test_send_pending(DATA_DIR)
+        if not to:
+            return 0
+        wake.take_test_send(DATA_DIR)
+        if not self.provider.is_configured():
+            await self.state.set_setting(self.TEST_SEND_LAST_KEY, "the mailbox is not connected yet, so no test copy went")
+            return 0
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        due = await self.state.get_outbox(status="approved", due_before=now.isoformat(), limit=len(to) * 3, first_only=True)
+        queued = [i for i in due if (i.get("kind") or "sequence") == "sequence"]
+        if not queued:
+            # Nothing due: anything approved first email at all, else held for review.
+            for status in ("approved", "pending_review"):
+                rows = await self.state.get_outbox(status=status, limit=len(to) * 3, first_only=True)
+                queued = [i for i in rows if (i.get("kind") or "sequence") == "sequence"]
+                if queued:
+                    break
+        if not queued:
+            text = "nothing is written yet, so there was no email to send a test copy of"
+            logger.warning(f"Sender: test copies asked for, but {text}.")
+            await self.state.set_setting(self.TEST_SEND_LAST_KEY, text)
+            return 0
+        sent, failed = [], []
+        for n, address in enumerate(to):
+            item = queued[n % len(queued)]            # each address sees the next wording along
+            send_kwargs: dict = {}
+            files = _attachment_paths(item.get("attachments_json"))
+            if files:
+                send_kwargs["attachments"] = files
+            if self._plain(item):
+                send_kwargs["plain"] = True
+            try:
+                result = await self.provider.send_email(address, item["subject"], item["body"], **send_kwargs)
+                ok, error = result.ok, result.error
+            except Exception as e:
+                ok, error = False, str(e)[:200]
+            (sent if ok else failed).append(address if ok else f"{address} ({error[:120]})")
+        stamp = now.strftime("%H:%M UTC")
+        text = (f"{stamp}: a copy of \u201c{queued[0]['subject'][:60]}\u201d" + (f" (and {min(len(to), len(queued)) - 1} other wording(s))" if min(len(to), len(queued)) > 1 else "")
+                + f" went to {', '.join(sent)}" if sent else f"{stamp}: no test copy went")
+        if failed:
+            text += f"; refused for {', '.join(failed)}"
+        await self.state.set_setting(self.TEST_SEND_LAST_KEY, text[:600])
+        await self.state.log_action(action_type="test_send", agent="sender",
+                                    details={"to": sent, "failed": failed, "subject": queued[0]["subject"][:120]})
+        logger.info(f"Sender: test copies: {text}")
+        return len(sent)
 
     async def _drain_due(self, first_only: bool = False, limit: int | None = None, force: bool = False):
         """Send due, approved outbox items through the provider. With

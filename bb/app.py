@@ -470,23 +470,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/worker/test-send")
     async def worker_test_send(request: Request, user: dict = Depends(current_user)):
-        """While sending is paused: the next few first emails go once, as a
-        test that the mailbox delivers; then it holds again. Resume carries
-        on from where the queue stopped."""
+        """Send a copy of the next queued first emails to addresses the
+        person pastes (their own inboxes): a test of what arrives and how,
+        paused or not, without touching the queue."""
+        import re as _re
         ws = workspace_for(user)
         form = await request.form()
-        try:
-            count = max(1, min(int(form.get("count") or 3), MAX_TEST_SEND))
-        except ValueError:
-            count = 3
-        summary = await ws.summary()
-        if not summary.get("sending_paused"):
-            return _redirect("/", error="Pause sending first; a test batch goes out while the rest holds.")
-        ws.request_test_send(count)
-        ok, detail = await ws.wake_worker("a test batch")
-        note = ("" if ok else f" ({detail})")
-        return _redirect("/", msg=f"The worker sends the next {count} first email{'s' if count != 1 else ''} as a test on "
-                                  f"its next pass, then holds again; the rest go when you press Resume sending.{note}")
+        raw = str(form.get("to") or "")
+        accepted = ws.request_test_send(_re.split(r"[\s,;]+", raw))
+        if not accepted:
+            return _redirect("/", error="Paste one or more email addresses to send the test copies to.")
+        ok, detail = await ws.wake_worker("a test copy")
+        note = "" if ok else f" ({detail})"
+        return _redirect("/", msg=f"Test copies of the next queued email go to {', '.join(accepted)} on the worker's next "
+                                  f"pass (within a minute or two). The queue itself is untouched.{note}")
 
     @app.post("/worker/{action}")
     async def worker(action: str, user: dict = Depends(current_user)):

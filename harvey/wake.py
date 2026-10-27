@@ -64,33 +64,40 @@ def request_wake(folder: Path, by: str = "the dashboard") -> None:
 TEST_SEND_FILE = "send_test.json"
 
 
-def request_test_send(folder: Path, count: int, by: str = "the dashboard") -> None:
-    """While sending is paused: ask the worker to send the next ``count``
-    first emails once, then hold again (a test that the mailbox delivers)."""
+TEST_SEND_MAX_AGE = 24 * 3600   # a request older than this is stale and dropped
+
+
+def request_test_send(folder: Path, to: list, by: str = "the dashboard") -> None:
+    """Ask the worker to send a copy of the next queued first emails to
+    these addresses (the person's own inboxes), as a test of what arrives
+    and how, without touching the queue."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     tmp = folder / (TEST_SEND_FILE + ".tmp")
-    tmp.write_text(json.dumps({"count": int(count), "at": time.time(), "by": by}))
+    tmp.write_text(json.dumps({"to": [str(a) for a in to], "at": time.time(), "by": by}))
     tmp.replace(folder / TEST_SEND_FILE)
 
 
-def test_send_pending(folder: Path) -> int:
-    """How many test emails a request still waiting for the worker asks for (0: none)."""
+def test_send_pending(folder: Path) -> list:
+    """The addresses a request still waiting for the worker names ([]: none, or stale)."""
     try:
-        return max(0, int(json.loads((Path(folder) / TEST_SEND_FILE).read_text()).get("count") or 0))
+        data = json.loads((Path(folder) / TEST_SEND_FILE).read_text())
+        if time.time() - float(data.get("at") or 0) > TEST_SEND_MAX_AGE:
+            return []
+        return [str(a) for a in (data.get("to") or []) if a]
     except (OSError, ValueError, AttributeError, TypeError):
-        return 0
+        return []
 
 
-def take_test_send(folder: Path) -> int:
-    """The worker's side: the pending request's count, and the request is gone."""
+def take_test_send(folder: Path) -> list:
+    """The worker's side: the pending request's addresses, and the request is gone."""
     path = Path(folder) / TEST_SEND_FILE
-    count = test_send_pending(folder)
+    to = test_send_pending(folder)
     try:
         path.unlink()
     except OSError:
         pass
-    return count
+    return to
 
 
 def wake_pending(folder: Path) -> bool:

@@ -191,9 +191,10 @@ maximum stops a reply (`limits.hard` via `service.set_ledger_limit`, `mailbox_da
 everything; first emails stop a tenth short of it. A send pass takes nothing new after `PASS_SECONDS`. Accounts can be added in bulk (`/mail/accounts/bulk`,
 `/mail/accounts/graph/bulk`). **Wake up now** (`/worker/wake`,
 `/campaigns/outreach/<id>/wake`; `Workspace.wake_worker`) reaches a
-running worker through `data/worker.wake` (and a paused sender takes a
-one-off test batch from `data/send_test.json`, `wake.request_test_send` /
-`take_test_send`, `/worker/test-send`; `/outbox/resend-last` queues the last
+running worker through `data/worker.wake` (and the sender sends test copies
+of the next queued first email to the addresses in `data/send_test.json`,
+`wake.request_test_send` / `take_test_send`, `Sender._send_test_copies`,
+`/worker/test-send`; `/outbox/resend-last` queues the last
 N sent first emails again via `state.requeue_last_first_emails`); the worker's `harvey/wake.py`
 beat (`data/worker.beat`, every 10 s) feeds `Workspace.worker_doing` and
 the site's stuck-worker restart (`restart_if_stuck`, `restart_mail_if_stuck`

@@ -126,8 +126,8 @@ MAX_INBOX_LINKS = 12
 # included) is enough that no two neighbours get the same email.
 TEMPLATE_VARIANTS = 5
 MAX_TEMPLATE_VARIANTS = 8
-# The most first emails one test batch sends while sending is paused.
-MAX_TEST_SEND = 20
+# The most addresses one test sends copies to.
+MAX_TEST_SEND = 10
 
 
 def _template_variants_from_form(form) -> list[dict]:
@@ -1292,6 +1292,8 @@ class Workspace:
                 "SELECT COUNT(*) AS n FROM outbox WHERE status = 'sent' AND COALESCE(kind, 'sequence') = 'sequence' "
                 "AND COALESCE(step, 1) = 1")
             out["sent_first"] = rows[0]["n"] if rows else 0
+        out["test_send_last"] = await self.last_test_send()
+        out["test_send_pending"] = self.test_send_pending()
         if await self._table_exists("conversations"):
             rows = await self._query(
                 "SELECT COUNT(*) AS n, SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open FROM conversations")
@@ -1996,15 +1998,31 @@ class Workspace:
         return await state.requeue_last_first_emails(
             count, "Queued again from the dashboard: it goes once more, at your daily limit.")
 
-    def request_test_send(self, count: int) -> None:
-        """While sending is paused: the worker sends the next ``count`` first
-        emails once on its next pass, then holds again."""
+    def request_test_send(self, addresses: list) -> list:
+        """The worker sends a copy of the next queued first emails to these
+        addresses on its next pass (the queue is not touched). Returns the
+        addresses accepted (valid, distinct, at most MAX_TEST_SEND)."""
         from harvey import wake
-        wake.request_test_send(self.data_dir, max(1, min(int(count), MAX_TEST_SEND)))
+        from harvey.listclean import EMAIL_RE
+        out: list = []
+        for raw in addresses:
+            a = (raw or "").strip().strip("<>,;").lower()
+            if a and EMAIL_RE.match(a) and a not in out:
+                out.append(a)
+        out = out[:MAX_TEST_SEND]
+        if out:
+            wake.request_test_send(self.data_dir, out)
+        return out
 
-    def test_send_pending(self) -> int:
+    def test_send_pending(self) -> list:
         from harvey import wake
         return wake.test_send_pending(self.data_dir)
+
+    async def last_test_send(self) -> str:
+        if not await self._table_exists("settings"):
+            return ""
+        rows = await self._query("SELECT value FROM settings WHERE key = 'test_send_last'")
+        return (rows[0]["value"] or "") if rows else ""
 
     async def set_sending_paused(self, paused: bool):
         state = self.state()

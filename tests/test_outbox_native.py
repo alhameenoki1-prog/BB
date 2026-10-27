@@ -1122,42 +1122,53 @@ async def test_the_tenants_daily_limit_pauses_a_day_and_the_bounced_first_emails
 
 
 @pytest.mark.asyncio
-async def test_a_test_batch_goes_out_while_sending_is_paused(state, monkeypatch, tmp_path):
-    """Sending is paused (the kill switch, a cool-off): a request from the
-    dashboard sends the next N first emails once, then it holds again. The
-    request is consumed; follow-ups stay; the pause stays."""
+async def test_test_copies_of_the_next_queued_email_go_to_the_pasted_addresses(state, monkeypatch, tmp_path):
+    """A request from the dashboard names the person's own addresses: each
+    gets a copy of the next queued first email as a recipient would (one
+    wording each, plain text), paused or not; the queue is untouched,
+    nothing is counted, and the request is consumed."""
     from harvey import wake
-    import harvey.agents.sender as sender_mod
     monkeypatch.setattr("harvey.paths.DATA_DIR", tmp_path)
-    ids = [await seed_prospect(state, email=f"p{i}@acme.com") for i in range(5)]
+    ids = [await seed_prospect(state, email=f"p{i}@acme.com") for i in range(3)]
     await seed_campaign(state, ids)
     provider = FakeProvider()
-    sender = make_sender(state, provider, require_approval=False)
-    await sender.run()                                        # staged, then sent: 5 first emails
-    assert len(provider.sent) == 5
-    provider.sent.clear()
-    # Paused and cooling off: nothing goes.
+    sender = make_sender(state, provider, require_approval=True)
+    await sender.run()                                        # staged for review: nothing sent
+    for item in await state.get_outbox(status="pending_review"):
+        if int(item.get("step") or 1) == 1:
+            await state.update_outbox_item(item["id"], status="approved")
+    assert provider.sent == [] and len(await state.get_outbox(status="approved")) == 3
     await state.set_setting("sending_paused", "your mailbox is blocked from sending (...)")
     await state.set_setting("sender_cooloff_until", (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=20)).isoformat())
-    for i, pid in enumerate(ids):
-        await state.add_outbox_item(prospect_id=pid, to_email=f"p{i}@acme.com", subject="x", body="Fine body. Question?",
-                                    send_at=_now_iso(), status="approved", campaign_id="c9", step=1)
     await sender.run()
-    assert provider.sent == []
-    # A test batch of 2: exactly two first emails, follow-ups untouched, the request gone, still paused.
-    wake.request_test_send(tmp_path, 2)
-    assert wake.test_send_pending(tmp_path) == 2
+    assert provider.sent == []                                # paused: nothing goes
+    wake.request_test_send(tmp_path, ["me@gmail.com", "me@outlook.com"])
+    assert wake.test_send_pending(tmp_path) == ["me@gmail.com", "me@outlook.com"]
     await sender.run()
-    assert len(provider.sent) == 2 and all(s["subject"] == "x" for s in provider.sent)
-    assert wake.test_send_pending(tmp_path) == 0 and not (tmp_path / wake.TEST_SEND_FILE).exists()
+    assert [m["to"] for m in provider.sent] == ["me@gmail.com", "me@outlook.com"]
+    assert all(m["subject"].startswith("hi ") for m in provider.sent)       # the queued first email's words
+    assert len(await state.get_outbox(status="approved")) == 3                # the queue is untouched
+    assert await state.count_outbox_sent_today() == 0
+    assert wake.test_send_pending(tmp_path) == [] and not (tmp_path / wake.TEST_SEND_FILE).exists()
+    assert "went to me@gmail.com, me@outlook.com" in await state.get_setting("test_send_last")
     assert (await state.get_setting("sending_paused")).startswith("your mailbox is blocked")
-    assert len(await state.get_outbox(status="approved")) == 3 + 5          # three first emails left, five follow-ups
-    await sender.run()
-    assert len(provider.sent) == 2                                             # holds again
-    # A first-only pass (the send loop with the model down) does not spend a request.
-    wake.request_test_send(tmp_path, 1)
+    # A first-only pass (the send loop with the model down) leaves the request for a full pass.
+    wake.request_test_send(tmp_path, ["me@gmail.com"])
     await sender.run(first_only=True)
-    assert len(provider.sent) == 2 and wake.test_send_pending(tmp_path) == 1
+    assert len(provider.sent) == 2 and wake.test_send_pending(tmp_path) == ["me@gmail.com"]
+    # A stale request (a day old) is dropped.
+    import json as _json, time as _time
+    (tmp_path / wake.TEST_SEND_FILE).write_text(_json.dumps({"to": ["old@x.example"], "at": _time.time() - 2 * 86400}))
+    await sender.run()
+    assert len(provider.sent) == 2
+    # Nothing written: the request is consumed and the dashboard told.
+    await state.set_setting("sending_paused", "")
+    wake.request_test_send(tmp_path, ["me@gmail.com"])
+    for status in ("approved", "pending_review"):
+        for item in await state.get_outbox(status=status):
+            await state.update_outbox_item(item["id"], status="cancelled")
+    await sender.run()
+    assert len(provider.sent) == 2 and "nothing is written yet" in await state.get_setting("test_send_last")
 
 
 @pytest.mark.asyncio

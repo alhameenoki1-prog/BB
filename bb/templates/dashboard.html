@@ -73,12 +73,17 @@
           <form class="inline" method="post" action="/sending/pause"><button class="danger small" type="submit">{{ icon('pause', 14) }} Pause all sending</button></form>
         {% endif %}
       </div>
-      {% if summary.sending_paused %}<p class="tiny" style="margin-top:8px">Reason: {{ summary.sending_paused }}</p>
-      <form class="inline" method="post" action="/worker/test-send" style="margin-top:8px">
-        <label class="small" style="display:inline">While paused, send the next <input type="number" name="count" value="3" min="1" max="{{ max_test_send }}" style="width:64px;display:inline"> first emails now as a test</label>
-        <button class="secondary small" type="submit">{{ icon('play', 13) }} Send the test batch</button>
-        <span class="tiny muted">The rest keep waiting; Resume sending carries on from where it stopped.</span>
-      </form>{% endif %}
+      {% if summary.sending_paused %}<p class="tiny" style="margin-top:8px">Reason: {{ summary.sending_paused }}</p>{% endif %}
+      <details style="margin-top:12px" {{ 'open' if summary.test_send_pending or summary.sending_paused else '' }}>
+        <summary class="small muted" style="cursor:pointer">Send me a test copy</summary>
+        <p class="small muted" style="margin-top:8px">Paste your own addresses (up to {{ max_test_send }}); each gets a copy of the next queued first email exactly as a recipient would (one wording each, greeting, signature, plain text). The queue is not touched and nothing is counted, paused or not. Then press Resume sending to carry on from where it stopped.</p>
+        <form method="post" action="/worker/test-send">
+          <textarea name="to" rows="2" placeholder="me@gmail.com, me@outlook.com" style="width:100%">{{ summary.test_send_pending | join(', ') }}</textarea>
+          <p style="margin:8px 0 0"><button class="secondary small" type="submit">{{ icon('play', 13) }} Send the test copies</button>
+          {% if summary.test_send_pending %}<span class="tiny muted">Waiting for the worker's next pass.</span>{% endif %}</p>
+        </form>
+        {% if summary.test_send_last %}<p class="tiny" style="margin-top:8px">Last test: {{ summary.test_send_last }}</p>{% endif %}
+      </details>
       {% if summary.sending %}
       <div class="card flat" id="sending-status" style="margin-top:12px;{{ 'border-color:var(--warn)' if summary.sending.state == 'stuck' else ('border-color:var(--good)' if summary.sending.state == 'sending' else '') }}">
         <b>{{ {'sending': 'Sending now.', 'waiting': 'Nothing to send yet.', 'stuck': 'Not sending.'}[summary.sending.state] }}</b> <span id="sending-status-text">{{ summary.sending.text }}</span>{% if summary.sending.link %} <a href="{{ summary.sending.link }}">Open</a>{% endif %}

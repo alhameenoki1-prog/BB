@@ -1384,20 +1384,20 @@ def test_dashboard_can_queue_the_last_emails_again_and_send_a_test_batch_while_p
     monkeypatch.setattr(Workspace, "wake_worker", fake_wake)
     page = client.get("/").text
     assert "3 first emails have been sent" in page and "Send the last emails again" in page
-    assert "Send the test batch" not in page                       # only while paused
     r = client.post("/outbox/resend-last", data={"count": "2"})
     assert r.status_code == 303 and "2+first+emails+queued+again" in r.headers["location"].replace("%20", "+")
     assert len(asyncio.run(sm.get_outbox(status="approved"))) == 2 and woken == ["emails queued again"]
     assert "error=" in client.post("/outbox/resend-last", data={"count": "0"}).headers["location"]
-    # The test batch needs the pause.
-    r = client.post("/worker/test-send", data={"count": "2"})
-    assert "Pause+sending+first" in r.headers["location"].replace("%20", "+")
-    asyncio.run(ws.set_sending_paused(True))
+    # Test copies go to the addresses pasted: valid, distinct, at most ten.
+    r = client.post("/worker/test-send", data={"to": "  "})
+    assert "error=" in r.headers["location"]
+    r = client.post("/worker/test-send", data={"to": "Me@Gmail.com, me@gmail.com; not-an-address\nme@outlook.com"})
+    assert r.status_code == 303 and "Test+copies+of+the+next+queued+email+go+to+me%40gmail.com%2C+me%40outlook.com" in r.headers["location"].replace("%20", "+")
+    assert wake.test_send_pending(ws.data_dir) == ["me@gmail.com", "me@outlook.com"] and woken[-1] == "a test copy"
     page = client.get("/").text
-    assert "Send the test batch" in page
-    r = client.post("/worker/test-send", data={"count": "50"})
-    assert r.status_code == 303 and "next+20+first+emails+as+a+test" in r.headers["location"].replace("%20", "+")
-    assert wake.test_send_pending(ws.data_dir) == 20 and woken[-1] == "a test batch"
+    assert "Send me a test copy" in page and "me@gmail.com, me@outlook.com" in page and "Waiting for the worker" in page
+    asyncio.run(sm.set_setting("test_send_last", "10:02 UTC: a copy of \u201chello\u201d went to me@gmail.com"))
+    assert "Last test: 10:02 UTC" in client.get("/").text
 
 
 def test_gmail_mailboxes_get_their_own_daily_ceiling(client):

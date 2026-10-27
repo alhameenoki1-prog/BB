@@ -27,12 +27,14 @@ minor versions can still change behaviour.
   "Send the last emails again" queues the most recent N first emails once
   more (for a run that went out while the mailbox was blocked or over its
   daily cap, so nobody received it), each with its follow-ups moved along
-  (`/outbox/resend-last`, `state.requeue_last_first_emails`). While
-  sending is paused, "send the next N first emails now as a test" makes
-  the worker send that many once on its next pass, the pause, cool-off and
-  day's count aside, then hold again; Resume carries on from where the
-  queue stopped (`/worker/test-send`, `wake.request_test_send`, the sender's
-  `_drain_due(limit=, force=)`).
+  (`/outbox/resend-last`, `state.requeue_last_first_emails`). "Send me a
+  test copy" takes addresses you paste (your own inboxes, up to ten): on
+  its next pass the worker sends each a copy of the next queued first email
+  exactly as a recipient would get it (one wording each, greeting,
+  signature, plain text), paused or not, without touching the queue or
+  counting anything; the card then says what went where. Resume carries on
+  from where the queue stopped (`/worker/test-send`,
+  `wake.request_test_send`, `Sender._send_test_copies`).
 
 - **A second Microsoft admin app connects with the mailbox permissions
   alone.** The admin-app connection test read the mailbox's directory
