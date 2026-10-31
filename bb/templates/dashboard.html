@@ -496,7 +496,7 @@
 </div>
 
 {% if logs %}
-<div class="card">
+<div class="card bb-activity-panel">
   <div class="actions" style="justify-content:space-between"><h2 style="margin:0">Recent activity</h2><span class="tiny">{{ activity|length }} recent event{{ 's' if activity|length != 1 else '' }} · routine checks left out</span></div>
   {% if activity %}
   <ul class="feed" style="margin-top:8px">
@@ -512,5 +512,190 @@
   .feed .who { font-weight:600; color:var(--ink-2); margin-right:2px; }
   .feed-sent .ic, .feed-reply .ic { color:var(--good); } .feed-warning .ic { color:var(--warn); } .feed-control .ic { color:var(--accent); }
 </style>
+
+<style>
+/* BB ACTIVITY TIMELINE V1 */
+
+.bb-activity-panel {
+  margin-top:24px;
+  padding:26px 28px;
+  border:1px solid var(--line);
+  border-radius:16px;
+}
+
+.bb-activity-panel > .actions {
+  padding-bottom:18px;
+  border-bottom:1px solid var(--line);
+}
+
+.bb-activity-panel > .actions h2 {
+  font-size:21px;
+  font-weight:750;
+  letter-spacing:-.04em;
+}
+
+.bb-activity-panel > .actions .tiny {
+  color:var(--ink-3);
+  font-size:11px;
+  font-weight:600;
+}
+
+.bb-activity-panel .feed {
+  position:relative;
+  list-style:none;
+  margin:18px 0 0;
+  padding:0;
+}
+
+.bb-activity-panel .feed li {
+  position:relative;
+  display:grid;
+  grid-template-columns:30px minmax(0,1fr) auto;
+  align-items:start;
+  gap:15px;
+  padding:14px 0 19px;
+  border-bottom:0;
+  font-size:13px;
+  line-height:1.65;
+}
+
+.bb-activity-panel .feed li:not(:last-child)::before {
+  content:"";
+  position:absolute;
+  left:14px;
+  top:43px;
+  bottom:-2px;
+  width:1px;
+  background:var(--line-2);
+}
+
+.bb-activity-panel .feed .ic {
+  position:relative;
+  z-index:1;
+  display:grid;
+  place-items:center;
+  width:29px;
+  height:29px;
+  border:1px solid var(--line);
+  border-radius:9px;
+  background:var(--surface-2);
+  color:var(--ink-2);
+  font-size:14px;
+  font-weight:800;
+  line-height:1;
+}
+
+.bb-activity-panel .feed .who {
+  display:inline-block;
+  margin-right:5px;
+  color:var(--ink);
+  font-weight:750;
+}
+
+.bb-activity-panel .feed .when {
+  margin-left:0;
+  padding-top:5px;
+  color:var(--ink-3);
+  font-size:11px;
+  font-weight:600;
+  font-variant-numeric:tabular-nums;
+  white-space:nowrap;
+}
+
+.bb-activity-panel .feed .tag {
+  font-size:10px;
+  vertical-align:middle;
+}
+
+.bb-activity-panel .feed-sent .ic,
+.bb-activity-panel .feed-reply .ic {
+  color:var(--good);
+  background:var(--good-soft);
+  border-color:var(--good-soft);
+}
+
+.bb-activity-panel .feed-warning .ic {
+  color:var(--warn);
+  background:var(--warn-soft);
+  border-color:var(--warn-soft);
+}
+
+.bb-activity-panel .feed-control .ic {
+  color:var(--accent);
+  background:var(--accent-soft);
+  border-color:var(--accent-soft);
+}
+
+.bb-activity-panel .feed-wrote .ic {
+  color:var(--accent);
+}
+
+.bb-activity-panel details {
+  padding-top:16px;
+  border-top:1px solid var(--line);
+}
+
+.bb-activity-panel details summary {
+  font-weight:650;
+}
+
+.bb-activity-panel pre.log {
+  margin-top:12px;
+  border-radius:11px;
+}
+
+@media (max-width:650px) {
+  .bb-activity-panel {
+    padding:19px 16px;
+  }
+
+  .bb-activity-panel .feed li {
+    grid-template-columns:29px minmax(0,1fr);
+    gap:10px;
+  }
+
+  .bb-activity-panel .feed .when {
+    grid-column:2;
+    padding-top:0;
+    margin-top:-8px;
+  }
+
+  .bb-activity-panel .feed li:not(:last-child)::before {
+    bottom:-5px;
+  }
+}
+</style>
+
+
+<style>
+/* BB ACTIVITY WRAPPING FIX V1 */
+
+.bb-activity-panel {
+  min-width:0;
+  max-width:100%;
+}
+
+.bb-activity-panel .feed li {
+  min-width:0;
+  max-width:100%;
+}
+
+.bb-activity-panel .feed li > span:nth-child(2) {
+  min-width:0;
+  overflow-wrap:anywhere;
+  word-break:normal;
+}
+
+.bb-activity-panel .feed .when {
+  text-align:right;
+}
+
+@media (max-width:650px) {
+  .bb-activity-panel .feed .when {
+    text-align:left;
+  }
+}
+</style>
+
 {% endif %}
 {% endblock %}
