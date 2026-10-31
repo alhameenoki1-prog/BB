@@ -3,6 +3,38 @@
 {% from "_browser_signin.html" import browser_signin %}
 {% block title %}Mailbox{% endblock %}
 {% block content %}
+
+<div class="card" id="graph-diagnostics">
+  <h2>Microsoft Graph Diagnostics</h2>
+  <p class="muted small">
+    Test Microsoft Graph connectivity from this BB website.
+    No Microsoft passwords or tokens are collected by this diagnostic.
+  </p>
+  <p>
+    <button type="button" class="secondary"
+            onclick="testMicrosoftGraph()">
+      Test Microsoft Graph connectivity
+    </button>
+  </p>
+  <pre id="graph-test-result" style="white-space:pre-wrap"></pre>
+</div>
+
+<script>
+async function testMicrosoftGraph() {
+  const result = document.getElementById("graph-test-result");
+  result.textContent = "Testing...";
+  try {
+    const response = await fetch("/diagnostics/graph", {
+      credentials: "same-origin"
+    });
+    const data = await response.json();
+    result.textContent = JSON.stringify(data, null, 2);
+  } catch (error) {
+    result.textContent = "Request failed: " + error.message;
+  }
+}
+</script>
+
 <div class="page-head"><div><div class="eyebrow">Setup</div><h1>Your mailbox</h1><p class="lead">Emails are sent from your own address and replies are read from its inbox. Nothing is sent on anyone's behalf but yours.</p></div></div>
 
 {% if not campaign_main %}
