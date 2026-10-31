@@ -1463,7 +1463,7 @@ def test_workers_on_old_code_are_restarted_when_the_site_starts(client, monkeypa
     ws.save_secrets(smtp_host="smtp.example.com", smtp_port=587, smtp_username="me@example.com", smtp_password="pw")
     ws.set_mail_provider("smtp")
     starts = []
-    monkeypatch.setattr(ws_mod.subprocess, "Popen", lambda cmd, **kw: starts.append(cmd) or _FakeProc())
+    monkeypatch.setattr(ws_mod.subprocess, "Popen", lambda cmd, **kw: starts.append(cmd) or _FakeProc() if "harvey.main" in cmd else _FakeProc())
     monkeypatch.setattr(ws_mod.os, "kill", lambda pid, sig: None)
     monkeypatch.setattr(ws_mod, "STOP_GRACE_SECONDS", 0.5)
     monkeypatch.setattr(ws_mod, "code_version", lambda: "v1")

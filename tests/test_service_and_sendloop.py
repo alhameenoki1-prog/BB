@@ -124,6 +124,8 @@ def test_cli_sees_a_running_site_and_its_version(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("BB_HOME", str(tmp_path / "home")); monkeypatch.setenv("BB_PORT", "8123")
     monkeypatch.setattr(cli, "ENV_FILES", ())
     assert cli.running_site(8123) is None
+    from bb import service
+    monkeypatch.setattr(service, "restart", lambda: (False, "no service installed"))
     with pytest.raises(SystemExit):
         cli.main(["restart"])
     assert "Nothing is running" in capsys.readouterr().out

@@ -1886,8 +1886,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from bb.graph_diagnostics import router as graph_diagnostics_router
     app.include_router(graph_diagnostics_router, dependencies=[Depends(current_admin)])
     from bb.graph_test_page import router as graph_test_page_router
-    app.include_router(graph_test_page_router)
+    app.include_router(graph_test_page_router, dependencies=[Depends(current_admin)])
     from bb.graph_web_auth import router as graph_web_auth_router
+    for route in graph_web_auth_router.routes:
+        if getattr(route, "path", "") == "/diagnostics/microsoft/start":
+            route.dependencies.append(Depends(current_admin))
     app.include_router(graph_web_auth_router)
 
 
