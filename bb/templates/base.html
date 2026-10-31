@@ -444,6 +444,221 @@
 }
 </style>
 
+
+<style>
+/* BB UNIFIED TERMINAL V1 */
+
+/* Institutional navigation */
+.side {
+  border-right:1px solid var(--line-2);
+}
+
+.brand {
+  padding:8px 10px 24px;
+  gap:12px;
+}
+
+.brand .mark {
+  width:36px;
+  height:36px;
+  border-radius:11px;
+  background:linear-gradient(145deg,#2563eb,#1e40af);
+  box-shadow:0 5px 16px rgba(37,99,235,.18);
+}
+
+.brand b {
+  font-size:16px;
+  font-weight:750;
+  letter-spacing:-.04em;
+}
+
+.brand span {
+  font-size:10px;
+  letter-spacing:.08em;
+}
+
+.nav a {
+  min-height:40px;
+  margin:2px 0;
+  font-size:13px;
+  font-weight:550;
+  border:1px solid transparent;
+  transition:background .15s,color .15s,border-color .15s;
+}
+
+.nav a.active {
+  background:var(--accent-soft);
+  border-color:var(--line);
+  color:var(--accent);
+  font-weight:700;
+}
+
+.nav a:hover {
+  background:var(--fill);
+}
+
+.nav .sep {
+  margin:21px 12px 8px;
+  font-size:10px;
+  font-weight:750;
+  letter-spacing:.12em;
+}
+
+/* Account panel */
+.side .me {
+  padding:15px 8px 4px;
+}
+
+.side .me .av {
+  width:36px;
+  height:36px;
+  border-radius:11px;
+  background:var(--accent-soft);
+  color:var(--accent);
+}
+
+.side .me .who b {
+  font-weight:650;
+}
+
+/* Live operational monitoring */
+.live {
+  gap:8px;
+  margin-bottom:28px;
+}
+
+.live .pill {
+  padding:9px 13px;
+  border-radius:9px;
+  font-size:12px;
+  font-weight:550;
+  box-shadow:none;
+}
+
+.live .pill b {
+  font-size:13px;
+  font-weight:750;
+}
+
+/* Consistent cards */
+.card {
+  border:1px solid var(--line);
+  border-radius:15px;
+  box-shadow:var(--shadow);
+}
+
+.card h2 {
+  font-weight:700;
+  letter-spacing:-.035em;
+}
+
+/* Professional tables */
+table {
+  font-variant-numeric:tabular-nums;
+}
+
+th {
+  background:var(--surface-2);
+  font-size:10px;
+  font-weight:750;
+  letter-spacing:.10em;
+}
+
+td {
+  font-size:13px;
+  line-height:1.55;
+}
+
+tbody tr:hover td {
+  background:var(--fill);
+}
+
+/* Form refinement */
+input[type=text],
+input[type=email],
+input[type=password],
+input[type=number],
+input[type=url],
+input[type=time],
+select,
+textarea {
+  border:1px solid var(--line);
+  background:var(--surface-2);
+  border-radius:10px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  background:var(--surface);
+  border-color:var(--accent);
+}
+
+/* Buttons */
+button,
+.btn,
+a.button {
+  font-weight:650;
+  letter-spacing:-.01em;
+}
+
+button.secondary,
+a.button.secondary {
+  border-color:var(--line);
+}
+
+/* Status indicators */
+.tag {
+  border-radius:7px;
+  padding:5px 9px;
+  font-size:11px;
+  font-weight:700;
+}
+
+/* Dark theme */
+:root[data-bb-theme="dark"] .side {
+  background:#101825;
+}
+
+:root[data-bb-theme="dark"] .nav a.active {
+  border-color:rgba(123,156,255,.20);
+}
+
+:root[data-bb-theme="dark"] .card {
+  border-color:rgba(190,205,230,.10);
+}
+
+/* Responsive */
+@media (max-width:860px) {
+  .brand {
+    padding:4px 8px;
+  }
+
+  .nav a {
+    min-height:36px;
+    margin:0;
+  }
+
+  .side .me {
+    padding:0;
+  }
+
+  .live {
+    gap:6px;
+  }
+
+  .live .pill {
+    padding:7px 10px;
+  }
+}
+
+@media (prefers-reduced-motion:reduce) {
+  .nav a {
+    transition:none;
+  }
+}
+</style>
+
 </head>
 <body class="{% if not user %}auth{% endif %}">
 {% if user %}
