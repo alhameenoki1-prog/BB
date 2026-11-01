@@ -61,92 +61,115 @@
   .link-manager-grid { grid-template-columns:1fr; }
   .link-manager-panel { padding:15px; }
 }
+.link-wizard { max-width:760px; margin:0 auto 24px; }
+.link-wizard-step[hidden] { display:none !important; }
+.link-wizard-actions { display:flex; justify-content:space-between; gap:12px; margin-top:22px; }
+.link-wizard-progress { display:flex; gap:7px; margin:14px 0 24px; }
+.link-wizard-progress span { flex:1; height:4px; border-radius:4px; background:var(--border,#dfe5ee); }
+.link-wizard-progress span.current { background:var(--accent,#2563eb); }
+.link-wizard-fields { display:grid; gap:15px; }
+.link-wizard-fields label { display:block; margin-bottom:6px; }
+.link-wizard-muted { color:var(--muted,#788397); font-size:13px; }
+.link-wizard-review { padding:16px; border:1px solid var(--border,#dfe5ee); border-radius:12px; overflow-wrap:anywhere; }
+.link-wizard-error { color:#b91c1c; margin:10px 0; }
 </style>
 
 <div class="link-manager-head">
   <div>
     <h1>Link Manager</h1>
-    <p>Manage authorized training links and destinations.</p>
+    <p>Create and manage your training links.</p>
   </div>
-  <a href="/domains" class="small secondary">Manage domains</a>
+  <a href="/domains" class="small secondary">Domains</a>
 </div>
 
-<div class="link-manager-grid">
-  <div class="link-manager-stat">
-    <span>Total links</span>
-    <strong>{{ links|length }}</strong>
+{% if request.query_params.get('error') %}
+<p role="alert" class="link-wizard-error">{{ request.query_params.get('error') }}</p>
+{% endif %}
+{% if request.query_params.get('msg') %}
+<p role="status">{{ request.query_params.get('msg') }}</p>
+{% endif %}
+<section class="link-manager-panel link-wizard">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+    <h2 style="margin:0">Create link</h2>
+    <span id="link-step-label" class="link-wizard-muted">Step 1 of 3</span>
   </div>
-  <div class="link-manager-stat">
-    <span>Active records</span>
-    <strong>{{ active_count }}</strong>
-  </div>
-  <div class="link-manager-stat">
-    <span>Eligible hostnames</span>
-    <strong>{{ domain_options|length }}</strong>
-  </div>
-</div>
-
-
-<section class="link-manager-panel">
-  <h2>Create training link configuration</h2>
-  <p class="link-manager-note">
-    Choose a domain already listed under Managed Domains and save a training-link draft.
-    No per-link administrator approval is required to save a draft.
-    Saving does not publish a link or enable visitor tracking.
-  </p>
-
+  <div class="link-wizard-progress" aria-hidden="true"><span class="current"></span><span></span><span></span></div>
   {% if eligible_link_hostnames %}
-  <form action="/links/create" method="post">
-    <div class="link-manager-grid">
-      <div>
-        <label for="training-link-name">Name</label>
-        <input id="training-link-name" name="name"
-               type="text" maxlength="120" required
-               placeholder="Security awareness lesson">
+  <form id="link-create-form" action="/links/create" method="post">
+    <input type="hidden" name="destination" value="">
+    <section class="link-wizard-step" data-step="1">
+      <h3>Name your link</h3>
+      <p class="link-wizard-muted">Choose a name and address.</p>
+      <div class="link-wizard-fields">
+        <div><label for="training-link-name">Name</label><input id="training-link-name" name="name" type="text" maxlength="120" required placeholder="Security awareness"></div>
+        <div><label for="training-link-hostname">Domain</label><select id="training-link-hostname" name="hostname" required>{% for hostname in eligible_link_hostnames %}<option value="{{ hostname }}">{{ hostname }}</option>{% endfor %}</select></div>
+        <div><label for="training-link-path">Link address</label><input id="training-link-path" name="path" type="text" maxlength="100" pattern="[a-zA-Z0-9][a-zA-Z0-9/_-]*" required placeholder="awareness-lesson"><p class="link-wizard-muted" id="link-address-preview" aria-live="polite"></p></div>
       </div>
-
-      <div>
-        <label for="training-link-hostname">Hostname</label>
-        <select id="training-link-hostname" name="hostname" required>
-          {% for hostname in eligible_link_hostnames %}
-          <option value="{{ hostname }}">{{ hostname }}</option>
-          {% endfor %}
-        </select>
-      </div>
-
-      <div>
-        <label for="training-link-path">Path</label>
-        <input id="training-link-path" name="path"
-               type="text" required
-               placeholder="awareness-lesson">
-      </div>
-
-      <div>
-        <label for="training-link-destination">Approved destination (optional for draft)</label>
-        <select id="training-link-destination" name="destination">
-          <option value="">None — save as draft</option>
-          {% for hostname in approved_destination_hostnames %}
-          <option value="https://{{ hostname }}/">
-            https://{{ hostname }}/
-          </option>
-          {% endfor %}
-        </select>
-      </div>
-
+    </section>
+    <section class="link-wizard-step" data-step="2" hidden>
+      <h3>Your training page</h3>
+      <p class="link-wizard-muted">Page templates, AI generation, and pasted HTML are planned for the Page Builder. They are not available yet.</p>
+      <div class="link-wizard-review"><strong>Save a draft first</strong><p class="link-wizard-muted">Your link configuration will be saved privately. No public page will be created or published.</p></div>
+    </section>
+    <section class="link-wizard-step" data-step="3" hidden>
+      <h3>Review your draft</h3>
+      <div class="link-wizard-review"><strong id="link-review-name"></strong><p id="link-review-url"></p><span class="link-wizard-muted">Status: Draft · Not published</span></div>
+    </section>
+    <p id="link-wizard-error" class="link-wizard-error" role="alert" hidden></p>
+    <div class="link-wizard-actions">
+      <button type="button" id="link-back" class="secondary" hidden>Back</button>
+      <span id="link-first-spacer"></span>
+      <button type="button" id="link-next">Continue</button>
+      <button type="submit" id="link-save" hidden>Save draft</button>
     </div>
-
-    <p class="link-manager-note">
-      A destination is only required before activating a record.
-    </p>
-
-    <button type="submit">Save configuration</button>
   </form>
   {% else %}
-  <p class="link-manager-note">
-    No eligible domain is available. Add or verify a domain in Managed Domains.
-  </p>
+  <p class="link-wizard-muted">Add or verify a domain under <a href="/domains">Domains</a> before creating a link.</p>
   {% endif %}
 </section>
+<script>
+(function () {
+  const form = document.getElementById('link-create-form');
+  if (!form) return;
+  let step = 1;
+  const name = document.getElementById('training-link-name');
+  const host = document.getElementById('training-link-hostname');
+  const path = document.getElementById('training-link-path');
+  const error = document.getElementById('link-wizard-error');
+  const next = document.getElementById('link-next');
+  const back = document.getElementById('link-back');
+  const save = document.getElementById('link-save');
+  const preview = document.getElementById('link-address-preview');
+  function address() { return 'https://' + host.value + '/' + path.value.trim().replace(/^\\/+/, ''); }
+  function update() {
+    document.querySelectorAll('.link-wizard-step').forEach(el => { el.hidden = Number(el.dataset.step) !== step; });
+    document.querySelectorAll('.link-wizard-progress span').forEach((el,i) => el.classList.toggle('current', i < step));
+    document.getElementById('link-step-label').textContent = 'Step ' + step + ' of 3';
+    back.hidden = step === 1;
+    document.getElementById('link-first-spacer').hidden = step !== 1;
+    next.hidden = step === 3;
+    save.hidden = step !== 3;
+    preview.textContent = address();
+    document.getElementById('link-review-name').textContent = name.value.trim();
+    document.getElementById('link-review-url').textContent = address();
+    error.hidden = true;
+  }
+  next.addEventListener('click', () => {
+    if (step === 1 && (![name,host,path].every(el => el.reportValidity()) || path.value.includes('//') || path.value.includes('..'))) {
+      error.textContent = 'Enter a valid name and link address.';
+      error.hidden = false;
+      return;
+    }
+    step = Math.min(3,step+1); update();
+  });
+  back.addEventListener('click', () => { step = Math.max(1,step-1); update(); });
+  [name,host,path].forEach(el => el.addEventListener('input', update));
+  form.addEventListener('submit', ev => {
+    if (![name,host,path].every(el => el.reportValidity())) { ev.preventDefault(); step = 1; update(); }
+  });
+  update();
+})();
+</script>
 
 <section class="link-manager-panel">
   <h2>Training links</h2>
