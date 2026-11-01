@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 from bb.domains import normalize_domain
+from bb.simulation_link_destinations import validate_approved_destination
 from bb.simulation_links import (
     new_link_id,
     normalize_path,
@@ -65,12 +66,15 @@ def create_link(
     path,
     destination,
     allowed_hostnames,
+    approved_destination_hostnames=(),
     expires_at=None,
 ):
     name = validate_name(name)
     hostname = normalize_domain(hostname)
     path = normalize_path(path)
-    destination = validate_destination(destination)
+    destination = validate_approved_destination(
+        destination, approved_destination_hostnames
+    )
 
     approved = {
         normalize_domain(item)

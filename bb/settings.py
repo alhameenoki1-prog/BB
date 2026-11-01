@@ -33,6 +33,14 @@ class Settings:
         self.home = Path(get("BB_HOME") or PROJECT_ROOT / "data" / "bb").expanduser().resolve()
         self.base_url = get("BB_BASE_URL", "http://localhost:8000").rstrip("/")
         self.secure_cookies = self.base_url.startswith("https://")
+        # Operator-controlled destination approvals; deny by default.
+        self.training_destination_hostnames = tuple(
+            sorted({
+                hostname.strip().lower().rstrip(".")
+                for hostname in get("BB_TRAINING_DESTINATIONS").split(",")
+                if hostname.strip()
+            })
+        )
         self.admin_email = get("BB_ADMIN_EMAIL").strip().lower()
         self.admin_password = get("BB_ADMIN_PASSWORD")
         self.gmail_client_id = get("GMAIL_CLIENT_ID").strip()

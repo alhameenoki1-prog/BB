@@ -86,6 +86,77 @@
   </div>
 </div>
 
+
+<section class="link-manager-panel">
+  <h2>Create training link configuration</h2>
+  <p class="link-manager-note">
+    Save an authorized training configuration.
+    Saving does not publish a link or enable visitor tracking.
+  </p>
+
+  {% if approved_destination_hostnames and eligible_link_hostnames %}
+  <form action="/links/create" method="post">
+    <div class="link-manager-grid">
+      <div>
+        <label for="training-link-name">Name</label>
+        <input id="training-link-name" name="name"
+               type="text" maxlength="120" required
+               placeholder="Security awareness lesson">
+      </div>
+
+      <div>
+        <label for="training-link-hostname">Hostname</label>
+        <select id="training-link-hostname" name="hostname" required>
+          {% for hostname in eligible_link_hostnames %}
+          <option value="{{ hostname }}">{{ hostname }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div>
+        <label for="training-link-path">Path</label>
+        <input id="training-link-path" name="path"
+               type="text" required
+               placeholder="awareness-lesson">
+      </div>
+
+      <div>
+        <label for="training-link-destination">Approved destination</label>
+        <select id="training-link-destination" name="destination" required>
+          {% for hostname in approved_destination_hostnames %}
+          <option value="https://{{ hostname }}/">
+            https://{{ hostname }}/
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div>
+        <label for="training-link-expiration">
+          Expiration (optional)
+        </label>
+        <input id="training-link-expiration" name="expires_at"
+               type="text"
+               placeholder="2027-01-31T23:59:00+00:00">
+      </div>
+    </div>
+
+    <p class="link-manager-note">
+      Destinations must be approved by the administrator.
+      Expiration must be a future ISO 8601 timestamp with a timezone.
+    </p>
+
+    <button type="submit">Save configuration</button>
+  </form>
+  {% else %}
+  <p class="link-manager-note">
+    Configuration creation is unavailable until an administrator
+    approves at least one training destination and an eligible
+    hostname is available.
+  </p>
+  {% endif %}
+</section>
+
 <section class="link-manager-panel">
   <h2>Training links</h2>
   <p class="link-manager-note">
@@ -102,6 +173,7 @@
           <th>Destination</th>
           <th>Status</th>
           <th>Expiration</th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -118,10 +190,26 @@
             {% endif %}
           </td>
           <td>{{ link.expires_at or "No expiration" }}</td>
+          <td>
+            <form action="/links/status" method="post">
+              <input type="hidden" name="link_id" value="{{ link.id }}">
+              {% if link.status == "active" %}
+                <input type="hidden" name="status" value="disabled">
+                <button type="submit" class="small secondary">
+                  Disable
+                </button>
+              {% else %}
+                <input type="hidden" name="status" value="active">
+                <button type="submit" class="small secondary">
+                  Enable
+                </button>
+              {% endif %}
+            </form>
+          </td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="5" class="link-manager-empty">
+          <td colspan="6" class="link-manager-empty">
             No training links have been configured yet.
           </td>
         </tr>
