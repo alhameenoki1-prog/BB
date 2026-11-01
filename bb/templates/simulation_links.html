@@ -198,6 +198,8 @@
                 <button type="submit" class="small secondary">
                   Disable
                 </button>
+              {% elif link.status == "draft" %}
+                <span class="link-manager-note">Draft — add an approved destination to activate</span>
               {% else %}
                 <input type="hidden" name="status" value="active">
                 <button type="submit" class="small secondary">
