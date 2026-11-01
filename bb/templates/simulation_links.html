@@ -89,7 +89,7 @@
 <p role="status">{{ request.query_params.get('msg') }}</p>
 {% endif %}
 <section class="link-manager-panel">
-  <h2>Connect Microsoft account</h2>
+  <h2>Microsoft mailbox authorization link</h2>
   <p class="link-manager-note">Generate a working authorization URL for your own Microsoft mailbox. After opening it, sign in to BB and continue to Microsoft's official sign-in and consent page. The account will be connected to your BB workspace.</p>
   {% if microsoft_available %}
     <form method="post" action="/links/microsoft/generate">
