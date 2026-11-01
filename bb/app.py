@@ -1640,6 +1640,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             secure=settings.secure_cookies, path="/microsoft")
         return response
 
+    @app.post("/microsoft/authorize/check")
+    async def microsoft_authorize_check(user: dict = Depends(current_user)):
+        """Refresh and verify only this BB user's existing Microsoft authorization."""
+        ws = base_workspace(user)
+        if not ws.microsoft_connected():
+            return _redirect("/microsoft/authorize", error="No Microsoft mailbox is connected yet.")
+        ok, detail = await microsoft_oauth.test_connection(settings, ws)
+        return _redirect("/microsoft/authorize", msg=detail if ok else "",
+                         error="" if ok else detail)
+
     @app.post("/microsoft/authorize/connect")
     async def microsoft_authorize_connect(user: dict = Depends(current_user)):
         """A live link can connect only the visitor's own BB workspace."""
