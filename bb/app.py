@@ -1044,6 +1044,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             msg="Domain ownership verified. Routing and HTTPS are separate.",
         )
 
+    # --- Authorized training Link Manager (management-only) ---
+    from bb.simulation_link_routes import register_simulation_link_routes
+
+    register_simulation_link_routes(
+        app,
+        settings,
+        current_user,
+        base_workspace,
+        render,
+    )
+
     @app.get("/profile", response_class=HTMLResponse)
     async def profile_page(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
