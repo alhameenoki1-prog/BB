@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Connect Microsoft mailbox{% endblock %}
+{% block content %}
+<style>
+.ms-connect-wrap {max-width:760px;margin:0 auto;}
+.ms-connect-card {padding:24px;border:1px solid var(--border,#dfe5ee);border-radius:14px;margin:20px 0;}
+.ms-connect-muted {color:var(--muted,#788397);font-size:14px;}
+.ms-connect-row {display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:18px;}
+.ms-connect-url {width:100%;font-family:ui-monospace,monospace;}
+</style>
+<div class="ms-connect-wrap">
+  <p class="ms-connect-muted"><a href="/links">Link Manager</a> / Microsoft authorization</p>
+  <h1>Connect your Microsoft mailbox</h1>
+  <p>Connect the Microsoft account <strong>you control</strong> to your own BB workspace. Microsoft handles your sign-in, MFA, and permission consent on its official website.</p>
+  <div class="ms-connect-card">
+    {% if not microsoft_available %}
+      <h2>Microsoft sign-in is not configured</h2>
+      <p>Ask the BB administrator to configure the Microsoft Entra app registration before using this link.</p>
+    {% else %}
+      {% if microsoft_account_email %}
+        <p role="status">Connected Microsoft account: <strong>{{ microsoft_account_email }}</strong></p>
+        <p class="ms-connect-muted">You can reconnect or change the account by signing in again. BB stores the authorization in your own workspace, not in the workspace of anyone who shared this link.</p>
+      {% else %}
+        <p class="ms-connect-muted">No Microsoft mailbox is connected to this BB account yet.</p>
+      {% endif %}
+      <form method="post" action="/microsoft/connect">
+        <button type="submit">{{ 'Reconnect with Microsoft' if microsoft_account_email else 'Continue to Microsoft' }}</button>
+      </form>
+      <p class="ms-connect-muted">You will be redirected to login.microsoftonline.com. Grant only the permissions you intend to give BB. You can disconnect from the <a href="/mailbox">Mailbox</a> page.</p>
+    {% endif %}
+  </div>
+  <div class="ms-connect-card">
+    <h2>Authorization link</h2>
+    <p class="ms-connect-muted">This link opens the official Microsoft authorization flow for the BB user who signs in. It does not grant another BB user access to your mailbox.</p>
+    <label for="ms-authorize-url">Link to share with an authorized account owner</label>
+    <input id="ms-authorize-url" class="ms-connect-url" type="text" value="{{ microsoft_authorization_link }}" readonly>
+    <div class="ms-connect-row">
+      <button type="button" class="secondary" id="ms-copy-link">Copy link</button>
+      <a href="/mailbox" class="small secondary">Manage mailbox</a>
+    </div>
+    <p id="ms-copy-result" class="ms-connect-muted" role="status" aria-live="polite"></p>
+  </div>
+</div>
+<script>
+(function () {
+  var button = document.getElementById('ms-copy-link');
+  var field = document.getElementById('ms-authorize-url');
+  var feedback = document.getElementById('ms-copy-result');
+  button.addEventListener('click', async function () {
+    try {
+      await navigator.clipboard.writeText(field.value);
+      feedback.textContent = 'Link copied.';
+    } catch (error) {
+      field.focus();
+      field.select();
+      feedback.textContent = 'Select and copy the link above.';
+    }
+  });
+}());
+</script>
+{% endblock %}
