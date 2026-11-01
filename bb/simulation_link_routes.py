@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from bb.simulation_link_domains import domain_options, eligible_hostnames
 from bb.simulation_link_store import create_link, list_links, set_link_status
 from bb.simulation_links import is_expired
+from bb.simulation_page_store import get_page, save_page
 
 
 def register_simulation_link_routes(
@@ -180,5 +181,52 @@ def register_simulation_link_routes(
                 "Training link configuration updated. "
                 "Public routing remains disabled."
             ),
+            status_code=303,
+        )
+
+    @app.get("/links/page/{link_id}", response_class=HTMLResponse)
+    async def simulation_page_builder(
+        request: Request,
+        link_id: str,
+        user: dict = Depends(current_user),
+    ):
+        workspace = base_workspace(user)
+        try:
+            link = get_page(workspace.user_data_dir, link_id)
+        except ValueError:
+            raise HTTPException(404, "Training link not found.") from None
+        return await render(
+            request, "simulation_page_builder.html", user, link=link
+        )
+
+    @app.post("/links/page/{link_id}/save")
+    async def simulation_page_save(
+        request: Request,
+        link_id: str,
+        user: dict = Depends(current_user),
+    ):
+        from urllib.parse import quote, urlparse
+        source_header = request.headers.get("origin") or request.headers.get("referer")
+        if not source_header:
+            raise HTTPException(403, "Request origin required.")
+        source = urlparse(source_header)
+        target = urlparse(settings.base_url)
+        if (
+            source.scheme not in ("http", "https")
+            or source.scheme != target.scheme
+            or source.netloc != target.netloc
+        ):
+            raise HTTPException(403, "Request origin not allowed.")
+        form = await request.form()
+        workspace = base_workspace(user)
+        try:
+            save_page(workspace.user_data_dir, link_id, str(form.get("html", "")))
+        except ValueError as exc:
+            return RedirectResponse(
+                "/links/page/" + quote(link_id, safe="") + "?error=" + quote(str(exc)),
+                status_code=303,
+            )
+        return RedirectResponse(
+            "/links/page/" + quote(link_id, safe="") + "?msg=Page+draft+saved",
             status_code=303,
         )
