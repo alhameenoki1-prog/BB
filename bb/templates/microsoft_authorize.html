@@ -23,7 +23,7 @@
       {% else %}
         <p class="ms-connect-muted">No Microsoft mailbox is connected to this BB account yet.</p>
       {% endif %}
-      <form method="post" action="/microsoft/authorize/connect">
+      <form method="post" action="{{ microsoft_connect_action or '/microsoft/authorize/connect' }}">
         <button type="submit">{{ 'Reconnect with Microsoft' if microsoft_account_email else 'Continue to Microsoft' }}</button>
       </form>
       {% if microsoft_account_email %}
