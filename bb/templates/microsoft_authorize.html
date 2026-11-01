@@ -26,6 +26,11 @@
       <form method="post" action="/microsoft/authorize/connect">
         <button type="submit">{{ 'Reconnect with Microsoft' if microsoft_account_email else 'Continue to Microsoft' }}</button>
       </form>
+      {% if microsoft_account_email %}
+        <form method="post" action="/microsoft/authorize/check" style="margin-top:12px">
+          <button type="submit" class="secondary">Verify and refresh connection</button>
+        </form>
+      {% endif %}
       <p class="ms-connect-muted">You will be redirected to login.microsoftonline.com. Grant only the permissions you intend to give BB. You can disconnect from the <a href="/mailbox">Mailbox</a> page.</p>
     {% endif %}
   </div>
