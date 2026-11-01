@@ -102,3 +102,34 @@ def test_missing_microsoft_configuration_disables_authorize_button(tmp_path, mon
         assert page.status_code == 200
         assert "Microsoft sign-in is not configured" in page.text
         assert 'action="/microsoft/authorize/connect"' not in page.text
+
+
+def test_owner_can_verify_rotate_and_revoke_microsoft_connection(client, monkeypatch):
+    client.post("/login", data=ADMIN)
+    user = Accounts(client.settings.accounts_db).get_by_email(ADMIN["email"])
+    ws = Workspace(client.settings, user).ensure()
+    microsoft_oauth.save_token(ws, {"refresh_token": "rt-original"}, "me@outlook.com")
+
+    async def refresh(settings, token):
+        assert token == "rt-original"
+        return {"refresh_token": "rt-rotated", "access_token": "at"}
+
+    async def email(token):
+        assert token == "at"
+        return "me@outlook.com"
+
+    monkeypatch.setattr(microsoft_oauth, "refresh_access_token", refresh)
+    monkeypatch.setattr(microsoft_oauth, "account_email", email)
+    r = client.post("/microsoft/authorize/check")
+    assert r.status_code == 303
+    assert "Connected%20as%20me%40outlook.com" in r.headers["location"]
+    assert json.loads(ws.microsoft_token_file.read_text())["refresh_token"] == "rt-rotated"
+    assert "Verify and refresh connection" in client.get("/microsoft/authorize").text
+
+    async def revoked(settings, token):
+        raise RuntimeError("Microsoft refused the authorization.")
+
+    monkeypatch.setattr(microsoft_oauth, "refresh_access_token", revoked)
+    r = client.post("/microsoft/authorize/check")
+    assert "error=" in r.headers["location"]
+    assert json.loads(ws.microsoft_token_file.read_text())["refresh_token"] == "rt-rotated"
