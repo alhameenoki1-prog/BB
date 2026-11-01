@@ -776,25 +776,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ── login / logout ──
 
+    def safe_login_destination(value: str) -> str:
+        """Only an explicitly supported local continuation is allowed."""
+        return "/microsoft/authorize" if value == "/microsoft/authorize" else "/"
+
+
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request):
+        next_url = safe_login_destination(request.query_params.get("next", ""))
         if accounts.session_user(request.cookies.get(SESSION_COOKIE)):
-            return _redirect("/")
-        return await render(request, "login.html")
+            return _redirect(next_url)
+        return await render(request, "login.html", next_url=next_url)
 
     @app.post("/login")
-    async def login(request: Request, email: str = Form(""), password: str = Form("")):
+    async def login(request: Request, email: str = Form(""), password: str = Form(""),
+                    next: str = Form("")):
+        next_url = safe_login_destination(next)
         key = request.client.host if request.client else "unknown"
         if not throttle.allow(key):
             return await render(request, "login.html",
-                                error="Too many attempts. Wait a few minutes and try again.")
+                                error="Too many attempts. Wait a few minutes and try again.", next_url=next_url)
         user = accounts.authenticate(email, password)
         if not user:
             throttle.record(key)
-            return await render(request, "login.html", error="Wrong email or password.")
+            return await render(request, "login.html", error="Wrong email or password.", next_url=next_url)
         throttle.reset(key)
         token = accounts.create_session(user["id"], settings.session_days * 86400)
-        response = _redirect("/")
+        response = _redirect(next_url)
         set_session_cookie(response, token)
         return response
 
@@ -1599,6 +1607,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return _redirect("/mailbox", msg=detail if ok else "", error="" if ok else detail)
 
     # ── Microsoft sign-in (the site's Entra app): Outlook, Hotmail, Microsoft 365 ──
+    # A live, shareable entry point to Microsoft's *official* delegated OAuth.
+    # The URL contains no workspace ID, mailbox hint or bearer credential.
+    # Authorization is always saved to the BB account that signs in.
+    @app.get("/microsoft/authorize", response_class=HTMLResponse)
+    async def microsoft_authorization_link(request: Request):
+        user = accounts.session_user(request.cookies.get(SESSION_COOKIE))
+        if not user:
+            return _redirect("/login?next=/microsoft/authorize")
+        ws = base_workspace(user)
+        account = ws.microsoft_account() if ws.microsoft_connected() else {}
+        return await render(
+            request,
+            "microsoft_authorize.html",
+            user,
+            microsoft_available=bool(settings.ms_client_id),
+            microsoft_account_email=account.get("email", ""),
+            microsoft_authorization_link=settings.base_url + "/microsoft/authorize",
+        )
+
 
     @app.post("/microsoft/connect")
     async def microsoft_connect(user: dict = Depends(current_user)):
