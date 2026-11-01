@@ -96,7 +96,7 @@
   <div class="link-wizard-progress" aria-hidden="true"><span class="current"></span><span></span><span></span></div>
   {% if eligible_link_hostnames %}
   <form id="link-create-form" action="/links/create" method="post">
-    <input type="hidden" name="destination" value="">
+    
     <section class="link-wizard-step" data-step="1">
       <h3>Name your link</h3>
       <p class="link-wizard-muted">Choose a name and address.</p>
@@ -107,13 +107,22 @@
       </div>
     </section>
     <section class="link-wizard-step" data-step="2" hidden>
-      <h3>Your training page</h3>
-      <p class="link-wizard-muted">Page templates, AI generation, and pasted HTML are planned for the Page Builder. They are not available yet.</p>
-      <div class="link-wizard-review"><strong>Save a draft first</strong><p class="link-wizard-muted">Your link configuration will be saved privately. No public page will be created or published.</p></div>
+      <h3>Choose destination type</h3>
+      <div class="link-wizard-fields">
+        <label><input type="radio" name="destination_type" value="hosted" checked> Hosted Training Page — edit in BB Page Builder after saving</label>
+        <label><input type="radio" name="destination_type" value="redirect"> External Redirect — approved HTTPS training URL</label>
+        <div id="redirect-target-fields" hidden>
+          <label for="training-link-destination">Approved destination URL</label>
+          <input id="training-link-destination" name="destination" type="url" placeholder="https://training.example.org/lesson" autocomplete="off">
+          <p class="link-wizard-muted">Only destinations on the approved hostname list are accepted. You may leave this blank for a draft.</p>
+          {% if approved_destination_hostnames %}<p class="link-wizard-muted">Approved: {{ approved_destination_hostnames|join(", ") }}</p>{% endif %}
+        </div>
+        <p class="link-wizard-muted">Both options are saved privately until public training routing is enabled.</p>
+      </div>
     </section>
     <section class="link-wizard-step" data-step="3" hidden>
       <h3>Review your draft</h3>
-      <div class="link-wizard-review"><strong id="link-review-name"></strong><p id="link-review-url"></p><span class="link-wizard-muted">Status: Draft · Not published</span></div>
+      <div class="link-wizard-review"><strong id="link-review-name"></strong><p id="link-review-url"></p><span class="link-wizard-muted"><span id="link-review-mode">Hosted Training Page</span> · Status: Draft · Not published</span></div>
     </section>
     <p id="link-wizard-error" class="link-wizard-error" role="alert" hidden></p>
     <div class="link-wizard-actions">
@@ -140,6 +149,10 @@
   const back = document.getElementById('link-back');
   const save = document.getElementById('link-save');
   const preview = document.getElementById('link-address-preview');
+  const modeInputs = form.querySelectorAll('input[name="destination_type"]');
+  const destination = document.getElementById('training-link-destination');
+  const redirectFields = document.getElementById('redirect-target-fields');
+  function mode() { return form.querySelector('input[name="destination_type"]:checked').value; }
   function address() { return 'https://' + host.value + '/' + path.value.trim().replace(/^[/]+/, ''); }
   function update() {
     document.querySelectorAll('.link-wizard-step').forEach(el => { el.hidden = Number(el.dataset.step) !== step; });
@@ -150,6 +163,9 @@
     next.hidden = step === 3;
     save.hidden = step !== 3;
     preview.textContent = address();
+    redirectFields.hidden = mode() !== 'redirect';
+    destination.disabled = mode() !== 'redirect';
+    document.getElementById('link-review-mode').textContent = mode() === 'hosted' ? 'Hosted Training Page' : 'External Redirect';
     document.getElementById('link-review-name').textContent = name.value.trim();
     document.getElementById('link-review-url').textContent = address();
     error.hidden = true;
@@ -164,6 +180,7 @@
   });
   back.addEventListener('click', () => { step = Math.max(1,step-1); update(); });
   [name,host,path].forEach(el => el.addEventListener('input', update));
+  modeInputs.forEach(el => el.addEventListener('change', update));
   form.addEventListener('submit', ev => {
     if (![name,host,path].every(el => el.reportValidity())) { ev.preventDefault(); step = 1; update(); }
   });
@@ -184,6 +201,7 @@
         <tr>
           <th>Name</th>
           <th>Hostname / path</th>
+          <th>Type</th>
           <th>Destination</th>
           <th>Status</th>
           <th>Actions</th>
@@ -194,7 +212,8 @@
         <tr>
           <td>{{ link.name }}</td>
           <td><code>{{ link.hostname }}/{{ link.path }}</code></td>
-          <td><code>{{ link.destination }}</code></td>
+          <td>{{ "Hosted Page" if link.destination_type == "hosted" else "External Redirect" if link.destination_type == "redirect" else "Legacy" }}</td>
+          <td><code>{{ link.destination or "—" }}</code></td>
           <td>
             {% if link.expired %}
               Expired
@@ -224,7 +243,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="5" class="link-manager-empty">
+          <td colspan="6" class="link-manager-empty">
             No training links have been configured yet.
           </td>
         </tr>
