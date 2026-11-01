@@ -3,6 +3,7 @@
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from bb.microsoft_authorization_links import generate_link, get_link, revoke_link
 from bb.simulation_link_domains import domain_options, eligible_hostnames
 from bb.simulation_link_store import create_link, list_links, set_link_status
 from bb.simulation_links import is_expired
@@ -18,6 +19,38 @@ def register_simulation_link_routes(
 ):
     """Register authenticated Link Manager management routes."""
 
+    def require_same_origin(request):
+        from urllib.parse import urlparse
+        source = request.headers.get("origin") or request.headers.get("referer")
+        if not source:
+            raise HTTPException(403, "Request origin required.")
+        a, b = urlparse(source), urlparse(settings.base_url)
+        if a.scheme != b.scheme or a.netloc != b.netloc or a.scheme not in ("http", "https"):
+            raise HTTPException(403, "Request origin not allowed.")
+
+    @app.post("/links/microsoft/generate")
+    async def generate_microsoft_link(request: Request, user: dict = Depends(current_user)):
+        """Generate a real Microsoft OAuth entry URL scoped to this BB owner."""
+        from urllib.parse import quote
+        require_same_origin(request)
+        if not getattr(settings, "ms_client_id", ""):
+            return RedirectResponse(
+                "/links?error=" + quote("Configure Microsoft sign-in before generating a link."),
+                status_code=303,
+            )
+        workspace = base_workspace(user)
+        generate_link(workspace.user_data_dir)
+        return RedirectResponse("/links?msg=" + quote("Microsoft authorization link generated."), status_code=303)
+
+    @app.post("/links/microsoft/revoke")
+    async def revoke_microsoft_link(request: Request, user: dict = Depends(current_user)):
+        """Disable a generated URL; leave existing Microsoft consent intact."""
+        from urllib.parse import quote
+        require_same_origin(request)
+        revoke_link(base_workspace(user).user_data_dir)
+        return RedirectResponse("/links?msg=" + quote("Microsoft authorization link revoked."), status_code=303)
+
+
     @app.get("/links", response_class=HTMLResponse)
     async def simulation_links_page(
         request: Request,
@@ -25,6 +58,7 @@ def register_simulation_link_routes(
     ):
         workspace = base_workspace(user)
         records = list_links(workspace.user_data_dir)
+        microsoft_link_record = get_link(workspace.user_data_dir)
 
         links = []
 
@@ -52,6 +86,14 @@ def register_simulation_link_routes(
             user,
             links=links,
             active_count=active_count,
+            microsoft_generated_link=(
+                settings.base_url + "/microsoft/authorize/l/" + microsoft_link_record["token"]
+                if microsoft_link_record else ""
+            ),
+            microsoft_link_expires_at=(
+                microsoft_link_record["expires_at"] if microsoft_link_record else ""
+            ),
+            microsoft_available=bool(getattr(settings, "ms_client_id", "")),
             domain_options=domain_options(
                 workspace.user_data_dir,
                 settings.base_url,
