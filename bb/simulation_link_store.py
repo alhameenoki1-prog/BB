@@ -147,7 +147,7 @@ def set_link_status(
     *,
     approved_destination_hostnames=(),
 ):
-    if status not in ("active", "disabled"):
+    if status not in ("active", "disabled", "draft"):
         raise ValueError("Unsupported link status.")
 
     with workspace_file_lock(user_data_dir, 'simulation_links.json'):
