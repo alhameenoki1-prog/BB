@@ -955,6 +955,11 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
 - Email 2: Follow-up 3 days later. Different angle, one concrete proof point. {self._length_rule}.
 - Email 3: Break-up email 4 days after that. Under 40 words. Gracious, not guilt-tripping."""
 
+        merge_variable_rule = ("- Do NOT use {{company}} or {{title}} anywhere: the recipient\'s company is never named. "
+            "Email 1 must still read as written for people in this line of work (use the segment above).") if self.inquiry else (
+            "- Use {{company}} and {{title}} as merge variables where natural — every email\n"
+            "  must use at least one, and email 1 must reference something specific to\n"
+            "  these prospects\' industry or role (use the notes above).")
         prompt += f"""
 
 Write a 3-email {'enquiry' if self.inquiry else 'cold outreach'} sequence for people like these:
@@ -965,12 +970,7 @@ Requirements:
 - Every email opens with the greeting line "{self.greeting_word} {{{{first_name}}}}," on its
   own line, then a blank line. Use {{{{first_name}}}} ONLY there (it is swapped for
   "there" or the team when a name is unknown).
-{("- Do NOT use {{company}} or {{title}} anywhere: the recipient's company is never named. "
-   "Email 1 must still read as written for people in this line of work (use the segment above).")
-  if self.inquiry else
-  "- Use {{company}} and {{title}} as merge variables where natural — every email\n"
-  "  must use at least one, and email 1 must reference something specific to\n"
-  "  these prospects' industry or role (use the notes above)."}
+{merge_variable_rule}
 - {"Write as the customer, never as a seller. Sign each email off with " + self._persona_first + " alone on its last line." if self.inquiry else "Never be pushy or salesy."}
 {self._subject_rule}
 - Follow every rule above. No exceptions.
