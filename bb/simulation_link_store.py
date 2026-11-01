@@ -69,11 +69,16 @@ def create_link(
     allowed_hostnames,
     approved_destination_hostnames=(),
     expires_at=None,
-    destination_type="hosted",
+    destination_type=None,
 ):
     name = validate_name(name)
     hostname = normalize_domain(hostname)
     path = normalize_path(path)
+    # Calls predating the wizard passed only a destination URL. Keep their
+    # validated configuration behaviour while new wizard records stay drafts.
+    legacy_record = destination_type is None
+    if destination_type is None:
+        destination_type = "redirect" if str(destination or "").strip() else "hosted"
     if destination_type not in ("hosted", "redirect"):
         raise ValueError("Choose Hosted Page or External Redirect.")
     # Redirect targets must be explicitly approved; hosted pages remain drafts.
@@ -83,6 +88,8 @@ def create_link(
             destination, approved_destination_hostnames
         )
     elif destination_type == "hosted":
+        if destination:
+            raise ValueError("Hosted training pages cannot have a redirect destination.")
         destination = ""
 
     approved = {
@@ -127,7 +134,7 @@ def create_link(
             "path": path,
             "destination": destination,
             "destination_type": destination_type,
-            "status": "draft",
+            "status": "active" if legacy_record and destination else "draft",
             "created_at": utc_now(),
             "updated_at": utc_now(),
             "expires_at": expires_at,
