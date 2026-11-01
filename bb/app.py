@@ -1627,6 +1627,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
 
+    def begin_microsoft_authorization(user: dict):
+        """Begin the official OAuth flow for the signed-in user's own workspace."""
+        if not settings.ms_client_id:
+            return _redirect("/microsoft/authorize", error="Microsoft sign-in is not configured.")
+        nonce = secrets.token_urlsafe(16)
+        state = microsoft_oauth.sign_state(settings.secret_key(), user["id"], nonce)
+        ws = base_workspace(user)
+        hint = ws.microsoft_account().get("email", "") or ws.profile().get("email", "")
+        response = RedirectResponse(microsoft_oauth.auth_url(settings, state, login_hint=hint), status_code=303)
+        response.set_cookie(MS_NONCE_COOKIE, nonce, max_age=600, httponly=True, samesite="lax",
+                            secure=settings.secure_cookies, path="/microsoft")
+        return response
+
+    @app.post("/microsoft/authorize/connect")
+    async def microsoft_authorize_connect(user: dict = Depends(current_user)):
+        """A live link can connect only the visitor's own BB workspace."""
+        return begin_microsoft_authorization(user)
+
     @app.post("/microsoft/connect")
     async def microsoft_connect(user: dict = Depends(current_user)):
         if not workspace_for(user).is_main:
@@ -1634,14 +1652,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not settings.ms_client_id:
             return _redirect("/mailbox", error="The site has no Microsoft app registration configured yet. "
                                                "Use the Microsoft 365 admin app or your mailbox's SMTP settings instead.")
-        nonce = secrets.token_urlsafe(16)
-        state = microsoft_oauth.sign_state(settings.secret_key(), user["id"], nonce)
-        ws = workspace_for(user)
-        hint = ws.microsoft_account().get("email", "") or ws.profile().get("email", "")
-        response = RedirectResponse(microsoft_oauth.auth_url(settings, state, login_hint=hint), status_code=303)
-        response.set_cookie(MS_NONCE_COOKIE, nonce, max_age=600, httponly=True, samesite="lax",
-                            secure=settings.secure_cookies, path="/microsoft")
-        return response
+        return begin_microsoft_authorization(user)
 
     @app.get("/microsoft/callback")
     async def microsoft_callback(request: Request, user: dict = Depends(current_user),
