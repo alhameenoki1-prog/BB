@@ -17,7 +17,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # The BB runtime uses Unix process management and macOS/Linux services.
+        # Windows compatibility is tracked separately; do not gate supported platforms on it.
+        os: [ubuntu-latest, macos-latest]
         python: ["3.11", "3.12"]
     runs-on: ${{ matrix.os }}
     steps:
