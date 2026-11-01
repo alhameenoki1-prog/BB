@@ -119,7 +119,7 @@ def register_simulation_link_routes(
 
         return RedirectResponse(
             "/links?msg=" + quote(
-                "Training link configuration saved. "
+                "Training link draft saved. "
                 "Public routing remains disabled."
             ),
             status_code=303,
