@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.page-builder { max-width:1100px; margin:0 auto; }
+.page-builder-head { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:22px; }
+.page-builder-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:18px; }
+.page-builder-panel { border:1px solid var(--border,#dfe5ee); border-radius:14px; padding:20px; min-width:0; }
+.page-builder-panel textarea { width:100%; min-height:300px; font-family:ui-monospace,monospace; font-size:13px; }
+.page-builder-panel iframe { width:100%; height:440px; background:white; border:1px solid #dfe5ee; border-radius:10px; }
+.page-builder-muted { color:var(--muted,#788397); font-size:13px; }
+.page-builder-actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+@media(max-width:850px){ .page-builder-grid { grid-template-columns:1fr; } }
+</style>
+<div class="page-builder">
+  <div class="page-builder-head">
+    <div><a href="/links" class="page-builder-muted">← Link Manager</a><h1 style="margin:8px 0">Page Builder</h1><p class="page-builder-muted">Edit the training page for {{ link.name }}.</p></div>
+    <span class="page-builder-muted">Draft only · Not published</span>
+  </div>
+  {% if request.query_params.get('error') %}<p role="alert">{{ request.query_params.get('error') }}</p>{% endif %}
+  {% if request.query_params.get('msg') %}<p role="status">{{ request.query_params.get('msg') }}</p>{% endif %}
+  <div class="page-builder-grid">
+    <div class="page-builder-panel">
+      <h2 style="margin-top:0">Build your page</h2>
+      <label for="builder-mode">Start with</label>
+      <select id="builder-mode">
+        <option value="template">Training template</option>
+        <option value="paste">Paste HTML</option>
+        <option value="ai">AI prompt</option>
+      </select>
+      <div id="builder-ai" hidden>
+        <p class="page-builder-muted">Copy this prompt into your preferred AI tool, then paste its HTML below.</p>
+        <textarea id="builder-prompt" rows="4" style="min-height:110px;font-family:inherit">Create a standalone, responsive HTML/CSS security-awareness training page with a short lesson and a quiz. Include no password fields, authentication flows, external scripts, or trackers. Return only HTML.</textarea>
+        <button type="button" id="builder-copy" class="secondary">Copy prompt</button>
+      </div>
+      <form action="/links/page/{{ link.id }}/save" method="post" id="builder-form">
+        <label for="builder-html">Page HTML</label>
+        <textarea id="builder-html" name="html" maxlength="100000" spellcheck="false">{{ link.page_html or '' }}</textarea>
+        <p class="page-builder-muted">Preview runs in an isolated frame with scripts, forms, and network requests blocked. Saved HTML is a private draft, not a public page.</p>
+        <div class="page-builder-actions">
+          <button type="button" id="builder-preview" class="secondary">Preview</button>
+          <button type="submit">Save draft</button>
+        </div>
+      </form>
+    </div>
+    <div class="page-builder-panel">
+      <h2 style="margin-top:0">Preview</h2>
+      <iframe id="builder-frame" title="Isolated training page preview" sandbox="" referrerpolicy="no-referrer"></iframe>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  const mode = document.getElementById('builder-mode');
+  const editor = document.getElementById('builder-html');
+  const frame = document.getElementById('builder-frame');
+  const ai = document.getElementById('builder-ai');
+  const starter = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font:16px system-ui;max-width:680px;margin:10vh auto;padding:24px;color:#1f2937}h1{font-size:2rem}section{background:#f3f4f6;padding:20px;border-radius:12px}</style></head><body><h1>Security awareness</h1><section><p>Learn to recognize suspicious messages and verify unexpected requests through trusted channels.</p><h2>Quick check</h2><p>Before opening a link, inspect the sender and destination.</p></section></body></html>';
+  const policy = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; font-src data:; form-action \'none\'; base-uri \'none\';">';
+  function preview() { frame.srcdoc = policy + editor.value; }
+  mode.addEventListener('change', () => {
+    ai.hidden = mode.value !== 'ai';
+    if (mode.value === 'template' && !editor.value.trim()) editor.value = starter;
+    preview();
+  });
+  document.getElementById('builder-preview').addEventListener('click', preview);
+  document.getElementById('builder-copy').addEventListener('click', () => {
+    const prompt = document.getElementById('builder-prompt');
+    prompt.select();
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(prompt.value).catch(() => {});
+  });
+  if (!editor.value.trim()) editor.value = starter;
+  preview();
+})();
+</script>
+{% endblock %}
