@@ -87,7 +87,7 @@ def register_simulation_link_routes(
             links=links,
             active_count=active_count,
             microsoft_generated_link=(
-                settings.base_url + "/microsoft/authorize/l/" + microsoft_link_record["token"]
+                settings.base_url + "/l/" + microsoft_link_record["token"]
                 if microsoft_link_record else ""
             ),
             microsoft_link_expires_at=(
