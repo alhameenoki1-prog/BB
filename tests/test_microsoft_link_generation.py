@@ -79,9 +79,11 @@ def test_owner_bound_login_and_official_microsoft_consent(client, monkeypatch):
     token = get_link(_admin_ws(client).user_data_dir)["token"]
     client.cookies.clear()
     public = client.get("/l/" + token)
-    assert public.status_code == 303
-    assert public.headers["location"] == "/login?next=/l/" + token
-    login_page = client.get(public.headers["location"])
+    assert public.status_code == 200
+    assert "Connect your Microsoft account to BB" in public.text
+    assert 'href="/login?next=/l/' + token + '"' in public.text
+    assert "Microsoft password" in public.text
+    login_page = client.get("/login?next=/l/" + token)
     assert f'name="next" value="/l/{token}"' in login_page.text
     # Another BB user must not be able to redeem an administrator's link.
     as_other = client.post("/login", data={**USER, "next": "/l/" + token})
