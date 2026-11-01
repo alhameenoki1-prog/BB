@@ -287,3 +287,27 @@ def test_http_reactivation_rejects_revoked_destination(environment, monkeypatch)
     assert response.status_code == 303
     assert "error=" in response.headers["location"]
     assert list_links(root / "alice")[0]["status"] == "disabled"
+
+
+def test_create_draft_without_destination(environment):
+    client, root = environment
+    response = create(client, destination="")
+    assert response.status_code == 303
+    record = list_links(root / "alice")[0]
+    assert record["status"] == "draft"
+    assert record["destination"] == ""
+
+
+def test_draft_activation_rejected_without_destination(environment):
+    client, root = environment
+    assert create(client, destination="").status_code == 303
+    record = list_links(root / "alice")[0]
+    response = client.post(
+        "/links/status",
+        data={"link_id": record["id"], "status": "active"},
+        headers=headers(),
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    assert list_links(root / "alice")[0]["status"] == "draft"
