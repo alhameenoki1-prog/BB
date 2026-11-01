@@ -39,7 +39,7 @@ def test_public_link_requires_bb_login_and_returns_to_authorization(client):
     assert "your own BB workspace" in page.text
     links_page = client.get("/links")
     assert "Microsoft mailbox authorization link" in links_page.text
-    assert 'href="/microsoft/authorize"' in links_page.text
+    assert 'action="/links/microsoft/generate"' in links_page.text
 
 
 def test_login_continuation_does_not_allow_open_redirect(client):
