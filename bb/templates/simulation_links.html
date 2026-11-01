@@ -1,0 +1,266 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.link-manager-head {
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:18px;
+  flex-wrap:wrap;
+  margin-bottom:24px;
+}
+.link-manager-head h1 { margin:0 0 8px; }
+.link-manager-head p { margin:0; color:var(--muted, #788397); }
+.link-manager-grid {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:14px;
+  margin-bottom:22px;
+}
+.link-manager-stat {
+  padding:20px;
+  border:1px solid var(--border, #dfe5ee);
+  border-radius:14px;
+  background:var(--card, transparent);
+}
+.link-manager-stat strong {
+  display:block;
+  font-size:28px;
+  margin-top:9px;
+}
+.link-manager-stat span { font-size:13px; opacity:.75; }
+.link-manager-panel {
+  border:1px solid var(--border, #dfe5ee);
+  border-radius:14px;
+  padding:22px;
+  margin-bottom:20px;
+}
+.link-manager-panel h2 { margin-top:0; }
+.link-manager-table-wrap { overflow-x:auto; }
+.link-manager-table {
+  width:100%;
+  border-collapse:collapse;
+  text-align:left;
+}
+.link-manager-table th,
+.link-manager-table td {
+  padding:13px 12px;
+  border-bottom:1px solid var(--border, #dfe5ee);
+  font-size:13px;
+  vertical-align:top;
+}
+.link-manager-table th { opacity:.7; }
+.link-manager-table code { overflow-wrap:anywhere; }
+.link-manager-note { font-size:13px; opacity:.75; }
+.link-manager-empty {
+  padding:32px 15px;
+  text-align:center;
+  opacity:.75;
+}
+@media(max-width:700px) {
+  .link-manager-grid { grid-template-columns:1fr; }
+  .link-manager-panel { padding:15px; }
+}
+</style>
+
+<div class="link-manager-head">
+  <div>
+    <h1>Link Manager</h1>
+    <p>Manage authorized training links, destinations, and expiration.</p>
+  </div>
+  <a href="/domains" class="small secondary">Manage domains</a>
+</div>
+
+<div class="link-manager-grid">
+  <div class="link-manager-stat">
+    <span>Total links</span>
+    <strong>{{ links|length }}</strong>
+  </div>
+  <div class="link-manager-stat">
+    <span>Active records</span>
+    <strong>{{ active_count }}</strong>
+  </div>
+  <div class="link-manager-stat">
+    <span>Eligible hostnames</span>
+    <strong>{{ domain_options|length }}</strong>
+  </div>
+</div>
+
+
+<section class="link-manager-panel">
+  <h2>Create training link configuration</h2>
+  <p class="link-manager-note">
+    Save an authorized training configuration.
+    Saving does not publish a link or enable visitor tracking.
+  </p>
+
+  {% if approved_destination_hostnames and eligible_link_hostnames %}
+  <form action="/links/create" method="post">
+    <div class="link-manager-grid">
+      <div>
+        <label for="training-link-name">Name</label>
+        <input id="training-link-name" name="name"
+               type="text" maxlength="120" required
+               placeholder="Security awareness lesson">
+      </div>
+
+      <div>
+        <label for="training-link-hostname">Hostname</label>
+        <select id="training-link-hostname" name="hostname" required>
+          {% for hostname in eligible_link_hostnames %}
+          <option value="{{ hostname }}">{{ hostname }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div>
+        <label for="training-link-path">Path</label>
+        <input id="training-link-path" name="path"
+               type="text" required
+               placeholder="awareness-lesson">
+      </div>
+
+      <div>
+        <label for="training-link-destination">Approved destination</label>
+        <select id="training-link-destination" name="destination" required>
+          {% for hostname in approved_destination_hostnames %}
+          <option value="https://{{ hostname }}/">
+            https://{{ hostname }}/
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div>
+        <label for="training-link-expiration">
+          Expiration (optional)
+        </label>
+        <input id="training-link-expiration" name="expires_at"
+               type="text"
+               placeholder="2027-01-31T23:59:00+00:00">
+      </div>
+    </div>
+
+    <p class="link-manager-note">
+      Destinations must be approved by the administrator.
+      Expiration must be a future ISO 8601 timestamp with a timezone.
+    </p>
+
+    <button type="submit">Save configuration</button>
+  </form>
+  {% else %}
+  <p class="link-manager-note">
+    Configuration creation is unavailable until an administrator
+    approves at least one training destination and an eligible
+    hostname is available.
+  </p>
+  {% endif %}
+</section>
+
+<section class="link-manager-panel">
+  <h2>Training links</h2>
+  <p class="link-manager-note">
+    This page displays saved link configurations.
+    Public link publication and visitor tracking are not enabled.
+  </p>
+
+  <div class="link-manager-table-wrap">
+    <table class="link-manager-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Hostname / path</th>
+          <th>Destination</th>
+          <th>Status</th>
+          <th>Expiration</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for link in links %}
+        <tr>
+          <td>{{ link.name }}</td>
+          <td><code>{{ link.hostname }}/{{ link.path }}</code></td>
+          <td><code>{{ link.destination }}</code></td>
+          <td>
+            {% if link.expired %}
+              Expired
+            {% else %}
+              {{ link.status|capitalize }}
+            {% endif %}
+          </td>
+          <td>{{ link.expires_at or "No expiration" }}</td>
+          <td>
+            <form action="/links/status" method="post">
+              <input type="hidden" name="link_id" value="{{ link.id }}">
+              {% if link.status == "active" %}
+                <input type="hidden" name="status" value="disabled">
+                <button type="submit" class="small secondary">
+                  Disable
+                </button>
+              {% else %}
+                <input type="hidden" name="status" value="active">
+                <button type="submit" class="small secondary">
+                  Enable
+                </button>
+              {% endif %}
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" class="link-manager-empty">
+            No training links have been configured yet.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="link-manager-panel">
+  <h2>Available domains</h2>
+  <p class="link-manager-note">
+    Domain ownership eligibility is separate from routing and HTTPS readiness.
+  </p>
+
+  <div class="link-manager-table-wrap">
+    <table class="link-manager-table">
+      <thead>
+        <tr>
+          <th>Hostname</th>
+          <th>Ownership</th>
+          <th>Routing</th>
+          <th>HTTPS</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for domain in domain_options %}
+        <tr>
+          <td>
+            <code>{{ domain.hostname }}</code>
+            {% if domain.is_default %}(Default){% endif %}
+          </td>
+          <td>
+            {% if domain.is_default %}
+              Application default
+            {% else %}
+              DNS verified
+            {% endif %}
+          </td>
+          <td>Not checked</td>
+          <td>Not checked</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="4" class="link-manager-empty">
+            No eligible domains found.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

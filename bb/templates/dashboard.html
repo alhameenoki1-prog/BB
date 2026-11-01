@@ -2,6 +2,370 @@
 {% from "_icons.html" import icon %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
+
+<style>
+/* BB PREMIUM TERMINAL V1 */
+
+/* Dashboard header */
+.page-head {
+  padding:8px 0 26px;
+  border-bottom:1px solid var(--line);
+  align-items:center;
+  gap:24px;
+}
+
+.page-head .eyebrow {
+  color:var(--accent);
+  font-size:11px;
+  font-weight:800;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+}
+
+.page-head h1 {
+  margin:8px 0 10px;
+  font-size:clamp(30px,3.4vw,43px);
+  font-weight:720;
+  letter-spacing:-.055em;
+  line-height:1.12;
+}
+
+.page-head .lead {
+  max-width:650px;
+  color:var(--ink-2);
+  font-size:14px;
+  line-height:1.7;
+}
+
+/* Section hierarchy */
+.bb-section-heading {
+  margin-top:34px;
+  margin-bottom:17px;
+}
+
+.bb-section-heading h2 {
+  font-size:22px;
+  font-weight:720;
+  letter-spacing:-.04em;
+}
+
+.bb-kicker {
+  font-size:10px;
+  font-weight:800;
+  letter-spacing:.15em;
+}
+
+/* Financial-style performance cards */
+.bb-metrics {
+  gap:13px;
+}
+
+.bb-metrics .stat {
+  position:relative;
+  overflow:hidden;
+  min-height:155px;
+  padding:21px;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:14px;
+  box-shadow:var(--shadow);
+}
+
+.bb-metrics .stat::before {
+  content:"";
+  position:absolute;
+  left:0;
+  top:0;
+  width:100%;
+  height:2px;
+  background:var(--fill-2);
+}
+
+.bb-metrics .stat.hero::before {
+  background:var(--accent);
+}
+
+.bb-metrics .stat.warn::before {
+  background:var(--warn);
+}
+
+.bb-metrics .stat.bad::before {
+  background:var(--bad);
+}
+
+.bb-metrics .stat .l {
+  color:var(--ink-2);
+  font-size:12px;
+  font-weight:650;
+  letter-spacing:.005em;
+}
+
+.bb-metrics .stat .n {
+  color:var(--ink);
+  font-size:clamp(30px,2.7vw,42px);
+  font-weight:750;
+  font-variant-numeric:tabular-nums;
+  letter-spacing:-.055em;
+  line-height:1.15;
+}
+
+.bb-metrics .stat .sub {
+  color:var(--ink-3);
+  font-size:12px;
+}
+
+.bb-metrics .stat:hover {
+  border-color:var(--accent);
+  transform:translateY(-2px);
+}
+
+/* Operations workspace */
+.bb-operations {
+  gap:18px;
+}
+
+.bb-operations .card {
+  border:1px solid var(--line);
+  border-radius:15px;
+  background:var(--surface);
+  box-shadow:var(--shadow);
+}
+
+.bb-operations .card h2 {
+  font-size:18px;
+  font-weight:720;
+  letter-spacing:-.035em;
+}
+
+.bb-operations .steps li {
+  border-radius:11px;
+}
+
+.bb-operations .progress,
+.bb-operations .bar {
+  overflow:hidden;
+  border-radius:999px;
+}
+
+/* Worker state and actions */
+.bb-operations .tag {
+  border-radius:7px;
+  font-weight:700;
+  letter-spacing:.01em;
+}
+
+.bb-operations .actions {
+  gap:9px;
+}
+
+.bb-operations button {
+  font-weight:650;
+}
+
+/* Pipeline */
+.bb-operations .legend {
+  gap:13px;
+  line-height:1.6;
+}
+
+.bb-operations .legend span {
+  font-size:12px;
+}
+
+/* Recent activity */
+.feed li {
+  padding:13px 4px;
+  gap:14px;
+}
+
+.feed .when {
+  font-variant-numeric:tabular-nums;
+  color:var(--ink-3);
+}
+
+/* Dark-mode surface refinement */
+:root[data-bb-theme="dark"] .bb-metrics .stat,
+:root[data-bb-theme="dark"] .bb-operations .card {
+  background:linear-gradient(155deg,var(--surface),var(--surface-2));
+}
+
+:root[data-bb-theme="dark"] .bb-metrics .stat.hero {
+  border-color:rgba(123,156,255,.24);
+}
+
+/* Responsive */
+@media (max-width:650px) {
+  .page-head {
+    align-items:flex-start;
+    padding-bottom:20px;
+  }
+
+  .page-head h1 {
+    font-size:30px;
+  }
+
+  .bb-metrics .stat {
+    min-height:140px;
+    padding:17px;
+  }
+
+  .bb-metrics .stat .n {
+    font-size:31px;
+  }
+
+  .bb-operations .card {
+    padding:18px;
+  }
+}
+
+@media (prefers-reduced-motion:reduce) {
+  .bb-metrics .stat {
+    transform:none !important;
+    transition:none;
+  }
+}
+</style>
+
+<style>
+
+/* BB DASHBOARD REDESIGN V1 */
+.bb-section-heading {
+  display:flex;
+  align-items:end;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:12px;
+  margin:30px 0 16px;
+}
+
+.bb-section-heading h2 {
+  margin:3px 0 0;
+  font-size:21px;
+  letter-spacing:-.035em;
+}
+
+.bb-kicker {
+  color:var(--accent);
+  font-size:11px;
+  font-weight:750;
+  letter-spacing:.11em;
+}
+
+.bb-section-note,
+.bb-card-description {
+  color:var(--ink-2);
+  font-size:13px;
+}
+
+.bb-card-description {
+  margin:-5px 0 16px;
+}
+
+.bb-metrics {
+  grid-template-columns:repeat(5,minmax(0,1fr));
+  gap:14px;
+}
+
+.bb-metrics .stat {
+  min-width:0;
+  min-height:146px;
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  transition:border-color .18s,transform .18s;
+}
+
+.bb-metrics .stat:hover {
+  border-color:var(--line-2);
+  transform:translateY(-2px);
+}
+
+.bb-metrics .stat .l {
+  font-size:12px;
+  font-weight:650;
+}
+
+.bb-metrics .stat .n {
+  margin:12px 0;
+  font-size:clamp(27px,2.5vw,39px);
+}
+
+.bb-metrics .stat .sub {
+  font-size:12px;
+  line-height:1.4;
+}
+
+.bb-operations-heading {
+  margin-top:36px;
+}
+
+.bb-operations {
+  grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);
+  gap:20px;
+  align-items:start;
+}
+
+.bb-operations > *,
+.bb-operations .card {
+  min-width:0;
+}
+
+.bb-operations .card h2 {
+  font-size:18px;
+}
+
+.bb-operations .steps {
+  gap:9px;
+}
+
+.bb-operations .steps li {
+  padding:14px;
+}
+
+.bb-operations .bar {
+  height:12px;
+  margin:18px 0;
+}
+
+@media (max-width:1200px) {
+  .bb-metrics {
+    grid-template-columns:repeat(3,minmax(0,1fr));
+  }
+}
+
+@media (max-width:900px) {
+  .bb-operations {
+    grid-template-columns:minmax(0,1fr);
+  }
+}
+
+@media (max-width:650px) {
+  .bb-metrics {
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+
+  .bb-section-note {
+    display:none;
+  }
+
+  .bb-metrics .stat {
+    min-height:130px;
+  }
+}
+
+@media (max-width:380px) {
+  .bb-metrics {
+    grid-template-columns:minmax(0,1fr);
+  }
+}
+
+@media (prefers-reduced-motion:reduce) {
+  .bb-metrics .stat {
+    transition:none;
+  }
+}
+</style>
+
 {% set done = (1 if summary.api_key else 0) + (1 if summary.configured else 0) + (1 if summary.gmail else 0) + (1 if summary.recipients else 0) + (1 if summary.worker_running else 0) %}
 <div class="page-head">
   <div><div class="eyebrow">Overview</div><h1>{{ 'Good to see you' if done == 5 else 'Let’s get you sending' }}</h1>
@@ -23,7 +387,8 @@
 {% if reconnect %}<div class="card flat" style="border-color:var(--bad)"><b style="color:var(--bad)">Your mailbox needs reconnecting.</b> <span class="small">{{ reconnect }}</span> <a href="/mailbox" class="button small" style="margin-left:8px">Reconnect on the Mailbox page</a></div>
 {% elif health and health.alert %}<div class="card flat" style="border-color:var(--bad);color:var(--bad)"><b>Mailbox:</b> {{ health.alert }} <a href="/mailbox">Mailbox page</a></div>{% endif %}
 
-<div class="grid">
+<div class="bb-section-heading"><div><span class="bb-kicker">PERFORMANCE</span><h2>Campaign overview</h2></div><span class="bb-section-note">Your outreach at a glance</span></div>
+<div class="grid bb-metrics">
   <div class="stat hero"><div class="l">Replies received</div><div class="n">{{ summary.replies }}</div><div class="sub">{{ summary.open_replies }} open conversation{{ 's' if summary.open_replies != 1 else '' }}</div></div>
   <div class="stat"><div class="l">Emails sent</div><div class="n">{{ summary.sent }}</div><div class="sub">{{ summary.sent_today }} today</div></div>
   <div class="stat warn"><div class="l">Not sent yet</div><div class="n">{{ summary.not_sent }}</div><div class="sub">{{ summary.outbox_pending }} need your review</div></div>
@@ -47,9 +412,10 @@
 </div>
 {% endif %}
 
-<div class="two" style="margin-top:18px">
+<div class="bb-section-heading bb-operations-heading"><div><span class="bb-kicker">OPERATIONS</span><h2>Workspace</h2></div><span class="bb-section-note">Manage your setup and sending activity</span></div>
+<div class="two bb-operations">
   <div class="card">
-    <h2>Getting started</h2>
+    <h2>Getting started</h2><p class="bb-card-description">Complete your workspace setup.</p>
     <div class="progress"><i style="width:{{ done * 20 }}%"></i></div>
     <ol class="steps">
       <li class="{{ 'done' if summary.api_key else '' }}"><span class="tick">{{ icon('check', 13) }}</span><div><b><a href="/apikey">Choose your AI provider</a></b><span class="small">Google Gemini and Groq have free tiers; Anthropic and OpenAI are paid. Your own account, your own key.</span></div></li>
@@ -61,7 +427,7 @@
   </div>
   <div>
     <div class="card">
-      <h2>Worker</h2>
+      <h2>Worker control center</h2>
       <p class="muted small">Your personal copy of the engine. Every cycle (1, 2 or 5 minutes, set by the speed on your profile) it writes emails for new recipients, sends what is due inside your sending hours and daily limit, and reads replies. Saving your profile or AI provider restarts a running worker so the change applies at once.</p>
       {% if summary.worker_paused %}<p class="small" style="margin-top:10px;color:var(--warn)"><b>Paused for edits.</b> Change what you need on Profile, Mailbox or AI provider, then press Resume. Queued emails and open conversations are waiting where they were.</p>{% endif %}
       <div class="actions" style="margin-top:14px">
@@ -104,7 +470,7 @@
       </details>
     </div>
     <div class="card">
-      <h2>Pipeline</h2>
+      <h2>Campaign pipeline</h2>
       {% set total = summary.recipients if summary.recipients else 1 %}
       <div class="bar">
         <i style="width:{{ (summary.waiting / total * 100) | round(1) }}%;background:var(--ink-3)"></i>
@@ -130,7 +496,7 @@
 </div>
 
 {% if logs %}
-<div class="card">
+<div class="card bb-activity-panel">
   <div class="actions" style="justify-content:space-between"><h2 style="margin:0">Recent activity</h2><span class="tiny">{{ activity|length }} recent event{{ 's' if activity|length != 1 else '' }} · routine checks left out</span></div>
   {% if activity %}
   <ul class="feed" style="margin-top:8px">
@@ -146,5 +512,190 @@
   .feed .who { font-weight:600; color:var(--ink-2); margin-right:2px; }
   .feed-sent .ic, .feed-reply .ic { color:var(--good); } .feed-warning .ic { color:var(--warn); } .feed-control .ic { color:var(--accent); }
 </style>
+
+<style>
+/* BB ACTIVITY TIMELINE V1 */
+
+.bb-activity-panel {
+  margin-top:24px;
+  padding:26px 28px;
+  border:1px solid var(--line);
+  border-radius:16px;
+}
+
+.bb-activity-panel > .actions {
+  padding-bottom:18px;
+  border-bottom:1px solid var(--line);
+}
+
+.bb-activity-panel > .actions h2 {
+  font-size:21px;
+  font-weight:750;
+  letter-spacing:-.04em;
+}
+
+.bb-activity-panel > .actions .tiny {
+  color:var(--ink-3);
+  font-size:11px;
+  font-weight:600;
+}
+
+.bb-activity-panel .feed {
+  position:relative;
+  list-style:none;
+  margin:18px 0 0;
+  padding:0;
+}
+
+.bb-activity-panel .feed li {
+  position:relative;
+  display:grid;
+  grid-template-columns:30px minmax(0,1fr) auto;
+  align-items:start;
+  gap:15px;
+  padding:14px 0 19px;
+  border-bottom:0;
+  font-size:13px;
+  line-height:1.65;
+}
+
+.bb-activity-panel .feed li:not(:last-child)::before {
+  content:"";
+  position:absolute;
+  left:14px;
+  top:43px;
+  bottom:-2px;
+  width:1px;
+  background:var(--line-2);
+}
+
+.bb-activity-panel .feed .ic {
+  position:relative;
+  z-index:1;
+  display:grid;
+  place-items:center;
+  width:29px;
+  height:29px;
+  border:1px solid var(--line);
+  border-radius:9px;
+  background:var(--surface-2);
+  color:var(--ink-2);
+  font-size:14px;
+  font-weight:800;
+  line-height:1;
+}
+
+.bb-activity-panel .feed .who {
+  display:inline-block;
+  margin-right:5px;
+  color:var(--ink);
+  font-weight:750;
+}
+
+.bb-activity-panel .feed .when {
+  margin-left:0;
+  padding-top:5px;
+  color:var(--ink-3);
+  font-size:11px;
+  font-weight:600;
+  font-variant-numeric:tabular-nums;
+  white-space:nowrap;
+}
+
+.bb-activity-panel .feed .tag {
+  font-size:10px;
+  vertical-align:middle;
+}
+
+.bb-activity-panel .feed-sent .ic,
+.bb-activity-panel .feed-reply .ic {
+  color:var(--good);
+  background:var(--good-soft);
+  border-color:var(--good-soft);
+}
+
+.bb-activity-panel .feed-warning .ic {
+  color:var(--warn);
+  background:var(--warn-soft);
+  border-color:var(--warn-soft);
+}
+
+.bb-activity-panel .feed-control .ic {
+  color:var(--accent);
+  background:var(--accent-soft);
+  border-color:var(--accent-soft);
+}
+
+.bb-activity-panel .feed-wrote .ic {
+  color:var(--accent);
+}
+
+.bb-activity-panel details {
+  padding-top:16px;
+  border-top:1px solid var(--line);
+}
+
+.bb-activity-panel details summary {
+  font-weight:650;
+}
+
+.bb-activity-panel pre.log {
+  margin-top:12px;
+  border-radius:11px;
+}
+
+@media (max-width:650px) {
+  .bb-activity-panel {
+    padding:19px 16px;
+  }
+
+  .bb-activity-panel .feed li {
+    grid-template-columns:29px minmax(0,1fr);
+    gap:10px;
+  }
+
+  .bb-activity-panel .feed .when {
+    grid-column:2;
+    padding-top:0;
+    margin-top:-8px;
+  }
+
+  .bb-activity-panel .feed li:not(:last-child)::before {
+    bottom:-5px;
+  }
+}
+</style>
+
+
+<style>
+/* BB ACTIVITY WRAPPING FIX V1 */
+
+.bb-activity-panel {
+  min-width:0;
+  max-width:100%;
+}
+
+.bb-activity-panel .feed li {
+  min-width:0;
+  max-width:100%;
+}
+
+.bb-activity-panel .feed li > span:nth-child(2) {
+  min-width:0;
+  overflow-wrap:anywhere;
+  word-break:normal;
+}
+
+.bb-activity-panel .feed .when {
+  text-align:right;
+}
+
+@media (max-width:650px) {
+  .bb-activity-panel .feed .when {
+    text-align:left;
+  }
+}
+</style>
+
 {% endif %}
 {% endblock %}

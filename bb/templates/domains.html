@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.bb-domains { max-width: 1120px; margin: 0 auto; }
+.bb-domains .domain-header { margin-bottom: 26px; }
+.bb-domains .domain-header h1 { margin: 0 0 8px; font-size: 28px; }
+.bb-domains .domain-muted { opacity: .72; line-height: 1.6; }
+.bb-domains .domain-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr);
+  gap: 18px;
+}
+.bb-domains .domain-panel {
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 24px;
+  margin-bottom: 18px;
+}
+.bb-domains .domain-panel h2 { margin: 0 0 16px; font-size: 18px; }
+.bb-domains .domain-field { margin-bottom: 16px; }
+.bb-domains .domain-field label {
+  display: block;
+  margin-bottom: 7px;
+  font-weight: 600;
+}
+.bb-domains .domain-field input,
+.bb-domains .domain-field select {
+  display: block;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  box-sizing: border-box;
+}
+.bb-domains .domain-button {
+  display: inline-block;
+  padding: 10px 17px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--surface);
+  font-weight: 600;
+  cursor: pointer;
+}
+.bb-domains .domain-secondary {
+  background: var(--surface);
+  color: var(--ink);
+}
+.bb-domains .domain-item {
+  border-top: 1px solid var(--line);
+  padding: 18px 0;
+}
+.bb-domains .domain-item:first-of-type { border-top: 0; }
+.bb-domains .domain-name { font-weight: 700; overflow-wrap: anywhere; }
+.bb-domains .domain-status {
+  display: inline-block;
+  font-size: 12px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  margin-top: 8px;
+}
+.bb-domains .domain-record {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 13px;
+  margin: 12px 0;
+  overflow-wrap: anywhere;
+}
+.bb-domains .domain-record code {
+  display: block;
+  margin-top: 5px;
+  user-select: all;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.bb-domains .domain-steps { padding-left: 21px; line-height: 1.8; }
+.bb-domains .domain-actions { margin-top: 14px; }
+@media(max-width: 760px) {
+  .bb-domains .domain-grid { grid-template-columns: 1fr; }
+  .bb-domains .domain-panel { padding: 17px; }
+}
+</style>
+
+<div class="bb-domains">
+  <div class="domain-header">
+    <h1>Domain Management</h1>
+    <p class="domain-muted">
+      Register domains, verify DNS ownership, and track setup readiness.
+      Verification does not automatically configure hosting or HTTPS.
+    </p>
+  </div>
+
+  <div class="domain-grid">
+    <div>
+      <section class="domain-panel">
+        <h2>Managed Domains</h2>
+
+        {% if default_hostname %}
+        <div class="domain-item">
+          <div class="domain-name">{{ default_hostname }}</div>
+          <span class="domain-status">BB default hostname</span>
+          <p class="domain-muted">
+            Existing application hostname. Its routing and HTTPS
+            configuration are managed separately.
+          </p>
+        </div>
+        {% endif %}
+
+        {% for domain in domains %}
+        <div class="domain-item">
+          <div class="domain-name">{{ domain.hostname }}</div>
+          <span class="domain-status">{{ domain.status | replace('_', ' ') | title }}</span>
+          <p class="domain-muted">
+            DNS provider: {{ domain.provider | title }}
+          </p>
+
+          {% if domain.status != "verified" %}
+            {% set dns = domain.dns %}
+            <div class="domain-record">
+              <strong>TXT record hostname</strong>
+              <code>{{ dns.name }}</code>
+            </div>
+            <div class="domain-record">
+              <strong>TXT record value</strong>
+              <code>{{ dns.value }}</code>
+            </div>
+
+            <form method="post" action="/domains/verify" class="domain-actions">
+              <input type="hidden" name="hostname" value="{{ domain.hostname }}">
+              <button type="submit" class="domain-button domain-secondary">
+                Check DNS Verification
+              </button>
+            </form>
+          {% else %}
+            <p class="domain-muted">
+              Ownership verified. Hosting and HTTPS readiness must
+              still be configured and checked separately.
+            </p>
+          {% endif %}
+        </div>
+        {% else %}
+          {% if not default_hostname %}
+          <p class="domain-muted">No domains registered yet.</p>
+          {% endif %}
+        {% endfor %}
+      </section>
+    </div>
+
+    <div>
+      <section class="domain-panel">
+        <h2>Add a Domain</h2>
+        <form method="post" action="/domains/add">
+          <div class="domain-field">
+            <label for="domain-hostname">Domain or subdomain</label>
+            <input
+              id="domain-hostname"
+              name="hostname"
+              placeholder="training.example.com"
+              autocomplete="off"
+              required
+            >
+          </div>
+
+          <div class="domain-field">
+            <label for="domain-provider">DNS provider</label>
+            <select id="domain-provider" name="provider">
+              <option value="cloudflare">Cloudflare</option>
+              <option value="namecheap">Namecheap</option>
+              <option value="other">Other provider</option>
+            </select>
+          </div>
+
+          <button type="submit" class="domain-button">
+            Register Domain
+          </button>
+        </form>
+      </section>
+
+      <section class="domain-panel">
+        <h2>Setup Guide</h2>
+        <ol class="domain-steps">
+          <li>Register your domain in BB.</li>
+          <li>Open your DNS provider's dashboard.</li>
+          <li>Publish the unique TXT record shown here.</li>
+          <li>Return and check DNS verification.</li>
+          <li>Configure routing and HTTPS separately.</li>
+        </ol>
+        <p class="domain-muted">
+          BB only reads DNS during verification. It does not
+          change Cloudflare or Namecheap records.
+        </p>
+      </section>
+    </div>
+  </div>
+</div>
+{% endblock %}

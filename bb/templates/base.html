@@ -19,7 +19,7 @@
     --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Inter","Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-bb-theme]) {
       --bg:#000; --surface:#1c1c1e; --surface-2:#161618; --fill:#2c2c2e; --fill-2:#3a3a3c;
       --ink:#f5f5f7; --ink-2:#a1a1a6; --ink-3:#6e6e73; --line:rgba(255,255,255,.10); --line-2:rgba(255,255,255,.18);
       --accent:#0a84ff; --accent-2:#409cff; --accent-soft:rgba(10,132,255,.18);
@@ -165,7 +165,500 @@
     .side .me { margin:0 0 0 auto; padding:0; border:0; } .side .me .who { display:none; }
     main { padding:18px 16px 48px; } h1 { font-size:24px; } .stat .n { font-size:28px; }
   }
+
+  /* BB ADAPTIVE DESIGN V1 */
+  :root {
+    --bg:#f6f8fc;
+    --surface:#ffffff;
+    --surface-2:#f9fafc;
+    --fill:#f0f3f8;
+    --fill-2:#e5eaf2;
+    --ink:#172033;
+    --ink-2:#64748b;
+    --ink-3:#94a3b8;
+    --line:rgba(28,44,75,.09);
+    --line-2:rgba(28,44,75,.16);
+    --accent:#3563e9;
+    --accent-2:#527cff;
+    --accent-soft:rgba(53,99,233,.10);
+    --shadow:0 2px 12px rgba(22,37,70,.035);
+    --shadow-lg:0 16px 45px rgba(22,37,70,.10);
+    --r:16px;
+    --r-sm:10px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-bb-theme]) {
+      --bg:#0c111b;
+      --surface:#151d2a;
+      --surface-2:#1a2433;
+      --fill:#222e40;
+      --fill-2:#2d3b50;
+      --ink:#edf2fa;
+      --ink-2:#a5b2c5;
+      --ink-3:#7f8ea5;
+      --line:rgba(190,205,230,.10);
+      --line-2:rgba(190,205,230,.18);
+      --accent:#7b9cff;
+      --accent-2:#9bb4ff;
+      --accent-soft:rgba(123,156,255,.14);
+      --shadow:0 2px 12px rgba(0,0,0,.10);
+      --shadow-lg:0 16px 45px rgba(0,0,0,.28);
+    }
+  }
+
+  :root[data-bb-theme="dark"] {
+    --bg:#0c111b;
+    --surface:#151d2a;
+    --surface-2:#1a2433;
+    --fill:#222e40;
+    --fill-2:#2d3b50;
+    --ink:#edf2fa;
+    --ink-2:#a5b2c5;
+    --ink-3:#7f8ea5;
+    --line:rgba(190,205,230,.10);
+    --line-2:rgba(190,205,230,.18);
+    --accent:#7b9cff;
+    --accent-2:#9bb4ff;
+    --accent-soft:rgba(123,156,255,.14);
+    --shadow:0 2px 12px rgba(0,0,0,.10);
+    --shadow-lg:0 16px 45px rgba(0,0,0,.28);
+    color-scheme:dark;
+  }
+
+  :root[data-bb-theme="light"] {
+    color-scheme:light;
+  }
+
+  body {
+    line-height:1.55;
+  }
+
+  .shell {
+    grid-template-columns:252px minmax(0,1fr);
+  }
+
+  .side {
+    background:var(--surface);
+    border-right:1px solid var(--line);
+    padding:22px 14px;
+  }
+
+  .nav a {
+    border-radius:10px;
+    padding:10px 12px;
+  }
+
+  .nav a.active {
+    font-weight:650;
+  }
+
+  main {
+    max-width:1440px;
+    min-width:0;
+    padding:34px clamp(20px,3.5vw,52px) 72px;
+  }
+
+  .page-head {
+    margin-bottom:26px;
+  }
+
+  h1 {
+    font-size:clamp(27px,3vw,36px);
+    letter-spacing:-.035em;
+  }
+
+  h2 {
+    letter-spacing:-.025em;
+  }
+
+  .card, .stat {
+    border-radius:var(--r);
+    box-shadow:var(--shadow);
+  }
+
+  .card {
+    padding:24px;
+  }
+
+  .stat {
+    padding:22px;
+  }
+
+  .stat .n {
+    font-size:clamp(30px,3vw,39px);
+  }
+
+  .grid {
+    gap:16px;
+  }
+
+  button, .btn, a.button {
+    border-radius:10px;
+    min-height:39px;
+  }
+
+  button:focus-visible, a:focus-visible,
+  input:focus-visible, select:focus-visible,
+  textarea:focus-visible {
+    outline:2px solid var(--accent);
+    outline-offset:3px;
+  }
+
+  table {
+    font-variant-numeric:tabular-nums;
+  }
+
+  th {
+    padding:12px;
+  }
+
+  td {
+    padding:13px 12px;
+  }
+
+  @media (max-width:860px) {
+    .shell {
+      grid-template-columns:minmax(0,1fr);
+    }
+
+    .side {
+      padding:10px 12px;
+    }
+
+    main {
+      padding:24px 16px 56px;
+    }
+
+    .card {
+      padding:18px;
+    }
+
+    .stat {
+      padding:18px;
+    }
+  }
+
+  @media (prefers-reduced-motion:reduce) {
+    *, *::before, *::after {
+      animation-duration:.01ms !important;
+      transition-duration:.01ms !important;
+    }
+  }
+
 </style>
+
+<style>
+/* BB PLATFORM THEME SWITCHER V1 */
+.bb-theme-control {
+  position:fixed;
+  right:18px;
+  bottom:18px;
+  z-index:100;
+  display:flex;
+  align-items:center;
+  gap:5px;
+  padding:5px;
+  border:1px solid var(--line-2);
+  border-radius:13px;
+  background:var(--surface);
+  box-shadow:var(--shadow-lg);
+}
+
+.bb-theme-control button {
+  min-height:34px;
+  padding:7px 12px;
+  border:0;
+  border-radius:9px;
+  background:transparent;
+  color:var(--ink-2);
+  font-size:12px;
+  font-weight:650;
+}
+
+.bb-theme-control button[aria-pressed="true"] {
+  background:var(--accent-soft);
+  color:var(--accent);
+}
+
+@media (max-width:650px) {
+  .bb-theme-control {
+    right:10px;
+    bottom:10px;
+  }
+}
+</style>
+
+
+<style>
+/* BB SIDEBAR APPEARANCE V1 */
+.bb-appearance-section {
+  margin-top:auto;
+  padding:14px 4px;
+  border-top:1px solid var(--line);
+}
+
+.bb-appearance-label {
+  padding:0 8px 9px;
+  color:var(--ink-3);
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+
+.bb-appearance-section .bb-theme-control {
+  position:static;
+  width:100%;
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:3px;
+  padding:4px;
+  box-shadow:none;
+  border-radius:11px;
+  background:var(--fill);
+}
+
+.bb-appearance-section .bb-theme-control button {
+  min-width:0;
+  padding:9px 3px;
+  font-size:11px;
+  cursor:pointer;
+}
+
+.bb-appearance-section .bb-theme-control button[aria-pressed="true"] {
+  background:var(--surface);
+  color:var(--accent);
+  box-shadow:var(--shadow);
+}
+
+@media (max-width:860px) {
+  .bb-appearance-section {
+    margin-top:0;
+    padding:8px 0;
+  }
+
+  .bb-appearance-section .bb-theme-control {
+    max-width:260px;
+  }
+}
+</style>
+
+
+<style>
+/* BB UNIFIED TERMINAL V1 */
+
+/* Institutional navigation */
+.side {
+  border-right:1px solid var(--line-2);
+}
+
+.brand {
+  padding:8px 10px 24px;
+  gap:12px;
+}
+
+.brand .mark {
+  width:36px;
+  height:36px;
+  border-radius:11px;
+  background:linear-gradient(145deg,#2563eb,#1e40af);
+  box-shadow:0 5px 16px rgba(37,99,235,.18);
+}
+
+.brand b {
+  font-size:16px;
+  font-weight:750;
+  letter-spacing:-.04em;
+}
+
+.brand span {
+  font-size:10px;
+  letter-spacing:.08em;
+}
+
+.nav a {
+  min-height:40px;
+  margin:2px 0;
+  font-size:13px;
+  font-weight:550;
+  border:1px solid transparent;
+  transition:background .15s,color .15s,border-color .15s;
+}
+
+.nav a.active {
+  background:var(--accent-soft);
+  border-color:var(--line);
+  color:var(--accent);
+  font-weight:700;
+}
+
+.nav a:hover {
+  background:var(--fill);
+}
+
+.nav .sep {
+  margin:21px 12px 8px;
+  font-size:10px;
+  font-weight:750;
+  letter-spacing:.12em;
+}
+
+/* Account panel */
+.side .me {
+  padding:15px 8px 4px;
+}
+
+.side .me .av {
+  width:36px;
+  height:36px;
+  border-radius:11px;
+  background:var(--accent-soft);
+  color:var(--accent);
+}
+
+.side .me .who b {
+  font-weight:650;
+}
+
+/* Live operational monitoring */
+.live {
+  gap:8px;
+  margin-bottom:28px;
+}
+
+.live .pill {
+  padding:9px 13px;
+  border-radius:9px;
+  font-size:12px;
+  font-weight:550;
+  box-shadow:none;
+}
+
+.live .pill b {
+  font-size:13px;
+  font-weight:750;
+}
+
+/* Consistent cards */
+.card {
+  border:1px solid var(--line);
+  border-radius:15px;
+  box-shadow:var(--shadow);
+}
+
+.card h2 {
+  font-weight:700;
+  letter-spacing:-.035em;
+}
+
+/* Professional tables */
+table {
+  font-variant-numeric:tabular-nums;
+}
+
+th {
+  background:var(--surface-2);
+  font-size:10px;
+  font-weight:750;
+  letter-spacing:.10em;
+}
+
+td {
+  font-size:13px;
+  line-height:1.55;
+}
+
+tbody tr:hover td {
+  background:var(--fill);
+}
+
+/* Form refinement */
+input[type=text],
+input[type=email],
+input[type=password],
+input[type=number],
+input[type=url],
+input[type=time],
+select,
+textarea {
+  border:1px solid var(--line);
+  background:var(--surface-2);
+  border-radius:10px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  background:var(--surface);
+  border-color:var(--accent);
+}
+
+/* Buttons */
+button,
+.btn,
+a.button {
+  font-weight:650;
+  letter-spacing:-.01em;
+}
+
+button.secondary,
+a.button.secondary {
+  border-color:var(--line);
+}
+
+/* Status indicators */
+.tag {
+  border-radius:7px;
+  padding:5px 9px;
+  font-size:11px;
+  font-weight:700;
+}
+
+/* Dark theme */
+:root[data-bb-theme="dark"] .side {
+  background:#101825;
+}
+
+:root[data-bb-theme="dark"] .nav a.active {
+  border-color:rgba(123,156,255,.20);
+}
+
+:root[data-bb-theme="dark"] .card {
+  border-color:rgba(190,205,230,.10);
+}
+
+/* Responsive */
+@media (max-width:860px) {
+  .brand {
+    padding:4px 8px;
+  }
+
+  .nav a {
+    min-height:36px;
+    margin:0;
+  }
+
+  .side .me {
+    padding:0;
+  }
+
+  .live {
+    gap:6px;
+  }
+
+  .live .pill {
+    padding:7px 10px;
+  }
+}
+
+@media (prefers-reduced-motion:reduce) {
+  .nav a {
+    transition:none;
+  }
+}
+</style>
+
 </head>
 <body class="{% if not user %}auth{% endif %}">
 {% if user %}
@@ -199,6 +692,8 @@
       <a href="/mail/audit" class="{{ 'active' if path.startswith('/mail/audit') else '' }}">{{ icon('shield') }}<span class="t">Audit log</span></a>
       <div class="sep">Setup</div>
       <a href="/profile" class="{{ 'active' if path.startswith('/profile') else '' }}">{{ icon('person') }}<span class="t">Profile</span></a>
+      <a href="/domains" class="{{ 'active' if path.startswith('/domains') else '' }}">{{ icon('globe') }}<span class="t">Domains</span></a>
+      <a href="/links" class="{{ 'active' if path == '/links' else '' }}">{{ icon('link') }}<span class="t">Link Manager</span></a>
       <a href="/mailbox" class="{{ 'active' if path.startswith('/mailbox') or path.startswith('/gmail') else '' }}">{{ icon('mail') }}<span class="t">Mailbox</span></a>
       <a href="/apikey" class="{{ 'active' if path.startswith('/apikey') else '' }}">{{ icon('key') }}<span class="t">AI provider</span></a>
     </nav>
@@ -212,6 +707,18 @@
         });
       });
     </script>{% endif %}
+    <!-- BB SIDEBAR APPEARANCE V1 -->
+    <div class="bb-appearance-section">
+      <div class="bb-appearance-label">Appearance</div>
+      <div class="bb-theme-control" role="group" aria-label="Appearance">
+  <button type="button" data-bb-theme-choice="light"
+          onclick="bbSetTheme('light')">Light</button>
+  <button type="button" data-bb-theme-choice="dark"
+          onclick="bbSetTheme('dark')">Dark</button>
+  <button type="button" data-bb-theme-choice="system"
+          onclick="bbSetTheme('system')">System</button>
+</div>
+    </div>
     <div class="me">
       <div class="av">{{ user.email[0] | upper }}</div>
       <div class="who"><b>{{ user.email }}</b><span class="tiny">{{ user.role }}</span></div>
@@ -429,5 +936,42 @@
 </div>
 <script>setTimeout(() => document.querySelectorAll('.toast.ok').forEach(t => t.style.opacity = '0'), 7000);</script>
 {% endif %}
+
+
+
+<script>
+(function () {
+  const storageKey = "bb.appearance.theme";
+
+  window.bbSetTheme = function (choice) {
+    if (!["light", "dark", "system"].includes(choice)) return;
+
+    try {
+      localStorage.setItem(storageKey, choice);
+    } catch (e) {}
+
+    if (choice === "system") {
+      document.documentElement.removeAttribute("data-bb-theme");
+    } else {document.documentElement.setAttribute("data-bb-theme", choice);
+    }
+
+    document.querySelectorAll("[data-bb-theme-choice]").forEach(function (button) {
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.bbThemeChoice === choice)
+      );
+    });
+  };
+
+  let saved = "system";
+
+  try {
+    saved = localStorage.getItem(storageKey) || "system";
+  } catch (e) {}
+
+  bbSetTheme(saved);
+})();
+</script>
+
 </body>
 </html>
