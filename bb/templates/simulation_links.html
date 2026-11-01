@@ -66,7 +66,7 @@
 <div class="link-manager-head">
   <div>
     <h1>Link Manager</h1>
-    <p>Manage authorized training links, destinations, and expiration.</p>
+    <p>Manage authorized training links and destinations.</p>
   </div>
   <a href="/domains" class="small secondary">Manage domains</a>
 </div>
@@ -133,19 +133,10 @@
         </select>
       </div>
 
-      <div>
-        <label for="training-link-expiration">
-          Expiration (optional)
-        </label>
-        <input id="training-link-expiration" name="expires_at"
-               type="text"
-               placeholder="2027-01-31T23:59:00+00:00">
-      </div>
     </div>
 
     <p class="link-manager-note">
       A destination is only required before activating a record.
-      Expiration must be a future ISO 8601 timestamp with a timezone.
     </p>
 
     <button type="submit">Save configuration</button>
@@ -172,7 +163,6 @@
           <th>Hostname / path</th>
           <th>Destination</th>
           <th>Status</th>
-          <th>Expiration</th>
           <th>Actions</th>
         </tr>
       </thead>
@@ -189,7 +179,6 @@
               {{ link.status|capitalize }}
             {% endif %}
           </td>
-          <td>{{ link.expires_at or "No expiration" }}</td>
           <td>
             <form action="/links/status" method="post">
               <input type="hidden" name="link_id" value="{{ link.id }}">
@@ -211,7 +200,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="6" class="link-manager-empty">
+          <td colspan="5" class="link-manager-empty">
             No training links have been configured yet.
           </td>
         </tr>
