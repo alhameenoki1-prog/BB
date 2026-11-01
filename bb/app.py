@@ -1643,7 +1643,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not user:
             if len(token) != 43 or not all(ch.isalnum() or ch in "-_" for ch in token):
                 raise HTTPException(404, "Authorization link not found.")
-            return _redirect("/login?next=" + request.url.path)
+            return await render(request, "microsoft_public_link.html",
+                                sign_in_url="/login?next=" + request.url.path)
 
         ws = base_workspace(user)
         record = link_for_token(ws.user_data_dir, token)
