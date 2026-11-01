@@ -311,3 +311,28 @@ def test_draft_activation_rejected_without_destination(environment):
     assert response.status_code == 303
     assert "error=" in response.headers["location"]
     assert list_links(root / "alice")[0]["status"] == "draft"
+
+
+def test_creation_message_reflects_record_status(environment):
+    client, _ = environment
+    draft = create(client, path="draft-lesson", destination="")
+    assert "draft+saved" in draft.headers["location"]
+    configured = create(client, path="configured-lesson")
+    assert "configuration+saved" in configured.headers["location"]
+
+
+def test_draft_creation_does_not_require_approved_destination(environment, monkeypatch):
+    client, root = environment
+    from bb import simulation_link_routes
+
+    original_create = simulation_link_routes.create_link
+
+    def no_approved_destinations(*args, **kwargs):
+        kwargs["approved_destination_hostnames"] = ()
+        return original_create(*args, **kwargs)
+
+    monkeypatch.setattr(simulation_link_routes, "create_link", no_approved_destinations)
+    response = create(client, path="no-approval", destination="")
+    assert response.status_code == 303
+    assert "error=" not in response.headers["location"]
+    assert list_links(root / "alice")[0]["status"] == "draft"
