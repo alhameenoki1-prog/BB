@@ -34,7 +34,7 @@ def test_public_link_requires_bb_login_and_returns_to_authorization(client):
     page = client.get("/microsoft/authorize")
     assert page.status_code == 200
     assert "Continue to Microsoft" in page.text
-    assert 'action="/microsoft/connect"' in page.text
+    assert 'action="/microsoft/authorize/connect"' in page.text
     assert "http://testserver/microsoft/authorize" in page.text
     assert "your own BB workspace" in page.text
     links_page = client.get("/links")
@@ -66,7 +66,7 @@ def test_live_link_uses_official_microsoft_oauth_and_is_user_bound(client, monke
     def connect(code):
         link = client.get("/microsoft/authorize")
         assert "Continue to Microsoft" in link.text or "Reconnect with Microsoft" in link.text
-        start = client.post("/microsoft/connect")
+        start = client.post("/microsoft/authorize/connect")
         assert start.status_code == 303
         assert start.headers["location"].startswith("https://login.microsoftonline.com/")
         assert "offline_access" in start.headers["location"]
@@ -101,4 +101,4 @@ def test_missing_microsoft_configuration_disables_authorize_button(tmp_path, mon
         page = client.get("/microsoft/authorize")
         assert page.status_code == 200
         assert "Microsoft sign-in is not configured" in page.text
-        assert 'action="/microsoft/connect"' not in page.text
+        assert 'action="/microsoft/authorize/connect"' not in page.text
