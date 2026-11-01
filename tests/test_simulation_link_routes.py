@@ -195,3 +195,95 @@ def test_no_public_redirect_route(environment):
 
     response = client.get("/lesson", follow_redirects=False)
     assert response.status_code == 404
+
+
+
+def test_revoked_destination_cannot_be_reactivated(environment):
+    client, root = environment
+
+    assert create(client).status_code == 303
+    record = list_links(root / "alice")[0]
+
+    def update(status):
+        return client.post(
+            "/links/status",
+            data={"link_id": record["id"], "status": status},
+            headers=headers(),
+            follow_redirects=False,
+        )
+
+    assert update("disabled").status_code == 303
+
+    from bb.simulation_link_store import set_link_status
+
+    with pytest.raises(ValueError, match="No training destinations have been approved"):
+        set_link_status(
+            root / "alice",
+            record["id"],
+            "active",
+            approved_destination_hostnames=(),
+        )
+
+    assert list_links(root / "alice")[0]["status"] == "disabled"
+
+
+def test_disabling_record_does_not_require_destination_approval(environment):
+    client, root = environment
+
+    assert create(client).status_code == 303
+    record = list_links(root / "alice")[0]
+
+    from bb.simulation_link_store import set_link_status
+
+    updated = set_link_status(
+        root / "alice",
+        record["id"],
+        "disabled",
+        approved_destination_hostnames=(),
+    )
+
+    assert updated["status"] == "disabled"
+    assert list_links(root / "alice")[0]["status"] == "disabled"
+
+
+
+def test_http_reactivation_rejects_revoked_destination(environment, monkeypatch):
+    client, root = environment
+
+    assert create(client).status_code == 303
+    record = list_links(root / "alice")[0]
+
+    def update(status):
+        return client.post(
+            "/links/status",
+            data={"link_id": record["id"], "status": status},
+            headers=headers(),
+            follow_redirects=False,
+        )
+
+    assert update("disabled").status_code == 303
+
+    from bb import simulation_link_routes
+
+    original_validator = simulation_link_routes.set_link_status
+
+    def revoked_approval(user_data_dir, link_id, status, **kwargs):
+        kwargs["approved_destination_hostnames"] = ()
+        return original_validator(
+            user_data_dir,
+            link_id,
+            status,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        simulation_link_routes,
+        "set_link_status",
+        revoked_approval,
+    )
+
+    response = update("active")
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    assert list_links(root / "alice")[0]["status"] == "disabled"

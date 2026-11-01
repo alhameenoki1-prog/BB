@@ -15,7 +15,7 @@ def register_simulation_link_routes(
     base_workspace,
     render,
 ):
-    """Register read-only, authenticated Link Manager routes."""
+    """Register authenticated Link Manager management routes."""
 
     @app.get("/links", response_class=HTMLResponse)
     async def simulation_links_page(
@@ -165,6 +165,9 @@ def register_simulation_link_routes(
                 workspace.user_data_dir,
                 link_id,
                 status,
+                approved_destination_hostnames=(
+                    settings.training_destination_hostnames
+                ),
             )
         except ValueError as exc:
             return RedirectResponse(

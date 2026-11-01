@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 from bb.domains import normalize_domain
+from bb.workspace_file_lock import workspace_file_lock
 from bb.simulation_link_destinations import validate_approved_destination
 from bb.simulation_links import (
     new_link_id,
@@ -84,62 +85,75 @@ def create_link(
     if hostname not in approved:
         raise ValueError("The selected hostname is not approved.")
 
-    records = list_links(user_data_dir)
+    with workspace_file_lock(user_data_dir, 'simulation_links.json'):
+        records = list_links(user_data_dir)
 
-    if any(
-        item["hostname"] == hostname and item["path"] == path
-        for item in records
-    ):
-        raise ValueError("This hostname and path are already in use.")
+        if any(
+            item["hostname"] == hostname and item["path"] == path
+            for item in records
+        ):
+            raise ValueError("This hostname and path are already in use.")
 
-    if expires_at:
-        from datetime import datetime, timezone
+        if expires_at:
+            from datetime import datetime, timezone
 
-        try:
-            expires = datetime.fromisoformat(
-                str(expires_at).replace("Z", "+00:00")
-            )
-        except ValueError:
-            raise ValueError("Invalid expiration timestamp.") from None
+            try:
+                expires = datetime.fromisoformat(
+                    str(expires_at).replace("Z", "+00:00")
+                )
+            except ValueError:
+                raise ValueError("Invalid expiration timestamp.") from None
 
-        if expires.tzinfo is None:
-            raise ValueError("Expiration must include a timezone.")
+            if expires.tzinfo is None:
+                raise ValueError("Expiration must include a timezone.")
 
-        if expires <= datetime.now(timezone.utc):
-            raise ValueError("Expiration must be in the future.")
+            if expires <= datetime.now(timezone.utc):
+                raise ValueError("Expiration must be in the future.")
 
-        expires_at = expires.isoformat()
+            expires_at = expires.isoformat()
 
-    record = {
-        "id": new_link_id(),
-        "name": name,
-        "hostname": hostname,
-        "path": path,
-        "destination": destination,
-        "status": "active",
-        "created_at": utc_now(),
-        "updated_at": utc_now(),
-        "expires_at": expires_at,
-        "visits": 0,
-    }
+        record = {
+            "id": new_link_id(),
+            "name": name,
+            "hostname": hostname,
+            "path": path,
+            "destination": destination,
+            "status": "active",
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+            "expires_at": expires_at,
+            "visits": 0,
+        }
 
-    records.append(record)
-    _save(user_data_dir, records)
+        records.append(record)
+        _save(user_data_dir, records)
 
-    return record
+        return record
 
 
-def set_link_status(user_data_dir, link_id, status):
+def set_link_status(
+    user_data_dir,
+    link_id,
+    status,
+    *,
+    approved_destination_hostnames=(),
+):
     if status not in ("active", "disabled"):
         raise ValueError("Unsupported link status.")
 
-    records = list_links(user_data_dir)
+    with workspace_file_lock(user_data_dir, 'simulation_links.json'):
+        records = list_links(user_data_dir)
 
-    for record in records:
-        if record["id"] == link_id:
-            record["status"] = status
-            record["updated_at"] = utc_now()
-            _save(user_data_dir, records)
-            return record
+        for record in records:
+            if record["id"] == link_id:
+                if status == "active":
+                    validate_approved_destination(
+                        record["destination"],
+                        approved_destination_hostnames,
+                    )
+                record["status"] = status
+                record["updated_at"] = utc_now()
+                _save(user_data_dir, records)
+                return record
 
-    raise ValueError("Link not found.")
+        raise ValueError("Link not found.")

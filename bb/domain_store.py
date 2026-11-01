@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from bb.domains import normalize_domain, new_challenge, verification_record
+from bb.workspace_file_lock import workspace_file_lock
 
 
 def _file(workspace_root):
@@ -33,25 +34,26 @@ def add_domain(workspace_root, hostname, provider="cloudflare"):
     if provider not in ("cloudflare", "namecheap", "other"):
         raise ValueError("Unsupported DNS provider.")
 
-    domains = list_domains(workspace_root)
+    with workspace_file_lock(workspace_root, 'managed_domains.json'):
+        domains = list_domains(workspace_root)
 
-    if any(item["hostname"] == hostname for item in domains):
-        raise ValueError("Domain already registered in this workspace.")
+        if any(item["hostname"] == hostname for item in domains):
+            raise ValueError("Domain already registered in this workspace.")
 
-    challenge = new_challenge()
-    record = {
-        "hostname": hostname,
-        "provider": provider,
-        "status": "pending_verification",
-        "challenge": challenge,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "verified_at": None,
-    }
+        challenge = new_challenge()
+        record = {
+            "hostname": hostname,
+            "provider": provider,
+            "status": "pending_verification",
+            "challenge": challenge,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "verified_at": None,
+        }
 
-    domains.append(record)
-    _save(workspace_root, domains)
+        domains.append(record)
+        _save(workspace_root, domains)
 
-    return record
+        return record
 
 
 def _save(workspace_root, domains):
@@ -116,13 +118,14 @@ def domain_instructions(record):
 def mark_verified(workspace_root, hostname):
     """Save a successful DNS ownership verification."""
     hostname = normalize_domain(hostname)
-    domains = list_domains(workspace_root)
+    with workspace_file_lock(workspace_root, 'managed_domains.json'):
+        domains = list_domains(workspace_root)
 
-    for record in domains:
-        if record["hostname"] == hostname:
-            record["status"] = "verified"
-            record["verified_at"] = datetime.now(timezone.utc).isoformat()
-            _save(workspace_root, domains)
-            return record
+        for record in domains:
+            if record["hostname"] == hostname:
+                record["status"] = "verified"
+                record["verified_at"] = datetime.now(timezone.utc).isoformat()
+                _save(workspace_root, domains)
+                return record
 
-    raise ValueError("Domain not found.")
+        raise ValueError("Domain not found.")
