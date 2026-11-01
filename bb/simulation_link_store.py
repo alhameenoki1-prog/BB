@@ -69,16 +69,21 @@ def create_link(
     allowed_hostnames,
     approved_destination_hostnames=(),
     expires_at=None,
+    destination_type="hosted",
 ):
     name = validate_name(name)
     hostname = normalize_domain(hostname)
     path = normalize_path(path)
-    # Draft configurations do not need a destination approval. Activation still does.
+    if destination_type not in ("hosted", "redirect"):
+        raise ValueError("Choose Hosted Page or External Redirect.")
+    # Redirect targets must be explicitly approved; hosted pages remain drafts.
     destination = str(destination or "").strip()
-    if destination:
+    if destination_type == "redirect" and destination:
         destination = validate_approved_destination(
             destination, approved_destination_hostnames
         )
+    elif destination_type == "hosted":
+        destination = ""
 
     approved = {
         normalize_domain(item)
@@ -121,7 +126,8 @@ def create_link(
             "hostname": hostname,
             "path": path,
             "destination": destination,
-            "status": "active" if destination else "draft",
+            "destination_type": destination_type,
+            "status": "draft",
             "created_at": utc_now(),
             "updated_at": utc_now(),
             "expires_at": expires_at,
@@ -150,10 +156,12 @@ def set_link_status(
         for record in records:
             if record["id"] == link_id:
                 if status == "active":
-                    validate_approved_destination(
-                        record["destination"],
-                        approved_destination_hostnames,
-                    )
+                    if record.get("destination_type", "redirect") == "redirect":
+                        validate_approved_destination(
+                            record["destination"], approved_destination_hostnames
+                        )
+                    else:
+                        raise ValueError("Hosted pages cannot be activated until public training routing is available.")
                 record["status"] = status
                 record["updated_at"] = utc_now()
                 _save(user_data_dir, records)
