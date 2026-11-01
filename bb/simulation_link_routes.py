@@ -156,7 +156,7 @@ def register_simulation_link_routes(
         link_id = str(form.get("link_id", "")).strip()
         status = str(form.get("status", "")).strip()
 
-        if not link_id or status not in ("active", "disabled"):
+        if not link_id or status not in ("active", "disabled", "draft"):
             raise HTTPException(400, "Invalid status update.")
 
         workspace = base_workspace(user)
@@ -178,8 +178,7 @@ def register_simulation_link_routes(
 
         return RedirectResponse(
             "/links?msg=" + quote(
-                "Training link configuration updated. "
-                "Public routing remains disabled."
+                "Training link status updated. Public routing remains disabled."
             ),
             status_code=303,
         )
