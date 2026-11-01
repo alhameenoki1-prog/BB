@@ -316,9 +316,9 @@ def test_draft_activation_rejected_without_destination(environment):
 def test_creation_message_reflects_record_status(environment):
     client, _ = environment
     draft = create(client, path="draft-lesson", destination="")
-    assert "draft+saved" in draft.headers["location"]
+    assert "draft%20saved" in draft.headers["location"]
     configured = create(client, path="configured-lesson")
-    assert "configuration+saved" in configured.headers["location"]
+    assert "configuration%20saved" in configured.headers["location"]
 
 
 def test_draft_creation_does_not_require_approved_destination(environment, monkeypatch):
