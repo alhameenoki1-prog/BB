@@ -59,7 +59,6 @@ def test_generate_show_copy_and_regenerate_link(client):
     first = get_link(_admin_ws(client).user_data_dir)
     assert first and first["enabled"]
     page = client.get("/links")
-    assert "https://" not in ""  # No HTTPS assertion for the local test origin.
     assert "http://testserver/l/" + first["token"] in page.text
     assert "Copy link" in page.text
     r = client.get("/l/" + first["token"])
