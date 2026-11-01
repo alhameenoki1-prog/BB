@@ -90,11 +90,12 @@
 <section class="link-manager-panel">
   <h2>Create training link configuration</h2>
   <p class="link-manager-note">
-    Save an authorized training configuration.
+    Choose a domain already listed under Managed Domains and save a training-link draft.
+    No per-link administrator approval is required to save a draft.
     Saving does not publish a link or enable visitor tracking.
   </p>
 
-  {% if approved_destination_hostnames and eligible_link_hostnames %}
+  {% if eligible_link_hostnames %}
   <form action="/links/create" method="post">
     <div class="link-manager-grid">
       <div>
@@ -121,8 +122,9 @@
       </div>
 
       <div>
-        <label for="training-link-destination">Approved destination</label>
-        <select id="training-link-destination" name="destination" required>
+        <label for="training-link-destination">Approved destination (optional for draft)</label>
+        <select id="training-link-destination" name="destination">
+          <option value="">None — save as draft</option>
           {% for hostname in approved_destination_hostnames %}
           <option value="https://{{ hostname }}/">
             https://{{ hostname }}/
@@ -142,7 +144,7 @@
     </div>
 
     <p class="link-manager-note">
-      Destinations must be approved by the administrator.
+      A destination is only required before activating a record.
       Expiration must be a future ISO 8601 timestamp with a timezone.
     </p>
 
@@ -150,9 +152,7 @@
   </form>
   {% else %}
   <p class="link-manager-note">
-    Configuration creation is unavailable until an administrator
-    approves at least one training destination and an eligible
-    hostname is available.
+    No eligible domain is available. Add or verify a domain in Managed Domains.
   </p>
   {% endif %}
 </section>
@@ -161,7 +161,7 @@
   <h2>Training links</h2>
   <p class="link-manager-note">
     This page displays saved link configurations.
-    Public link publication and visitor tracking are not enabled.
+    Drafts are configuration records only. Public link publication and visitor tracking are not enabled.
   </p>
 
   <div class="link-manager-table-wrap">
