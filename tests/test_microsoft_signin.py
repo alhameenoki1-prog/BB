@@ -309,7 +309,7 @@ async def test_connect_microsoft_stores_the_rotated_token_and_check_keeps_rotati
     m = await db.mailbox(mid)
     assert m["address"] == "me@outlook.com" and m["provider"] == "graph" and m["mode"] == "full" and m["status"] == "ok"
     assert service.open_creds("sec", m)["refresh_token"] == "rt+"      # the rotation during the probe was kept
-    assert service.signed_in("sec", m) and "rt" not in m["creds"]
+    assert service.signed_in("sec", m) and m["creds"].startswith("v1:") and m["creds"] != "rt"
     assert await service.check_mailbox(db, "sec", m, {}) == "ok"
     assert service.open_creds("sec", await db.mailbox(mid))["refresh_token"] == "rt++"
     # Reconnecting the same address replaces the token in place.
