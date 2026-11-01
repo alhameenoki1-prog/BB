@@ -228,15 +228,13 @@
               {% if link.status == "active" %}
                 <input type="hidden" name="status" value="disabled">
                 <button type="submit" class="small secondary">
-                  Disable
+                  Pause
                 </button>
               {% elif link.status == "draft" %}
                 <span class="link-manager-note">Private draft · Not published</span>
               {% else %}
-                <input type="hidden" name="status" value="active">
-                <button type="submit" class="small secondary">
-                  Enable
-                </button>
+                <input type="hidden" name="status" value="draft">
+                <button type="submit" class="small secondary">Return to draft</button>
               {% endif %}
             </form>
           </td>
