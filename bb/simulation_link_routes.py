@@ -94,7 +94,7 @@ def register_simulation_link_routes(
         workspace = base_workspace(user)
 
         try:
-            create_link(
+            record = create_link(
                 workspace.user_data_dir,
                 name=str(form.get("name", "")),
                 hostname=str(form.get("hostname", "")),
@@ -119,8 +119,8 @@ def register_simulation_link_routes(
 
         return RedirectResponse(
             "/links?msg=" + quote(
-                "Training link draft saved. "
-                "Public routing remains disabled."
+                ("Training link draft saved. " if record["status"] == "draft" else "Training link configuration saved. ")
+                + "Public routing remains disabled."
             ),
             status_code=303,
         )
