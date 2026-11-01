@@ -781,7 +781,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         import re
         if value == "/microsoft/authorize":
             return value
-        if re.fullmatch(r"/microsoft/authorize/l/[A-Za-z0-9_-]{43}", value):
+        if re.fullmatch(r"/(?:microsoft/authorize/l|l)/[A-Za-z0-9_-]{43}", value):
             return value
         return "/"
 
@@ -1632,6 +1632,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
 
+    @app.get("/l/{token}", response_class=HTMLResponse)
     @app.get("/microsoft/authorize/l/{token}", response_class=HTMLResponse)
     async def microsoft_generated_authorization_link(request: Request, token: str):
         """Open a generated URL only for its originating BB account."""
@@ -1642,7 +1643,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not user:
             if len(token) != 43 or not all(ch.isalnum() or ch in "-_" for ch in token):
                 raise HTTPException(404, "Authorization link not found.")
-            return _redirect("/login?next=/microsoft/authorize/l/" + token)
+            return _redirect("/login?next=" + request.url.path)
 
         ws = base_workspace(user)
         record = link_for_token(ws.user_data_dir, token)
@@ -1653,10 +1654,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request, "microsoft_authorize.html", user,
             microsoft_available=bool(settings.ms_client_id),
             microsoft_account_email=account.get("email", ""),
-            microsoft_authorization_link=settings.base_url + "/microsoft/authorize/l/" + token,
-            microsoft_connect_action="/microsoft/authorize/l/" + token + "/connect",
+            microsoft_authorization_link=settings.base_url + request.url.path,
+            microsoft_connect_action=request.url.path + "/connect",
         )
 
+    @app.post("/l/{token}/connect")
     @app.post("/microsoft/authorize/l/{token}/connect")
     async def microsoft_generated_authorization_start(token: str, user: dict = Depends(current_user)):
         from bb.microsoft_authorization_links import link_for_token
