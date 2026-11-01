@@ -73,9 +73,12 @@ def create_link(
     name = validate_name(name)
     hostname = normalize_domain(hostname)
     path = normalize_path(path)
-    destination = validate_approved_destination(
-        destination, approved_destination_hostnames
-    )
+    # Draft configurations do not need a destination approval. Activation still does.
+    destination = str(destination or "").strip()
+    if destination:
+        destination = validate_approved_destination(
+            destination, approved_destination_hostnames
+        )
 
     approved = {
         normalize_domain(item)
@@ -118,7 +121,7 @@ def create_link(
             "hostname": hostname,
             "path": path,
             "destination": destination,
-            "status": "active",
+            "status": "active" if destination else "draft",
             "created_at": utc_now(),
             "updated_at": utc_now(),
             "expires_at": expires_at,
