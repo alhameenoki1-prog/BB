@@ -140,7 +140,7 @@
   const back = document.getElementById('link-back');
   const save = document.getElementById('link-save');
   const preview = document.getElementById('link-address-preview');
-  function address() { return 'https://' + host.value + '/' + path.value.trim().replace(/^\\/+/, ''); }
+  function address() { return 'https://' + host.value + '/' + path.value.trim().replace(/^[/]+/, ''); }
   function update() {
     document.querySelectorAll('.link-wizard-step').forEach(el => { el.hidden = Number(el.dataset.step) !== step; });
     document.querySelectorAll('.link-wizard-progress span').forEach((el,i) => el.classList.toggle('current', i < step));
