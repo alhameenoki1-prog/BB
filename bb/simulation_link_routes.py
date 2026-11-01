@@ -101,7 +101,7 @@ def register_simulation_link_routes(
                 hostname=str(form.get("hostname", "")),
                 path=str(form.get("path", "")),
                 destination=str(form.get("destination", "")),
-                destination_type=str(form.get("destination_type", "hosted")),
+                destination_type=(str(form["destination_type"]) if "destination_type" in form else None),
                 allowed_hostnames=eligible_hostnames(
                     workspace.user_data_dir,
                     settings.base_url,
@@ -121,7 +121,9 @@ def register_simulation_link_routes(
 
         return RedirectResponse(
             "/links?msg=" + quote(
-                "Training link draft saved. Public routing remains disabled."
+                ("Training link draft saved. " if record["status"] == "draft"
+                 else "Training link configuration saved. ")
+                + "Public routing remains disabled."
             ),
             status_code=303,
         )
