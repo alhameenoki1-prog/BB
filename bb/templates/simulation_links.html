@@ -203,6 +203,7 @@
             {% endif %}
           </td>
           <td>
+            {% if link.status == "draft" %}<a href="/links/page/{{ link.id }}" class="small secondary">Edit page</a>{% endif %}
             <form action="/links/status" method="post">
               <input type="hidden" name="link_id" value="{{ link.id }}">
               {% if link.status == "active" %}
@@ -211,7 +212,7 @@
                   Disable
                 </button>
               {% elif link.status == "draft" %}
-                <span class="link-manager-note">Draft — add an approved destination to activate</span>
+                <span class="link-manager-note">Private draft · Not published</span>
               {% else %}
                 <input type="hidden" name="status" value="active">
                 <button type="submit" class="small secondary">
