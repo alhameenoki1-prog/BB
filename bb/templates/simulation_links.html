@@ -88,6 +88,19 @@
 {% if request.query_params.get('msg') %}
 <p role="status">{{ request.query_params.get('msg') }}</p>
 {% endif %}
+<section class="link-manager-panel">
+  <h2>Microsoft mailbox authorization link</h2>
+  <p class="link-manager-note">Live account-connection entry point, separate from training-link drafts. Each person signs in to their own BB account and authorizes their own Microsoft mailbox through Microsoft's official consent screen.</p>
+  <label for="ms-authorize-link">Live link</label>
+  <input id="ms-authorize-link" type="text" readonly value="{{ settings.base_url }}/microsoft/authorize" style="width:100%;font-family:ui-monospace,monospace;">
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px">
+    <a href="/microsoft/authorize" class="small secondary">Open authorization link</a>
+    <button type="button" id="ms-copy-live" class="small secondary">Copy link</button>
+    {% if not settings.ms_client_id %}<span class="link-manager-note">Microsoft sign-in must be configured first.</span>{% endif %}
+  </div>
+  <p id="ms-copy-feedback" class="link-manager-note" role="status" aria-live="polite"></p>
+</section>
+
 <section class="link-manager-panel link-wizard">
   <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
     <h2 style="margin:0">Create link</h2>
@@ -138,6 +151,17 @@
 </section>
 <script>
 (function () {
+  const copy = document.getElementById("ms-copy-live");
+  const field = document.getElementById("ms-authorize-link");
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(field.value);
+      document.getElementById("ms-copy-feedback").textContent = "Link copied.";
+    } catch (e) {
+      field.focus(); field.select();
+      document.getElementById("ms-copy-feedback").textContent = "Select and copy the link above.";
+    }
+  });
   const form = document.getElementById('link-create-form');
   if (!form) return;
   let step = 1;
