@@ -778,7 +778,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def safe_login_destination(value: str) -> str:
         """Only an explicitly supported local continuation is allowed."""
-        return "/microsoft/authorize" if value == "/microsoft/authorize" else "/"
+        import re
+        if value == "/microsoft/authorize":
+            return value
+        if re.fullmatch(r"/microsoft/authorize/l/[A-Za-z0-9_-]{43}", value):
+            return value
+        return "/"
 
 
     @app.get("/login", response_class=HTMLResponse)
@@ -1626,6 +1631,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             microsoft_authorization_link=settings.base_url + "/microsoft/authorize",
         )
 
+
+    @app.get("/microsoft/authorize/l/{token}", response_class=HTMLResponse)
+    async def microsoft_generated_authorization_link(request: Request, token: str):
+        """Open a generated URL only for its originating BB account."""
+        from bb.microsoft_authorization_links import link_for_token
+
+        # A BB session is required before looking up the workspace.
+        user = accounts.session_user(request.cookies.get(SESSION_COOKIE))
+        if not user:
+            if len(token) != 43 or not all(ch.isalnum() or ch in "-_" for ch in token):
+                raise HTTPException(404, "Authorization link not found.")
+            return _redirect("/login?next=/microsoft/authorize/l/" + token)
+
+        ws = base_workspace(user)
+        record = link_for_token(ws.user_data_dir, token)
+        if not record:
+            raise HTTPException(404, "Authorization link expired, revoked, or belongs to another BB account.")
+        account = ws.microsoft_account() if ws.microsoft_connected() else {}
+        return await render(
+            request, "microsoft_authorize.html", user,
+            microsoft_available=bool(settings.ms_client_id),
+            microsoft_account_email=account.get("email", ""),
+            microsoft_authorization_link=settings.base_url + "/microsoft/authorize/l/" + token,
+            microsoft_connect_action="/microsoft/authorize/l/" + token + "/connect",
+        )
+
+    @app.post("/microsoft/authorize/l/{token}/connect")
+    async def microsoft_generated_authorization_start(token: str, user: dict = Depends(current_user)):
+        from bb.microsoft_authorization_links import link_for_token
+        if not link_for_token(base_workspace(user).user_data_dir, token):
+            raise HTTPException(404, "Authorization link expired, revoked, or belongs to another BB account.")
+        return begin_microsoft_authorization(user)
 
     def begin_microsoft_authorization(user: dict):
         """Begin the official OAuth flow for the signed-in user's own workspace."""
