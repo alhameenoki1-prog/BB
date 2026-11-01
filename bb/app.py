@@ -933,6 +933,117 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     max_sector_messages=MAX_SECTOR_MESSAGES, template_variants=TEMPLATE_VARIANTS, max_template_variants=MAX_TEMPLATE_VARIANTS, signature_image=ws.signature_image(),
                     pace_held=ws.pace_held_reason(SPEEDS.get(profile.get("speed") or "normal", SPEEDS["normal"])))
 
+
+    # --- Domain Manager: authenticated, workspace-scoped DNS ownership ---
+
+    def require_domain_request_origin(request: Request):
+        """Require a same-origin Origin or Referer for domain changes."""
+        from urllib.parse import urlparse
+
+        origin = request.headers.get("origin")
+        referer = request.headers.get("referer")
+
+        if not origin and not referer:
+            raise HTTPException(
+                status_code=403,
+                detail="Request origin required.",
+            )
+
+        source = urlparse(origin or referer)
+        target = urlparse(settings.base_url)
+
+        if (
+            source.scheme not in ("http", "https")
+            or source.scheme != target.scheme
+            or source.netloc != target.netloc
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Request origin not allowed.",
+            )
+
+
+
+    @app.get("/domains", response_class=HTMLResponse)
+    async def domains_page(request: Request, user: dict = Depends(current_user)):
+        from bb.domains import default_domain, verification_record
+        from bb.domain_store import list_domains
+
+        ws = base_workspace(user)
+        records = list_domains(ws.user_data_dir)
+
+        for record in records:
+            if record.get("status") != "verified":
+                dns = verification_record(
+                    record["hostname"], record["challenge"]
+                )
+
+                record["dns"] = dns
+
+        return await render(
+            request, "domains.html", user,
+            domains=records,
+            default_hostname=default_domain(settings.base_url),
+        )
+
+    @app.post("/domains/add")
+    # Origin validation is enforced by the dependency below.
+    async def domains_add(request: Request, user: dict = Depends(current_user), _origin: None = Depends(require_domain_request_origin)):
+        from bb.domain_store import add_domain
+
+        form = await request.form()
+        hostname = str(form.get("hostname", "")).strip()
+        provider = str(form.get("provider", "cloudflare")).strip()
+
+        try:
+            add_domain(base_workspace(user).user_data_dir, hostname, provider)
+        except ValueError as exc:
+            return _redirect("/domains", error=str(exc))
+
+        return _redirect(
+            "/domains",
+            msg="Domain registered. Add the TXT record to verify ownership.",
+        )
+
+    @app.post("/domains/verify")
+    # Origin validation is enforced by the dependency below.
+    async def domains_verify(request: Request, user: dict = Depends(current_user), _origin: None = Depends(require_domain_request_origin)):
+        from bb.domains import normalize_domain
+        from bb.domain_store import list_domains, mark_verified
+        from bb.domain_verification import verify_domain
+
+        form = await request.form()
+
+        try:
+            hostname = normalize_domain(str(form.get("hostname", "")))
+        except ValueError as exc:
+            return _redirect("/domains", error=str(exc))
+
+        root = base_workspace(user).user_data_dir
+        record = next(
+            (item for item in list_domains(root)
+             if item["hostname"] == hostname),
+            None,
+        )
+
+        if record is None:
+            return _redirect("/domains", error="Domain not registered.")
+
+        if record.get("status") == "verified":
+            return _redirect("/domains", msg="Domain already verified.")
+
+        result = await asyncio.to_thread(verify_domain, record)
+
+        if not result["verified"]:
+            return _redirect("/domains", error=result["message"])
+
+        mark_verified(root, hostname)
+
+        return _redirect(
+            "/domains",
+            msg="Domain ownership verified. Routing and HTTPS are separate.",
+        )
+
     @app.get("/profile", response_class=HTMLResponse)
     async def profile_page(request: Request, user: dict = Depends(current_user)):
         ws = workspace_for(user)
