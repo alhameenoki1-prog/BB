@@ -224,6 +224,19 @@ def register_ms_vault_routes(app, settings, current_user, base_workspace, render
         finally:
             await service.persist_creds(db, settings.secret_key(), box, account)
 
+    @app.post("/vault/mailbox/{mailbox_id}/disconnect")
+    async def vault_disconnect(request: Request, mailbox_id: str,
+                               user: dict = Depends(current_user)):
+        """Remove one account's sealed tokens after rechecking the owner's TOTP."""
+        ws, db, box, creds = await get_account(user, mailbox_id)
+        code = str((await request.form()).get("code") or "")
+        if not accounts.verify_totp(user["id"], settings.secret_key(), code):
+            return _redirect("/vault?mailbox=" + mailbox_id,
+                             error="Enter the current authenticator code to disconnect.")
+        await db.remove_mailbox(mailbox_id)
+        return _redirect("/vault", msg="Microsoft account disconnected from BB. "
+                         "You can also revoke the application from your Microsoft account.")
+
     @app.get("/vault/mailbox/{mailbox_id}/organization", response_class=HTMLResponse)
     async def vault_organization(request: Request, mailbox_id: str, user: dict = Depends(current_user)):
         _, _, box, _ = await get_account(user, mailbox_id)
