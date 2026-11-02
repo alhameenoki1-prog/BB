@@ -19,7 +19,7 @@ from harvey.paths import PROJECT_ROOT
 WORKER_ENV_KEYS = (
     "ANTHROPIC_BASE_URL",
     "GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET",
-    "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_TENANT",
+    "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_DEVICE_CLIENT_ID", "MS_TENANT",
     "REOON_API_KEY", "ZEROBOUNCE_API_KEY", "HUNTER_API_KEY",
     "SERPER_API_KEY", "PRECLEARED_API_KEY",
 )
@@ -49,6 +49,8 @@ class Settings:
         # Hotmail and Microsoft 365 sign-in. MS_TENANT "common" takes both
         # personal and work accounts; a tenant id restricts it to one company.
         self.ms_client_id = get("MS_CLIENT_ID").strip()
+        # Optional public-client Entra app for the Microsoft device-code grant.
+        self.ms_device_client_id = get("MS_DEVICE_CLIENT_ID").strip()
         self.ms_client_secret = get("MS_CLIENT_SECRET").strip()
         self.ms_tenant = get("MS_TENANT", "common").strip() or "common"
         # The mailbox that sends users their mailbox alerts: any SMTP account
