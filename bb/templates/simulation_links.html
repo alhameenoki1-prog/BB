@@ -90,7 +90,7 @@
 {% endif %}
 <section class="link-manager-panel">
   <h2>Microsoft mailbox authorization link</h2>
-  <p class="link-manager-note">Generate a working authorization URL for your own Microsoft mailbox. After opening it, sign in to BB and continue to Microsoft's official sign-in and consent page. The account will be connected to your BB workspace.</p>
+  <p class="link-manager-note">Add each Microsoft account to your encrypted Graph vault using its own Microsoft authorization. From this signed-in BB dashboard, generate a private authorization link and launch the official device-code connection directly. BB never needs the Microsoft account password.</p>
   {% if microsoft_available %}
     <form method="post" action="/links/microsoft/generate">
       <button type="submit">{{ 'Generate new link' if microsoft_generated_link else 'Generate live link' }}</button>
@@ -99,8 +99,11 @@
       <div style="margin-top:15px">
         <label for="ms-authorize-link">Your live Microsoft authorization link</label>
         <input id="ms-authorize-link" type="text" readonly value="{{ microsoft_generated_link }}" style="width:100%;font-family:ui-monospace,monospace;">
-        <p class="link-manager-note">Valid until {{ microsoft_link_expires_at }} (UTC offset). Only your signed-in BB account can use this link. Generating another link disables this one.</p>
+        <p class="link-manager-note">Valid until {{ microsoft_link_expires_at }}. You can connect several independently authorized mailboxes from your owner account. Only the account owner signed into BB may add an authorization to this vault; the public link does not transfer Microsoft credentials.</p>
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px">
+          <form method="post" action="/l/{{ microsoft_generated_link.rsplit('/', 1)[-1] }}/device" style="display:inline">
+            <button type="submit">Connect mailbox — show Microsoft code</button>
+          </form>
           <a href="{{ microsoft_generated_link }}" class="small secondary">Open live link</a>
           <button type="button" id="ms-copy-live" class="small secondary">Copy link</button>
           <form method="post" action="/links/microsoft/revoke">
