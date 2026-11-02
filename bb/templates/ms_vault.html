@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Microsoft Graph vault{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><div class="eyebrow">Microsoft Graph</div><h1>Connected mailboxes</h1>
+    <p class="lead">One authorization per Microsoft account. Each mailbox has independent encrypted credentials; the browser receives no Microsoft tokens.</p></div>
+  <div class="actions"><a href="/links" class="secondary small">Generate authorization link</a> <a href="/security/mfa" class="secondary small">Account security</a></div>
+</div>
+{% if request.query_params.get("msg") %}<p class="tag good" role="status">{{ request.query_params.get("msg") }}</p>{% endif %}
+{% if request.query_params.get("error") %}<p class="tag bad" role="alert">{{ request.query_params.get("error") }}</p>{% endif %}
+<div class="card">
+  <h2>Microsoft accounts</h2>
+  {% if vault_mailboxes %}
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+  {% for m in vault_mailboxes %}
+    <a href="/vault?mailbox={{ m.id }}" style="display:block;text-decoration:none;padding:16px;border:{{ '2px solid var(--accent,#2563eb)' if vault_selected and vault_selected.id == m.id else '1px solid var(--border,#dfe5ee)' }};border-radius:12px">
+      <b style="overflow-wrap:anywhere">{{ m.address }}</b>
+      <p class="muted small">{{ 'Needs reconnect' if m.status == 'reconnect' else 'Connected' if m.status == 'ok' else m.status|capitalize }}</p>
+      {% if m.granted_scopes %}<p class="muted small">Scopes: {{ m.granted_scopes }}</p>{% endif %}
+      {% if m.token_expires_at %}<p class="muted small">Access token expires: {{ m.token_expires_at }}</p>{% endif %}
+    </a>
+  {% endfor %}
+  </div>
+  {% else %}
+    <p>No Microsoft mailboxes connected yet. Use <a href="/links">Link Manager</a> to generate a device-code authorization link, or <a href="/mail/accounts">connect using Microsoft sign-in</a>.</p>
+  {% endif %}
+</div>
+{% if vault_selected %}
+  {% if vault_selected.status == 'reconnect' %}
+    <div class="card flat"><b>Needs reconnect.</b> {{ vault_selected.status_detail }}
+      <p>Generate a new authorization from <a href="/links">Link Manager</a>, then sign in and consent with Microsoft.</p>
+    </div>
+  {% endif %}
+  {% if vault_problems %}
+    <div class="card flat">{% for problem in vault_problems %}<p class="muted small">{{ problem }}</p>{% endfor %}</div>
+  {% endif %}
+  <div class="two">
+    <section class="card">
+      <h2>Inbox — {{ vault_selected.address }}</h2>
+      {% if vault_messages %}
+        <table><thead><tr><th>From</th><th>Subject</th><th>Date</th></tr></thead><tbody>
+        {% for msg in vault_messages %}
+          <tr><td>{{ msg["from"]["emailAddress"]["address"] if msg.get("from") else "—" }}</td>
+            <td><a href="/vault/mailbox/{{ vault_selected.id }}/message/{{ msg.id|urlencode }}">{{ msg.subject or "(No subject)" }}</a><p class="muted small">{{ msg.bodyPreview or "" }}</p></td>
+            <td class="small">{{ msg.receivedDateTime or "" }}</td></tr>
+        {% endfor %}
+        </tbody></table>
+      {% else %}<p class="muted small">No messages returned, or the inbox is unavailable.</p>{% endif %}
+    </section>
+    <section class="card">
+      <h2>Send an email</h2>
+      <form action="/vault/mailbox/{{ vault_selected.id }}/send" method="post">
+        <label>To</label><input type="email" name="to" required>
+        <label>Subject</label><input type="text" name="subject" maxlength="250" required>
+        <label>Message</label><textarea name="body" rows="6" required></textarea>
+        <p><button type="submit">Send through Microsoft Graph</button></p>
+      </form>
+    </section>
+  </div>
+  <div class="two">
+    <section class="card">
+      <h2>OneDrive — {{ vault_selected.address }}</h2>
+      {% if vault_drive %}
+        <table><thead><tr><th>Item</th><th>Size</th><th></th></tr></thead><tbody>
+        {% for item in vault_drive %}
+        <tr><td>{{ item.name or "Untitled" }}{% if item.folder %} <span class="tag">Folder</span>{% endif %}</td>
+          <td class="small">{{ item.size or 0 }} bytes</td>
+          <td>{% if item.file %}<a href="/vault/mailbox/{{ vault_selected.id }}/drive/{{ item.id|urlencode }}/download">Download</a>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody></table>
+      {% else %}<p class="muted small">No OneDrive files returned, or file permissions are unavailable.</p>{% endif %}
+      <form method="post" enctype="multipart/form-data" action="/vault/mailbox/{{ vault_selected.id }}/drive/upload">
+        <label>Upload file (up to 4 MB)</label>
+        <input type="file" name="file" required>
+        <p><button type="submit" class="secondary">Upload to OneDrive</button></p>
+      </form>
+    </section>
+    <section class="card">
+      <h2>Organization and admin</h2>
+      <p class="muted small">Read organization metadata only when the Microsoft account has the necessary delegated permissions. Tenant-wide administration may require separate administrator consent.</p>
+      <p><a href="/vault/mailbox/{{ vault_selected.id }}/organization" class="small secondary">View organization information</a></p>
+      <p class="muted small">Reconnection and credential rotation are managed separately for every mailbox.</p>
+    </section>
+  </div>
+{% endif %}
+{% endblock %}
