@@ -63,6 +63,8 @@ def test_generate_show_copy_and_regenerate_link(client):
     page = client.get("/links")
     assert "http://testserver/l/" + first["token"] in page.text
     assert "Copy link" in page.text
+    assert 'action="/l/' + first["token"] + '/device"' in page.text
+    assert "Connect mailbox" in page.text
     r = client.get("/l/" + first["token"])
     assert r.status_code == 200
     assert "Connect your Microsoft mailbox" in r.text
