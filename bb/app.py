@@ -720,6 +720,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             posted_campaign.reset(token)
 
     @app.middleware("http")
+    async def require_production_mfa(request: Request, call_next):
+        """Make an enrolled TOTP authenticator mandatory across the HTTPS BB app."""
+        if settings.require_mfa:
+            path = request.url.path
+            allowed = (
+                path.startswith("/security/mfa")
+                or path.startswith("/login")
+                or path.startswith("/static/")
+                or path in ("/health", "/logout", "/favicon.ico")
+            )
+            if not allowed:
+                user = accounts.session_user(request.cookies.get(SESSION_COOKIE))
+                if user and not accounts.totp_enabled(user["id"]):
+                    return _redirect("/security/mfa")
+        return await call_next(request)
+
+    @app.middleware("http")
     async def security_headers(request: Request, call_next):
         """Browser-side locks that cost nothing: no framing by other sites,
         no content sniffing, no referrer leaking the session's pages, and
