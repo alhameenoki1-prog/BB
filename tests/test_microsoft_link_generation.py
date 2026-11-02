@@ -4,6 +4,7 @@ No Microsoft credentials or network access are required: only the official
 OAuth authorization-code exchange is mocked.
 """
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -13,6 +14,7 @@ from fastapi.testclient import TestClient
 from bb import microsoft_oauth
 from bb.accounts import Accounts
 from bb.app import create_app
+from bb.mail import service
 from bb.microsoft_authorization_links import (
     generate_link, get_link, link_for_token, revoke_link,
 )
@@ -113,8 +115,11 @@ def test_owner_bound_login_and_official_microsoft_consent(client, monkeypatch):
     assert cb.status_code == 303
     assert "Microsoft%20connected%20as%20owner%40outlook.com" in cb.headers["location"]
     ws = _admin_ws(client)
-    assert ws.microsoft_account()["email"] == "owner@outlook.com"
-    assert json.loads(ws.microsoft_token_file.read_text())["refresh_token"] == "refresh-test"
+    box = asyncio.run(ws.mail_db().mailbox_by_address("owner@outlook.com"))
+    assert box["address"] == "owner@outlook.com"
+    assert "refresh-test" not in box["creds"]
+    assert service.open_creds(client.settings.secret_key(), box)["refresh_token"] == "refresh-test"
+    assert not ws.microsoft_token_file.exists()
 
 
 def test_revocation_expiry_and_csrf(client):
