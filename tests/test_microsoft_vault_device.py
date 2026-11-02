@@ -410,6 +410,14 @@ def test_mail_browser_filters_reads_sends_replies_and_moves_mail_to_trash(client
     assert filtered.status_code == 200
     assert "Project report" in filtered.text
     assert "Social plans" not in filtered.text
+    assert operations[-1][3]["params"]["$search"] == '"report"'
+    assert "$filter" not in operations[-1][3]["params"]
+
+    only_flags = client.get(
+        f"/vault/mailbox/{mid}/inbox",
+        params={"unread": "true", "attachments": "true"},
+    )
+    assert only_flags.status_code == 200
     assert operations[-1][3]["params"]["$filter"] == (
         "isRead eq false and hasAttachments eq true"
     )
