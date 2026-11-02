@@ -1337,7 +1337,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             campaign_id=ws.campaign_id, campaign_label=ws.campaign_name(),
                             gmail_connected=ws.gmail_connected(), account=ws.gmail_account(),
                             gmail_available=bool(settings.gmail_client_id and settings.gmail_client_secret),
-                            microsoft_available=bool(settings.ms_client_id),
+                            microsoft_available=bool(settings.ms_client_id or settings.ms_device_client_id),
                             microsoft_connected=ws.microsoft_connected(), ms_account=ws.microsoft_account(),
                             ms_redirect_uri=microsoft_oauth.redirect_uri(settings),
                             reconnect=ws.needs_reconnect(health),
@@ -1722,7 +1722,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request,
             "microsoft_authorize.html",
             user,
-            microsoft_available=bool(settings.ms_client_id),
+            microsoft_available=bool(settings.ms_client_id or settings.ms_device_client_id),
             microsoft_account_email=account.get("email", ""),
             microsoft_authorization_link=settings.base_url + "/microsoft/authorize",
         )
@@ -1757,7 +1757,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return await render(
             request, "microsoft_authorize.html", user,
-            microsoft_available=bool(settings.ms_client_id),
+            microsoft_available=bool(settings.ms_client_id or settings.ms_device_client_id),
             microsoft_account_email=account.get("email", ""),
             microsoft_authorization_link=settings.base_url + request.url.path,
             microsoft_connect_action=request.url.path + "/connect",
