@@ -81,6 +81,14 @@
       <p class="muted small">Read organization metadata only when the Microsoft account has the necessary delegated permissions. Tenant-wide administration may require separate administrator consent.</p>
       <p><a href="/vault/mailbox/{{ vault_selected.id }}/organization" class="small secondary">View organization information</a></p>
       <p class="muted small">Reconnection and credential rotation are managed separately for every mailbox.</p>
+      <h3>Disconnect this mailbox</h3>
+      <p class="muted small">Delete this mailbox's encrypted OAuth credentials from BB. Microsoft may also require you to revoke BB in your Microsoft account settings.</p>
+      <form method="post" action="/vault/mailbox/{{ vault_selected.id }}/disconnect">
+        <label>Current BB authenticator code</label>
+        <input type="text" name="code" autocomplete="one-time-code" inputmode="numeric"
+               pattern="[0-9]{6}" maxlength="6" required>
+        <p><button type="submit" class="secondary">Disconnect {{ vault_selected.address }}</button></p>
+      </form>
     </section>
   </div>
 {% endif %}
