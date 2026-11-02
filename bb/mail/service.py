@@ -145,29 +145,54 @@ async def connect_gmail(db: MailDB, secret: str, *, address: str, refresh_token:
     return mid, note
 
 
-async def connect_microsoft(db: MailDB, secret: str, *, address: str, refresh_token: str, env: dict) -> tuple[str, str]:
-    """Store a mailbox from a completed Microsoft sign-in (Outlook, Hotmail
-    or Microsoft 365 as the person themselves) and verify it. The refresh
-    token is the credential; a rotation during the check is kept."""
+async def connect_microsoft(db: MailDB, secret: str, *, address: str, refresh_token: str, env: dict,
+                            scopes: str = "", expires_in: int = 0, client_id: str = "",
+                            public_client: bool = False, verify: bool = True) -> tuple[str, str]:
+    """Store an independently authorized Microsoft mailbox in the AES-GCM vault.
+
+    A successful OAuth exchange and verified Graph /me response are enough
+    for the initial connection; set verify=False to avoid an unnecessary
+    second token exchange during a callback or device-code grant.
+    """
     address = (address or "").strip().lower()
-    if "@" not in address:
-        raise ValueError("Microsoft did not say which mailbox this is.")
-    creds = {"refresh_token": refresh_token}
-    probe = {"address": address, "provider": "graph"}
-    account = account_for(probe, creds, env)
-    note = await account.test()
-    sealed = crypto.seal_json(secret, account.creds)
+    if "@" not in address or not refresh_token:
+        raise ValueError("Microsoft authorization must include a mailbox and refresh token.")
+    expiry = (datetime.now(timezone.utc) + timedelta(seconds=max(0, int(expires_in)))).isoformat() if expires_in else ""
+    creds = {
+        "refresh_token": refresh_token,
+        "scope": scopes,
+        "token_expires_at": expiry,
+    }
+    if client_id:
+        creds["client_id"] = client_id
+    if public_client:
+        creds["public_client"] = True
+    note = "Microsoft authorized; verify the mailbox connection to check mail access."
+    if verify:
+        probe = {"address": address, "provider": "graph"}
+        account = account_for(probe, creds, env)
+        note = await account.test()
+        creds = account.creds
+        expiry = str(creds.get("token_expires_at") or expiry)
+        scopes = str(creds.get("scope") or scopes)
+    sealed = crypto.seal_json(secret, creds)
     existing = await db.mailbox_by_address(address)
+    updates = {
+        "creds": sealed, "provider": "graph", "mode": "full",
+        "status": "ok", "status_detail": note, "last_checked_at": now_iso(),
+        "granted_scopes": scopes, "token_expires_at": expiry,
+        "enabled": 1,
+    }
     if existing:
-        await db.update_mailbox(existing["id"], creds=sealed, provider="graph", mode="full",
-                                status="ok", status_detail=note, last_checked_at=now_iso(), enabled=1,
-                                **_fresh_sync(existing, "graph"))
+        await db.update_mailbox(existing["id"], **updates, **_fresh_sync(existing, "graph"))
         await db.log("connected", f"Reconnected {address} through Microsoft.", existing["id"])
         return existing["id"], note
-    mid = await db.add_mailbox(address=address, provider="graph", creds=sealed, mode="full",
-                               settings=MailboxSettings(color=_next_color(await db.mailboxes())).model_dump(),
-                               status="ok")
-    await db.update_mailbox(mid, status_detail=note, last_checked_at=now_iso())
+    mid = await db.add_mailbox(
+        address=address, provider="graph", creds=sealed, mode="full",
+        settings=MailboxSettings(color=_next_color(await db.mailboxes())).model_dump(),
+        status="ok",
+    )
+    await db.update_mailbox(mid, **updates)
     await db.log("connected", f"Connected {address} through Microsoft.", mid)
     return mid, note
 
@@ -184,7 +209,13 @@ async def persist_creds(db: MailDB, secret: str, mailbox: dict, account) -> bool
     something was written."""
     if not getattr(account, "creds_changed", False):
         return False
-    await db.update_mailbox(mailbox["id"], creds=crypto.seal_json(secret, account.creds))
+    await db.update_mailbox(
+        mailbox["id"],
+        creds=crypto.seal_json(secret, account.creds),
+        granted_scopes=str(account.creds.get("scope") or mailbox.get("granted_scopes") or ""),
+        token_expires_at=str(account.creds.get("token_expires_at") or mailbox.get("token_expires_at") or ""),
+        last_refresh_at=now_iso(),
+    )
     account.creds_changed = False
     return True
 
