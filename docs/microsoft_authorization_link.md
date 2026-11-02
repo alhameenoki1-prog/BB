@@ -69,6 +69,36 @@ tokens and metadata in this database.
   backups may still contain older credentials and must be protected/cleaned.
   Do not store passwords or session cookies in the vault.
 
+## Mailbox browser and link-led onboarding
+
+Once signed into the BB account that owns the vault, open **/links** and
+generate a Microsoft authorization link. The **Connect mailbox — show
+Microsoft code** action starts Microsoft's official device authorization,
+displays its code inside BB, and waits for the signed-in Microsoft owner
+to enter that code at Microsoft's verification website. Upon consent the
+account appears as a separate row in **/vault**.
+
+The generated `/l/<token>` route is owner-bound. Public viewers can see
+a BB-branded landing page, but cannot cause Microsoft tokens to be
+deposited into another user's vault without the owner's BB session.
+
+Selecting **Open mailbox** from the Token Vault opens the full Graph
+mail viewer at `/vault/mailbox/<mailbox_id>/inbox`, with Inbox, Sent,
+Drafts, Archive, Junk, and Deleted Items. The browser supports message
+reading, composing, replying, mark read/unread, soft-delete (move to
+Deleted Items), and sender/subject/preview search and filters for unread
+messages and attachments. Graph search uses the selected folder's
+messages endpoint; the on-screen list is capped at the first 50 results.
+There is no claim of full mailbox indexing or server-side pagination
+beyond that limit.
+
+The **Copy reference** action copies only a BB-internal mailbox connection
+identifier and address. It does not export Microsoft bearer tokens or
+browser session cookies. Users can view permission scopes, refresh
+metadata, status, and expiry. The external **Open official Outlook** link
+is a normal Microsoft website link; it never injects authenticated
+session cookies. Microsoft may ask for sign-in there.
+
 ## Inside BB
 
 The `/vault` page offers separate mailbox tiles. Selecting one scopes
