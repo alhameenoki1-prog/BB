@@ -3,11 +3,23 @@
 {% block content %}
 <div class="page-head"><div><div class="eyebrow">Microsoft Graph mail</div><h1>{{ message.subject or "(No subject)" }}</h1>
   <p class="lead">{{ box.address }}</p></div>
-  <div class="actions"><a href="/vault?mailbox={{ box.id }}" class="small secondary">Back to mailbox</a></div></div>
+  <div class="actions"><a href="/vault/mailbox/{{ box.id }}/inbox" class="small secondary">Back to mailbox</a></div></div>
 <div class="card">
   <p><b>From:</b> {{ message["from"]["emailAddress"]["address"] if message.get("from") else "Unknown" }}</p>
   <p><b>Received:</b> {{ message.receivedDateTime or "" }}</p>
   <pre style="font:inherit;white-space:pre-wrap;overflow-wrap:anywhere">{{ body }}</pre>
+</div>
+<div class="card" style="max-width:750px">
+  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+    <form method="post" action="/vault/mailbox/{{ box.id }}/message/{{ message.id|urlencode }}/read-state">
+      <input type="hidden" name="state" value="unread">
+      <button class="secondary" type="submit">Mark unread</button>
+    </form>
+    <form method="post" action="/vault/mailbox/{{ box.id }}/message/{{ message.id|urlencode }}/trash"
+          onsubmit="return confirm('Move this email to Deleted Items?')">
+      <button class="secondary" type="submit">Delete (move to trash)</button>
+    </form>
+  </div>
 </div>
 <div class="card" style="max-width:750px">
   <h2>Reply through Microsoft Graph</h2>
