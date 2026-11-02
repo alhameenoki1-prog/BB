@@ -113,6 +113,88 @@ def register_ms_vault_routes(app, settings, current_user, base_workspace, render
             mfa_enabled=True,
         )
 
+
+    # Full mailbox browser: each Graph query is scoped to the selected
+    # encrypted, delegated account and never exposes OAuth credentials.
+    @app.get("/vault/mailbox/{mailbox_id}/inbox", response_class=HTMLResponse)
+    async def vault_inbox(request: Request, mailbox_id: str, folder: str = "inbox",
+                          q: str = "", unread: bool = False, attachments: bool = False,
+                          user: dict = Depends(current_user)):
+        allowed_folders = ("inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail")
+        folder = folder.lower().strip()
+        if folder not in allowed_folders:
+            raise HTTPException(400, "Unknown mailbox folder.")
+        q = q.strip()[:80]
+        _, db, box, _ = await get_account(user, mailbox_id)
+        problems = []
+        messages = []
+        try:
+            # Graph $search is mailbox-wide; for folder-specific searches use
+            # the folder's messages collection and filter locally. Do not
+            # place untrusted text in OData $filter expressions.
+            params = {"$top": "50", "$select": (
+                "id,subject,from,toRecipients,bodyPreview,receivedDateTime,"
+                "sentDateTime,isRead,hasAttachments,importance"
+            )}
+            if not q and not unread and not attachments:
+                params["$orderby"] = "receivedDateTime desc"
+            if unread or attachments:
+                filters = []
+                if unread:
+                    filters.append("isRead eq false")
+                if attachments:
+                    filters.append("hasAttachments eq true")
+                params["$filter"] = " and ".join(filters)
+            raw = await graph_call(user, mailbox_id, "GET",
+                                   "/me/mailFolders/" + folder + "/messages",
+                                   params=params)
+            messages = raw.get("value", [])
+            if q:
+                words = q.casefold()
+                messages = [
+                    item for item in messages if words in (
+                        str(item.get("subject") or "") + " " +
+                        str(item.get("bodyPreview") or "") + " " +
+                        str((item.get("from") or {}).get("emailAddress", {}).get("address") or "") + " " +
+                        str((item.get("from") or {}).get("emailAddress", {}).get("name") or "")
+                    ).casefold()
+                ]
+            if unread:
+                messages = [m for m in messages if not m.get("isRead", False)]
+            if attachments:
+                messages = [m for m in messages if m.get("hasAttachments")]
+        except HTTPException as exc:
+            problems.append(str(exc.detail))
+        return await render(request, "ms_inbox.html", user, box=box,
+                            folder=folder, query=q, only_unread=unread,
+                            only_attachments=attachments, folder_names=allowed_folders,
+                            messages=messages, problems=problems)
+
+    @app.post("/vault/mailbox/{mailbox_id}/message/{message_id}/trash")
+    async def vault_trash_message(request: Request, mailbox_id: str, message_id: str,
+                                  user: dict = Depends(current_user)):
+        if not _ID.fullmatch(message_id):
+            raise HTTPException(400, "Invalid Microsoft message ID.")
+        await graph_call(user, mailbox_id, "POST",
+                         "/me/messages/" + quote(message_id, safe="") + "/move",
+                         json={"destinationId": "deleteditems"})
+        return _redirect("/vault/mailbox/" + mailbox_id + "/inbox",
+                         msg="Message moved to Deleted Items.")
+
+    @app.post("/vault/mailbox/{mailbox_id}/message/{message_id}/read-state")
+    async def vault_message_read_state(request: Request, mailbox_id: str, message_id: str,
+                                       user: dict = Depends(current_user)):
+        if not _ID.fullmatch(message_id):
+            raise HTTPException(400, "Invalid Microsoft message ID.")
+        action = str((await request.form()).get("state") or "")
+        if action not in ("read", "unread"):
+            raise HTTPException(400, "Invalid read/unread action.")
+        await graph_call(user, mailbox_id, "PATCH",
+                         "/me/messages/" + quote(message_id, safe=""),
+                         json={"isRead": action == "read"})
+        return _redirect("/vault/mailbox/" + mailbox_id + "/inbox",
+                         msg="Message marked " + action + ".")
+
     @app.get("/vault/mailbox/{mailbox_id}/message/{message_id}", response_class=HTMLResponse)
     async def vault_message(request: Request, mailbox_id: str, message_id: str,
                             user: dict = Depends(current_user)):
