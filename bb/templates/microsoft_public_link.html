@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Connect Microsoft to BB{% endblock %}
+{% block auth %}
+<div class="auth-card">
+  <div class="brand" style="padding:0 0 22px">
+    <div class="mark"></div>
+    <div><b>BB Outreach</b><span>Connect your account</span></div>
+  </div>
+  <h1>Connect your Microsoft account to BB</h1>
+  <p class="muted">This is a BB account-connection link. Sign in to your own BB account first, then you'll be taken to Microsoft's official website to authorize access to your mailbox.</p>
+  <p class="muted" style="margin-top:12px">BB does not ask for your Microsoft password or verification codes on this page.</p>
+  <p style="margin-top:24px">
+    <a class="button" href="{{ sign_in_url }}" style="display:inline-block;padding:12px 20px;background:var(--accent,#2563eb);color:white;border-radius:8px;text-decoration:none;font-weight:600">Continue to BB sign-in</a>
+  </p>
+  <p class="muted" style="margin-top:20px">Only the BB account that generated this link can use it. Microsoft controls sign-in, consent, and session expiration.</p>
+</div>
+{% endblock %}

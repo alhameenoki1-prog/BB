@@ -340,10 +340,12 @@ async def test_a_command_center_reply_carries_the_brief_as_a_file(tmp_path, monk
     assert (await sending.send_draft(db, "s", env, draft))["status"] == "sent"
     assert _Box.sent[-1]["attachments"] == [str(root / "attachments" / "brief.pdf")]
     assert any("Attached brief.pdf" in a["text"] for a in await db.activity())
-    # The second reply in the same thread: the brief went already.
+    # The second reply is drafted after the first was sent, not before it.
+    # Reusing `now` races the duplicate-reply guard on fast CI runners.
+    second_draft_time = service.now_iso()
     await db.execute("INSERT INTO drafts(id, mailbox_id, thread_id, kind, to_json, subject, body, status, created_at, updated_at) "
                      "VALUES ('d2', ?, ?, 'reply', ?, 'Re: Site visit', 'Ten works for me as well, see you then.', 'approved', ?, ?)",
-                     (mid, tid, json.dumps([{"name": "Ann", "email": "ann@x.example"}]), now, now))
+                     (mid, tid, json.dumps([{"name": "Ann", "email": "ann@x.example"}]), second_draft_time, second_draft_time))
     await db.update_mailbox(mid, settings=MailboxSettings(display_name="Jane Doe", signature_html="Jane", project_link="https://acme.test", daily_cap=0).model_dump())
     draft2 = await db.one("SELECT * FROM drafts WHERE id = 'd2'")
     assert (await sending.send_draft(db, "s", env, draft2))["status"] == "sent"

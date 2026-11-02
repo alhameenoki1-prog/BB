@@ -18,7 +18,7 @@
       {% else %}<a href="/mail/accounts/{{ m.id }}" class="small">Reconnect</a>{% endif %}
     {% elif m.status == 'error' %}<span class="tag warn">unreachable</span>{% else %}<span class="tag">{{ m.status }}</span>{% endif %}</td>
     <td>{% if m.ready %}<span class="tag good">ready</span>{% else %}<span class="tag warn" title="{{ m.ready_why }}">needs signature &amp; link</span>{% endif %}</td>
-    <td style="text-align:right"><a href="/mail/accounts/{{ m.id }}" class="small">Settings</a></td></tr>
+    <td style="text-align:right">{% if m.provider == "graph" %}<a href="https://outlook.office.com/mail/" target="_blank" rel="noopener noreferrer" class="small">Open Outlook</a> · {% endif %}<a href="/mail/accounts/{{ m.id }}" class="small">Settings</a></td></tr>
   {% endfor %}</tbody></table>
   {% else %}<div class="empty">{{ icon('mail') }}<div>No mailboxes connected yet.</div></div>{% endif %}
 </div>

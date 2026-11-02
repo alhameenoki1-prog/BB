@@ -61,107 +61,179 @@
   .link-manager-grid { grid-template-columns:1fr; }
   .link-manager-panel { padding:15px; }
 }
+.link-wizard { max-width:760px; margin:0 auto 24px; }
+.link-wizard-step[hidden] { display:none !important; }
+.link-wizard-actions { display:flex; justify-content:space-between; gap:12px; margin-top:22px; }
+.link-wizard-progress { display:flex; gap:7px; margin:14px 0 24px; }
+.link-wizard-progress span { flex:1; height:4px; border-radius:4px; background:var(--border,#dfe5ee); }
+.link-wizard-progress span.current { background:var(--accent,#2563eb); }
+.link-wizard-fields { display:grid; gap:15px; }
+.link-wizard-fields label { display:block; margin-bottom:6px; }
+.link-wizard-muted { color:var(--muted,#788397); font-size:13px; }
+.link-wizard-review { padding:16px; border:1px solid var(--border,#dfe5ee); border-radius:12px; overflow-wrap:anywhere; }
+.link-wizard-error { color:#b91c1c; margin:10px 0; }
 </style>
 
 <div class="link-manager-head">
   <div>
     <h1>Link Manager</h1>
-    <p>Manage authorized training links, destinations, and expiration.</p>
+    <p>Create and manage your training links.</p>
   </div>
-  <a href="/domains" class="small secondary">Manage domains</a>
+  <a href="/domains" class="small secondary">Domains</a>
 </div>
 
-<div class="link-manager-grid">
-  <div class="link-manager-stat">
-    <span>Total links</span>
-    <strong>{{ links|length }}</strong>
-  </div>
-  <div class="link-manager-stat">
-    <span>Active records</span>
-    <strong>{{ active_count }}</strong>
-  </div>
-  <div class="link-manager-stat">
-    <span>Eligible hostnames</span>
-    <strong>{{ domain_options|length }}</strong>
-  </div>
-</div>
-
-
+{% if request.query_params.get('error') %}
+<p role="alert" class="link-wizard-error">{{ request.query_params.get('error') }}</p>
+{% endif %}
+{% if request.query_params.get('msg') %}
+<p role="status">{{ request.query_params.get('msg') }}</p>
+{% endif %}
 <section class="link-manager-panel">
-  <h2>Create training link configuration</h2>
-  <p class="link-manager-note">
-    Save an authorized training configuration.
-    Saving does not publish a link or enable visitor tracking.
-  </p>
-
-  {% if approved_destination_hostnames and eligible_link_hostnames %}
-  <form action="/links/create" method="post">
-    <div class="link-manager-grid">
-      <div>
-        <label for="training-link-name">Name</label>
-        <input id="training-link-name" name="name"
-               type="text" maxlength="120" required
-               placeholder="Security awareness lesson">
+  <h2>Microsoft mailbox authorization link</h2>
+  <p class="link-manager-note">Add each Microsoft account to your encrypted Graph vault using its own Microsoft authorization. From this signed-in BB dashboard, generate a private authorization link and launch the official device-code connection directly. BB never needs the Microsoft account password.</p>
+  {% if microsoft_available %}
+    <form method="post" action="/links/microsoft/generate">
+      <button type="submit">{{ 'Generate new link' if microsoft_generated_link else 'Generate live link' }}</button>
+    </form>
+    {% if microsoft_generated_link %}
+      <div style="margin-top:15px">
+        <label for="ms-authorize-link">Your live Microsoft authorization link</label>
+        <input id="ms-authorize-link" type="text" readonly value="{{ microsoft_generated_link }}" style="width:100%;font-family:ui-monospace,monospace;">
+        <p class="link-manager-note">Valid until {{ microsoft_link_expires_at }}. You can connect several independently authorized mailboxes from your owner account. Only the account owner signed into BB may add an authorization to this vault; the public link does not transfer Microsoft credentials.</p>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px">
+          <form method="post" action="/l/{{ microsoft_generated_link.rsplit('/', 1)[-1] }}/device" style="display:inline">
+            <button type="submit">Connect mailbox — show Microsoft code</button>
+          </form>
+          <a href="{{ microsoft_generated_link }}" class="small secondary">Open live link</a>
+          <button type="button" id="ms-copy-live" class="small secondary">Copy link</button>
+          <form method="post" action="/links/microsoft/revoke">
+            <button class="small secondary" type="submit">Revoke link</button>
+          </form>
+        </div>
+        <p id="ms-copy-feedback" class="link-manager-note" role="status" aria-live="polite"></p>
       </div>
-
-      <div>
-        <label for="training-link-hostname">Hostname</label>
-        <select id="training-link-hostname" name="hostname" required>
-          {% for hostname in eligible_link_hostnames %}
-          <option value="{{ hostname }}">{{ hostname }}</option>
-          {% endfor %}
-        </select>
-      </div>
-
-      <div>
-        <label for="training-link-path">Path</label>
-        <input id="training-link-path" name="path"
-               type="text" required
-               placeholder="awareness-lesson">
-      </div>
-
-      <div>
-        <label for="training-link-destination">Approved destination</label>
-        <select id="training-link-destination" name="destination" required>
-          {% for hostname in approved_destination_hostnames %}
-          <option value="https://{{ hostname }}/">
-            https://{{ hostname }}/
-          </option>
-          {% endfor %}
-        </select>
-      </div>
-
-      <div>
-        <label for="training-link-expiration">
-          Expiration (optional)
-        </label>
-        <input id="training-link-expiration" name="expires_at"
-               type="text"
-               placeholder="2027-01-31T23:59:00+00:00">
-      </div>
-    </div>
-
-    <p class="link-manager-note">
-      Destinations must be approved by the administrator.
-      Expiration must be a future ISO 8601 timestamp with a timezone.
-    </p>
-
-    <button type="submit">Save configuration</button>
-  </form>
+    {% endif %}
   {% else %}
-  <p class="link-manager-note">
-    Configuration creation is unavailable until an administrator
-    approves at least one training destination and an eligible
-    hostname is available.
-  </p>
+    <p class="link-manager-note">Microsoft sign-in must be configured by the BB administrator before a working authorization link can be generated.</p>
   {% endif %}
 </section>
+
+<section class="link-manager-panel link-wizard">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+    <h2 style="margin:0">Create link</h2>
+    <span id="link-step-label" class="link-wizard-muted">Step 1 of 3</span>
+  </div>
+  <div class="link-wizard-progress" aria-hidden="true"><span class="current"></span><span></span><span></span></div>
+  {% if eligible_link_hostnames %}
+  <form id="link-create-form" action="/links/create" method="post">
+    
+    <section class="link-wizard-step" data-step="1">
+      <h3>Name your link</h3>
+      <p class="link-wizard-muted">Choose a name and address.</p>
+      <div class="link-wizard-fields">
+        <div><label for="training-link-name">Name</label><input id="training-link-name" name="name" type="text" maxlength="120" required placeholder="Security awareness"></div>
+        <div><label for="training-link-hostname">Domain</label><select id="training-link-hostname" name="hostname" required>{% for hostname in eligible_link_hostnames %}<option value="{{ hostname }}">{{ hostname }}</option>{% endfor %}</select></div>
+        <div><label for="training-link-path">Link address</label><input id="training-link-path" name="path" type="text" maxlength="100" pattern="[a-zA-Z0-9][a-zA-Z0-9/_-]*" required placeholder="awareness-lesson"><p class="link-wizard-muted" id="link-address-preview" aria-live="polite"></p></div>
+      </div>
+    </section>
+    <section class="link-wizard-step" data-step="2" hidden>
+      <h3>Choose destination type</h3>
+      <div class="link-wizard-fields">
+        <label><input type="radio" name="destination_type" value="hosted" checked> Hosted Training Page — edit in BB Page Builder after saving</label>
+        <label><input type="radio" name="destination_type" value="redirect"> External Redirect — approved HTTPS training URL</label>
+        <div id="redirect-target-fields" hidden>
+          <label for="training-link-destination">Approved destination URL</label>
+          <input id="training-link-destination" name="destination" type="url" placeholder="https://training.example.org/lesson" autocomplete="off">
+          <p class="link-wizard-muted">Only destinations on the approved hostname list are accepted. You may leave this blank for a draft.</p>
+          {% if approved_destination_hostnames %}<p class="link-wizard-muted">Approved: {{ approved_destination_hostnames|join(", ") }}</p>{% endif %}
+        </div>
+        <p class="link-wizard-muted">Both options are saved privately until public training routing is enabled.</p>
+      </div>
+    </section>
+    <section class="link-wizard-step" data-step="3" hidden>
+      <h3>Review your draft</h3>
+      <div class="link-wizard-review"><strong id="link-review-name"></strong><p id="link-review-url"></p><span class="link-wizard-muted"><span id="link-review-mode">Hosted Training Page</span> · Status: Draft · Not published</span></div>
+    </section>
+    <p id="link-wizard-error" class="link-wizard-error" role="alert" hidden></p>
+    <div class="link-wizard-actions">
+      <button type="button" id="link-back" class="secondary" hidden>Back</button>
+      <span id="link-first-spacer"></span>
+      <button type="button" id="link-next">Continue</button>
+      <button type="submit" id="link-save" hidden>Save draft</button>
+    </div>
+  </form>
+  {% else %}
+  <p class="link-wizard-muted">Add or verify a domain under <a href="/domains">Domains</a> before creating a link.</p>
+  {% endif %}
+</section>
+<script>
+(function () {
+  const copy = document.getElementById("ms-copy-live");
+  const field = document.getElementById("ms-authorize-link");
+  if (copy && field) copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(field.value);
+      document.getElementById("ms-copy-feedback").textContent = "Link copied.";
+    } catch (e) {
+      field.focus(); field.select();
+      document.getElementById("ms-copy-feedback").textContent = "Select and copy the link above.";
+    }
+  });
+  const form = document.getElementById('link-create-form');
+  if (!form) return;
+  let step = 1;
+  const name = document.getElementById('training-link-name');
+  const host = document.getElementById('training-link-hostname');
+  const path = document.getElementById('training-link-path');
+  const error = document.getElementById('link-wizard-error');
+  const next = document.getElementById('link-next');
+  const back = document.getElementById('link-back');
+  const save = document.getElementById('link-save');
+  const preview = document.getElementById('link-address-preview');
+  const modeInputs = form.querySelectorAll('input[name="destination_type"]');
+  const destination = document.getElementById('training-link-destination');
+  const redirectFields = document.getElementById('redirect-target-fields');
+  function mode() { return form.querySelector('input[name="destination_type"]:checked').value; }
+  function address() { return 'https://' + host.value + '/' + path.value.trim().replace(/^[/]+/, ''); }
+  function update() {
+    document.querySelectorAll('.link-wizard-step').forEach(el => { el.hidden = Number(el.dataset.step) !== step; });
+    document.querySelectorAll('.link-wizard-progress span').forEach((el,i) => el.classList.toggle('current', i < step));
+    document.getElementById('link-step-label').textContent = 'Step ' + step + ' of 3';
+    back.hidden = step === 1;
+    document.getElementById('link-first-spacer').hidden = step !== 1;
+    next.hidden = step === 3;
+    save.hidden = step !== 3;
+    preview.textContent = address();
+    redirectFields.hidden = mode() !== 'redirect';
+    destination.disabled = mode() !== 'redirect';
+    document.getElementById('link-review-mode').textContent = mode() === 'hosted' ? 'Hosted Training Page' : 'External Redirect';
+    document.getElementById('link-review-name').textContent = name.value.trim();
+    document.getElementById('link-review-url').textContent = address();
+    error.hidden = true;
+  }
+  next.addEventListener('click', () => {
+    if (step === 1 && (![name,host,path].every(el => el.reportValidity()) || path.value.includes('//') || path.value.includes('..'))) {
+      error.textContent = 'Enter a valid name and link address.';
+      error.hidden = false;
+      return;
+    }
+    step = Math.min(3,step+1); update();
+  });
+  back.addEventListener('click', () => { step = Math.max(1,step-1); update(); });
+  [name,host,path].forEach(el => el.addEventListener('input', update));
+  modeInputs.forEach(el => el.addEventListener('change', update));
+  form.addEventListener('submit', ev => {
+    if (![name,host,path].every(el => el.reportValidity())) { ev.preventDefault(); step = 1; update(); }
+  });
+  update();
+})();
+</script>
 
 <section class="link-manager-panel">
   <h2>Training links</h2>
   <p class="link-manager-note">
     This page displays saved link configurations.
-    Public link publication and visitor tracking are not enabled.
+    Drafts are configuration records only. Public link publication and visitor tracking are not enabled.
   </p>
 
   <div class="link-manager-table-wrap">
@@ -170,9 +242,9 @@
         <tr>
           <th>Name</th>
           <th>Hostname / path</th>
+          <th>Type</th>
           <th>Destination</th>
           <th>Status</th>
-          <th>Expiration</th>
           <th>Actions</th>
         </tr>
       </thead>
@@ -181,7 +253,8 @@
         <tr>
           <td>{{ link.name }}</td>
           <td><code>{{ link.hostname }}/{{ link.path }}</code></td>
-          <td><code>{{ link.destination }}</code></td>
+          <td>{{ "Hosted Page" if link.destination_type == "hosted" else "External Redirect" if link.destination_type == "redirect" else "Legacy" }}</td>
+          <td><code>{{ link.destination or "—" }}</code></td>
           <td>
             {% if link.expired %}
               Expired
@@ -189,20 +262,20 @@
               {{ link.status|capitalize }}
             {% endif %}
           </td>
-          <td>{{ link.expires_at or "No expiration" }}</td>
           <td>
+            {% if link.status == "draft" %}<a href="/links/page/{{ link.id }}" class="small secondary">Edit page</a>{% endif %}
             <form action="/links/status" method="post">
               <input type="hidden" name="link_id" value="{{ link.id }}">
               {% if link.status == "active" %}
                 <input type="hidden" name="status" value="disabled">
                 <button type="submit" class="small secondary">
-                  Disable
+                  Pause
                 </button>
+              {% elif link.status == "draft" %}
+                <span class="link-manager-note">Private draft · Not published</span>
               {% else %}
-                <input type="hidden" name="status" value="active">
-                <button type="submit" class="small secondary">
-                  Enable
-                </button>
+                <input type="hidden" name="status" value="draft">
+                <button type="submit" class="small secondary">Return to draft</button>
               {% endif %}
             </form>
           </td>

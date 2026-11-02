@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}{{ box.address }} · Mailbox{% endblock %}
+{% block content %}
+<style>
+body:has(.bb-mail-browser) {
+  --bg:#0d101b;--surface:#151a2a;--surface-2:#131a2b;--fill:#1a2539;--fill-2:#263451;
+  --ink:#f0f5ff;--ink-2:#b2bcd3;--ink-3:#8593ad;
+  --line:rgba(172,198,249,.13);--line-2:rgba(172,198,249,.23);
+  --accent:#7fabff;--accent-soft:rgba(78,132,250,.18);
+}
+.shell:has(.bb-mail-browser) main {max-width:none;padding:20px clamp(16px,2vw,28px) 50px;}
+.bb-mail-browser {font-size:13px;}
+.bb-mail-browser .mb-top {display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px;margin-bottom:20px;}
+.bb-mail-browser h1{font-size:23px;letter-spacing:-.02em;}
+.bb-mail-browser .mb-sub{color:var(--ink-2);font-size:12px;margin-top:4px;}
+.bb-mail-browser .mb-grid{display:grid;grid-template-columns:165px minmax(0,1fr);gap:14px;align-items:start;}
+.bb-mail-browser .mb-panel{background:#131827;border:1px solid var(--line);border-radius:10px;padding:16px;}
+.bb-mail-browser .mb-folder{display:block;width:100%;padding:12px 13px;margin-bottom:5px;border-radius:8px;color:#bbc8e2;font-weight:650;}
+.bb-mail-browser .mb-folder:hover,.bb-mail-browser .mb-folder.active{background:#243752;color:#f2f7ff;text-decoration:none;}
+.bb-mail-browser .mb-main{min-width:0;}
+.bb-mail-browser .mb-toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;}
+.bb-mail-browser .mb-search{flex:1;min-width:180px;margin:0;color:var(--ink);background:#161d2e;border:1px solid var(--line-2);border-radius:8px;padding:11px 12px;}
+.bb-mail-browser button,.bb-mail-browser .mb-button{border-radius:8px;padding:11px 13px;background:#2857a0;color:#fff;font-weight:650;font-size:12px;border:1px solid rgba(188,210,255,.14);cursor:pointer;}
+.bb-mail-browser .mb-button.secondary,.bb-mail-browser button.secondary{background:#1c273c;color:#c6d6f7;}
+.bb-mail-browser .mb-tags{display:flex;flex-wrap:wrap;gap:14px;margin:6px 0 13px;color:#b5bfd5;}
+.bb-mail-browser .mb-tags label{display:inline-flex;align-items:center;gap:5px;font-weight:500;}
+.bb-mail-browser .mb-tags input{width:auto;margin:0;}
+.bb-mail-browser .mb-table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:#111724;}
+.bb-mail-browser table.mb-table{border-collapse:collapse;width:100%;min-width:650px;}
+.bb-mail-browser .mb-table th{background:#1b2233;color:#a7b4cd;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:13px 12px;}
+.bb-mail-browser .mb-table td{border-top:1px solid var(--line);padding:13px 12px;vertical-align:top;font-size:12px;color:#aebbd5;}
+.bb-mail-browser .mb-table tr:nth-child(even){background:#161c2a;}
+.bb-mail-browser .mb-table tr.unread .mb-subject{font-weight:800;color:#e7efff;}
+.bb-mail-browser .mb-subject{font-weight:550;color:#a8c8ff;}
+.bb-mail-browser .mb-preview{color:#8593ab;margin-top:4px;max-width:60ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.bb-mail-browser .mb-row-actions{display:flex;align-items:center;flex-wrap:wrap;gap:7px;}
+.bb-mail-browser .mb-row-actions form{margin:0;}
+.bb-mail-browser .mb-row-actions button{padding:6px 8px;background:#253149;}
+.bb-mail-browser .mb-row-actions button.remove{color:#ffb3bf;}
+.bb-mail-browser .mb-compose{margin-top:18px;}
+.bb-mail-browser .mb-compose label{display:block;margin:12px 0 5px;color:#b9c5dd;}
+.bb-mail-browser .mb-compose input,.bb-mail-browser .mb-compose textarea{width:100%;border:1px solid var(--line-2);background:#0f1523;color:#f3f5ff;border-radius:8px;}
+.bb-mail-browser .mb-warning{border:1px solid rgba(240,178,102,.35);color:#f5ce9d;background:#3a2b1f;padding:12px;border-radius:8px;margin:8px 0;}
+.bb-mail-browser .mb-empty{padding:28px;color:#a2b2ce;text-align:center;}
+.bb-mail-browser .mb-menu{display:none;}
+@media(max-width:800px){.bb-mail-browser .mb-grid{grid-template-columns:1fr}.bb-mail-browser .mb-folders{display:flex;gap:5px;flex-wrap:wrap}.bb-mail-browser .mb-folder{width:auto;margin:0}.bb-mail-browser .mb-top{align-items:start}}
+</style>
+<div class="bb-mail-browser">
+  <div class="mb-top">
+    <div>
+      <div class="eyebrow">BB · Microsoft Graph Mail</div>
+      <h1>{{ box.address }}</h1>
+      <p class="mb-sub">Your mailbox, opened inside BB. Actions run through the account's encrypted Microsoft Graph authorization.</p>
+    </div>
+    <div style="display:flex;gap:9px;flex-wrap:wrap">
+      <a href="/vault" class="mb-button secondary">Back to Token Vault</a>
+      <a href="https://outlook.office.com/mail/" target="_blank" rel="noopener noreferrer" class="mb-button secondary">Open official Outlook</a>
+    </div>
+  </div>
+  {% if request.query_params.get('msg') %}<div class="tag good" role="status">{{ request.query_params.get('msg') }}</div>{% endif %}
+  {% for problem in problems %}<div class="mb-warning" role="alert">{{ problem }}</div>{% endfor %}
+  <div class="mb-grid">
+    <aside class="mb-panel">
+      <div style="color:#8797b7;font-size:10px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:14px;font-weight:800">Folders</div>
+      <nav class="mb-folders" aria-label="Microsoft mailbox folders">
+        {% for folder_name in folder_names %}
+        <a class="mb-folder {{ 'active' if folder==folder_name else '' }}"
+           href="/vault/mailbox/{{ box.id }}/inbox?folder={{ folder_name }}">{{ {'inbox':'Inbox','sentitems':'Sent','drafts':'Drafts','deleteditems':'Deleted Items','archive':'Archive','junkemail':'Junk Email'}[folder_name] }}</a>
+        {% endfor %}
+      </nav>
+      <div style="margin:17px 0 10px;border-top:1px solid var(--line);padding-top:15px;color:#a7b7d4">
+        <b>Selected mailbox</b>
+        <p style="overflow-wrap:anywhere">{{ box.address }}</p>
+      </div>
+      <p style="color:#8391b1;font-size:11px">Switch accounts from Token Vault. Microsoft tokens remain on BB's server.</p>
+    </aside>
+    <section class="mb-main">
+      <div class="mb-panel">
+        <div class="mb-top" style="margin-bottom:12px">
+          <div><h2 style="margin-bottom:2px">{{ {'inbox':'Inbox','sentitems':'Sent','drafts':'Drafts','deleteditems':'Deleted Items','archive':'Archive','junkemail':'Junk Email'}[folder] }}</h2>
+            <p class="mb-sub">{{ messages|length }} messages shown, up to 50 fetched per page</p></div>
+          <a class="mb-button secondary" href="/vault/mailbox/{{ box.id }}/inbox?folder={{ folder }}">Refresh</a>
+        </div>
+        <form method="get" action="/vault/mailbox/{{ box.id }}/inbox">
+          <input type="hidden" name="folder" value="{{ folder }}">
+          <div class="mb-toolbar">
+            <input class="mb-search" name="q" type="search" maxlength="80" value="{{ query }}" placeholder="Search sender, subject, or preview in the latest 50 messages">
+            <button type="submit">Search / Filter</button>
+            {% if query or only_unread or only_attachments %}<a href="/vault/mailbox/{{ box.id }}/inbox?folder={{ folder }}" class="mb-button secondary">Clear</a>{% endif %}
+          </div>
+          <div class="mb-tags">
+            <label><input type="checkbox" name="unread" value="true" {{ 'checked' if only_unread else '' }}> Unread only</label>
+            <label><input type="checkbox" name="attachments" value="true" {{ 'checked' if only_attachments else '' }}> Has attachments</label>
+          </div>
+        </form>
+        <div class="mb-table-wrap">
+          <table class="mb-table">
+            <thead><tr><th>From</th><th>Subject / Preview</th><th>Date</th><th>Actions</th></tr></thead>
+            <tbody>
+            {% for m in messages %}
+              <tr class="{{ 'unread' if not m.isRead else '' }}">
+                <td>
+                  {% set sender = (m.get('from') or {}).get('emailAddress') or {} %}
+                  <b>{{ sender.get('name') or sender.get('address') or 'Unknown' }}</b>
+                  <div class="mb-sub">{{ sender.get('address') or '' }}</div>
+                </td>
+                <td>
+                  <a class="mb-subject" href="/vault/mailbox/{{ box.id }}/message/{{ m.id|urlencode }}">{{ m.subject or '(No subject)' }}</a>
+                  <div class="mb-preview">{{ m.bodyPreview or '' }}</div>
+                  {% if m.hasAttachments %}<div class="mb-sub">Attachment</div>{% endif %}
+                </td>
+                <td style="white-space:nowrap">{{ (m.receivedDateTime or m.sentDateTime or '')[:16] }}</td>
+                <td>
+                  <div class="mb-row-actions">
+                    <a href="/vault/mailbox/{{ box.id }}/message/{{ m.id|urlencode }}" class="mb-button secondary" style="padding:6px 8px">Read</a>
+                    <form method="post" action="/vault/mailbox/{{ box.id }}/message/{{ m.id|urlencode }}/read-state">
+                      <input type="hidden" name="state" value="{{ 'unread' if m.isRead else 'read' }}">
+                      <button type="submit">{{ 'Mark unread' if m.isRead else 'Mark read' }}</button>
+                    </form>
+                    {% if folder != 'deleteditems' %}
+                    <form method="post" action="/vault/mailbox/{{ box.id }}/message/{{ m.id|urlencode }}/trash"
+                          onsubmit="return confirm('Move this message to Deleted Items?')">
+                      <button class="remove" type="submit">Delete</button>
+                    </form>
+                    {% endif %}
+                  </div>
+                </td>
+              </tr>
+            {% else %}
+              <tr><td colspan="4" class="mb-empty">No messages match your current search or filter.</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="mb-sub" style="margin:12px 0 0">Search filters the most recent results returned by Microsoft Graph. Delete moves mail to Deleted Items, where you can recover it.</p>
+      </div>
+      <section class="mb-panel mb-compose" id="compose">
+        <h2>Compose email</h2>
+        <form method="post" action="/vault/mailbox/{{ box.id }}/send">
+          <label for="mb-to">Recipient</label><input id="mb-to" name="to" type="email" required placeholder="recipient@example.com">
+          <label for="mb-subject">Subject</label><input id="mb-subject" name="subject" maxlength="250" required>
+          <label for="mb-body">Message</label><textarea id="mb-body" name="body" rows="6" required></textarea>
+          <p style="margin-top:15px"><button type="submit">Send from {{ box.address }}</button></p>
+        </form>
+      </section>
+    </section>
+  </div>
+</div>
+{% endblock %}

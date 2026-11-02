@@ -85,7 +85,8 @@ FULL_SWEEP_EVERY = timedelta(hours=1)
 LOGIN = "https://login.microsoftonline.com"
 SCOPE = (
     "offline_access https://graph.microsoft.com/Mail.ReadWrite "
-    "https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/User.Read"
+    "https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/User.Read "
+    "https://graph.microsoft.com/Files.ReadWrite"
 )
 LOOPBACK_PORT = 8766
 REPLY_WINDOW_DAYS = 7

@@ -561,8 +561,12 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         try:
             data = await microsoft_oauth.exchange_code(settings, code, redirect=redirect)
             email = await microsoft_oauth.account_email(data["access_token"])
-            mid, detail = await service.connect_microsoft(c["db"], settings.secret_key(), address=email,
-                                                          refresh_token=data["refresh_token"], env=settings.worker_env())
+            mid, detail = await service.connect_microsoft(
+                c["db"], settings.secret_key(), address=email,
+                refresh_token=data["refresh_token"], env=settings.worker_env(),
+                scopes=str(data.get("scope") or ""), expires_in=int(data.get("expires_in") or 0),
+                access_token=str(data.get("access_token") or ""),
+            )
         except (AuthError, TransientError, KeyError, RuntimeError, ValueError) as e:
             return _redirect("/mail/accounts", error=f"Microsoft sign-in failed: {e}")
         await c["ws"].main().account_changed(mid)
@@ -624,7 +628,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             r["box"] = boxes.get(r["mailbox_id"])
         state_counts = {}
         for r in await c["db"].query(
-                f"SELECT state, COUNT(*) AS n FROM threads WHERE mailbox_id IN ({','.join('?' for _ in boxes) or "''"}) GROUP BY state",
+                f"SELECT state, COUNT(*) AS n FROM threads WHERE mailbox_id IN ({','.join('?' for _ in boxes) or chr(39) * 2}) GROUP BY state",
                 list(boxes)):
             state_counts[r["state"]] = r["n"]
         return await render(request, "mail_threads.html", user, **page_ctx(c), threads=rows, state=state,

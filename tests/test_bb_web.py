@@ -128,7 +128,7 @@ def test_login_is_throttled(client):
 def test_admin_creates_users_and_users_are_not_admins(client):
     _admin(client)
     weak = client.post("/admin/users", data={"email": USER["email"], "password": "short"})
-    assert "at%20least%2010" in weak.headers["location"]
+    assert "at%20least%2014" in weak.headers["location"]
     user = _make_user(client)
     assert user["role"] == "user" and not user["disabled"]
     dup = client.post("/admin/users", data={"email": USER["email"], "password": USER["password"]})
@@ -761,7 +761,7 @@ def test_cli_creates_and_resets_accounts(tmp_path, monkeypatch, capsys):
     assert "already exists" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         cli.main(["create-user", "weak@example.com", "--password", "short"])
-    assert "at least 10" in capsys.readouterr().out
+    assert "at least 14" in capsys.readouterr().out
 
     cli.main(["reset-password", "boss@example.com", "--password", "another-long-one-2"])
     assert "Password changed" in capsys.readouterr().out

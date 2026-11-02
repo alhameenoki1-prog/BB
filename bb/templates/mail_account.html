@@ -4,7 +4,7 @@
 {% block content %}
 {% set s = box.settings_model %}
 <div class="page-head"><div><div class="eyebrow">Mail · account</div><h1>{{ box.address }}</h1><p class="lead">{% if box.provider == 'graph' and box.signin %}Connected through Microsoft (full mode).{% else %}{{ {'gmail':'Connected through Google (full mode).','imap':'Connected with a password (limited mode: polled, not pushed).','graph':'Microsoft 365 through the Graph API (full mode).'}[box.provider] }}{% endif %} {% if box.status == 'ok' %}{{ box.status_detail }}{% endif %}</p></div>
-  <div class="actions"><form class="inline" method="post" action="/mail/accounts/{{ box.id }}/check"><button class="secondary small" type="submit">Test connection</button></form></div></div>
+  <div class="actions">{% if box.provider == "graph" %}<a class="secondary small" href="https://outlook.office.com/mail/" target="_blank" rel="noopener noreferrer">Open Outlook on Microsoft</a>{% endif %}<form class="inline" method="post" action="/mail/accounts/{{ box.id }}/check"><button class="secondary small" type="submit">Test connection</button></form></div></div>
 
 {% if box.status == 'reconnect' %}
 <div class="card flat" style="border-color:var(--bad)"><b>This mailbox needs reconnecting.</b> {{ box.status_detail }}
@@ -46,6 +46,8 @@
 </div>
 <p class="actions"><button type="submit">{{ icon('check', 15) }} Save settings</button></p>
 </form>
+
+{% if box.provider == "graph" %}<div class="card flat"><b>Microsoft web session:</b> Opening Outlook uses your existing Microsoft browser sign-in, not BB's Graph access token. If Microsoft requires authentication, complete it on Microsoft's website. The BB mailbox connection remains separate.</div>{% endif %}
 
 <div class="card">
   <h2>Connection</h2>

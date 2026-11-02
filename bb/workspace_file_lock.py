@@ -1,6 +1,11 @@
 """Cross-process advisory locks for workspace JSON storage."""
 
-import fcntl
+import sys
+
+if sys.platform == 'win32':
+    import msvcrt
+else:
+    import fcntl
 import os
 import threading
 from contextlib import contextmanager
@@ -36,10 +41,21 @@ def workspace_file_lock(workspace_root, filename):
         )
 
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if sys.platform == 'win32':
+                # Windows byte-range locks require an existing byte and a stable offset.
+                if os.fstat(fd).st_size == 0:
+                    os.write(fd, b'\\0')
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_EX)
             try:
                 yield
             finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                if sys.platform == 'win32':
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)

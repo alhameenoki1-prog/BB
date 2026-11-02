@@ -21,6 +21,8 @@ change ends it, and then the pages show Reconnect.
 import hashlib
 import hmac
 import json
+import os
+import tempfile
 import time
 import urllib.parse
 
@@ -131,27 +133,45 @@ async def account_email(access_token: str) -> str:
     return str(me.get("mail") or me.get("userPrincipalName") or "").lower()
 
 
+def _write_token_file(path, payload):
+    """Atomically replace sensitive OAuth data with owner-only permissions."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".m365-token-", dir=str(path.parent))
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def save_token(workspace, data: dict, email: str):
     workspace.ensure()
-    workspace.microsoft_token_file.write_text(json.dumps({
-        "refresh_token": data["refresh_token"],
+    from bb.mail.crypto import seal
+    _write_token_file(workspace.microsoft_token_file, {
+        "refresh_token_ciphertext": seal(workspace.settings.secret_key(), data["refresh_token"]),
         "scope": data.get("scope", SCOPE),
         "obtained_at": int(time.time()),
-    }, indent=2))
-    try:
-        workspace.microsoft_token_file.chmod(0o600)
-    except OSError:
-        pass
+    })
     workspace.microsoft_account_file.write_text(json.dumps({"email": email, "connected_at": int(time.time())}))
 
 
 async def test_connection(settings, workspace) -> tuple[bool, str]:
     try:
-        stored = json.loads(workspace.microsoft_token_file.read_text())
+        stored = workspace.microsoft_token()
         fresh = await refresh_access_token(settings, stored["refresh_token"])
         if fresh.get("refresh_token") and fresh["refresh_token"] != stored["refresh_token"]:
-            workspace.microsoft_token_file.write_text(json.dumps({**stored, "refresh_token": fresh["refresh_token"],
-                                                                  "refreshed_at": int(time.time())}, indent=2))
+            from bb.mail.crypto import seal
+            sealed = {
+                **{k: v for k, v in stored.items() if k != "refresh_token"},
+                "refresh_token_ciphertext": seal(workspace.settings.secret_key(), fresh["refresh_token"]),
+                "refreshed_at": int(time.time()),
+            }
+            _write_token_file(workspace.microsoft_token_file, sealed)
         email = await account_email(fresh.get("access_token", ""))
         return True, f"Connected as {email}"
     except (OSError, ValueError, KeyError):
