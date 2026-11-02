@@ -720,23 +720,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             posted_campaign.reset(token)
 
     @app.middleware("http")
-    async def require_production_mfa(request: Request, call_next):
-        """Make an enrolled TOTP authenticator mandatory across the HTTPS BB app."""
-        if settings.require_mfa:
-            path = request.url.path
-            allowed = (
-                path.startswith("/security/mfa")
-                or path.startswith("/login")
-                or path.startswith("/static/")
-                or path in ("/health", "/logout", "/favicon.ico")
-            )
-            if not allowed:
-                user = accounts.session_user(request.cookies.get(SESSION_COOKIE))
-                if user and not accounts.totp_enabled(user["id"]):
-                    return _redirect("/security/mfa")
-        return await call_next(request)
-
-    @app.middleware("http")
     async def security_headers(request: Request, call_next):
         """Browser-side locks that cost nothing: no framing by other sites,
         no content sniffing, no referrer leaking the session's pages, and
@@ -795,12 +778,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def safe_login_destination(value: str) -> str:
         """Only an explicitly supported local continuation is allowed."""
-        import re
-        if value == "/microsoft/authorize":
-            return value
-        if re.fullmatch(r"/(?:microsoft/authorize/l|l)/[A-Za-z0-9_-]{43}", value):
-            return value
-        return "/"
+        return "/microsoft/authorize" if value == "/microsoft/authorize" else "/"
 
 
     @app.get("/login", response_class=HTMLResponse)
@@ -823,82 +801,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             throttle.record(key)
             return await render(request, "login.html", error="Wrong email or password.", next_url=next_url)
         throttle.reset(key)
-        if accounts.totp_enabled(user["id"]):
-            ticket = accounts.new_mfa_challenge(user["id"])
-            response = _redirect("/login/totp?next=" + quote(next_url, safe=""))
-            response.set_cookie("bb_mfa_pending", ticket, max_age=300, httponly=True,
-                                samesite="lax", secure=settings.secure_cookies, path="/login")
-            return response
         token = accounts.create_session(user["id"], settings.session_days * 86400)
         response = _redirect(next_url)
         set_session_cookie(response, token)
-        return response
-
-    @app.get("/login/totp", response_class=HTMLResponse)
-    async def login_totp_page(request: Request):
-        if not request.cookies.get("bb_mfa_pending"):
-            return _redirect("/login", error="Your verification session expired. Sign in again.")
-        return await render(request, "login_totp.html",
-                            next_url=safe_login_destination(request.query_params.get("next", "")))
-
-    @app.post("/login/totp")
-    async def login_totp_verify(request: Request, code: str = Form(""), next: str = Form("")):
-        key = "totp:" + (request.client.host if request.client else "unknown")
-        if not throttle.allow(key):
-            return await render(request, "login_totp.html",
-                                next_url=safe_login_destination(next),
-                                error="Too many attempts. Wait before trying again.")
-        user = accounts.complete_mfa_challenge(
-            request.cookies.get("bb_mfa_pending", ""), settings.secret_key(), code
-        )
-        if not user:
-            throttle.record(key)
-            return await render(request, "login_totp.html",
-                                next_url=safe_login_destination(next),
-                                error="Incorrect or expired authenticator code.")
-        throttle.reset(key)
-        token = accounts.create_session(user["id"], settings.session_days * 86400)
-        response = _redirect(safe_login_destination(next))
-        set_session_cookie(response, token)
-        response.delete_cookie("bb_mfa_pending", path="/login")
-        return response
-
-    @app.get("/security/mfa", response_class=HTMLResponse)
-    async def security_mfa_page(request: Request, user: dict = Depends(current_user)):
-        from bb import totp
-        enabled = accounts.totp_enabled(user["id"])
-        secret = "" if enabled else accounts.totp_secret(
-            user["id"], settings.secret_key(), confirmed_only=False
-        )
-        if not enabled and not secret:
-            secret = accounts.begin_totp_enrollment(user["id"], settings.secret_key())
-        return await render(
-            request, "mfa_setup.html", user, mfa_enabled=enabled,
-            mfa_secret=secret,
-            mfa_uri=totp.provisioning_uri(user["email"], secret) if secret else "",
-        )
-
-    @app.post("/security/mfa/confirm")
-    async def security_mfa_confirm(request: Request, user: dict = Depends(current_user),
-                                   code: str = Form("")):
-        from bb import totp
-        if not accounts.confirm_totp(user["id"], settings.secret_key(), code):
-            return _redirect("/security/mfa", error="The authenticator code did not match.")
-        # A newly enrolled account cannot retain another password-only session.
-        with accounts._connect() as db:
-            db.execute("DELETE FROM sessions WHERE user_id=?", (user["id"],))
-        token = accounts.create_session(user["id"], settings.session_days * 86400)
-        response = _redirect("/security/mfa", msg="Authenticator verification enabled.")
-        set_session_cookie(response, token)
-        return response
-
-    @app.post("/security/mfa/disable")
-    async def security_mfa_disable(request: Request, user: dict = Depends(current_user),
-                                   code: str = Form("")):
-        if not accounts.disable_totp(user["id"], settings.secret_key(), code):
-            return _redirect("/security/mfa", error="Incorrect authenticator code.")
-        response = _redirect("/login", msg="MFA disabled. Sign in again.")
-        response.delete_cookie(SESSION_COOKIE, path="/")
         return response
 
     @app.post("/logout")
@@ -1337,7 +1242,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             campaign_id=ws.campaign_id, campaign_label=ws.campaign_name(),
                             gmail_connected=ws.gmail_connected(), account=ws.gmail_account(),
                             gmail_available=bool(settings.gmail_client_id and settings.gmail_client_secret),
-                            microsoft_available=bool(settings.ms_client_id or settings.ms_device_client_id),
+                            microsoft_available=bool(settings.ms_client_id),
                             microsoft_connected=ws.microsoft_connected(), ms_account=ws.microsoft_account(),
                             ms_redirect_uri=microsoft_oauth.redirect_uri(settings),
                             reconnect=ws.needs_reconnect(health),
@@ -1711,65 +1616,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not user:
             return _redirect("/login?next=/microsoft/authorize")
         ws = base_workspace(user)
-        db = ws.mail_db()
-        await db.init()
-        boxes = [box for box in await db.mailboxes()
-                 if box.get("provider") == "graph" and box.get("status") != "disabled"]
-        account = {"email": boxes[-1]["address"]} if boxes else (
-            ws.microsoft_account() if ws.microsoft_connected() else {}
-        )
+        account = ws.microsoft_account() if ws.microsoft_connected() else {}
         return await render(
             request,
             "microsoft_authorize.html",
             user,
-            microsoft_available=bool(settings.ms_client_id or settings.ms_device_client_id),
+            microsoft_available=bool(settings.ms_client_id),
             microsoft_account_email=account.get("email", ""),
             microsoft_authorization_link=settings.base_url + "/microsoft/authorize",
         )
 
-
-    @app.get("/l/{token}", response_class=HTMLResponse)
-    @app.get("/microsoft/authorize/l/{token}", response_class=HTMLResponse)
-    async def microsoft_generated_authorization_link(request: Request, token: str):
-        """Open a generated URL only for its originating BB account."""
-        from bb.microsoft_authorization_links import link_for_token
-
-        # A BB session is required before looking up the workspace.
-        user = accounts.session_user(request.cookies.get(SESSION_COOKIE))
-        if not user:
-            if len(token) != 43 or not all(ch.isalnum() or ch in "-_" for ch in token):
-                raise HTTPException(404, "Authorization link not found.")
-            return await render(request, "microsoft_public_link.html",
-                                sign_in_url="/login?next=" + request.url.path)
-
-        ws = base_workspace(user)
-        record = link_for_token(ws.user_data_dir, token)
-        if not record:
-            raise HTTPException(404, "Authorization link expired, revoked, or belongs to another BB account.")
-        from bb.mail import service as mail_service
-        db = ws.mail_db()
-        await db.init()
-        boxes = [b for b in await db.mailboxes()
-                 if b.get("provider") == "graph"
-                 and mail_service.signed_in(settings.secret_key(), b)]
-        account = {"email": boxes[-1]["address"]} if boxes else (
-            ws.microsoft_account() if ws.microsoft_connected() else {}
-        )
-        return await render(
-            request, "microsoft_authorize.html", user,
-            microsoft_available=bool(settings.ms_client_id or settings.ms_device_client_id),
-            microsoft_account_email=account.get("email", ""),
-            microsoft_authorization_link=settings.base_url + request.url.path,
-            microsoft_connect_action=request.url.path + "/connect",
-        )
-
-    @app.post("/l/{token}/connect")
-    @app.post("/microsoft/authorize/l/{token}/connect")
-    async def microsoft_generated_authorization_start(token: str, user: dict = Depends(current_user)):
-        from bb.microsoft_authorization_links import link_for_token
-        if not link_for_token(base_workspace(user).user_data_dir, token):
-            raise HTTPException(404, "Authorization link expired, revoked, or belongs to another BB account.")
-        return begin_microsoft_authorization(user)
 
     def begin_microsoft_authorization(user: dict):
         """Begin the official OAuth flow for the signed-in user's own workspace."""
@@ -1787,22 +1643,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/microsoft/authorize/check")
     async def microsoft_authorize_check(user: dict = Depends(current_user)):
         """Refresh and verify only this BB user's existing Microsoft authorization."""
-        from bb.mail import service as mail_service
         ws = base_workspace(user)
-        db = ws.mail_db()
-        await db.init()
-        boxes = [b for b in await db.mailboxes()
-                 if b.get("provider") == "graph"
-                 and mail_service.signed_in(settings.secret_key(), b)]
-        if not boxes:
+        if not ws.microsoft_connected():
             return _redirect("/microsoft/authorize", error="No Microsoft mailbox is connected yet.")
-        target = boxes[-1]
-        status = await mail_service.check_mailbox(
-            db, settings.secret_key(), target, settings.worker_env()
-        )
-        return _redirect("/microsoft/authorize",
-                         msg="Connected as " + target["address"] if status == "ok" else "",
-                         error="" if status == "ok" else "Microsoft requires reconnection or is unavailable.")
+        ok, detail = await microsoft_oauth.test_connection(settings, ws)
+        return _redirect("/microsoft/authorize", msg=detail if ok else "",
+                         error="" if ok else detail)
 
     @app.post("/microsoft/authorize/connect")
     async def microsoft_authorize_connect(user: dict = Depends(current_user)):
@@ -1837,19 +1683,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/mailbox", error=f"{email} already sends for the campaign {taken} (one campaign per account).")
         if not email:
             return _redirect("/mailbox", error="Microsoft did not say which mailbox this is. Try again.")
-        from bb.mail import service as mail_service
-        db = ws.mail_db()
-        await db.init()
-        mid, _ = await mail_service.connect_microsoft(
-            db, settings.secret_key(), address=email,
-            refresh_token=data["refresh_token"], env=settings.worker_env(),
-            scopes=str(data.get("scope") or ""),
-            expires_in=int(data.get("expires_in") or 0),
-            access_token=str(data.get("access_token") or ""), verify=False,
-        )
-        # No legacy plaintext token file is written. Old files are migrated on
-        # first vault access; new OAuth grants live only in encrypted SQLite.
-        response = _redirect("/vault?mailbox=" + mid, msg=f"Microsoft connected as {email}.")
+        microsoft_oauth.save_token(ws, data, email)
+        ws.set_mail_provider("microsoft")
+        ws.clear_mailbox_problem()
+        ws.rewrite_config()  # the persona sends from the connected mailbox
+        await ws.restart_worker_if_running("the new mailbox settings")
+        response = _redirect("/mailbox", msg=f"Microsoft connected as {email}.")
         response.delete_cookie(MS_NONCE_COOKIE, path="/microsoft")
         return response
 
@@ -2030,8 +1869,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ── the mail command center ──
     from bb.mail.routes import register_mail_routes
     register_mail_routes(app, settings, current_user, workspace_for, render, _redirect, templates)
-    from bb.ms_vault_routes import register_ms_vault_routes
-    register_ms_vault_routes(app, settings, current_user, base_workspace, render, _redirect, accounts)
     from bb.campaign_routes import register_campaign_routes
     register_campaign_routes(app, settings, current_user, base_workspace, render, _redirect)
 

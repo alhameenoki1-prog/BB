@@ -41,16 +41,7 @@ class GraphAccount(MailAccount):
 
     def __init__(self, mailbox, creds, env):
         super().__init__(mailbox, creds, env)
-        from datetime import datetime
         self._access, self._expires = "", 0.0
-        expires = str(creds.get("token_expires_at") or "")
-        if creds.get("access_token") and expires:
-            try:
-                stamp = datetime.fromisoformat(expires.replace("Z", "+00:00")).timestamp()
-                if stamp > time.time() + 60:
-                    self._access, self._expires = creds["access_token"], stamp
-            except (ValueError, TypeError):
-                pass
         self._sent_folder = ""
         self.creds_changed = False   # a rotated refresh token waits to be stored
 
@@ -96,14 +87,14 @@ class GraphAccount(MailAccount):
         """An access token from the stored refresh token, through the
         site's app registration (MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT)."""
         from harvey.integrations.microsoft import SCOPE as USER_SCOPE
-        cid = self.creds.get("client_id") or self.env.get("MS_CLIENT_ID", "")
+        cid = self.env.get("MS_CLIENT_ID", "")
         if not cid:
             raise TransientError("the site has no Microsoft app registration configured")
         form = {"client_id": cid, "grant_type": "refresh_token", "refresh_token": self.creds["refresh_token"],
                 "scope": USER_SCOPE}
-        if not self.creds.get("public_client") and self.env.get("MS_CLIENT_SECRET"):
+        if self.env.get("MS_CLIENT_SECRET"):
             form["client_secret"] = self.env["MS_CLIENT_SECRET"]
-        tenant = self.creds.get("tenant") or self.env.get("MS_TENANT") or "common"
+        tenant = self.env.get("MS_TENANT") or "common"
         try:
             async with httpx.AsyncClient(timeout=20) as client:
                 r = await client.post(f"{LOGIN}/{tenant}/oauth2/v2.0/token", data=form)
@@ -124,12 +115,6 @@ class GraphAccount(MailAccount):
         data = r.json()
         self._access = data.get("access_token", "")
         self._expires = time.time() + int(data.get("expires_in") or 3600)
-        self.creds["access_token"] = self._access
-        from datetime import datetime, timezone
-        self.creds["token_expires_at"] = datetime.fromtimestamp(self._expires, timezone.utc).isoformat()
-        if data.get("scope"):
-            self.creds["scope"] = data["scope"]
-        self.creds_changed = True
         if not self._access:
             raise AuthError("Microsoft returned no access token")
         rotated = data.get("refresh_token")

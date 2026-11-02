@@ -694,8 +694,6 @@ a.button.secondary {
       <a href="/profile" class="{{ 'active' if path.startswith('/profile') else '' }}">{{ icon('person') }}<span class="t">Profile</span></a>
       <a href="/domains" class="{{ 'active' if path.startswith('/domains') else '' }}">{{ icon('globe') }}<span class="t">Domains</span></a>
       <a href="/links" class="{{ 'active' if path == '/links' else '' }}">{{ icon('link') }}<span class="t">Link Manager</span></a>
-      <a href="/vault" class="{{ 'active' if path.startswith('/vault') else '' }}">{{ icon('shield') }}<span class="t">Microsoft Vault</span></a>
-      <a href="/security/mfa" class="{{ 'active' if path.startswith('/security/mfa') else '' }}">{{ icon('key') }}<span class="t">Account security</span></a>
       <a href="/mailbox" class="{{ 'active' if path.startswith('/mailbox') or path.startswith('/gmail') else '' }}">{{ icon('mail') }}<span class="t">Mailbox</span></a>
       <a href="/apikey" class="{{ 'active' if path.startswith('/apikey') else '' }}">{{ icon('key') }}<span class="t">AI provider</span></a>
     </nav>

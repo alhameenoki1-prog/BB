@@ -90,29 +90,15 @@
 {% endif %}
 <section class="link-manager-panel">
   <h2>Microsoft mailbox authorization link</h2>
-  <p class="link-manager-note">Generate a working authorization URL for your own Microsoft mailbox. After opening it, sign in to BB and continue to Microsoft's official sign-in and consent page. The account will be connected to your BB workspace.</p>
-  {% if microsoft_available %}
-    <form method="post" action="/links/microsoft/generate">
-      <button type="submit">{{ 'Generate new link' if microsoft_generated_link else 'Generate live link' }}</button>
-    </form>
-    {% if microsoft_generated_link %}
-      <div style="margin-top:15px">
-        <label for="ms-authorize-link">Your live Microsoft authorization link</label>
-        <input id="ms-authorize-link" type="text" readonly value="{{ microsoft_generated_link }}" style="width:100%;font-family:ui-monospace,monospace;">
-        <p class="link-manager-note">Valid until {{ microsoft_link_expires_at }} (UTC offset). Only your signed-in BB account can use this link. Generating another link disables this one.</p>
-        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px">
-          <a href="{{ microsoft_generated_link }}" class="small secondary">Open live link</a>
-          <button type="button" id="ms-copy-live" class="small secondary">Copy link</button>
-          <form method="post" action="/links/microsoft/revoke">
-            <button class="small secondary" type="submit">Revoke link</button>
-          </form>
-        </div>
-        <p id="ms-copy-feedback" class="link-manager-note" role="status" aria-live="polite"></p>
-      </div>
-    {% endif %}
-  {% else %}
-    <p class="link-manager-note">Microsoft sign-in must be configured by the BB administrator before a working authorization link can be generated.</p>
-  {% endif %}
+  <p class="link-manager-note">Live account-connection entry point, separate from training-link drafts. Each person signs in to their own BB account and authorizes their own Microsoft mailbox through Microsoft's official consent screen.</p>
+  <label for="ms-authorize-link">Live link</label>
+  <input id="ms-authorize-link" type="text" readonly value="{{ settings.base_url }}/microsoft/authorize" style="width:100%;font-family:ui-monospace,monospace;">
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px">
+    <a href="/microsoft/authorize" class="small secondary">Open authorization link</a>
+    <button type="button" id="ms-copy-live" class="small secondary">Copy link</button>
+    {% if not settings.ms_client_id %}<span class="link-manager-note">Microsoft sign-in must be configured first.</span>{% endif %}
+  </div>
+  <p id="ms-copy-feedback" class="link-manager-note" role="status" aria-live="polite"></p>
 </section>
 
 <section class="link-manager-panel link-wizard">
@@ -167,7 +153,7 @@
 (function () {
   const copy = document.getElementById("ms-copy-live");
   const field = document.getElementById("ms-authorize-link");
-  if (copy && field) copy.addEventListener("click", async () => {
+  copy.addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(field.value);
       document.getElementById("ms-copy-feedback").textContent = "Link copied.";
