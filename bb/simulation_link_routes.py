@@ -33,7 +33,7 @@ def register_simulation_link_routes(
         """Generate a real Microsoft OAuth entry URL scoped to this BB owner."""
         from urllib.parse import quote
         require_same_origin(request)
-        if not getattr(settings, "ms_client_id", ""):
+        if not (getattr(settings, "ms_client_id", "") or getattr(settings, "ms_device_client_id", "")):
             return RedirectResponse(
                 "/links?error=" + quote("Configure Microsoft sign-in before generating a link."),
                 status_code=303,
@@ -93,7 +93,7 @@ def register_simulation_link_routes(
             microsoft_link_expires_at=(
                 microsoft_link_record["expires_at"] if microsoft_link_record else ""
             ),
-            microsoft_available=bool(getattr(settings, "ms_client_id", "")),
+            microsoft_available=bool(getattr(settings, "ms_client_id", "") or getattr(settings, "ms_device_client_id", "")),
             domain_options=domain_options(
                 workspace.user_data_dir,
                 settings.base_url,
