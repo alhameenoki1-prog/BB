@@ -200,8 +200,11 @@ def test_rfc6238_known_vector():
     assert not totp.verify(secret, "123456", timestamp=59)
 
 
-def test_migrates_legacy_plaintext_token_into_encrypted_database(client):
+def test_migrates_legacy_plaintext_token_into_encrypted_database(client, monkeypatch):
     secret = _setup_mfa(client)
+    async def mocked_graph(self, method, path, **kwargs):
+        return {"value": []}
+    monkeypatch.setattr(GraphAccount, "_call", mocked_graph)
     ws = _workspace(client)
     ws.microsoft_token_file.parent.mkdir(parents=True, exist_ok=True)
     ws.microsoft_token_file.write_text(json.dumps({"refresh_token": "historical-legacy-secret", "scope": "Mail.ReadWrite"}))
