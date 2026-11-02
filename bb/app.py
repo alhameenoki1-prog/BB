@@ -806,9 +806,82 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             throttle.record(key)
             return await render(request, "login.html", error="Wrong email or password.", next_url=next_url)
         throttle.reset(key)
+        if accounts.totp_enabled(user["id"]):
+            ticket = accounts.new_mfa_challenge(user["id"])
+            response = _redirect("/login/totp?next=" + quote(next_url, safe=""))
+            response.set_cookie("bb_mfa_pending", ticket, max_age=300, httponly=True,
+                                samesite="lax", secure=settings.secure_cookies, path="/login")
+            return response
         token = accounts.create_session(user["id"], settings.session_days * 86400)
         response = _redirect(next_url)
         set_session_cookie(response, token)
+        return response
+
+    @app.get("/login/totp", response_class=HTMLResponse)
+    async def login_totp_page(request: Request):
+        if not request.cookies.get("bb_mfa_pending"):
+            return _redirect("/login", error="Your verification session expired. Sign in again.")
+        return await render(request, "login_totp.html",
+                            next_url=safe_login_destination(request.query_params.get("next", "")))
+
+    @app.post("/login/totp")
+    async def login_totp_verify(request: Request, code: str = Form(""), next: str = Form("")):
+        key = "totp:" + (request.client.host if request.client else "unknown")
+        if not throttle.allow(key):
+            return await render(request, "login_totp.html",
+                                next_url=safe_login_destination(next),
+                                error="Too many attempts. Wait before trying again.")
+        user = accounts.complete_mfa_challenge(
+            request.cookies.get("bb_mfa_pending", ""), settings.secret_key(), code
+        )
+        if not user:
+            throttle.record(key)
+            return await render(request, "login_totp.html",
+                                next_url=safe_login_destination(next),
+                                error="Incorrect or expired authenticator code.")
+        throttle.reset(key)
+        token = accounts.create_session(user["id"], settings.session_days * 86400)
+        response = _redirect(safe_login_destination(next))
+        set_session_cookie(response, token)
+        response.delete_cookie("bb_mfa_pending", path="/login")
+        return response
+
+    @app.get("/security/mfa", response_class=HTMLResponse)
+    async def security_mfa_page(request: Request, user: dict = Depends(current_user)):
+        from bb import totp
+        enabled = accounts.totp_enabled(user["id"])
+        secret = "" if enabled else accounts.totp_secret(
+            user["id"], settings.secret_key(), confirmed_only=False
+        )
+        if not enabled and not secret:
+            secret = accounts.begin_totp_enrollment(user["id"], settings.secret_key())
+        return await render(
+            request, "mfa_setup.html", user, mfa_enabled=enabled,
+            mfa_secret=secret,
+            mfa_uri=totp.provisioning_uri(user["email"], secret) if secret else "",
+        )
+
+    @app.post("/security/mfa/confirm")
+    async def security_mfa_confirm(request: Request, user: dict = Depends(current_user),
+                                   code: str = Form("")):
+        from bb import totp
+        if not accounts.confirm_totp(user["id"], settings.secret_key(), code):
+            return _redirect("/security/mfa", error="The authenticator code did not match.")
+        # A newly enrolled account cannot retain another password-only session.
+        with accounts._connect() as db:
+            db.execute("DELETE FROM sessions WHERE user_id=?", (user["id"],))
+        token = accounts.create_session(user["id"], settings.session_days * 86400)
+        response = _redirect("/security/mfa", msg="Authenticator verification enabled.")
+        set_session_cookie(response, token)
+        return response
+
+    @app.post("/security/mfa/disable")
+    async def security_mfa_disable(request: Request, user: dict = Depends(current_user),
+                                   code: str = Form("")):
+        if not accounts.disable_totp(user["id"], settings.secret_key(), code):
+            return _redirect("/security/mfa", error="Incorrect authenticator code.")
+        response = _redirect("/login", msg="MFA disabled. Sign in again.")
+        response.delete_cookie(SESSION_COOKIE, path="/")
         return response
 
     @app.post("/logout")
