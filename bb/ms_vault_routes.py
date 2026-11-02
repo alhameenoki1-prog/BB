@@ -14,7 +14,7 @@ from bb.mail import crypto, service
 from bb.mail.providers import AuthError, TransientError
 from bb.mail.providers.graph import GraphAccount
 
-_ID = re.compile(r"^[a-zA-Z0-9.!_~-]{1,180}$")
+_ID = re.compile(r"^[a-zA-Z0-9.!_~+=:-]{1,180}$")
 _MAX_FILE = 4 * 1024 * 1024
 
 
@@ -54,6 +54,8 @@ def register_ms_vault_routes(app, settings, current_user, base_workspace, render
         try:
             value = await account._call(method, path, **kwargs)
         except AuthError as exc:
+            if "(403)" in str(exc):
+                raise HTTPException(403, "This Microsoft operation is not permitted by the granted scopes.") from exc
             await db.update_mailbox(mailbox_id, status="reconnect", status_detail=str(exc)[:250])
             raise HTTPException(409, "Microsoft authorization needs reconnection.") from exc
         except TransientError as exc:
@@ -182,9 +184,11 @@ def register_ms_vault_routes(app, settings, current_user, base_workspace, render
                         "Authorization": "Bearer " + token,
                         "Content-Type": "application/octet-stream",
                     })
-            if response.status_code in (401, 403):
+            if response.status_code == 403:
+                raise HTTPException(403, "Microsoft denied OneDrive file permissions.")
+            if response.status_code == 401:
                 await db.update_mailbox(mailbox_id, status="reconnect",
-                                        status_detail="Microsoft authorization needs reconnection or Files.ReadWrite permission.")
+                                        status_detail="Microsoft authorization needs reconnection.")
                 raise HTTPException(409, "Microsoft refused OneDrive authorization.")
             if response.status_code >= 400:
                 raise HTTPException(502, "OneDrive upload failed.")
