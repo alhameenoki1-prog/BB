@@ -350,7 +350,7 @@ def test_reference_style_vault_lists_status_and_actions_without_exposing_tokens(
     assert 'data-status="ok"' in html
     assert 'data-status="reconnect"' in html
     assert "first@outlook.com" in html and "second@outlook.com" in html
-    assert 'href="/vault?mailbox=' + active + '#vault-inbox"' in html
+    assert 'href="/vault/mailbox/' + active + '/inbox"' in html
     assert 'href="/vault?mailbox=' + active + '#vault-files"' in html
     assert 'href="/vault/mailbox/' + active + '/organization"' in html
     assert 'id="vault-inbox"' in html and 'id="vault-files"' in html
@@ -359,3 +359,90 @@ def test_reference_style_vault_lists_status_and_actions_without_exposing_tokens(
     assert "first-sensitive-refresh" not in html
     assert "second-sensitive-refresh" not in html
     assert "document.cookie" not in html
+
+
+def test_mail_browser_filters_reads_sends_replies_and_moves_mail_to_trash(client, monkeypatch):
+    _setup_mfa(client)
+    ws = _workspace(client)
+    db = ws.mail_db()
+    asyncio.run(db.init())
+    mid, _ = asyncio.run(service.connect_microsoft(
+        db, client.settings.secret_key(), address="owner@outlook.com",
+        refresh_token="private-token-that-must-not-be-shown",
+        env=client.settings.worker_env(), verify=False,
+        scopes="offline_access Mail.ReadWrite Mail.Send",
+    ))
+    operations = []
+
+    async def graph_stub(self, method, path, **kwargs):
+        operations.append((self.address, method, path, kwargs))
+        if method == "GET" and path.startswith("/me/mailFolders/"):
+            return {"value": [
+                {"id": "msg-1", "subject": "Project report", "bodyPreview": "Report attached",
+                 "isRead": False, "hasAttachments": True,
+                 "from": {"emailAddress": {"name": "Research", "address": "research@example.com"}},
+                 "receivedDateTime": "2026-10-01T12:00:00Z"},
+                {"id": "msg-2", "subject": "Social plans", "bodyPreview": "Coffee after lunch",
+                 "isRead": True, "hasAttachments": False,
+                 "from": {"emailAddress": {"name": "Friend", "address": "friend@example.com"}},
+                 "receivedDateTime": "2026-10-02T12:00:00Z"},
+            ]}
+        if method == "GET" and path == "/me/messages/msg-1":
+            return {"id": "msg-1", "subject": "Project report",
+                    "from": {"emailAddress": {"name": "Research", "address": "research@example.com"}},
+                    "body": {"contentType": "Text", "content": "Report attached"},
+                    "receivedDateTime": "2026-10-01T12:00:00Z"}
+        return {}
+
+    monkeypatch.setattr(GraphAccount, "_call", graph_stub)
+
+    inbox = client.get(f"/vault/mailbox/{mid}/inbox")
+    assert inbox.status_code == 200
+    assert "Project report" in inbox.text and "Social plans" in inbox.text
+    assert "private-token-that-must-not-be-shown" not in inbox.text
+    assert "Compose email" in inbox.text and "Sent" in inbox.text
+
+    filtered = client.get(
+        f"/vault/mailbox/{mid}/inbox",
+        params={"folder": "inbox", "q": "report", "unread": "true",
+                "attachments": "true"},
+    )
+    assert filtered.status_code == 200
+    assert "Project report" in filtered.text
+    assert "Social plans" not in filtered.text
+    assert operations[-1][3]["params"]["$filter"] == (
+        "isRead eq false and hasAttachments eq true"
+    )
+
+    trash = client.post(f"/vault/mailbox/{mid}/message/msg-1/trash")
+    assert trash.status_code == 303
+    assert any(op[1] == "POST" and op[2] == "/me/messages/msg-1/move" and
+               op[3]["json"]["destinationId"] == "deleteditems" for op in operations)
+    read = client.post(
+        f"/vault/mailbox/{mid}/message/msg-1/read-state",
+        data={"state": "read"},
+    )
+    assert read.status_code == 303
+    assert any(op[1] == "PATCH" and op[2] == "/me/messages/msg-1"
+               and op[3]["json"] == {"isRead": True} for op in operations)
+    bad = client.post(
+        f"/vault/mailbox/{mid}/message/msg-1/read-state", data={"state": "erase"},
+    )
+    assert bad.status_code == 400
+    assert client.get(f"/vault/mailbox/{mid}/inbox?folder=not-a-folder").status_code == 400
+
+    send = client.post(
+        f"/vault/mailbox/{mid}/send",
+        data={"to": "contact@example.com", "subject": "Hi", "body": "Testing Graph mail"},
+    )
+    assert send.status_code == 303
+    assert any(op[1] == "POST" and op[2] == "/me/sendMail" for op in operations)
+    reply = client.post(
+        f"/vault/mailbox/{mid}/message/msg-1/reply", data={"body": "Acknowledged"},
+    )
+    assert reply.status_code == 303
+    assert any(op[1] == "POST" and op[2] == "/me/messages/msg-1/reply" for op in operations)
+    readpage = client.get(f"/vault/mailbox/{mid}/message/msg-1")
+    assert readpage.status_code == 200
+    assert "Report attached" in readpage.text
+    assert "Delete (move to trash)" in readpage.text
