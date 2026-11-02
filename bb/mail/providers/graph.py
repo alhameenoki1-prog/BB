@@ -41,7 +41,16 @@ class GraphAccount(MailAccount):
 
     def __init__(self, mailbox, creds, env):
         super().__init__(mailbox, creds, env)
+        from datetime import datetime
         self._access, self._expires = "", 0.0
+        expires = str(creds.get("token_expires_at") or "")
+        if creds.get("access_token") and expires:
+            try:
+                stamp = datetime.fromisoformat(expires.replace("Z", "+00:00")).timestamp()
+                if stamp > time.time() + 60:
+                    self._access, self._expires = creds["access_token"], stamp
+            except (ValueError, TypeError):
+                pass
         self._sent_folder = ""
         self.creds_changed = False   # a rotated refresh token waits to be stored
 
@@ -115,6 +124,7 @@ class GraphAccount(MailAccount):
         data = r.json()
         self._access = data.get("access_token", "")
         self._expires = time.time() + int(data.get("expires_in") or 3600)
+        self.creds["access_token"] = self._access
         from datetime import datetime, timezone
         self.creds["token_expires_at"] = datetime.fromtimestamp(self._expires, timezone.utc).isoformat()
         if data.get("scope"):
