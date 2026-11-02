@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Microsoft organization{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Microsoft Graph · Organization</div>
+<h1>{{ box.address }}</h1><p class="lead">Delegated organization information (read-only).</p></div>
+<a href="/vault?mailbox={{ box.id }}" class="small secondary">Back to vault</a></div>
+<div class="card">
+  {% if org_error %}<p class="tag warn" role="alert">{{ org_error }}</p>{% endif %}
+  {% if organizations %}
+    {% for org in organizations %}
+      <h2>{{ org.displayName or "Organization" }}</h2><p>ID: <code>{{ org.id }}</code></p>
+      {% if org.verifiedDomains %}<p>Verified domains: {% for dom in org.verifiedDomains %}{{ dom.name }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+    {% endfor %}
+  {% else %}<p>No organization metadata returned. A Microsoft personal account may not belong to an organization.</p>{% endif %}
+</div>
+{% endblock %}
