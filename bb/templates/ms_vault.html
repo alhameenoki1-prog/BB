@@ -124,7 +124,7 @@ body:has(.bb-vault) {
         <td>{{ m.created_at or '—' }}</td>
         <td>
           <div class="vault-quick">
-            <a href="/vault?mailbox={{ m.id }}#vault-inbox">Inbox</a>
+            <a href="/vault/mailbox/{{ m.id }}/inbox">Open mailbox</a>
             <a href="/vault?mailbox={{ m.id }}#vault-files">OneDrive</a>
             <a href="/vault/mailbox/{{ m.id }}/organization">Directory</a>
             <details class="vault-details">
