@@ -147,7 +147,8 @@ async def connect_gmail(db: MailDB, secret: str, *, address: str, refresh_token:
 
 async def connect_microsoft(db: MailDB, secret: str, *, address: str, refresh_token: str, env: dict,
                             scopes: str = "", expires_in: int = 0, client_id: str = "",
-                            public_client: bool = False, verify: bool = True) -> tuple[str, str]:
+                            public_client: bool = False, verify: bool = True,
+                            access_token: str = "") -> tuple[str, str]:
     """Store an independently authorized Microsoft mailbox in the AES-GCM vault.
 
     A successful OAuth exchange and verified Graph /me response are enough
@@ -163,6 +164,8 @@ async def connect_microsoft(db: MailDB, secret: str, *, address: str, refresh_to
         "scope": scopes,
         "token_expires_at": expiry,
     }
+    if access_token and expiry:
+        creds["access_token"] = access_token
     if client_id:
         creds["client_id"] = client_id
     if public_client:
