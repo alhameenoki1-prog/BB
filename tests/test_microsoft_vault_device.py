@@ -300,3 +300,20 @@ async def test_microsoft_device_endpoints_use_official_code_grant_and_throttle(m
     assert status == "connected" and data["refresh_token"] == "server-secret-refresh"
     assert calls[1][1]["grant_type"] == ["urn:ietf:params:oauth:grant-type:device_code"]
     assert calls[1][1]["client_id"] == ["public-device"]
+
+
+def test_https_production_enforces_mfa_for_entire_bb_app(tmp_path, monkeypatch):
+    monkeypatch.setattr("bb.app.check_domain", _dns_stub)
+    settings = _settings(tmp_path, BB_BASE_URL="https://testserver")
+    assert settings.require_mfa is True and settings.secure_cookies is True
+    with TestClient(create_app(settings), base_url="https://testserver", follow_redirects=False) as c:
+        c.post("/login", data=ADMIN)
+        denied = c.get("/")
+        assert denied.status_code == 303 and denied.headers["location"] == "/security/mfa"
+        assert c.get("/security/mfa").status_code == 200
+        user = Accounts(settings.accounts_db).get_by_email(ADMIN["email"])
+        secret = Accounts(settings.accounts_db).totp_secret(
+            user["id"], settings.secret_key(), confirmed_only=False
+        )
+        assert c.post("/security/mfa/confirm", data={"code": totp.current_code(secret)}).status_code == 303
+        assert c.get("/").status_code == 200
