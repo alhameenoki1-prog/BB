@@ -33,6 +33,11 @@ class Settings:
         self.home = Path(get("BB_HOME") or PROJECT_ROOT / "data" / "bb").expanduser().resolve()
         self.base_url = get("BB_BASE_URL", "http://localhost:8000").rstrip("/")
         self.secure_cookies = self.base_url.startswith("https://")
+        # Default to mandatory BB MFA when serving the production HTTPS site.
+        # Local HTTP development can opt in with BB_REQUIRE_MFA=1.
+        self.require_mfa = get("BB_REQUIRE_MFA", "1" if self.secure_cookies else "0").lower() in (
+            "1", "true", "yes", "on"
+        )
         # Operator-controlled destination approvals; deny by default.
         self.training_destination_hostnames = tuple(
             sorted({
