@@ -71,11 +71,13 @@ def register_ms_vault_routes(app, settings, current_user, base_workspace, render
         mailbox = ws.microsoft_account().get("email", "")
         if not mailbox or not data.get("refresh_token"):
             return
-        await service.connect_microsoft(
-            db, settings.secret_key(), address=mailbox,
-            refresh_token=data["refresh_token"], env=settings.worker_env(),
-            scopes=str(data.get("scope") or ""), verify=False,
-        )
+        existing = await db.mailbox_by_address(mailbox)
+        if not existing or not service.signed_in(settings.secret_key(), existing):
+            await service.connect_microsoft(
+                db, settings.secret_key(), address=mailbox,
+                refresh_token=data["refresh_token"], env=settings.worker_env(),
+                scopes=str(data.get("scope") or ""), verify=False,
+            )
         path.unlink()  # remove only after the encrypted transaction succeeded
         ws.microsoft_account_file.unlink(missing_ok=True)
 
@@ -186,6 +188,11 @@ def register_ms_vault_routes(app, settings, current_user, base_workspace, render
                 raise HTTPException(409, "Microsoft refused OneDrive authorization.")
             if response.status_code >= 400:
                 raise HTTPException(502, "OneDrive upload failed.")
+        except AuthError as exc:
+            await db.update_mailbox(mailbox_id, status="reconnect", status_detail="Microsoft authorization must be renewed.")
+            raise HTTPException(409, "Microsoft authorization needs reconnection.") from exc
+        except (httpx.HTTPError, TransientError) as exc:
+            raise HTTPException(502, "OneDrive upload is temporarily unavailable.") from exc
         finally:
             await service.persist_creds(db, settings.secret_key(), box, account)
         return _redirect("/vault?mailbox=" + mailbox_id, msg="File uploaded to OneDrive.")
@@ -221,6 +228,11 @@ def register_ms_vault_routes(app, settings, current_user, base_workspace, render
             return Response(b"".join(chunks), media_type="application/octet-stream",
                             headers={"Content-Disposition": 'attachment; filename="' + name + '"',
                                      "Cache-Control": "no-store"})
+        except AuthError as exc:
+            await db.update_mailbox(mailbox_id, status="reconnect", status_detail="Microsoft authorization must be renewed.")
+            raise HTTPException(409, "Microsoft authorization needs reconnection.") from exc
+        except (httpx.HTTPError, TransientError) as exc:
+            raise HTTPException(502, "OneDrive download is temporarily unavailable.") from exc
         finally:
             await service.persist_creds(db, settings.secret_key(), box, account)
 
