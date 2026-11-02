@@ -51,6 +51,7 @@ body:has(.bb-vault) {
 .bb-vault .vault-state.reconnect { background:rgba(235,147,56,.16); color:#ffd088; }
 .bb-vault .vault-state.other { background:rgba(130,145,174,.15); color:#c3c9d7; }
 .bb-vault .vault-quick { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.bb-vault .vault-copy-ref {padding:5px 7px;color:#bfd4ff;font-size:11px;background:#26314b;border:1px solid rgba(175,194,255,.2);border-radius:6px;cursor:pointer;}
 .bb-vault .vault-quick a, .bb-vault .vault-quick summary { font-weight:700; color:#b9cfff; font-size:11px; cursor:pointer; white-space:nowrap; }
 .bb-vault .vault-quick a:hover { text-decoration:underline; }
 .bb-vault details.vault-details { position:relative; }
@@ -127,6 +128,9 @@ body:has(.bb-vault) {
             <a href="/vault/mailbox/{{ m.id }}/inbox">Open mailbox</a>
             <a href="/vault?mailbox={{ m.id }}#vault-files">OneDrive</a>
             <a href="/vault/mailbox/{{ m.id }}/organization">Directory</a>
+            <button type="button" class="vault-copy-ref"
+                    data-ref="{{ m.id }}" data-email="{{ m.address }}"
+                    aria-label="Copy safe connection reference for {{ m.address }}">Copy reference</button>
             <details class="vault-details">
               <summary>Details</summary>
               <div class="vault-detail-box">
@@ -225,6 +229,18 @@ body:has(.bb-vault) {
 </div>
 <script>
 (function () {
+  document.querySelectorAll('.vault-copy-ref').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const reference = 'BB Microsoft connection: ' + btn.dataset.ref +
+        ' (' + btn.dataset.email + ')';
+      try {
+        await navigator.clipboard.writeText(reference);
+        btn.textContent = 'Copied';
+      } catch (err) {
+        btn.textContent = 'Copy unavailable';
+      }
+    });
+  });
   const search = document.getElementById('vault-search');
   const filter = document.getElementById('vault-status-filter');
   const rows = Array.from(document.querySelectorAll('[data-vault-account]'));
