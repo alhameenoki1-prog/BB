@@ -66,6 +66,7 @@ def test_state_is_signed_per_user_and_expires(tmp_path):
 # ── the Mailbox page ──
 
 def test_microsoft_connect_round_trip(client, monkeypatch):
+    """Official Microsoft callback writes one AES-GCM-sealed Graph mailbox."""
     _as_user(client)
     client.post("/profile", data=PROFILE)
     r = client.post("/microsoft/connect")
@@ -73,17 +74,16 @@ def test_microsoft_connect_round_trip(client, monkeypatch):
     url = r.headers["location"]
     assert url.startswith("https://login.microsoftonline.com/common/oauth2/v2.0/authorize?")
     assert "redirect_uri=http%3A%2F%2Ftestserver%2Fmicrosoft%2Fcallback" in url
-    assert "login_hint=jane%40acme-research.com" in url     # the profile address, as a hint only
+    assert "login_hint=jane%40acme-research.com" in url
     state = url.split("state=")[1].split("&")[0]
 
     async def fake_exchange(settings, code, redirect=""):
         assert code == "the-code" and not redirect
-        return {"refresh_token": "rt-1", "access_token": "at-1", "scope": "Mail.Send"}
-
-    seen_tokens = []
+        return {"refresh_token": "rt-1", "access_token": "at-1",
+                "scope": "offline_access Mail.ReadWrite", "expires_in": 3600}
 
     async def fake_email(token):
-        seen_tokens.append(token)
+        assert token == "at-1"
         return "jane@outlook.com"
 
     monkeypatch.setattr(microsoft_oauth, "exchange_code", fake_exchange)
@@ -94,39 +94,20 @@ def test_microsoft_connect_round_trip(client, monkeypatch):
     assert "Microsoft%20said%3A%20User%20declined" in denied.headers["location"]
     ok = client.get("/microsoft/callback", params={"code": "the-code", "state": state})
     assert "Microsoft%20connected%20as%20jane%40outlook.com" in ok.headers["location"]
+    assert ok.headers["location"].startswith("/vault?mailbox=")
 
     ws = _user_ws(client)
-    token = json.loads(ws.microsoft_token_file.read_text())
-    assert token["refresh_token"] == "rt-1"       # the file harvey.integrations.microsoft reads
-    assert ws.microsoft_account()["email"] == "jane@outlook.com"
-    assert ws.mail_provider() == "microsoft" and ws.mailbox_connected() and ws.sending_address() == "jane@outlook.com"
-    config = yaml.safe_load(ws.config_file.read_text())
-    assert config["persona"]["email"] == "jane@outlook.com" and config["channels"]["email"]["provider"] == "microsoft"
-    # The worker signs in through the site's app registration, as this user.
-    env = ws.worker_env()
-    assert env["M365_CLIENT_ID"] == "ms-cid" and env["M365_CLIENT_SECRET"] == "ms-sec" and env["M365_TENANT_ID"] == "common"
-    assert "M365_MAILBOX" not in env
-    assert ws.mailbox_tier()[0] == "consumer"     # a personal Outlook address is paced gently
-
-    page = client.get("/mailbox")
-    assert "Connected" in page.text and "jane@outlook.com" in page.text and 'action="/microsoft/disconnect"' in page.text
-    assert 'value="microsoft" checked' in page.text
-
-    # Test connection: a rotated refresh token is kept.
-    async def fake_refresh(settings, refresh_token):
-        assert refresh_token == "rt-1"
-        return {"access_token": "at-2", "refresh_token": "rt-2"}
-
-    monkeypatch.setattr(microsoft_oauth, "refresh_access_token", fake_refresh)
-    r = client.post("/microsoft/test")
-    assert "Connected%20as%20jane%40outlook.com" in r.headers["location"]
-    assert seen_tokens == ["at-1", "at-2"]
-    assert json.loads(ws.microsoft_token_file.read_text())["refresh_token"] == "rt-2"
-
-    assert client.post("/microsoft/disconnect").status_code == 303
-    assert not ws.microsoft_token_file.exists() and not ws.microsoft_connected()
-    assert ws.mail_provider() != "microsoft"
-
+    db = ws.mail_db()
+    box = asyncio.run(db.mailbox_by_address("jane@outlook.com"))
+    assert box["status"] == "ok" and box["provider"] == "graph"
+    assert box["granted_scopes"] == "offline_access Mail.ReadWrite"
+    assert box["token_expires_at"]
+    assert "rt-1" not in box["creds"]
+    assert service.open_creds(client.settings.secret_key(), box)["refresh_token"] == "rt-1"
+    assert service.open_creds(client.settings.secret_key(), box)["access_token"] == "at-1"
+    assert not ws.microsoft_token_file.exists()
+    # Full mailbox UI is behind BB's authenticator enrollment.
+    assert client.get("/vault").headers["location"] == "/security/mfa"
 
 def test_microsoft_connect_needs_the_site_app(tmp_path, monkeypatch):
     monkeypatch.setattr("bb.app.check_domain", _dns_stub)
