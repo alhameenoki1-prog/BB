@@ -1161,11 +1161,7 @@ class Workspace:
                 pass
 
     def microsoft_connected(self) -> bool:
-        try:
-            data = json.loads(self.microsoft_token_file.read_text())
-            return bool(isinstance(data, dict) and data.get("refresh_token"))
-        except (OSError, ValueError):
-            return False
+        return bool(self.microsoft_token().get("refresh_token"))
 
     def microsoft_account(self) -> dict:
         try:
@@ -1175,10 +1171,18 @@ class Workspace:
             return {}
 
     def microsoft_token(self) -> dict:
+        """Read older single-mailbox data for migration; decrypt modern files."""
         try:
             data = json.loads(self.microsoft_token_file.read_text())
-            return data if isinstance(data, dict) else {}
-        except (OSError, ValueError):
+            if not isinstance(data, dict):
+                return {}
+            if data.get("refresh_token_ciphertext"):
+                from bb.mail.crypto import open_sealed
+                data["refresh_token"] = open_sealed(
+                    self.settings.secret_key(), data["refresh_token_ciphertext"]
+                )
+            return data
+        except (OSError, ValueError, TypeError):
             return {}
 
     def disconnect_microsoft(self):

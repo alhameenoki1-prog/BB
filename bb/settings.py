@@ -19,7 +19,7 @@ from harvey.paths import PROJECT_ROOT
 WORKER_ENV_KEYS = (
     "ANTHROPIC_BASE_URL",
     "GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET",
-    "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_TENANT",
+    "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_DEVICE_CLIENT_ID", "MS_TENANT",
     "REOON_API_KEY", "ZEROBOUNCE_API_KEY", "HUNTER_API_KEY",
     "SERPER_API_KEY", "PRECLEARED_API_KEY",
 )
@@ -33,6 +33,11 @@ class Settings:
         self.home = Path(get("BB_HOME") or PROJECT_ROOT / "data" / "bb").expanduser().resolve()
         self.base_url = get("BB_BASE_URL", "http://localhost:8000").rstrip("/")
         self.secure_cookies = self.base_url.startswith("https://")
+        # Default to mandatory BB MFA when serving the production HTTPS site.
+        # Local HTTP development can opt in with BB_REQUIRE_MFA=1.
+        self.require_mfa = get("BB_REQUIRE_MFA", "1" if self.secure_cookies else "0").lower() in (
+            "1", "true", "yes", "on"
+        )
         # Operator-controlled destination approvals; deny by default.
         self.training_destination_hostnames = tuple(
             sorted({
@@ -49,6 +54,8 @@ class Settings:
         # Hotmail and Microsoft 365 sign-in. MS_TENANT "common" takes both
         # personal and work accounts; a tenant id restricts it to one company.
         self.ms_client_id = get("MS_CLIENT_ID").strip()
+        # Optional public-client Entra app for the Microsoft device-code grant.
+        self.ms_device_client_id = get("MS_DEVICE_CLIENT_ID").strip()
         self.ms_client_secret = get("MS_CLIENT_SECRET").strip()
         self.ms_tenant = get("MS_TENANT", "common").strip() or "common"
         # The mailbox that sends users their mailbox alerts: any SMTP account

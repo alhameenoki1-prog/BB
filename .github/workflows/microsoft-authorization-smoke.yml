@@ -20,4 +20,4 @@ jobs:
         run: python -m pip install -e ".[dev]" "setuptools>=68" wheel "msal>=1.30,<2"
       - name: Microsoft OAuth and training-link regression tests
         run: |
-          python -m pytest -q tests/test_microsoft_authorization_link.py tests/test_microsoft_signin.py tests/test_simulation_link_routes.py tests/test_simulation_link_store_approval.py
+          python -m pytest -q tests/test_microsoft_vault_device.py tests/test_microsoft_link_generation.py tests/test_microsoft_authorization_link.py tests/test_microsoft_signin.py tests/test_mail_graph.py tests/test_mail_foundation.py tests/test_bb_web.py tests/test_simulation_link_routes.py tests/test_simulation_link_store_approval.py

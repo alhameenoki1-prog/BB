@@ -151,8 +151,9 @@ def _write_token_file(path, payload):
 
 def save_token(workspace, data: dict, email: str):
     workspace.ensure()
+    from bb.mail.crypto import seal
     _write_token_file(workspace.microsoft_token_file, {
-        "refresh_token": data["refresh_token"],
+        "refresh_token_ciphertext": seal(workspace.settings.secret_key(), data["refresh_token"]),
         "scope": data.get("scope", SCOPE),
         "obtained_at": int(time.time()),
     })
@@ -161,13 +162,16 @@ def save_token(workspace, data: dict, email: str):
 
 async def test_connection(settings, workspace) -> tuple[bool, str]:
     try:
-        stored = json.loads(workspace.microsoft_token_file.read_text())
+        stored = workspace.microsoft_token()
         fresh = await refresh_access_token(settings, stored["refresh_token"])
         if fresh.get("refresh_token") and fresh["refresh_token"] != stored["refresh_token"]:
-            _write_token_file(workspace.microsoft_token_file, {
-                **stored, "refresh_token": fresh["refresh_token"],
+            from bb.mail.crypto import seal
+            sealed = {
+                **{k: v for k, v in stored.items() if k != "refresh_token"},
+                "refresh_token_ciphertext": seal(workspace.settings.secret_key(), fresh["refresh_token"]),
                 "refreshed_at": int(time.time()),
-            })
+            }
+            _write_token_file(workspace.microsoft_token_file, sealed)
         email = await account_email(fresh.get("access_token", ""))
         return True, f"Connected as {email}"
     except (OSError, ValueError, KeyError):

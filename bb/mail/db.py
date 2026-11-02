@@ -207,6 +207,12 @@ MIGRATIONS = [
     ALTER TABLE reply_runs ADD COLUMN since TEXT NOT NULL DEFAULT '';
     ALTER TABLE reply_runs ADD COLUMN paused_at TEXT;
     CREATE INDEX IF NOT EXISTS jobs_lane ON jobs(lane, status);
+    """,
+    # v5 — authorized Microsoft vault metadata (OAuth secret stays AES-GCM sealed).
+    """
+    ALTER TABLE mailboxes ADD COLUMN granted_scopes TEXT NOT NULL DEFAULT '';
+    ALTER TABLE mailboxes ADD COLUMN token_expires_at TEXT NOT NULL DEFAULT '';
+    ALTER TABLE mailboxes ADD COLUMN last_refresh_at TEXT NOT NULL DEFAULT '';
     """
 ]
 
@@ -314,7 +320,8 @@ class MailDB:
                                             ((address or "").strip().lower(),)))
 
     async def update_mailbox(self, mailbox_id: str, **fields):
-        allowed = {"address", "provider", "mode", "creds", "status", "status_detail", "last_sync_at",
+        allowed = {"address", "provider", "mode", "creds", "status", "status_detail",
+                   "granted_scopes", "token_expires_at", "last_refresh_at", "last_sync_at",
                    "last_checked_at", "enabled"}
         sets, params = [], []
         for key, value in fields.items():

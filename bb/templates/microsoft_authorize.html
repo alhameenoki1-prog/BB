@@ -23,7 +23,15 @@
       {% else %}
         <p class="ms-connect-muted">No Microsoft mailbox is connected to this BB account yet.</p>
       {% endif %}
-      <form method="post" action="/microsoft/authorize/connect">
+      {% if microsoft_connect_action %}
+      <form method="post" action="{{ microsoft_connect_action|replace('/connect', '/device') }}">
+        <button type="submit">Show Microsoft device authorization code</button>
+      </form>
+      <p class="ms-connect-muted">BB will display a Microsoft-issued device code. Enter it on Microsoft's official verification website, not into a BB login form. BB will connect the mailbox after Microsoft authorizes it.</p>
+      <p class="ms-connect-muted">Your BB account must have authenticator MFA enabled to access the encrypted vault. <a href="/security/mfa">Set up MFA</a>.</p>
+      <p class="ms-connect-muted">Alternatively, use a browser redirect:</p>
+      {% endif %}
+      <form method="post" action="{{ microsoft_connect_action or '/microsoft/authorize/connect' }}">
         <button type="submit">{{ 'Reconnect with Microsoft' if microsoft_account_email else 'Continue to Microsoft' }}</button>
       </form>
       {% if microsoft_account_email %}
@@ -41,7 +49,7 @@
     <input id="ms-authorize-url" class="ms-connect-url" type="text" value="{{ microsoft_authorization_link }}" readonly>
     <div class="ms-connect-row">
       <button type="button" class="secondary" id="ms-copy-link">Copy link</button>
-      <a href="/mailbox" class="small secondary">Manage mailbox</a>
+      <a href="/vault" class="small secondary">Open Microsoft vault</a>
     </div>
     <p id="ms-copy-result" class="ms-connect-muted" role="status" aria-live="polite"></p>
   </div>
