@@ -1694,7 +1694,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not user:
             return _redirect("/login?next=/microsoft/authorize")
         ws = base_workspace(user)
-        account = ws.microsoft_account() if ws.microsoft_connected() else {}
+        db = ws.mail_db()
+        await db.init()
+        boxes = [box for box in await db.mailboxes()
+                 if box.get("provider") == "graph" and box.get("status") != "disabled"]
+        account = {"email": boxes[-1]["address"]} if boxes else (
+            ws.microsoft_account() if ws.microsoft_connected() else {}
+        )
         return await render(
             request,
             "microsoft_authorize.html",
@@ -1756,12 +1762,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/microsoft/authorize/check")
     async def microsoft_authorize_check(user: dict = Depends(current_user)):
         """Refresh and verify only this BB user's existing Microsoft authorization."""
+        from bb.mail import service as mail_service
         ws = base_workspace(user)
-        if not ws.microsoft_connected():
+        db = ws.mail_db()
+        await db.init()
+        boxes = [b for b in await db.mailboxes()
+                 if b.get("provider") == "graph"
+                 and mail_service.signed_in(settings.secret_key(), b)]
+        if not boxes:
             return _redirect("/microsoft/authorize", error="No Microsoft mailbox is connected yet.")
-        ok, detail = await microsoft_oauth.test_connection(settings, ws)
-        return _redirect("/microsoft/authorize", msg=detail if ok else "",
-                         error="" if ok else detail)
+        target = boxes[-1]
+        status = await mail_service.check_mailbox(
+            db, settings.secret_key(), target, settings.worker_env()
+        )
+        return _redirect("/microsoft/authorize",
+                         msg="Connected as " + target["address"] if status == "ok" else "",
+                         error="" if status == "ok" else "Microsoft requires reconnection or is unavailable.")
 
     @app.post("/microsoft/authorize/connect")
     async def microsoft_authorize_connect(user: dict = Depends(current_user)):
@@ -1796,12 +1812,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _redirect("/mailbox", error=f"{email} already sends for the campaign {taken} (one campaign per account).")
         if not email:
             return _redirect("/mailbox", error="Microsoft did not say which mailbox this is. Try again.")
-        microsoft_oauth.save_token(ws, data, email)
-        ws.set_mail_provider("microsoft")
-        ws.clear_mailbox_problem()
-        ws.rewrite_config()  # the persona sends from the connected mailbox
-        await ws.restart_worker_if_running("the new mailbox settings")
-        response = _redirect("/mailbox", msg=f"Microsoft connected as {email}.")
+        from bb.mail import service as mail_service
+        db = ws.mail_db()
+        await db.init()
+        mid, _ = await mail_service.connect_microsoft(
+            db, settings.secret_key(), address=email,
+            refresh_token=data["refresh_token"], env=settings.worker_env(),
+            scopes=str(data.get("scope") or ""),
+            expires_in=int(data.get("expires_in") or 0),
+            access_token=str(data.get("access_token") or ""), verify=False,
+        )
+        # No legacy plaintext token file is written. Old files are migrated on
+        # first vault access; new OAuth grants live only in encrypted SQLite.
+        response = _redirect("/vault?mailbox=" + mid, msg=f"Microsoft connected as {email}.")
         response.delete_cookie(MS_NONCE_COOKIE, path="/microsoft")
         return response
 
