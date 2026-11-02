@@ -129,16 +129,22 @@ def register_ms_vault_routes(app, settings, current_user, base_workspace, render
         problems = []
         messages = []
         try:
-            # Graph $search is mailbox-wide; for folder-specific searches use
-            # the folder's messages collection and filter locally. Do not
-            # place untrusted text in OData $filter expressions.
+            # Graph handles mailbox search on the selected folder. Only safe,
+            # validated booleans enter OData $filter; never interpolate
+            # untrusted user text into a filter expression.
             params = {"$top": "50", "$select": (
                 "id,subject,from,toRecipients,bodyPreview,receivedDateTime,"
                 "sentDateTime,isRead,hasAttachments,importance"
             )}
+            if q:
+                # Outlook search syntax supports quoted terms; quote stripping
+                # prevents an untrusted user from adding Graph search operators.
+                term = " ".join(q.replace('"', " ").replace("\\", " ").split())
+                if term:
+                    params["$search"] = '"' + term + '"'
             if not q and not unread and not attachments:
                 params["$orderby"] = "receivedDateTime desc"
-            if unread or attachments:
+            if (unread or attachments) and not q:
                 filters = []
                 if unread:
                     filters.append("isRead eq false")
@@ -163,8 +169,8 @@ def register_ms_vault_routes(app, settings, current_user, base_workspace, render
                 messages = [m for m in messages if not m.get("isRead", False)]
             if attachments:
                 messages = [m for m in messages if m.get("hasAttachments")]
-        except HTTPException as exc:
-            problems.append(str(exc.detail))
+        except (HTTPException, LookupError) as exc:
+            problems.append(str(getattr(exc, "detail", "Mailbox folder not found.")))
         return await render(request, "ms_inbox.html", user, box=box,
                             folder=folder, query=q, only_unread=unread,
                             only_attachments=attachments, folder_names=allowed_folders,
