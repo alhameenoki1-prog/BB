@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Microsoft mail message{% endblock %}
+{% block content %}
+<div class="page-head"><div><div class="eyebrow">Microsoft Graph mail</div><h1>{{ message.subject or "(No subject)" }}</h1>
+  <p class="lead">{{ box.address }}</p></div>
+  <div class="actions"><a href="/vault?mailbox={{ box.id }}" class="small secondary">Back to mailbox</a></div></div>
+<div class="card">
+  <p><b>From:</b> {{ message["from"]["emailAddress"]["address"] if message.get("from") else "Unknown" }}</p>
+  <p><b>Received:</b> {{ message.receivedDateTime or "" }}</p>
+  <pre style="font:inherit;white-space:pre-wrap;overflow-wrap:anywhere">{{ body }}</pre>
+</div>
+<div class="card" style="max-width:750px">
+  <h2>Reply through Microsoft Graph</h2>
+  <form method="post" action="/vault/mailbox/{{ box.id }}/message/{{ message.id|urlencode }}/reply">
+    <label>Reply text</label>
+    <textarea name="body" rows="6" required></textarea>
+    <p><button type="submit">Send reply</button></p>
+  </form>
+</div>
+{% endblock %}
