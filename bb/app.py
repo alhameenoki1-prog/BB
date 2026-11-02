@@ -1982,6 +1982,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ── the mail command center ──
     from bb.mail.routes import register_mail_routes
     register_mail_routes(app, settings, current_user, workspace_for, render, _redirect, templates)
+    from bb.ms_vault_routes import register_ms_vault_routes
+    register_ms_vault_routes(app, settings, current_user, base_workspace, render, _redirect, accounts)
     from bb.campaign_routes import register_campaign_routes
     register_campaign_routes(app, settings, current_user, base_workspace, render, _redirect)
 
