@@ -128,7 +128,7 @@ def test_login_is_throttled(client):
 def test_admin_creates_users_and_users_are_not_admins(client):
     _admin(client)
     weak = client.post("/admin/users", data={"email": USER["email"], "password": "short"})
-    assert "at%20least%2010" in weak.headers["location"]
+    assert "at%20least%2014" in weak.headers["location"]
     user = _make_user(client)
     assert user["role"] == "user" and not user["disabled"]
     dup = client.post("/admin/users", data={"email": USER["email"], "password": USER["password"]})
