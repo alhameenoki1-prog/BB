@@ -317,3 +317,45 @@ def test_https_production_enforces_mfa_for_entire_bb_app(tmp_path, monkeypatch):
         )
         assert c.post("/security/mfa/confirm", data={"code": totp.current_code(secret)}).status_code == 303
         assert c.get("/").status_code == 200
+
+
+def test_reference_style_vault_lists_status_and_actions_without_exposing_tokens(client, monkeypatch):
+    _setup_mfa(client)
+    ws = _workspace(client)
+    db = ws.mail_db()
+    asyncio.run(db.init())
+    active, _ = asyncio.run(service.connect_microsoft(
+        db, client.settings.secret_key(), address="first@outlook.com",
+        refresh_token="first-sensitive-refresh", env=client.settings.worker_env(),
+        scopes="offline_access Mail.ReadWrite", verify=False,
+    ))
+    reconnect, _ = asyncio.run(service.connect_microsoft(
+        db, client.settings.secret_key(), address="second@outlook.com",
+        refresh_token="second-sensitive-refresh", env=client.settings.worker_env(),
+        scopes="offline_access Files.ReadWrite", verify=False,
+    ))
+    asyncio.run(db.update_mailbox(reconnect, status="reconnect",
+                                  status_detail="Microsoft revoked the application."))
+
+    async def read_graph(self, method, path, **kwargs):
+        return {"value": []}
+    monkeypatch.setattr(GraphAccount, "_call", read_graph)
+
+    page = client.get("/vault?mailbox=" + active)
+    assert page.status_code == 200
+    html = page.text
+    assert "Token Vault" in html
+    assert 'id="vault-search"' in html
+    assert 'id="vault-status-filter"' in html
+    assert 'data-status="ok"' in html
+    assert 'data-status="reconnect"' in html
+    assert "first@outlook.com" in html and "second@outlook.com" in html
+    assert 'href="/vault?mailbox=' + active + '#vault-inbox"' in html
+    assert 'href="/vault?mailbox=' + active + '#vault-files"' in html
+    assert 'href="/vault/mailbox/' + active + '/organization"' in html
+    assert 'id="vault-inbox"' in html and 'id="vault-files"' in html
+    assert "2 connected accounts" in html
+    assert "1 need reconnect" in html
+    assert "first-sensitive-refresh" not in html
+    assert "second-sensitive-refresh" not in html
+    assert "document.cookie" not in html
