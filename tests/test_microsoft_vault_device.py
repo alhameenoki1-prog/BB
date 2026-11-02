@@ -198,3 +198,102 @@ def test_rfc6238_known_vector():
     assert totp.current_code(secret, timestamp=59) == "287082"
     assert totp.verify(secret, "287082", timestamp=59)
     assert not totp.verify(secret, "123456", timestamp=59)
+
+
+def test_migrates_legacy_plaintext_token_into_encrypted_database(client):
+    secret = _setup_mfa(client)
+    ws = _workspace(client)
+    ws.microsoft_token_file.parent.mkdir(parents=True, exist_ok=True)
+    ws.microsoft_token_file.write_text(json.dumps({"refresh_token": "historical-legacy-secret", "scope": "Mail.ReadWrite"}))
+    ws.microsoft_account_file.write_text(json.dumps({"email": "old@outlook.com"}))
+    r = client.get("/vault")
+    assert r.status_code == 200 and "old@outlook.com" in r.text
+    assert not ws.microsoft_token_file.exists()
+    assert not ws.microsoft_account_file.exists()
+    box = asyncio.run(ws.mail_db().mailbox_by_address("old@outlook.com"))
+    assert box and box["creds"].startswith("v1:")
+    assert "historical-legacy-secret" not in box["creds"]
+    assert service.open_creds(client.settings.secret_key(), box)["refresh_token"] == "historical-legacy-secret"
+
+
+def test_graph_invalid_grant_marks_only_affected_mailbox_reconnect(client, monkeypatch):
+    from bb.mail.providers import AuthError
+    _setup_mfa(client)
+    ws = _workspace(client)
+    db = ws.mail_db()
+    asyncio.run(db.init())
+    one, _ = asyncio.run(service.connect_microsoft(
+        db, client.settings.secret_key(), address="one@outlook.com",
+        refresh_token="revoked-one", env=client.settings.worker_env(), verify=False,
+    ))
+    two, _ = asyncio.run(service.connect_microsoft(
+        db, client.settings.secret_key(), address="two@outlook.com",
+        refresh_token="good-two", env=client.settings.worker_env(), verify=False,
+    ))
+    async def test_graph(self, method, path, **kwargs):
+        if self.address == "one@outlook.com":
+            raise AuthError("Microsoft no longer accepts this sign-in: invalid_grant")
+        if path == "/me/messages" or path == "/me/drive/root/children":
+            return {"value": []}
+        return {}
+    monkeypatch.setattr(GraphAccount, "_call", test_graph)
+    page = client.get("/vault?mailbox=" + one)
+    assert page.status_code == 200
+    assert asyncio.run(db.mailbox(one))["status"] == "reconnect"
+    assert asyncio.run(db.mailbox(two))["status"] == "ok"
+    assert "Needs reconnect" in client.get("/vault?mailbox=" + one).text
+
+
+def test_owner_must_reverify_totp_before_deleting_vault_tokens(client):
+    secret = _setup_mfa(client)
+    ws = _workspace(client)
+    db = ws.mail_db()
+    asyncio.run(db.init())
+    mid, _ = asyncio.run(service.connect_microsoft(
+        db, client.settings.secret_key(), address="my@outlook.com",
+        refresh_token="should-be-erased", env=client.settings.worker_env(), verify=False,
+    ))
+    wrong = client.post("/vault/mailbox/" + mid + "/disconnect", data={"code": "000000"})
+    assert wrong.status_code == 303 and asyncio.run(db.mailbox(mid))
+    correct = client.post("/vault/mailbox/" + mid + "/disconnect",
+                          data={"code": totp.current_code(secret)})
+    assert correct.status_code == 303 and asyncio.run(db.mailbox(mid)) is None
+
+
+@pytest.mark.asyncio
+async def test_microsoft_device_endpoints_use_official_code_grant_and_throttle(monkeypatch, tmp_path):
+    import httpx
+    from urllib.parse import parse_qs
+    settings = _settings(tmp_path, MS_CLIENT_ID="confidential",
+                         MS_DEVICE_CLIENT_ID="public-device", MS_TENANT="common")
+    calls = []
+
+    def handler(request):
+        calls.append((str(request.url), parse_qs(request.content.decode())))
+        assert str(request.url).startswith("https://login.microsoftonline.com/common/oauth2/v2.0/")
+        if request.url.path.endswith("/devicecode"):
+            return httpx.Response(200, json={
+                "device_code": "server-secret-device", "user_code": "ABCDEFGH",
+                "verification_uri": "https://microsoft.com/devicelogin",
+                "expires_in": 900, "interval": 5,
+            })
+        if len(calls) == 2:
+            return httpx.Response(400, json={"error": "authorization_pending"})
+        return httpx.Response(200, json={
+            "refresh_token": "server-secret-refresh", "access_token": "server-secret-access",
+            "scope": "offline_access", "expires_in": 3600,
+        })
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr("bb.microsoft_device.httpx.AsyncClient",
+                        lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    grant = await microsoft_device.start(settings)
+    assert grant["client_id"] == "public-device"
+    assert grant["user_code"] == "ABCDEFGH"
+    assert grant["verification_uri"] == "https://microsoft.com/devicelogin"
+    status, pending = await microsoft_device.poll(settings, grant["device_code"], grant["client_id"])
+    assert status == "authorization_pending" and pending == {}
+    status, data = await microsoft_device.poll(settings, grant["device_code"], grant["client_id"])
+    assert status == "connected" and data["refresh_token"] == "server-secret-refresh"
+    assert calls[1][1]["grant_type"] == ["urn:ietf:params:oauth:grant-type:device_code"]
+    assert calls[1][1]["client_id"] == ["public-device"]
