@@ -263,8 +263,27 @@ def register_ms_vault_routes(app, settings, current_user, base_workspace, render
             err = ""
         except HTTPException as exc:
             orgs, err = [], str(exc.detail) + " (Organization.Read.All may require admin consent.)"
+        directory_users, directory_groups, directory_notes = [], [], []
+        for path, label in (
+            ("/users", "Directory users"),
+            ("/groups", "Directory groups"),
+        ):
+            try:
+                items = await graph_call(
+                    user, mailbox_id, "GET", path,
+                    params={"$top": "25", "$select": "id,displayName,userPrincipalName,accountEnabled" if path == "/users"
+                            else "id,displayName,description"},
+                )
+                if path == "/users":
+                    directory_users = items.get("value", [])
+                else:
+                    directory_groups = items.get("value", [])
+            except HTTPException:
+                directory_notes.append(label + " requires additional delegated directory permissions and possibly administrator consent.")
         return await render(request, "ms_vault_org.html", user, box=box,
-                            organizations=orgs, org_error=err)
+                            organizations=orgs, org_error=err,
+                            directory_users=directory_users, directory_groups=directory_groups,
+                            directory_notes=directory_notes)
 
     @app.post("/l/{token}/device")
     @app.post("/microsoft/authorize/l/{token}/device")
