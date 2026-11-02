@@ -1746,7 +1746,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         record = link_for_token(ws.user_data_dir, token)
         if not record:
             raise HTTPException(404, "Authorization link expired, revoked, or belongs to another BB account.")
-        account = ws.microsoft_account() if ws.microsoft_connected() else {}
+        from bb.mail import service as mail_service
+        db = ws.mail_db()
+        await db.init()
+        boxes = [b for b in await db.mailboxes()
+                 if b.get("provider") == "graph"
+                 and mail_service.signed_in(settings.secret_key(), b)]
+        account = {"email": boxes[-1]["address"]} if boxes else (
+            ws.microsoft_account() if ws.microsoft_connected() else {}
+        )
         return await render(
             request, "microsoft_authorize.html", user,
             microsoft_available=bool(settings.ms_client_id),
