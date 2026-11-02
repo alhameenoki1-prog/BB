@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Verify BB sign-in{% endblock %}
+{% block auth %}
+<div class="auth-card">
+  <div class="brand" style="padding:0 0 20px"><div class="mark"></div><div><b>BB</b><span>Authenticator verification</span></div></div>
+  <h1>Enter your authenticator code</h1>
+  <p class="muted">Enter the six-digit code from your authenticator app to complete your BB login.</p>
+  {% if error %}<p class="tag bad" role="alert">{{ error }}</p>{% endif %}
+  <form action="/login/totp" method="post">
+    <input name="next" type="hidden" value="{{ next_url or '/' }}">
+    <label for="totp-code">Authenticator code</label>
+    <input id="totp-code" type="text" name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required autofocus>
+    <p style="margin-top:18px"><button type="submit" style="width:100%;justify-content:center">Verify and sign in</button></p>
+  </form>
+  <p class="muted"><a href="/login">Restart sign-in</a></p>
+</div>
+{% endblock %}
