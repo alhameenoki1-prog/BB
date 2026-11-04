@@ -166,7 +166,10 @@ async def test_connect_check_scope_and_migration(tmp_path, monkeypatch):
     mid, note = await service.connect_imap(db, "sec", address="Me@X.com", smtp=smtp, env={})
     m = await db.mailbox(mid)
     assert m["address"] == "me@x.com" and m["mode"] == "limited" and m["status"] == "ok"
-    assert service.open_creds("sec", m)["password"] == "pw" and "pw" not in m["creds"]
+    assert service.open_creds("sec", m)["password"] == "pw"
+    # A two-letter test password can occur by chance in random base64 ciphertext.
+    # Assert authenticated decryptability and the sealed envelope format instead.
+    assert m["creds"].startswith("v1:") and m["creds"] != "pw"
     assert service.masked_creds("sec", m)["password"] != "pw"
     assert service.ready_to_send(m) == (False, "Set a signature and the project link in this mailbox's settings before sending from it.")
     with pytest.raises(ValueError):
