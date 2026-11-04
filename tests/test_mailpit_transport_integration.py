@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from bb.mail.providers.base import TransientError
+from bb.mail.providers.base import PermanentError
 from bb.mail.providers.imap import ImapAccount
 
 pytestmark = pytest.mark.skipif(
@@ -99,7 +99,7 @@ async def test_bb_smtp_rejected_recipient_is_not_marked_sent():
         {},
     )
     account._append_sent = lambda _data: None
-    with pytest.raises(TransientError):
+    with pytest.raises(PermanentError):
         await account.send(
             to=["outside@example.invalid"], subject="Should be rejected", body_text="Local-only negative test", body_html=""
         )
