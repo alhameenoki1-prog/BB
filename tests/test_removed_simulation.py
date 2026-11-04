@@ -13,7 +13,7 @@ def test_removed_phishing_routes_are_not_registered(tmp_path):
         "BB_ADMIN_PASSWORD": "correct-horse-battery",
     })
     app = create_app(settings)
-    assert not any(route.path.startswith("/phish") for route in app.routes)
+    assert not any((getattr(route, "path", "") or "").startswith("/phish") for route in app.routes)
 
 
 def test_regular_application_routes_remain_available(tmp_path):
@@ -25,6 +25,6 @@ def test_regular_application_routes_remain_available(tmp_path):
         "BB_ADMIN_PASSWORD": "correct-horse-battery",
     })
     app = create_app(settings)
-    paths = {route.path for route in app.routes}
+    paths = {path for route in app.routes if (path := getattr(route, "path", None))}
     assert "/login" in paths
     assert "/admin/users" in paths
