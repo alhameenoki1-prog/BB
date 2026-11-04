@@ -3,6 +3,7 @@
 No messages are delivered to the internet. Enabled only by CI with BB_KUMO_TEST.
 """
 
+import asyncio
 import os
 import smtplib
 import socket
@@ -11,6 +12,7 @@ from email.message import EmailMessage
 from email.utils import make_msgid
 
 import pytest
+import httpx
 
 pytestmark = pytest.mark.skipif(
     os.getenv("BB_KUMO_TEST") != "1",
@@ -46,3 +48,43 @@ def test_kumomta_null_queue_accepts_12_local_smtp_messages():
             mids.add(msg["Message-ID"])
     assert len(mids) == 12
     print(f"KumoMTA null-queue local smoke: 12 SMTP acknowledgements in {time.monotonic()-started:.3f}s; 0 public sends")
+
+
+@pytest.mark.asyncio
+async def test_kumomta_local_http_injection_to_null_queue():
+    """Test documented REST injection; all recipients are reserved .test addresses."""
+    _ready()
+    endpoint = "http://127.0.0.1:8005/api/inject/v1"
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        # Account for the Docker test process starting HTTP slightly after SMTP.
+        for attempt in range(30):
+            try:
+                response = await client.get("http://127.0.0.1:8005/api/check-liveness/v1")
+                if response.status_code < 500:
+                    break
+            except httpx.RequestError:
+                pass
+            await asyncio.sleep(0.25)
+
+        started = time.monotonic()
+        for i in range(10):
+            body = (
+                f"From: BB Test <bb-sender@example.test>\\r\\n"
+                f"To: recipient-{i}@example.test\\r\\n"
+                f"Subject: BB Kumo HTTP null-queue smoke {i:03d}\\r\\n"
+                "MIME-Version: 1.0\\r\\n"
+                "Content-Type: text/plain; charset=utf-8\\r\\n"
+                "\\r\\nThis stays inside the isolated test sink."
+            ).replace("\\r", "\r").replace("\\n", "\n")
+            payload = {
+                "envelope_sender": "bb-sender@example.test",
+                "content": body,
+                "recipients": [{"email": f"recipient-{i}@example.test"}],
+            }
+            response = await client.post(endpoint, json=payload)
+            assert response.status_code == 200, response.text[:300]
+            accepted = response.json()
+            assert accepted.get("success_count") == 1, accepted
+            assert accepted.get("fail_count") == 0, accepted
+    elapsed = time.monotonic() - started
+    print(f"KumoMTA HTTP injection: 10 locally accepted, {elapsed:.3f}s; 0 public sends")
