@@ -2,6 +2,24 @@
 
 Research date: 2026-11-04. This is an evaluation plan, **not** a deliverability benchmark. No public-inbox mail has been sent or new transport integrated.
 
+## Verified local test results (2026-11-04)
+
+| Check | Result | Scope |
+|---|---|---|
+| Existing BB SMTP adapter -> Mailpit | PASS: 40/40 local submissions; 0.241s on one CI runner | Local sink only; no inbox placement |
+| SMTP failure classification, authentication and partial recipient handling | PASS: 11/11 total sender tests including Mailpit scenarios | Mocked/isolated responses, no public mail |
+| KumoMTA Docker SMTP null-queue listener | PASS: 12/12 acknowledgements; 0.027s | Kumo accepted and discarded messages |
+| KumoMTA Docker HTTP `/api/inject/v1` | PASS: 10/10; 0.012s | API injection accepted and discarded messages |
+| Ubuntu/Python 3.11 and 3.12 full BB regression (earlier head) | PASS | Latest exact-head result still pending |
+| macOS/Python 3.11 and 3.12 full BB regression (earlier head) | 998 passed, 1 flaky test failed | Invalid 2-character ciphertext substring test fixed; rerun pending |
+| Windows/Python 3.11 and 3.12 | Baseline platform failures remain | Unix-only process signals, tunnel mocks, path separators |
+| Gmail/Outlook/Yahoo inbox placement | NOT TESTED | Requires controlled seeds and owned domains |
+| Postal/Hyvor runtime and spooling | NOT TESTED | Separate service/dependency setup needed |
+
+Evidence: [BB sender workflow run](https://github.com/alhameenoki1-prog/BB/actions/runs/41855649544), [SMTP classification workflow](https://github.com/alhameenoki1-prog/BB/actions/runs/41834111116), [full BB regression](https://github.com/alhameenoki1-prog/BB/actions/runs/41834111302).
+
+**Decision:** KumoMTA passes the isolated SMTP and HTTP injection gates. It is approved for *further non-production evaluation only*, not production, until queue durability, crash recovery, performance under sustained load, cost and controlled public-inbox placement are verified. Avoid interpreting fast sink acknowledgements as deliverability or full end-to-end throughput.
+
 ## Current BB
 - Keep Gmail API, Microsoft Graph and authenticated IMAP/SMTP adapters until an alternative beats them in a controlled trial.
 - `bb/mail/sending.py` delegates to `bb/mail/providers`; `bb/mail/worker.py` manages jobs.
