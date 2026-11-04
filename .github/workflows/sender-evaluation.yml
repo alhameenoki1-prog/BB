@@ -53,7 +53,7 @@ jobs:
       - name: Start official KumoMTA image in null-queue sink mode
         run: |
           docker run -d --name bb-kumo-local --pull=always \
-            -p 127.0.0.1:2025:25 \
+            -p 127.0.0.1:2025:25 -p 127.0.0.1:8005:8005 \
             -v "$PWD/tests/evaluation/kumo-sink:/opt/kumomta/etc/policy:ro" \
             ghcr.io/kumocorp/kumomta:latest
       - name: Install BB dependencies and pytest
