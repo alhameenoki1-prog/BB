@@ -7,6 +7,7 @@ on:
     paths:
       - 'bb/mail/**'
       - 'tests/test_mailpit_transport_integration.py'
+      - 'tests/evaluation/**'
       - '.github/workflows/sender-evaluation.yml'
       - 'pyproject.toml'
       - 'requirements.txt'
@@ -40,3 +41,28 @@ jobs:
         env:
           BB_MAILPIT_TEST: '1'
         run: python -m pytest -q -s tests/test_mailpit_transport_integration.py
+
+  kumo-null-queue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Start official KumoMTA image in null-queue sink mode
+        run: |
+          docker run -d --name bb-kumo-local --pull=always \
+            -p 127.0.0.1:2025:25 \
+            -v "$PWD/tests/evaluation/kumo-sink:/opt/kumomta/etc/policy:ro" \
+            ghcr.io/kumocorp/kumomta:latest
+      - name: Install pytest
+        run: python -m pip install 'pytest>=8,<9'
+      - name: Exercise KumoMTA's real localhost SMTP listener
+        env:
+          BB_KUMO_TEST: '1'
+        run: python -m pytest -q -s tests/evaluation/test_kumo_sink.py
+      - name: KumoMTA diagnostics
+        if: always()
+        run: |
+          docker logs --tail=70 bb-kumo-local || true
+          docker rm -f bb-kumo-local || true
