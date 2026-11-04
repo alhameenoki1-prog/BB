@@ -11,6 +11,10 @@ class TransientError(Exception):
     """Network, rate limit, outage: try again later."""
 
 
+class PermanentError(Exception):
+    """Provider explicitly refused a message: hold for review, never auto-retry."""
+
+
 @dataclass
 class RawMessage:
     provider_id: str
