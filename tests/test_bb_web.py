@@ -435,7 +435,8 @@ def test_ai_provider_anthropic_is_checked_and_stored_per_user(client, monkeypatc
     assert "wrkspc_01ABC" in client.get("/apikey").text
     client.post("/apikey", data={"provider": "anthropic", "api_key": "sk-ant-abcdefghijklmnop"})
     assert ws.llm()["workspace_id"] == "" and "ANTHROPIC_WORKSPACE_ID" not in ws.worker_env()
-    assert oct(ws.secrets_file.stat().st_mode)[-3:] == "600"
+    if os.name == "posix":
+        assert oct(ws.secrets_file.stat().st_mode)[-3:] == "600"  # Unix file permission; Windows chmod differs
     page = client.get("/apikey")
     assert "Anthropic Claude" in page.text and "sk-ant-abcdefghijklmnop" not in page.text  # masked
     assert client.get("/api/summary").json()["api_key"] is True
@@ -626,7 +627,7 @@ def test_worker_start_stop(client, monkeypatch):
         if pid == 4242:
             if sig == 0 and 4242 in alive:
                 return None
-            if sig in (ws_mod.signal.SIGTERM, ws_mod.signal.SIGKILL):
+            if sig in (ws_mod.signal.SIGTERM, getattr(ws_mod.signal, "SIGKILL", ws_mod.signal.SIGTERM)):
                 alive.discard(4242)
                 return None
             raise ProcessLookupError
