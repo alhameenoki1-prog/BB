@@ -124,3 +124,18 @@ async def test_kumomta_http_injection_concurrent_local_load():
     sorted_latency = sorted(latency)
     p95 = sorted_latency[int(total * 0.95) - 1] * 1000
     print(f"KumoMTA HTTP local load: {total}/{total} accepted; p95 {p95:.1f}ms; 0 public sends")
+
+@pytest.mark.asyncio
+async def test_bb_kumo_http_adapter_against_real_local_sink():
+    """Exercise BB's candidate adapter end-to-end, not a bare HTTP request."""
+    _ready()
+    from bb.mail.kumo_eval import KumoLocalSink
+    receipt = await KumoLocalSink().submit(
+        sender="verified-sender@example.test",
+        recipient="consenting-recipient@example.test",
+        subject="BB candidate HTTP delivery adapter",
+        body_text="Local test; no public delivery",
+        body_html="<p>Local test; no public delivery</p>",
+    )
+    assert receipt.accepted_recipients == 1
+    assert receipt.message_id.startswith("<")
