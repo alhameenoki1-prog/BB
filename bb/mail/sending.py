@@ -6,6 +6,7 @@ and Reply-To, mirrors the sent message into the database so the thread
 state updates at once, and writes the activity line."""
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from bb.mail import service
 from bb.mail.db import MailDB, now_iso
@@ -295,7 +296,7 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
         except Exception:
             pass   # the send went; a missed note only means a later check reads the thread
     if attachments:
-        await db.log("send", f"Attached {', '.join(a.rsplit('/', 1)[-1] for a in attachments)} to the reply to "
+        await db.log("send", f"Attached {', '.join(Path(a).name for a in attachments)} to the reply to "
                              f"{recipient.get('name') or recipient['email']}", mailbox["id"], draft_id=draft["id"])
     now = now_iso()
     await db.execute("UPDATE drafts SET status = 'sent', body = ?, sent_message_id = ?, sent_at = ?, updated_at = ? WHERE id = ?",
