@@ -2234,11 +2234,14 @@ class Workspace:
                 if _process_gone(pid):
                     break
             else:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
                 await asyncio.sleep(0.2)
                 _process_gone(pid)
         except (ProcessLookupError, PermissionError):
             pass
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != 87:
+                raise
         _unlink_if_pid(self.pid_file, pid)
         # Only now, with the last send pass over, does its share go back: a
         # send in flight would otherwise sign it up again.
@@ -2608,14 +2611,15 @@ class Workspace:
             os.kill(pid, signal.SIGTERM)
             for _ in range(20):
                 await asyncio.sleep(0.25)
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
+                if _process_gone(pid):
                     break
             else:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         except (ProcessLookupError, PermissionError):
             pass
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != 87:
+                raise
         _unlink_if_pid(self.mail_pid_file, pid)
         return True, "Stopped."
 
