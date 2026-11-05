@@ -9,6 +9,11 @@ on:
   push:
     branches: [main]
 
+# Keep only the latest validation run for a pull request while editing BB.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
