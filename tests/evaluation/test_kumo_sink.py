@@ -88,3 +88,39 @@ async def test_kumomta_local_http_injection_to_null_queue():
             assert accepted.get("fail_count") == 0, accepted
     elapsed = time.monotonic() - started
     print(f"KumoMTA HTTP injection: 10 locally accepted, {elapsed:.3f}s; 0 public sends")
+
+@pytest.mark.asyncio
+async def test_kumomta_http_injection_concurrent_local_load():
+    """Bounded local HTTP test; never routes a message beyond the null queue."""
+    _ready()
+    total = 200
+    latency = []
+    sem = asyncio.Semaphore(10)
+    async with httpx.AsyncClient(timeout=15.0, limits=httpx.Limits(max_connections=12)) as client:
+        async def one(index: int):
+            async with sem:
+                from email.message import EmailMessage
+                m = EmailMessage()
+                m["From"] = "bb-sender@example.test"
+                m["To"] = f"recipient-{index}@example.test"
+                m["Subject"] = f"BB Kumo HTTP concurrent sink {index:03d}"
+                m.set_content("Test-only message, never delivered to public inboxes.")
+                started = time.monotonic()
+                response = await client.post(
+                    "http://127.0.0.1:8005/api/inject/v1",
+                    json={
+                        "envelope_sender": "bb-sender@example.test",
+                        "content": m.as_string(),
+                        "recipients": [{"email": f"recipient-{index}@example.test"}],
+                    },
+                )
+                latency.append(time.monotonic() - started)
+                assert response.status_code == 200, response.text[:240]
+                result = response.json()
+                assert result.get("success_count") == 1 and result.get("fail_count") == 0
+
+        await asyncio.gather(*(one(i) for i in range(total)))
+    assert len(latency) == total
+    sorted_latency = sorted(latency)
+    p95 = sorted_latency[int(total * 0.95) - 1] * 1000
+    print(f"KumoMTA HTTP local load: {total}/{total} accepted; p95 {p95:.1f}ms; 0 public sends")
