@@ -4,6 +4,7 @@ the web redirect flow, and the worker process (stubbed)."""
 
 import asyncio
 import json
+import os
 import sqlite3
 import sys
 import time
