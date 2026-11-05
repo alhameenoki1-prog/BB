@@ -38,11 +38,21 @@ jobs:
       - name: Unit, integration, end-to-end and soak tests (Linux/macOS)
         if: runner.os != 'Windows'
         run: python -m pytest -q
-      - name: Unit, integration, end-to-end and soak tests (Windows trace)
+      - name: Windows tests — shard 1 of 3
         if: runner.os == 'Windows'
         env:
           PYTHONFAULTHANDLER: '1'
-        run: python -m pytest -vv --tb=short
+        run: python tests/run_windows_shard.py 1
+      - name: Windows tests — shard 2 of 3
+        if: runner.os == 'Windows'
+        env:
+          PYTHONFAULTHANDLER: '1'
+        run: python tests/run_windows_shard.py 2
+      - name: Windows tests — shard 3 of 3
+        if: runner.os == 'Windows'
+        env:
+          PYTHONFAULTHANDLER: '1'
+        run: python tests/run_windows_shard.py 3
       - name: Installed wheel (scripted Codex CLI on PATH)
         if: runner.os != 'Windows'
         env:
