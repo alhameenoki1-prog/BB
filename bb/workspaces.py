@@ -2991,20 +2991,28 @@ code_version()
 def _process_gone(pid: int) -> bool:
     """True when the process has exited. A child that exited is a zombie
     until reaped, and os.kill(pid, 0) still sees it: reap it first."""
-    try:
-        done, _ = os.waitpid(pid, os.WNOHANG)
-        if done == pid:
-            return True
-    except ChildProcessError:
-        pass   # not our child: fall through to the signal probe
-    except OSError:
-        pass
+    # Windows does not define WNOHANG and cannot non-blockingly reap
+    # children with this Unix-style waitpid probe. Fall back to checking
+    # whether the process still exists.
+    if hasattr(os, "WNOHANG"):
+        try:
+            done, _ = os.waitpid(pid, os.WNOHANG)
+            if done == pid:
+                return True
+        except ChildProcessError:
+            pass   # not our child: fall through to the signal probe
+        except OSError:
+            pass
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return True
     except PermissionError:
         return False
+    except OSError as exc:
+        # On Windows an invalid/reaped PID may surface as WinError 87.
+        # Do not mistake other access/OS failures for a dead worker.
+        return getattr(exc, "winerror", None) == 87
     return False
 
 
