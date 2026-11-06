@@ -139,3 +139,24 @@ async def test_uncertain_send_requires_explicit_retry_before_reclaim(tmp_path):
     claimed = await jobs.claim()
     assert claimed is not None and claimed["id"] == job_id
     assert claimed["attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_workers_cannot_claim_same_job(tmp_path):
+    """Two independent workers must not both execute one queued delivery."""
+    import asyncio
+
+    db = MailDB(tmp_path / "concurrent-claim.db")
+    await db.init()
+    job_id = await Jobs(db).enqueue(
+        "send_draft", "sender-a", {"draft_id": "claim-only.test"}
+    )
+    first, second = await asyncio.gather(Jobs(db).claim(), Jobs(db).claim())
+    claimed = [job for job in (first, second) if job is not None]
+    assert len(claimed) == 1
+    assert claimed[0]["id"] == job_id
+    row = await db.one(
+        "SELECT status, attempts FROM jobs WHERE id = ?", (job_id,)
+    )
+    assert row["status"] == "running"
+    assert row["attempts"] == 1
