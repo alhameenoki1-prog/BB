@@ -87,3 +87,55 @@ async def test_cancelled_safe_job_can_be_reclaimed_without_extra_attempt(tmp_pat
     reclaimed = await jobs.claim()
     assert reclaimed is not None and reclaimed["id"] == job_id
     assert reclaimed["attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_read_only_job_recovers_and_can_finish(tmp_path):
+    """An abandoned mailbox scan is safe to retry, unlike an uncertain send."""
+    db = MailDB(tmp_path / "stale-read.db")
+    await db.init()
+    jobs = Jobs(db)
+    job_id = await jobs.enqueue("check_mailbox", "reader-a")
+    await db.execute(
+        "UPDATE jobs SET status = 'running', attempts = 1, "
+        "locked_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+        (job_id,),
+    )
+    claimed = await jobs.claim()
+    assert claimed is not None and claimed["id"] == job_id
+    assert claimed["attempts"] == 2
+    assert claimed["status"] == "running"
+    await jobs.complete(job_id, scanned=0)
+    row = await db.one(
+        "SELECT status, attempts, locked_at, finished_at, last_error FROM jobs WHERE id = ?",
+        (job_id,),
+    )
+    assert row["status"] == "done"
+    assert row["attempts"] == 2
+    assert row["locked_at"] is None
+    assert row["finished_at"] is not None
+    assert row["last_error"] == "worker lost mid-run"
+    assert await jobs.claim() is None
+
+
+@pytest.mark.asyncio
+async def test_uncertain_send_requires_explicit_retry_before_reclaim(tmp_path):
+    """Recovery must never silently retry a possibly accepted delivery."""
+    db = MailDB(tmp_path / "manual-send.db")
+    await db.init()
+    jobs = Jobs(db)
+    job_id = await jobs.enqueue("send_draft", "sender-a", {"draft_id": "example.test"})
+    await db.execute(
+        "UPDATE jobs SET status = 'running', attempts = 1, "
+        "locked_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+        (job_id,),
+    )
+    assert await jobs.claim() is None
+    assert await jobs.claim() is None
+    quarantined = await db.one("SELECT status, attempts FROM jobs WHERE id = ?", (job_id,))
+    assert quarantined["status"] == "dead"
+    assert quarantined["attempts"] == 1
+    assert await jobs.retry(job_id) is True
+    claimed = await jobs.claim()
+    assert claimed is not None and claimed["id"] == job_id
+    assert claimed["attempts"] == 1
