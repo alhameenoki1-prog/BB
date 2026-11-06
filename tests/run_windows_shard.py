@@ -58,7 +58,7 @@ def main() -> int:
     observer = threading.Thread(target=report_stacks, name="pytest-stack-observer", daemon=True)
     observer.start()
     try:
-        return pytest.main(["-vv", "--tb=short", *selected])
+        return pytest.main(["-vv", "--full-trace", "--tb=long", *selected])
     finally:
         finished.set()
         observer.join(timeout=2)
