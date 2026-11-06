@@ -11,6 +11,10 @@ from bb.mail.db import MailDB, new_id, now_iso
 BACKOFF_BASE_SECONDS = 30
 BACKOFF_CAP_SECONDS = 30 * 60
 STALE_LOCK_SECONDS = 15 * 60   # a job "running" this long was lost with its process
+UNCERTAIN_SEND_NOTE = (
+    "Send was interrupted; delivery may have succeeded. Check the mailbox Sent folder "
+    "and recipient status before manually retrying to avoid duplicate email."
+)
 
 
 def _iso(dt: datetime) -> str:
@@ -60,9 +64,19 @@ class Jobs:
             await db.execute("PRAGMA busy_timeout=15000")
             # Recover jobs whose worker died mid-run.
             stale = _iso(datetime.now(timezone.utc) - timedelta(seconds=STALE_LOCK_SECONDS))
+            # An interrupted send is not idempotent: a remote SMTP/API
+            # service may have accepted it just before the worker died.
+            # Quarantine it in the existing dead-letter review UI rather than
+            # automatically deliver the same message a second time.
+            await db.execute(
+                "UPDATE jobs SET status = 'dead', locked_at = NULL, last_error = ?, "
+                "updated_at = ?, finished_at = ? "
+                "WHERE status = 'running' AND kind = 'send_draft' AND locked_at < ?",
+                (UNCERTAIN_SEND_NOTE, now, now, stale))
             await db.execute(
                 "UPDATE jobs SET status = 'queued', locked_at = NULL, last_error = 'worker lost mid-run', "
-                "updated_at = ? WHERE status = 'running' AND locked_at < ?", (now, stale))
+                "updated_at = ? WHERE status = 'running' AND locked_at < ? AND kind != 'send_draft'",
+                (now, stale))
             cur = await db.execute(
                 f"""UPDATE jobs SET status = 'running', locked_at = ?, attempts = attempts + 1, updated_at = ?
                     WHERE id = (SELECT id FROM jobs WHERE status = 'queued' AND run_at <= ?{not_busy}
@@ -116,9 +130,18 @@ class Jobs:
         """Put a job back without counting the try: the worker stopped (a
         restart, a new AI key), not the job. It runs again when the worker
         is back."""
+        # A cancelled send could have already been accepted remotely.
+        # Keep it in the dead-letter review instead of silently resending.
+        current = now_iso()
+        await self.db.execute(
+            "UPDATE jobs SET status = 'dead', locked_at = NULL, last_error = ?, "
+            "updated_at = ?, finished_at = ? "
+            "WHERE id = ? AND status = 'running' AND kind = 'send_draft'",
+            (UNCERTAIN_SEND_NOTE, current, current, job_id))
         await self.db.execute(
             "UPDATE jobs SET status = 'queued', locked_at = NULL, attempts = MAX(0, attempts - 1), last_error = ?, "
-            "updated_at = ? WHERE id = ? AND status = 'running'", (note[:600], now_iso(), job_id))
+            "updated_at = ? WHERE id = ? AND status = 'running' AND kind != 'send_draft'",
+            (note[:600], current, job_id))
 
     async def retry(self, job_id: str) -> bool:
         now = now_iso()
