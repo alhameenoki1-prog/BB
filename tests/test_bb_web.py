@@ -1601,3 +1601,26 @@ def test_a_bound_campaign_takes_the_admin_app_accounts_reply_to(client, monkeypa
     assert ws.worker_env().get("M365_REPLY_TO") == "replies@corp.example"
     before = ws.binding_file.read_text()
     assert ws.bind_account() == "" and ws.binding_file.read_text() == before     # up to date: left alone
+
+
+def test_mail_sender_pages_are_integrated_and_session_protected(client):
+    """The existing hosted site exposes mail operations only to signed-in users."""
+    for path in ("/mail", "/mail/accounts", "/mail/jobs"):
+        response = client.get(path)
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/login")
+
+    _admin(client)
+    overview = client.get("/mail")
+    assert overview.status_code == 200
+    assert "Command center" in overview.text
+    assert "/mail/accounts" in overview.text
+    assert "/mail/jobs" in overview.text
+    assert client.get("/mail/accounts").status_code == 200
+    assert client.get("/mail/jobs").status_code == 200
+
+    client.cookies.clear()
+    for path in ("/mail", "/mail/accounts", "/mail/jobs"):
+        response = client.get(path)
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/login")
