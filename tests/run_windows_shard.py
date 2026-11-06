@@ -6,8 +6,9 @@ runner interruption diagnosable without silently dropping any modules.
 This file is not itself a pytest test.
 """
 
-import faulthandler
 import sys
+import threading
+import traceback
 from pathlib import Path
 
 import pytest
@@ -42,11 +43,25 @@ def main() -> int:
     # A Windows test can stall inside a TestClient request without producing a
     # pytest failure. Emit thread stacks before the runner interrupts it;
     # keep the test running so a real failure is never turned into a pass.
-    faulthandler.dump_traceback_later(20, repeat=True, file=sys.stderr)
+    # Avoid faulthandler's platform-dependent timer in the Windows runner.
+    # A daemon observer prints stacks but never interrupts pytest or alters its result.
+    finished = threading.Event()
+
+    def report_stacks() -> None:
+        while not finished.wait(20):
+            print("Windows pytest diagnostic: thread stacks after 20s", file=sys.stderr, flush=True)
+            for thread_id, frame in sys._current_frames().items():
+                print(f"Thread {thread_id}:", file=sys.stderr)
+                traceback.print_stack(frame, file=sys.stderr)
+            sys.stderr.flush()
+
+    observer = threading.Thread(target=report_stacks, name="pytest-stack-observer", daemon=True)
+    observer.start()
     try:
         return pytest.main(["-vv", "--tb=short", *selected])
     finally:
-        faulthandler.cancel_dump_traceback_later()
+        finished.set()
+        observer.join(timeout=2)
 
 
 if __name__ == "__main__":
