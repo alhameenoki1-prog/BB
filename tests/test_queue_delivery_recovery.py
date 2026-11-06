@@ -78,3 +78,40 @@ async def test_normal_pending_send_can_still_be_claimed(tmp_path):
     assert claim and claim["id"] == send_id and claim["payload"]["draft_id"] == "d1"
     await jobs.complete(send_id, status="sent")
     assert (await db.one("SELECT status FROM jobs WHERE id = ?", (send_id,)))["status"] == "done"
+
+
+def test_sender_send_window_daytime_boundaries():
+    """Sending windows include endpoints and exclude off-hours."""
+    from datetime import datetime
+    from types import SimpleNamespace
+    from bb.mail.sending import within_hours
+
+    settings = SimpleNamespace(hours_start="09:00", hours_end="17:00")
+    assert within_hours(settings, datetime(2026, 1, 1, 9, 0))
+    assert within_hours(settings, datetime(2026, 1, 1, 17, 0))
+    assert not within_hours(settings, datetime(2026, 1, 1, 8, 59))
+    assert not within_hours(settings, datetime(2026, 1, 1, 17, 1))
+
+
+def test_sender_send_window_crosses_midnight():
+    """A window spanning midnight must not become an all-day permission."""
+    from datetime import datetime
+    from types import SimpleNamespace
+    from bb.mail.sending import within_hours
+
+    settings = SimpleNamespace(hours_start="22:00", hours_end="06:00")
+    assert within_hours(settings, datetime(2026, 1, 1, 22, 0))
+    assert within_hours(settings, datetime(2026, 1, 2, 2, 0))
+    assert within_hours(settings, datetime(2026, 1, 2, 6, 0))
+    assert not within_hours(settings, datetime(2026, 1, 1, 21, 59))
+    assert not within_hours(settings, datetime(2026, 1, 2, 6, 1))
+    assert not within_hours(settings, datetime(2026, 1, 2, 12, 0))
+
+
+def test_sender_without_configured_window_is_unrestricted_by_hours():
+    from datetime import datetime
+    from types import SimpleNamespace
+    from bb.mail.sending import within_hours
+
+    settings = SimpleNamespace(hours_start="", hours_end="")
+    assert within_hours(settings, datetime(2026, 1, 1, 3, 0))
