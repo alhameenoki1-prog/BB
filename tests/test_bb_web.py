@@ -52,6 +52,10 @@ async def _dns_stub(domain):
 @pytest.fixture
 def client(settings, monkeypatch):
     monkeypatch.setattr("bb.app.check_domain", _dns_stub)  # never touch real DNS in tests
+    # Web/route tests use isolated in-process workspaces. Connecting a fake
+    # mailbox must not spawn an actual mail-worker subprocess, especially on
+    # Windows where its console signals can interrupt pytest.
+    monkeypatch.setattr(Workspace, "start_mail_worker", lambda self: (True, "Test mail worker stub"))
     with TestClient(create_app(settings), follow_redirects=False) as c:
         c.settings = settings
         yield c
