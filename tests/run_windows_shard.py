@@ -6,6 +6,7 @@ runner interruption diagnosable without silently dropping any modules.
 This file is not itself a pytest test.
 """
 
+import subprocess
 import sys
 import threading
 import traceback
@@ -54,6 +55,25 @@ def main() -> int:
                 print(f"Thread {thread_id}:", file=sys.stderr)
                 traceback.print_stack(frame, file=sys.stderr)
             sys.stderr.flush()
+
+    # Shard 3 repeatedly outlives the other Windows shards. Isolate its
+    # modules in fresh interpreters so a hanging test cannot hide which
+    # module is responsible. A timeout is a failure, never a skipped test.
+    if shard == 2:
+        for index, module in enumerate(selected, 1):
+            print(f"Windows shard 3 module {index}/{len(selected)}: {Path(module).name}", flush=True)
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pytest", "-vv", "--tb=long", module],
+                    timeout=300, check=False,
+                )
+            except subprocess.TimeoutExpired:
+                print(f"TIMEOUT after 300s: {module}", file=sys.stderr, flush=True)
+                return 124
+            if result.returncode != 0:
+                print(f"FAILED ({result.returncode}): {module}", file=sys.stderr, flush=True)
+                return result.returncode
+        return 0
 
     observer = threading.Thread(target=report_stacks, name="pytest-stack-observer", daemon=True)
     observer.start()
