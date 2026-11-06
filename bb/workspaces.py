@@ -2589,9 +2589,16 @@ class Workspace:
         env["PYTHONUNBUFFERED"] = "1"
         try:
             with open(self.mail_log_file, "a") as log:
+                # On Windows start_new_session does not isolate console
+                # control events like a POSIX session. Put the worker in
+                # its own process group so stopping it cannot interrupt BB
+                # or the test runner's main process.
+                win_group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                             if os.name == "nt" else {})
                 proc = subprocess.Popen(
                     [sys.executable, "-m", "bb.mail.worker", str(self.user_root)], cwd=str(PROJECT_ROOT),
                     env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                    **win_group,
                 )
         except Exception as e:
             logger.error("Could not start the mail worker for %s: %s", self.user["email"], e)
