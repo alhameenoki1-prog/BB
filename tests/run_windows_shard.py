@@ -39,7 +39,14 @@ def main() -> int:
         f"from {Path(selected[0]).name} to {Path(selected[-1]).name}",
         flush=True,
     )
-    # A Windows test can stall inside a TestClient request without producing a\n    # pytest failure. Emit all thread stacks before the runner interrupts it;\n    # keep the test running so this never turns a real failure into a pass.\n    faulthandler.dump_traceback_later(20, repeat=True, file=sys.stderr)\n    try:\n        return pytest.main(["-vv", "--tb=short", *selected])\n    finally:\n        faulthandler.cancel_dump_traceback_later()
+    # A Windows test can stall inside a TestClient request without producing a
+    # pytest failure. Emit thread stacks before the runner interrupts it;
+    # keep the test running so a real failure is never turned into a pass.
+    faulthandler.dump_traceback_later(20, repeat=True, file=sys.stderr)
+    try:
+        return pytest.main(["-vv", "--tb=short", *selected])
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 
 if __name__ == "__main__":
