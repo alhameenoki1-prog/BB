@@ -29,7 +29,7 @@ def validate_role_arn(role_arn: str, expected_account_id: str) -> None:
 
 
 def assume_ses_role(*, role_arn: str, external_id: str, account_id: str,
-                    region: str, session: Any = None) -> AssumedRole:
+                    region: str, session: Any = None, session_factory: Any = None) -> AssumedRole:
     """Assume a previously approved cross-account role with ExternalId."""
     validate_role_arn(role_arn, account_id)
     if len(external_id) < 24 or not region:
@@ -53,8 +53,10 @@ def assume_ses_role(*, role_arn: str, external_id: str, account_id: str,
             raise AuthError("AWS role authorization denied") from exc
         raise TransientError("Could not verify AWS role authorization") from exc
     creds = response["Credentials"]
-    import boto3
-    temporary_session = boto3.Session(
+    if session_factory is None:
+        import boto3
+        session_factory = boto3.Session
+    temporary_session = session_factory(
         aws_access_key_id=creds["AccessKeyId"],
         aws_secret_access_key=creds["SecretAccessKey"],
         aws_session_token=creds["SessionToken"],
