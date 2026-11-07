@@ -359,16 +359,28 @@ async def test_inbound_dedup(state):
 
 
 class SlowProvider(FakeProvider):
-    """Records how many sends are in flight at once."""
+    """Records overlapping provider calls without relying on OS timer precision."""
     def __init__(self):
+        import asyncio as _a
         super().__init__()
         self.in_flight = 0; self.peak = 0
+        self.expect_overlap = True
+        self._overlap = _a.Event()
 
     async def send_email(self, to_email, subject, body, thread_ref="", in_reply_to="", **kw):
         import asyncio as _a
         self.in_flight += 1; self.peak = max(self.peak, self.in_flight)
+        if self.in_flight >= 2:
+            self._overlap.set()
         try:
-            await _a.sleep(0.02)
+            if self.expect_overlap:
+                # Allow the next lane to enter before returning. On a busy
+                # Windows runner, sleep(0.02) may expire before another lane
+                # is scheduled, producing a false serial-execution result.
+                # A genuinely serial implementation still fails peak >= 2.
+                await _a.wait_for(self._overlap.wait(), timeout=3)
+            else:
+                await _a.sleep(0)
             return await super().send_email(to_email, subject, body, thread_ref, in_reply_to)
         finally:
             self.in_flight -= 1
@@ -391,6 +403,7 @@ async def test_drain_sends_several_at_once_when_the_channel_allows(state):
     pids = [await seed_prospect(state, email=f"q{i}@acme{i}.com") for i in range(4)]
     await seed_campaign(state, pids)
     provider.peak = 0
+    provider.expect_overlap = False
     sender.config.channels.email.send_concurrency = 1
     await sender._run_native()
     assert provider.peak == 1 and len(await state.get_outbox(status="sent")) == 12
