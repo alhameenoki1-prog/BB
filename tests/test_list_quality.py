@@ -2,7 +2,7 @@
 rejection is named, one bounce holds the rest of that company, uploaded
 addresses are checked when a verifier exists, and emails written with an
 old brief are rewritten rather than sent."""
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -196,5 +196,9 @@ async def test_a_sequence_written_before_the_brief_changed_is_not_reused(state, 
     os.utime(cfg_file, (old, old)); os.utime(brief, (old, old))
     campaign = Campaign(id="x", name="construction · executive", sequence=[], created_at=datetime.utcnow())
     assert writer._written_after_config_change(campaign) is True
-    brief.write_text("new brief after an update")      # touched now: newer than the campaign
+    brief.write_text("new brief after an update")
+    # A real file edit must occur after campaign creation. Windows may round
+    # immediate filesystem mtimes so set an unambiguous later timestamp.
+    changed_at = campaign.created_at.replace(tzinfo=timezone.utc).timestamp() + 60
+    os.utime(brief, (changed_at, changed_at))
     assert writer._written_after_config_change(campaign) is False

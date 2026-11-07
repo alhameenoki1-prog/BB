@@ -14,7 +14,7 @@ import ssl
 from datetime import datetime, timedelta, timezone
 
 from bb.mail.parse import parse_rfc822
-from bb.mail.providers.base import AuthError, MailAccount, TransientError
+from bb.mail.providers.base import AuthError, MailAccount, PermanentError, TransientError
 
 BATCH = 40
 SENT_NAMES = ("[Gmail]/Sent Mail", "Sent", "Sent Items", "Sent Messages", "INBOX.Sent", "Sent Mail")
@@ -99,13 +99,35 @@ class ImapAccount(MailAccount):
             # Implicit TLS on 465/2465, STARTTLS required on 587/2587, and
             # whenever offered on any other port: never a password in clear.
             use_tls = port in (465, 2465)
-            await aiosmtplib.send(msg, hostname=c["smtp_host"], port=port, username=c["username"], password=c["password"],
-                                  start_tls=False if use_tls else (True if port in (587, 2587) else None),
-                                  use_tls=use_tls, timeout=40)
+            refused, _response = await aiosmtplib.send(
+                msg, hostname=c["smtp_host"], port=port, username=c["username"], password=c["password"],
+                start_tls=False if use_tls else (True if port in (587, 2587) else None),
+                use_tls=use_tls, timeout=40,
+            )
+            if refused:
+                # Some recipients may already have been accepted: never
+                # blindly replay a partially accepted transaction.
+                raise PermanentError("SMTP accepted only some recipients; review the delivery before resending")
         except aiosmtplib.SMTPAuthenticationError as e:
             raise AuthError(f"SMTP sign-in refused: {str(e)[:160]}") from e
+        except aiosmtplib.SMTPRecipientsRefused as e:
+            codes = [int(getattr(item, "code", 0)) for item in e.recipients]
+            if codes and all(500 <= code < 600 for code in codes):
+                raise PermanentError("SMTP permanently refused all recipients (5xx); verify addresses and content") from e
+            # A mixed batch is not safe to blindly retry: some 5xx refusals
+            # will never succeed even if other addresses were deferred.
+            if any(500 <= code < 600 for code in codes):
+                raise PermanentError("SMTP reported mixed permanent/temporary recipient refusals; review the recipients") from e
+            raise TransientError("SMTP temporarily refused recipients; retry after backoff") from e
+        except aiosmtplib.SMTPResponseException as e:
+            code = int(getattr(e, "code", 0))
+            if 500 <= code < 600:
+                raise PermanentError(f"SMTP permanently refused the message ({code})") from e
+            raise TransientError(f"SMTP rejected the send ({code}); retry if temporary") from e
         except (aiosmtplib.SMTPException, OSError) as e:
-            raise TransientError(f"send failed: {str(e)[:200]}") from e
+            # Disconnects and timeouts can happen after acceptance. The
+            # worker may retry; future idempotency work must reconcile this.
+            raise TransientError(f"SMTP submission uncertain: {type(e).__name__}") from e
         message_id = msg["Message-ID"]
         # Best effort: a copy in the Sent folder, so the mailbox itself shows it.
         try:

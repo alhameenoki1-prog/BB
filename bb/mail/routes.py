@@ -623,8 +623,9 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         for r in rows:
             r["box"] = boxes.get(r["mailbox_id"])
         state_counts = {}
+        placeholders = ",".join("?" for _ in boxes) or "''"
         for r in await c["db"].query(
-                f"SELECT state, COUNT(*) AS n FROM threads WHERE mailbox_id IN ({','.join('?' for _ in boxes) or "''"}) GROUP BY state",
+                f"SELECT state, COUNT(*) AS n FROM threads WHERE mailbox_id IN ({placeholders}) GROUP BY state",
                 list(boxes)):
             state_counts[r["state"]] = r["n"]
         return await render(request, "mail_threads.html", user, **page_ctx(c), threads=rows, state=state,

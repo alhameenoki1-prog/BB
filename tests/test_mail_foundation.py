@@ -166,7 +166,10 @@ async def test_connect_check_scope_and_migration(tmp_path, monkeypatch):
     mid, note = await service.connect_imap(db, "sec", address="Me@X.com", smtp=smtp, env={})
     m = await db.mailbox(mid)
     assert m["address"] == "me@x.com" and m["mode"] == "limited" and m["status"] == "ok"
-    assert service.open_creds("sec", m)["password"] == "pw" and "pw" not in m["creds"]
+    assert service.open_creds("sec", m)["password"] == "pw"
+    # A two-letter test password can occur by chance in random base64 ciphertext.
+    # Assert authenticated decryptability and the sealed envelope format instead.
+    assert m["creds"].startswith("v1:") and m["creds"] != "pw"
     assert service.masked_creds("sec", m)["password"] != "pw"
     assert service.ready_to_send(m) == (False, "Set a signature and the project link in this mailbox's settings before sending from it.")
     with pytest.raises(ValueError):
@@ -237,6 +240,10 @@ def test_mailbox_settings_validation():
 def mail_client(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "account_for", lambda m, c, e: _FakeAccount(m, c, e))
     monkeypatch.setattr("bb.app.check_domain", lambda d: asyncio.sleep(0, result=None))
+    # Route/preview tests should never launch a real bb.mail.worker process.
+    # Those workers outlive the fake TestClient and can interfere with the
+    # Windows console. Dedicated worker tests exercise process behavior.
+    monkeypatch.setattr(Workspace, "start_mail_worker", lambda self: (True, "Test mail worker stub"))
     settings = _settings(tmp_path, GMAIL_CLIENT_ID="", GMAIL_CLIENT_SECRET="")
     with TestClient(create_app(settings), follow_redirects=False) as c:
         c.settings = settings

@@ -1,0 +1,75 @@
+# Isolated local email transport test. No real recipient addresses and no relay
+# host are configured. Only the BB existing transport is being exercised here.
+name: BB sender evaluation (local SMTP sink)
+
+on:
+  pull_request:
+    paths:
+      - 'bb/mail/**'
+      - 'tests/test_mailpit_transport_integration.py'
+      - 'tests/test_smtp_failure_classification.py'
+      - 'tests/test_kumo_eval.py'
+      - 'tests/evaluation/**'
+      - '.github/workflows/sender-evaluation.yml'
+      - 'pyproject.toml'
+      - 'requirements.txt'
+  workflow_dispatch:
+
+# Keep only the latest validation run for a pull request while editing BB.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  local-smtp:
+    runs-on: ubuntu-latest
+    services:
+      mailpit:
+        image: axllent/mailpit:v1.33.0
+        env:
+          MP_SMTP_AUTH_ACCEPT_ANY: '1'
+          MP_SMTP_AUTH_ALLOW_INSECURE: '1'
+          MP_SMTP_ALLOWED_RECIPIENTS: '@example.test$'
+          MP_MAX_MESSAGES: '500'
+        ports:
+          - 1025:1025
+          - 8025:8025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install BB and test dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Real BB SMTP adapter to local Mailpit only
+        env:
+          BB_MAILPIT_TEST: '1'
+        run: python -m pytest -q -s tests/test_mailpit_transport_integration.py tests/test_smtp_failure_classification.py tests/test_kumo_eval.py
+
+  kumo-null-queue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Start official KumoMTA image in null-queue sink mode
+        run: |
+          docker run -d --name bb-kumo-local --pull=always \
+            -p 127.0.0.1:2025:25 -p 127.0.0.1:8005:8005 \
+            -v "$PWD/tests/evaluation/kumo-sink:/opt/kumomta/etc/policy:ro" \
+            ghcr.io/kumocorp/kumomta:latest
+      - name: Install BB dependencies and pytest
+        run: python -m pip install -e '.[dev]'
+      - name: Exercise KumoMTA's real localhost SMTP listener
+        env:
+          BB_KUMO_TEST: '1'
+        run: python -m pytest -q -s tests/evaluation/test_kumo_sink.py
+      - name: KumoMTA diagnostics
+        if: always()
+        run: |
+          docker logs --tail=70 bb-kumo-local || true
+          docker rm -f bb-kumo-local || true

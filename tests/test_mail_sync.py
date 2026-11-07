@@ -270,7 +270,11 @@ async def test_worker_backfills_then_syncs_and_counts(tmp_path, monkeypatch):
     for _ in range(100):
         await asyncio.sleep(0.1)
         box = await db.mailbox(mid)
-        if (box.get("sync") or {}).get("backfill_done"):
+        # The mailbox's sync flag is written before the job is finally
+        # marked 'done'. Wait for that transaction too: stopping the worker
+        # too early cancels the in-flight task and requeues the job.
+        completed = any(j["kind"] == "sync_backfill" for j in await jobs.list("done"))
+        if (box.get("sync") or {}).get("backfill_done") and completed:
             break
     worker.stop.set(); await task
     box = await db.mailbox(mid)

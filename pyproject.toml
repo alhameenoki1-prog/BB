@@ -34,6 +34,7 @@ dependencies = [
     "uvicorn>=0.34,<1",
     "anthropic>=1.15,<2",
     "cryptography>=42,<46",
+    "msal>=1.31,<2",
     # The hosted web app (bb/)
     "jinja2>=3.1,<4",
     "python-multipart>=0.0.9,<1",
@@ -62,3 +63,7 @@ include = ["harvey*", "bb*"]
 [tool.setuptools.package-data]
 harvey = ["web/*", "web/fonts/*"]
 bb = ["templates/*.html"]
+
+[tool.pytest.ini_options]
+# Device-auth diagnostic modules under bb/ are not pytest suites.
+testpaths = ["tests"]

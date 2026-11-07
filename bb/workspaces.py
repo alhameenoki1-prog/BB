@@ -2234,11 +2234,14 @@ class Workspace:
                 if _process_gone(pid):
                     break
             else:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
                 await asyncio.sleep(0.2)
                 _process_gone(pid)
         except (ProcessLookupError, PermissionError):
             pass
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != 87:
+                raise
         _unlink_if_pid(self.pid_file, pid)
         # Only now, with the last send pass over, does its share go back: a
         # send in flight would otherwise sign it up again.
@@ -2586,9 +2589,16 @@ class Workspace:
         env["PYTHONUNBUFFERED"] = "1"
         try:
             with open(self.mail_log_file, "a") as log:
+                # On Windows start_new_session does not isolate console
+                # control events like a POSIX session. Put the worker in
+                # its own process group so stopping it cannot interrupt BB
+                # or the test runner's main process.
+                win_group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                             if os.name == "nt" else {})
                 proc = subprocess.Popen(
                     [sys.executable, "-m", "bb.mail.worker", str(self.user_root)], cwd=str(PROJECT_ROOT),
                     env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                    **win_group,
                 )
         except Exception as e:
             logger.error("Could not start the mail worker for %s: %s", self.user["email"], e)
@@ -2608,14 +2618,15 @@ class Workspace:
             os.kill(pid, signal.SIGTERM)
             for _ in range(20):
                 await asyncio.sleep(0.25)
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
+                if _process_gone(pid):
                     break
             else:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         except (ProcessLookupError, PermissionError):
             pass
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != 87:
+                raise
         _unlink_if_pid(self.mail_pid_file, pid)
         return True, "Stopped."
 
@@ -2991,20 +3002,28 @@ code_version()
 def _process_gone(pid: int) -> bool:
     """True when the process has exited. A child that exited is a zombie
     until reaped, and os.kill(pid, 0) still sees it: reap it first."""
-    try:
-        done, _ = os.waitpid(pid, os.WNOHANG)
-        if done == pid:
-            return True
-    except ChildProcessError:
-        pass   # not our child: fall through to the signal probe
-    except OSError:
-        pass
+    # Windows does not define WNOHANG and cannot non-blockingly reap
+    # children with this Unix-style waitpid probe. Fall back to checking
+    # whether the process still exists.
+    if hasattr(os, "WNOHANG"):
+        try:
+            done, _ = os.waitpid(pid, os.WNOHANG)
+            if done == pid:
+                return True
+        except ChildProcessError:
+            pass   # not our child: fall through to the signal probe
+        except OSError:
+            pass
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return True
     except PermissionError:
         return False
+    except OSError as exc:
+        # On Windows an invalid/reaped PID may surface as WinError 87.
+        # Do not mistake other access/OS failures for a dead worker.
+        return getattr(exc, "winerror", None) == 87
     return False
 
 

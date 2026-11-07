@@ -6,13 +6,14 @@ and Reply-To, mirrors the sent message into the database so the thread
 state updates at once, and writes the activity line."""
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from bb.mail import service
 from bb.mail.db import MailDB, now_iso
 from bb.mail.drafting import finalize
 from bb.mail.ingest import Ingest
 from bb.mail.providers import AuthError, TransientError, account_for
-from bb.mail.providers.base import RawMessage
+from bb.mail.providers.base import PermanentError, RawMessage
 
 
 class SendRefused(Exception):
@@ -183,7 +184,7 @@ async def prior_replies(db: MailDB, thread_id: str, exclude_draft: str = "") -> 
 async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run: bool = False, pressed: bool = False,
                      saw_thread: bool = False) -> dict:
     """Send one approved draft. Returns {status, message_id}. Raises
-    SendRefused for a rule, AuthError / TransientError from the provider."""
+    SendRefused for a rule or permanent rejection; AuthError / TransientError for recoverable provider trouble."""
     mailbox = await db.mailbox(draft["mailbox_id"])
     if not mailbox:
         raise SendRefused("the mailbox no longer exists")
@@ -270,6 +271,12 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
             in_reply_to=draft.get("in_reply_to") or "", references=draft.get("references_text") or "",
             reply_to=reply_to, from_name=settings.display_name, attachments=attachments or None,
         )
+    except PermanentError as e:
+        if led is not None:
+            led.release(slot)
+        # Both manual Send and automatic campaign senders already know how
+        # to move SendRefused drafts into Review instead of blindly retrying.
+        raise SendRefused(f"provider permanently refused the message: {e}") from e
     except BaseException:
         if led is not None:
             led.release(slot)
@@ -289,7 +296,7 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
         except Exception:
             pass   # the send went; a missed note only means a later check reads the thread
     if attachments:
-        await db.log("send", f"Attached {', '.join(a.rsplit('/', 1)[-1] for a in attachments)} to the reply to "
+        await db.log("send", f"Attached {', '.join(Path(a).name for a in attachments)} to the reply to "
                              f"{recipient.get('name') or recipient['email']}", mailbox["id"], draft_id=draft["id"])
     now = now_iso()
     await db.execute("UPDATE drafts SET status = 'sent', body = ?, sent_message_id = ?, sent_at = ?, updated_at = ? WHERE id = ?",
