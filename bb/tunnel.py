@@ -175,15 +175,28 @@ class Tunnel:
             return False
         pid = rec["pid"]
         try:
-            os.kill(pid, signal.SIGTERM)
-            for _ in range(50):
-                if not _alive(pid):
-                    break
-                time.sleep(0.1)
-            if _alive(pid):
-                os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass           # gone already, or someone else's now: either way, not ours
+            if sys.platform == "win32":
+                # Windows has no SIGKILL. Terminate the validated recorded
+                # process *and its children* (cmd wrappers may own the tunnel).
+                # Avoid console control events that can interrupt BB itself.
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if result.returncode != 0 and _alive(pid):
+                    logger.warning("tunnel: taskkill failed for pid %s: %s", pid, result.stderr.strip())
+                    return False
+            else:
+                os.kill(pid, signal.SIGTERM)
+                for _ in range(50):
+                    if not _alive(pid):
+                        break
+                    time.sleep(0.1)
+                if _alive(pid):
+                    os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError, subprocess.TimeoutExpired) as e:
+            logger.warning("tunnel: could not stop recorded pid %s: %s", pid, e)
+            return False
         self._clear_state()
         return True
 
