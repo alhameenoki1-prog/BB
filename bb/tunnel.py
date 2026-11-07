@@ -159,6 +159,13 @@ class Tunnel:
         started, from the state file; alive only if it is still cloudflared."""
         st = self.read_state()
         pid = int(st.get("pid") or 0)
+        # A stale or tampered state file must never identify BB itself as
+        # the tunnel. On Windows a command line may contain the fake tunnel
+        # path as an argument, making the substring check below misleading.
+        if pid == os.getpid():
+            return {"pid": pid, "url": st.get("url", ""), "alive": False,
+                    "started_at": st.get("started_at", 0), "mode": st.get("mode", ""),
+                    "port": st.get("port"), "token": st.get("token", "")}
         cmd = _command_of(pid) if _alive(pid) else ""
         # Only a process that can be seen to be cloudflared counts: a pid
         # with no readable command line may be anything (after a reboot).
