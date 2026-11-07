@@ -5,6 +5,7 @@ reported missing. A fake cloudflared stands in for the real one."""
 import asyncio
 import os
 import stat
+import sys
 import time
 
 import pytest
@@ -26,9 +27,26 @@ while true; do sleep 0.2; done
 
 
 def _fake(tmp_path, body=FAKE):
-    path = tmp_path / "cloudflared"
-    path.write_text(body)
-    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    if sys.platform == "win32":
+        # Windows cannot execute the POSIX shell-script fake. Use a real
+        # cmd.exe child instead, exercising tunnel startup and log parsing.
+        path = tmp_path / "cloudflared.cmd"
+        named = "Registered tunnel connection connIndex=0" in body
+        line = ("Registered tunnel connection connIndex=0" if named else
+                "https://sunny-ridge-example.trycloudflare.com")
+        path.write_text(
+            "@echo off\\n"
+            "echo INF Requesting new quick Tunnel on trycloudflare.com... 1>&2\\n"
+            "ping -n 2 127.0.0.1 >nul\\n"
+            f"echo INF {line} 1>&2\\n"
+            ":again\\n"
+            "ping -n 2 127.0.0.1 >nul\\n"
+            "goto again\\n"
+        )
+    else:
+        path = tmp_path / "cloudflared"
+        path.write_text(body)
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
     return str(path)
 
 
