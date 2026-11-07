@@ -58,7 +58,7 @@ def main() -> int:
                 traceback.print_stack(frame, file=sys.stderr)
             sys.stderr.flush()
 
-    # Shard 3 repeatedly outlives the other Windows shards. Isolate its
+    # Capture the exact interrupted stack (including async tunnel tasks)\n    # rather than treating an external KeyboardInterrupt as a test failure\n    # without actionable diagnostic evidence.\n    # Shard 3 repeatedly outlives the other Windows shards. Isolate its
     # modules in fresh interpreters so a hanging test cannot hide which
     # module is responsible. A timeout is a failure, never a skipped test.
     if shard in (2, 3):
@@ -66,7 +66,7 @@ def main() -> int:
             print(f"Windows shard {shard + 1} module {index}/{len(selected)}: {Path(module).name}", flush=True)
             try:
                 result = subprocess.run(
-                    [sys.executable, "-m", "pytest", "-vv", "--tb=long", module],
+                    [sys.executable, "-m", "pytest", "-vv", "-s", "--full-trace", "--tb=long", module],
                     timeout=300, check=False,
                 )
             except subprocess.TimeoutExpired:
