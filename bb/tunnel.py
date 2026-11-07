@@ -24,6 +24,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -62,9 +63,18 @@ def _command_of(pid: int) -> str:
     except OSError:
         pass
     try:
-        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5)
-        return out.stdout.strip()
-    except Exception:
+        if sys.platform == "win32":
+            # Windows has no /proc or ps. Query the actual process command
+            # line before trusting a persisted PID (which may be reused).
+            command = [
+                "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {int(pid)}').CommandLine",
+            ]
+        else:
+            command = ["ps", "-p", str(pid), "-o", "command="]
+        out = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired, ValueError):
         return ""
 
 
