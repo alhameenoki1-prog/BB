@@ -16,15 +16,17 @@ import pytest
 
 
 def main() -> int:
-    if len(sys.argv) != 2 or sys.argv[1] not in {"1", "2", "3"}:
-        raise SystemExit("usage: python tests/run_windows_shard.py {1|2|3}")
+    if len(sys.argv) != 2 or sys.argv[1] not in {"1", "2", "3", "4"}:
+        raise SystemExit("usage: python tests/run_windows_shard.py {1|2|3|4}")
 
     root = Path(__file__).parent
     files = sorted(root.rglob("test_*.py"))
-    groups = ([], [], [])
+    groups = ([], [], [], [])
     for path in files:
         name = path.name
-        if name < "test_email_finder.py":
+        if name >= "test_spamcheck.py":
+            groups[3].append(str(path))
+        elif name < "test_email_finder.py":
             groups[0].append(str(path))
         elif name < "test_mail_runs.py":
             groups[1].append(str(path))
@@ -37,7 +39,7 @@ def main() -> int:
     assert selected, "empty pytest shard"
 
     print(
-        f"Windows shard {shard + 1}/3: {len(selected)} of {len(files)} test modules, "
+        f"Windows shard {shard + 1}/4: {len(selected)} of {len(files)} test modules, "
         f"from {Path(selected[0]).name} to {Path(selected[-1]).name}",
         flush=True,
     )
@@ -59,9 +61,9 @@ def main() -> int:
     # Shard 3 repeatedly outlives the other Windows shards. Isolate its
     # modules in fresh interpreters so a hanging test cannot hide which
     # module is responsible. A timeout is a failure, never a skipped test.
-    if shard == 2:
+    if shard in (2, 3):
         for index, module in enumerate(selected, 1):
-            print(f"Windows shard 3 module {index}/{len(selected)}: {Path(module).name}", flush=True)
+            print(f"Windows shard {shard + 1} module {index}/{len(selected)}: {Path(module).name}", flush=True)
             try:
                 result = subprocess.run(
                     [sys.executable, "-m", "pytest", "-vv", "--tb=long", module],
