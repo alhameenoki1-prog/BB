@@ -238,8 +238,16 @@ class Tunnel:
             with open(self.log_file, "ab") as log:
                 # Its own session: a stop or restart of the site (Ctrl+C, launchd,
                 # systemd with KillMode=process) does not take the tunnel with it.
-                self._proc = subprocess.Popen(self.command(), stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                              start_new_session=True)
+                # POSIX uses a new session; Windows needs explicit process-group
+                # isolation. Without it, terminating a cmd-based tunnel child
+                # can deliver console control events to BB/pytest as well.
+                isolation = (
+                    {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+                    if sys.platform == "win32" else {"start_new_session": True}
+                )
+                self._proc = subprocess.Popen(
+                    self.command(), stdin=subprocess.DEVNULL, stdout=log, stderr=log, **isolation
+                )
         except (OSError, ValueError) as e:
             self.status, self.detail = "error", f"could not start {self.binary}: {e}"
             logger.warning("tunnel: %s", self.detail)
