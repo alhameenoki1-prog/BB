@@ -58,6 +58,26 @@ async def _until(t, status, tries=60):
     return False
 
 
+def test_stale_tunnel_state_cannot_adopt_or_kill_current_process(tmp_path, monkeypatch):
+    """Even if process command line contains 'cloudflared', BB's PID is not a tunnel."""
+    import json
+    import bb.tunnel as tunnel_module
+
+    state = tmp_path / "home"
+    state.mkdir()
+    (state / "tunnel.json").write_text(json.dumps({
+        "mode": "quick", "port": 8000, "pid": os.getpid(),
+        "url": "https://stale.trycloudflare.com", "started_at": 1,
+    }))
+    monkeypatch.setattr(tunnel_module, "_command_of",
+                        lambda pid: "python -m pytest cloudflared.cmd")
+    instance = Tunnel("quick", 8000, binary="cloudflared.cmd", state_dir=state)
+    assert instance.recorded_process()["alive"] is False
+    assert instance._adopt() is False
+    assert instance.kill_recorded() is False
+    assert not (state / "tunnel.json").exists()
+
+
 @pytest.mark.asyncio
 async def test_quick_tunnel_reports_its_address_and_restarts(tmp_path):
     seen = []
