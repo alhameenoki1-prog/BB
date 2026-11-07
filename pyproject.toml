@@ -41,6 +41,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ses = ["boto3>=1.35,<2"]
 dev = [
     "pytest>=8.0,<9",
     "pytest-asyncio>=0.23,<1",
