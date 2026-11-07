@@ -35,13 +35,13 @@ def _fake(tmp_path, body=FAKE):
         line = ("Registered tunnel connection connIndex=0" if named else
                 "https://sunny-ridge-example.trycloudflare.com")
         path.write_text(
-            "@echo off\\n"
-            "echo INF Requesting new quick Tunnel on trycloudflare.com... 1>&2\\n"
-            "ping -n 2 127.0.0.1 >nul\\n"
-            f"echo INF {line} 1>&2\\n"
-            ":again\\n"
-            "ping -n 2 127.0.0.1 >nul\\n"
-            "goto again\\n"
+            "@echo off\n"
+            "echo INF Requesting new quick Tunnel on trycloudflare.com... 1>&2\n"
+            "ping -n 2 127.0.0.1 >nul\n"
+            f"echo INF {line} 1>&2\n"
+            ":again\n"
+            "ping -n 2 127.0.0.1 >nul\n"
+            "goto again\n"
         )
     else:
         path = tmp_path / "cloudflared"
