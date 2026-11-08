@@ -88,8 +88,19 @@ async def test_quick_tunnel_reports_its_address_and_restarts(tmp_path):
     assert await _until(t, "up")
     assert t.url == "https://sunny-ridge-example.trycloudflare.com" and seen == [t.url]
     assert t.describe()["changes"] is True and t.pid and not t.adopted
+    # Windows process enumeration can lag behind a newly detached cmd.exe.
+    # Require the real persisted process identity to become visible; do not
+    # replace it with a mocked identity or weaken the assertion.
     rec = t.recorded_process()
-    assert rec["alive"] and rec["pid"] == t.pid and rec["url"] == t.url and (state / "tunnel.log").exists()
+    for _ in range(20):
+        if rec["alive"]:
+            break
+        await asyncio.sleep(0.1)
+        rec = t.recorded_process()
+    assert rec["alive"] and rec["pid"] == t.pid and rec["url"] == t.url and (state / "tunnel.log").exists(), (
+        f"detached tunnel identity unavailable: pid={t.pid}, "
+        f"returncode={t._proc.poll() if t._proc else None}, record={rec}"
+    )
     # The process dies: the tunnel notes it and comes back with the backoff.
     t._proc.kill()
     assert await _until(t, "down", 30)
