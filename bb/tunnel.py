@@ -73,7 +73,13 @@ def _command_of(pid: int) -> str:
         else:
             command = ["ps", "-p", str(pid), "-o", "command="]
         out = subprocess.run(command, capture_output=True, text=True, timeout=5)
-        return out.stdout.strip() if out.returncode == 0 else ""
+        if out.returncode != 0:
+            logger.debug("tunnel: process command lookup for pid %s failed: %s", pid, out.stderr.strip())
+            return ""
+        value = out.stdout.strip()
+        if not value:
+            logger.debug("tunnel: no process command returned for pid %s", pid)
+        return value
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return ""
 
