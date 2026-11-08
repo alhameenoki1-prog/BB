@@ -2524,7 +2524,9 @@ class Workspace:
             return None
         # A zombie, or a number reused by another program after a reboot,
         # is not the mail worker (and Stop must never signal that program).
-        if _process_gone(pid) or not _is_harvey_process(pid):
+        if pid == os.getpid() or _process_gone(pid) or not _is_harvey_process(pid):
+            # A stale PID file must never identify the BB process itself
+            # as a mail worker, even when process inspection is unavailable.
             self.mail_pid_file.unlink(missing_ok=True)
             return None
         return pid
@@ -3055,9 +3057,21 @@ def _ask_is_harvey_process(pid: int) -> bool:
         if sys.platform == "darwin":
             out = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout
             return ("harvey" in out or "bb.mail" in out) if out.strip() else False
-    except Exception:
-        return True
-    return True
+        if sys.platform == "win32":
+            # Windows lacks /proc. Do not trust an arbitrary live PID:
+            # verify its actual command line before stopping/adopting it.
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                 f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {int(pid)}').CommandLine"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                return False
+            cmd = result.stdout.lower()
+            return "harvey" in cmd or "bb.mail" in cmd
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    return False
 
 
 def all_workspaces(settings, accounts) -> list[Workspace]:
