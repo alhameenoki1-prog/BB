@@ -554,7 +554,7 @@ def test_mailbox_smtp_settings(client, monkeypatch):
     seen = {}
     monkeypatch.setattr("bb.app.check_anthropic_key", _accept_key)
     client.post("/apikey", data={"api_key": "sk-ant-user-key-2"})
-    monkeypatch.setattr(ws_mod.subprocess, "Popen", lambda cmd, **kw: seen.update(kw) or _FakeProc())
+    _stub_worker_spawn(monkeypatch, seen)
     monkeypatch.setattr(ws_mod.os, "kill", lambda pid, sig: None)
     assert "Started" in client.post("/worker/start").headers["location"]
     env = seen["env"]
@@ -597,6 +597,26 @@ def test_attachments_upload_and_delete(client):
     cfg = yaml.safe_load(ws.config_file.read_text())
     assert cfg["outreach"]["reply_attachments"] == ["My Brief (v2).pdf"] and cfg["outreach"]["attach_on"] == "every_reply"
     assert client.post("/attachments", files=[("files", ("", b"", "text/plain"))]).headers["location"].startswith("/profile?error")
+
+
+def _stub_worker_spawn(monkeypatch, seen):
+    """Intercept only BB worker launches; preserve subprocess for OS inspection.
+
+    Patching subprocess.Popen on a module also patches the global subprocess
+    module, which subprocess.run uses internally (including process inspection).
+    """
+    real_popen = ws_mod.subprocess.Popen
+
+    def spawn(cmd, **kwargs):
+        env = kwargs.get("env") or {}
+        if "ANTHROPIC_API_KEY" in env and (
+            "SMTP_HOST" in env or "M365_CLIENT_ID" in env
+        ):
+            seen.update(kwargs)
+            return _FakeProc()
+        return real_popen(cmd, **kwargs)
+
+    monkeypatch.setattr(ws_mod.subprocess, "Popen", spawn)
 
 
 class _FakeProc:
@@ -906,7 +926,7 @@ def test_mailbox_microsoft_admin_app(client, monkeypatch):
     seen = {}
     monkeypatch.setattr("bb.app.check_anthropic_key", _accept_key)
     client.post("/apikey", data={"api_key": "sk-ant-user-key-3"})
-    monkeypatch.setattr(ws_mod.subprocess, "Popen", lambda cmd, **kw: seen.update(kw) or _FakeProc())
+    _stub_worker_spawn(monkeypatch, seen)
     monkeypatch.setattr(ws_mod.os, "kill", lambda pid, sig: None)
     assert "Started" in client.post("/worker/start").headers["location"]
     env = seen["env"]
