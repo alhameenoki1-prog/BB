@@ -336,7 +336,7 @@ def test_the_site_keeps_a_mac_awake_and_the_service_is_not_throttled(monkeypatch
     monkeypatch.setattr("subprocess.Popen", lambda cmd, **k: seen.append(cmd))
     monkeypatch.setattr(cli.Path, "exists", lambda self: True)
     assert "Keeping this Mac awake" in cli.keep_mac_awake(pid=123, platform="darwin")
-    assert seen == [["/usr/bin/caffeinate", "-i", "-w", "123"]]
+    # The test simulates macOS even on Windows, whose Path stringification\n    # uses backslashes. Assert the intended executable without assuming the\n    # host runner uses POSIX path separators.\n    assert [[str(part).replace("\\\\", "/") for part in cmd] for cmd in seen] == [\n        ["/usr/bin/caffeinate", "-i", "-w", "123"]\n    ]
     assert cli.keep_mac_awake(pid=123, platform="linux") == ""
     monkeypatch.setenv("BB_ALLOW_SLEEP", "1")
     assert cli.keep_mac_awake(pid=123, platform="darwin") == ""
