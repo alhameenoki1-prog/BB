@@ -107,7 +107,13 @@ async def test_the_tunnel_outlives_the_site_and_is_adopted_on_the_next_start(tmp
     pid, url = first.pid, first.url
     # The site stops (an update, a restart): the tunnel is left running on purpose.
     await first.stop()
-    assert first.status == "off" and first.recorded_process()["alive"]
+    rec_after_stop = first.recorded_process()
+    assert first.status == "off" and rec_after_stop["alive"], (
+        f"detached tunnel not recognized: pid={pid}, returncode="
+        f"{first._proc.poll() if first._proc else None}, "
+        f"command={__import__('bb.tunnel', fromlist=['_command_of'])._command_of(pid)!r}, "
+        f"record={rec_after_stop}"
+    )
     seen = []
     second = Tunnel("quick", 8000, binary=_fake(tmp_path), on_url=seen.append, state_dir=state)
     await second.start()
