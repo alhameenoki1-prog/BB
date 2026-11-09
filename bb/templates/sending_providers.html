@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Sending providers{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Sending providers</h1><p class="muted">Manage how your workspace sends email. Connections remain under your control.</p></div></div>
+<div class="card" style="padding:22px;margin:18px 0">
+  <h2>Current sending connection</h2>
+  <p><strong>{{ active_label }}</strong> {% if connected %}<span class="badge">Connected</span>{% else %}<span class="badge">Setup required</span>{% endif %}</p>
+  <p class="muted">Sending address: {{ sending or 'Not configured' }}</p>
+  <p><a class="btn" href="/mailbox">Manage existing connection</a> <a class="btn secondary" href="/mail/accounts">Manage mail accounts</a></p>
+</div>
+<h2>Available connections</h2>
+<div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px">
+  <section class="card" style="padding:20px"><h3>Gmail</h3><p class="muted">Connect using Google OAuth.</p><p>{{ 'Connected' if gmail_connected else 'Not connected' }}</p><a href="/mailbox">Configure Gmail</a></section>
+  <section class="card" style="padding:20px"><h3>Microsoft 365</h3><p class="muted">Use your authorized Microsoft mailbox or configured application.</p><p>{{ 'Connected' if microsoft_connected else 'Not connected' }}</p><a href="/mailbox">Configure Microsoft</a></section>
+  <section class="card" style="padding:20px"><h3>SMTP / IMAP</h3><p class="muted">Use your own authenticated SMTP connection.</p><p>{{ 'Configured' if smtp_connected else 'Not configured' }}</p><a href="/mailbox">Configure SMTP</a></section>
+  <section class="card" style="padding:20px"><h3>Amazon SES</h3><p class="muted">User-owned AWS SES API integration is being developed. Connection setup and sending are not enabled yet.</p><p><strong>Coming soon — not connected</strong></p><span class="muted">No credentials are collected on this page.</span></section>
+</div>
+<p class="small muted" style="margin-top:22px">Only connected and authorized providers can send. Amazon SES is not available for live sending from this interface.</p>
+{% endblock %}
