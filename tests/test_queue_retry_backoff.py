@@ -70,3 +70,59 @@ async def test_cancelled_job_requires_explicit_retry(tmp_path):
     assert await jobs.discard(job_id) is True
     assert await jobs.retry(job_id) is True  # explicit manual retry of cancelled work
     assert (await jobs.claim())["id"] == job_id
+
+
+@pytest.mark.asyncio
+async def test_stale_send_is_quarantined_but_stale_read_recovers(tmp_path):
+    """Crash recovery must never silently replay a possibly accepted send."""
+    db = MailDB(tmp_path / "crash-recovery.db")
+    await db.init()
+    jobs = Jobs(db)
+    send_id = await jobs.enqueue("send_draft", "sender.test", payload={"draft_id": "local.test"})
+    read_id = await jobs.enqueue("check_mailbox", "reader.test")
+    assert (await jobs.claim())["id"] == send_id
+    assert (await jobs.claim())["id"] == read_id
+
+    # Simulate worker death with expired locks, without waiting or sending.
+    for job_id in (send_id, read_id):
+        await db.execute(
+            "UPDATE jobs SET locked_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+            (job_id,),
+        )
+    recovered = await jobs.claim()
+    assert recovered is not None and recovered["id"] == read_id
+    assert recovered["attempts"] == 2
+
+    send = await db.one(
+        "SELECT status, locked_at, finished_at, last_error FROM jobs WHERE id = ?",
+        (send_id,),
+    )
+    assert send["status"] == "dead"
+    assert send["locked_at"] is None
+    assert send["finished_at"] is not None
+    assert "may have succeeded" in send["last_error"]
+    assert await jobs.claim() is None
+
+
+@pytest.mark.asyncio
+async def test_release_interrupted_send_requires_manual_retry(tmp_path):
+    db = MailDB(tmp_path / "release-recovery.db")
+    await db.init()
+    jobs = Jobs(db)
+    send_id = await jobs.enqueue("send_draft", "sender.test")
+    assert (await jobs.claim())["id"] == send_id
+    await jobs.release(send_id)
+    row = await db.one(
+        "SELECT status, attempts, locked_at, finished_at, last_error FROM jobs WHERE id = ?",
+        (send_id,),
+    )
+    assert row["status"] == "dead"
+    assert row["attempts"] == 1
+    assert row["locked_at"] is None
+    assert row["finished_at"] is not None
+    assert "may have succeeded" in row["last_error"]
+    assert await jobs.claim() is None
+    assert await jobs.retry(send_id) is True
+    retried = await jobs.claim()
+    assert retried is not None and retried["id"] == send_id
+    assert retried["attempts"] == 1
