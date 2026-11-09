@@ -106,7 +106,7 @@ class Jobs:
         progress.update(result)
         await self.db.execute(
             "UPDATE jobs SET status = 'done', locked_at = NULL, progress_json = ?, updated_at = ?, finished_at = ? "
-            "WHERE id = ?", (json.dumps(progress), now, now, job_id))
+            "WHERE id = ? AND status = 'running'", (json.dumps(progress), now, now, job_id))
 
     async def fail(self, job_id: str, error: str) -> str:
         """Retry with backoff, or mark dead after the last attempt. Returns
