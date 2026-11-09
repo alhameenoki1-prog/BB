@@ -3039,7 +3039,11 @@ def _is_harvey_process(pid: int) -> bool:
     The answer is kept a minute per pid: on a Mac it costs a ps run, and
     the pages ask often (the Mail page's live feed every two seconds)."""
     seen = _PROCESS_SEEN.get(pid)
-    if seen and time.monotonic() - seen[1] < _PROCESS_SEEN_SECONDS:
+    # A newly spawned worker can be visible to os.kill before its command
+    # line is available to process inspection (notably Windows CIM).
+    # Never cache a negative identity lookup for the full positive TTL.
+    ttl = _PROCESS_SEEN_SECONDS if seen and seen[0] else 1.0
+    if seen and time.monotonic() - seen[1] < ttl:
         return seen[0]
     answer = _ask_is_harvey_process(pid)
     if len(_PROCESS_SEEN) > 512:
