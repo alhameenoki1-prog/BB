@@ -728,6 +728,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws.clear_llm()
         return _redirect("/apikey", msg="AI provider removed. Every campaign's worker and the background mail worker were stopped.")
 
+    @app.get("/sending-providers", response_class=HTMLResponse)
+    async def sending_providers_page(request: Request, user: dict = Depends(current_user)):
+        """Authenticated, read-only inventory of supported sender connections."""
+        ws = workspace_for(user)
+        provider = ws.mail_provider()
+        labels = {"gmail": "Gmail", "microsoft": "Microsoft", "microsoft_app": "Microsoft 365 app",
+                  "smtp": "SMTP / IMAP"}
+        return await render(
+            request, "sending_providers.html", user,
+            active_label=labels.get(provider, "No provider selected"),
+            connected=ws.mailbox_connected(),
+            sending=ws.sending_address(),
+            gmail_connected=ws.gmail_connected(),
+            microsoft_connected=ws.microsoft_connected() or ws.m365_configured(),
+            smtp_connected=ws.smtp_configured(),
+        )
+
     # ── mailbox: Gmail (OAuth) or the mailbox's own SMTP/IMAP ──
 
     @app.get("/mailbox", response_class=HTMLResponse)
