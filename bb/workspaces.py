@@ -2524,10 +2524,14 @@ class Workspace:
             return None
         # A zombie, or a number reused by another program after a reboot,
         # is not the mail worker (and Stop must never signal that program).
-        if pid == os.getpid() or _process_gone(pid) or not _is_harvey_process(pid):
-            # A stale PID file must never identify the BB process itself
-            # as a mail worker, even when process inspection is unavailable.
+        if pid == os.getpid() or _process_gone(pid):
+            # Definitely stale or our own process: never adopt or signal it.
             self.mail_pid_file.unlink(missing_ok=True)
+            return None
+        if not _is_harvey_process(pid):
+            # A live process with an unreadable command line is not trusted.
+            # Keep the record temporarily: Windows process inspection can
+            # lag behind startup, and a later lookup may establish identity.
             return None
         return pid
 
