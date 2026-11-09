@@ -15,5 +15,6 @@
   <section class="card" style="padding:20px"><h3>SMTP / IMAP</h3><p class="muted">Use your own authenticated SMTP connection.</p><p>{{ 'Configured' if smtp_connected else 'Not configured' }}</p><a href="/mailbox">Configure SMTP</a></section>
   <section class="card" style="padding:20px"><h3>Amazon SES</h3><p class="muted">User-owned AWS SES API integration is being developed. Connection setup and sending are not enabled yet.</p><p><strong>Coming soon — not connected</strong></p><span class="muted">No credentials are collected on this page.</span></section>
 </div>
+<section class="card" style="padding:20px;margin-top:18px"><h3>SOCKS5 network connection (development)</h3><p class="muted">Purchased SOCKS5 proxy URL parsing and validation is implemented in the backend. Import, encrypted storage, connectivity tests, and authorized mail routing are not enabled in this page yet.</p><p><strong>Not available for live sending</strong></p></section>
 <p class="small muted" style="margin-top:22px">Only connected and authorized providers can send. Amazon SES is not available for live sending from this interface.</p>
 {% endblock %}
