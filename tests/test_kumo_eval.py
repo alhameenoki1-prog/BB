@@ -73,3 +73,30 @@ async def test_kumo_eval_rejects_public_destinations_and_external_urls():
             sender="sender@example.test", recipient="user@gmail.com",
             subject="Never transmitted", body_text="blocked before network",
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [301, 302, 307, 308])
+async def test_kumo_eval_rejects_redirects_without_following(monkeypatch, status):
+    calls = []
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(status, headers={"location": "https://external.example/"})
+    _fake_client(monkeypatch, respond)
+    with pytest.raises(PermanentError, match="redirected"):
+        await kumo_eval.KumoLocalSink().submit(
+            sender="sender@example.test", recipient="recipient@example.test",
+            subject="Redirect test", body_text="local",
+        )
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [[], None, "accepted", 42])
+async def test_kumo_eval_rejects_non_object_acknowledgements(monkeypatch, body):
+    _fake_client(monkeypatch, lambda request: httpx.Response(200, json=body))
+    with pytest.raises(TransientError, match="invalid acknowledgement"):
+        await kumo_eval.KumoLocalSink().submit(
+            sender="sender@example.test", recipient="recipient@example.test",
+            subject="Malformed acknowledgement", body_text="local",
+        )
