@@ -346,9 +346,12 @@ def test_mail_worker_process_starts_and_heartbeats(tmp_path, monkeypatch):
     try:
         for _ in range(80):
             time.sleep(0.25)
-            if (ws.data_dir / "mailworker.heartbeat").exists():
+            if ws.mail_worker_alive():
                 break
-        assert ws.mail_worker_alive()
+        assert ws.mail_worker_alive(), (
+            f"worker did not become healthy; pid_record={ws.mail_pid_file.read_text() if ws.mail_pid_file.exists() else 'missing'}, "
+            f"heartbeat={ws.user_data_dir / 'mailworker.heartbeat'}"
+        )
         db = ws.mail_db()
         asyncio.run(db.init())
         assert any("Background worker started" in r["text"] for r in asyncio.run(db.activity()))
