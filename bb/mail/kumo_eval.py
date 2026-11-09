@@ -58,6 +58,8 @@ class KumoLocalSink:
                 response = await client.post(self.endpoint, json=payload)
         except httpx.RequestError as exc:
             raise TransientError("The local KumoMTA test service could not be reached") from exc
+        if 300 <= response.status_code < 400:
+            raise PermanentError("KumoMTA test endpoint redirected; redirects are not permitted")
         if response.status_code in (401, 403):
             raise AuthError("The KumoMTA test listener rejected this client")
         if response.status_code >= 500 or response.status_code == 429:
@@ -68,6 +70,8 @@ class KumoLocalSink:
             result = response.json()
         except ValueError as exc:
             raise TransientError("KumoMTA returned a non-JSON acknowledgement") from exc
+        if not isinstance(result, dict):
+            raise TransientError("KumoMTA returned an invalid acknowledgement object")
         if result.get("success_count") != 1 or result.get("fail_count") != 0:
             raise PermanentError("KumoMTA did not confirm acceptance of the test recipient")
         return SinkReceipt(message_id=msg["Message-ID"], accepted_recipients=1)
