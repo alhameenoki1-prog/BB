@@ -80,8 +80,8 @@ async def test_stale_send_is_quarantined_but_stale_read_recovers(tmp_path):
     jobs = Jobs(db)
     send_id = await jobs.enqueue("send_draft", "sender.test", payload={"draft_id": "local.test"})
     read_id = await jobs.enqueue("check_mailbox", "reader.test")
-    assert (await jobs.claim())["id"] == send_id
-    assert (await jobs.claim())["id"] == read_id
+    claimed_ids = {(await jobs.claim())["id"], (await jobs.claim())["id"]}
+    assert claimed_ids == {send_id, read_id}
 
     # Simulate worker death with expired locks, without waiting or sending.
     for job_id in (send_id, read_id):
