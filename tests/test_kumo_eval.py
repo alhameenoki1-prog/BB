@@ -94,7 +94,7 @@ async def test_kumo_eval_rejects_redirects_without_following(monkeypatch, status
 @pytest.mark.asyncio
 @pytest.mark.parametrize("body", [[], None, "accepted", 42])
 async def test_kumo_eval_rejects_non_object_acknowledgements(monkeypatch, body):
-    _fake_client(monkeypatch, lambda request: httpx.Response(200, json=body))
+    _fake_client(monkeypatch, lambda request: httpx.Response(200, content=__import__("json").dumps(body).encode("utf-8"), headers={"content-type": "application/json"}))
     with pytest.raises(TransientError, match="invalid acknowledgement"):
         await kumo_eval.KumoLocalSink().submit(
             sender="sender@example.test", recipient="recipient@example.test",
