@@ -100,3 +100,42 @@ async def test_kumo_eval_rejects_non_object_acknowledgements(monkeypatch, body):
             sender="sender@example.test", recipient="recipient@example.test",
             subject="Malformed acknowledgement", body_text="local",
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exception", [
+    httpx.ConnectError("local sink unavailable"),
+    httpx.ReadTimeout("local sink timed out"),
+    httpx.RemoteProtocolError("local sink closed without acknowledgement"),
+])
+async def test_kumo_eval_ambiguous_transport_failures_are_not_accepted(monkeypatch, exception):
+    """A failed/ambiguous HTTP exchange must never return a delivery receipt."""
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        raise exception
+
+    _fake_client(monkeypatch, respond)
+    with pytest.raises(TransientError, match="could not be reached"):
+        await kumo_eval.KumoLocalSink().submit(
+            sender="sender@example.test", recipient="recipient@example.test",
+            subject="Transport interruption", body_text="local-only",
+        )
+    assert len(calls) == 1  # No implicit replay after ambiguous acceptance.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ack", [
+    {"success_count": True, "fail_count": False},
+    {"success_count": "1", "fail_count": "0"},
+    {"success_count": 1.0, "fail_count": 0.0},
+])
+async def test_kumo_eval_requires_integer_acknowledgement_counts(monkeypatch, ack):
+    """Bool and float equality with integers must not be interpreted as receipts."""
+    _fake_client(monkeypatch, lambda request: httpx.Response(200, json=ack))
+    with pytest.raises(TransientError, match="invalid acknowledgement"):
+        await kumo_eval.KumoLocalSink().submit(
+            sender="sender@example.test", recipient="recipient@example.test",
+            subject="Invalid count types", body_text="local-only",
+        )
