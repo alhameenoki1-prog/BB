@@ -2,7 +2,7 @@
 
 Research date: 2026-11-04. This is an evaluation plan, **not** a deliverability benchmark. No public-inbox mail has been sent or new transport integrated.
 
-## Verified local test results (2026-11-04)
+## Verified local test results and current CI (updated 2026-11-10)
 
 | Check | Result | Scope |
 |---|---|---|
@@ -10,13 +10,12 @@ Research date: 2026-11-04. This is an evaluation plan, **not** a deliverability 
 | SMTP failure classification, authentication and partial recipient handling | PASS: 11/11 total sender tests including Mailpit scenarios | Mocked/isolated responses, no public mail |
 | KumoMTA Docker SMTP null-queue listener | PASS: 12/12 acknowledgements; 0.027s | Kumo accepted and discarded messages |
 | KumoMTA Docker HTTP `/api/inject/v1` | PASS: 10/10; 0.012s | API injection accepted and discarded messages |
-| Ubuntu/Python 3.11 and 3.12 full BB regression (earlier head) | PASS | Latest exact-head result still pending |
-| macOS/Python 3.11 and 3.12 full BB regression (earlier head) | 998 passed, 1 flaky test failed | Invalid 2-character ciphertext substring test fixed; rerun pending |
-| Windows/Python 3.11 and 3.12 | Baseline platform failures remain | Unix-only process signals, tunnel mocks, path separators |
+| Latest PR #3 cross-platform test workflow (2026-11-10, head `fb18bac812148dcdf713fa0a162ff627090b1e81`) | PASS: GitHub workflow conclusion success | [Run 42784102814](https://github.com/alhameenoki1-prog/BB/actions/runs/42784102814); check individual job matrix in run |
+| Latest PR #3 local sender evaluation (same head) | PASS: GitHub workflow conclusion success | [Run 42784102887](https://github.com/alhameenoki1-prog/BB/actions/runs/42784102887); local-only, not public delivery |
 | Gmail/Outlook/Yahoo inbox placement | NOT TESTED | Requires controlled seeds and owned domains |
 | Postal/Hyvor runtime and spooling | NOT TESTED | Separate service/dependency setup needed |
 
-Evidence: [BB sender workflow run](https://github.com/alhameenoki1-prog/BB/actions/runs/41855649544), [SMTP classification workflow](https://github.com/alhameenoki1-prog/BB/actions/runs/41834111116), [full BB regression](https://github.com/alhameenoki1-prog/BB/actions/runs/41834111302).
+Historical 2026-11-04 evidence: [BB sender workflow run](https://github.com/alhameenoki1-prog/BB/actions/runs/41855649544), [SMTP classification workflow](https://github.com/alhameenoki1-prog/BB/actions/runs/41834111116), [full BB regression](https://github.com/alhameenoki1-prog/BB/actions/runs/41834111302).
 
 **Decision:** KumoMTA passes the isolated SMTP and HTTP injection gates. It is approved for *further non-production evaluation only*, not production, until queue durability, crash recovery, performance under sustained load, cost and controlled public-inbox placement are verified. Avoid interpreting fast sink acknowledgements as deliverability or full end-to-end throughput.
 
@@ -97,3 +96,20 @@ Cloud baseline to compare with independent servers: [Amazon SES HTTP API](https:
 - [Mailpit local sink and chaos tests](https://github.com/axllent/mailpit)
 - [Gmail sender requirements](https://support.google.com/mail/answer/14229414)
 - [Yahoo sender requirements](https://senders.yahooinc.com/best-practices/)
+
+## PR #3 release decision record — 2026-11-10
+
+- Exact verified head before this documentation change: `fb18bac812148dcdf713fa0a162ff627090b1e81`. Both test and local sender evaluation workflows completed successfully. **This documentation update itself requires fresh CI confirmation.**
+- SQLite recovery tests cover stale running sends, explicit manual retry, concurrent claim, exponential backoff, worker restart and completed-job non-replay. They do not establish exactly-once delivery at an external provider; remote acceptance followed by a lost acknowledgement remains inherently ambiguous without provider-side idempotency and reconciliation.
+- KumoMTA: local null-queue and API acknowledgement evidence only. This is **not** proof of durable spool persistence, downstream-MX acceptance, complaint handling, or inbox placement.
+- Postal: static candidate only. No isolated runtime, restart, queue durability or webhook signature test has been recorded in this branch. **Not approved for production.**
+- HYVOR Relay: static candidate only. License and integration compatibility must be reviewed; no isolated runtime, idempotency or bounce-webhook test has been recorded. **Not approved for production.**
+- Existing authenticated Gmail, Graph and SMTP paths remain the compatibility baseline. New transports should be feature-gated and must never silently replace them.
+
+### Reproducible next acceptance checks
+
+1. From a clean checkout of this PR head, run `python -m compileall -q bb harvey` and `pytest -q tests/test_queue_restart_persistence.py tests/test_queue_delivery_recovery.py tests/test_queue_recovery_boundaries.py tests/test_queue_retry_backoff.py` on supported OS/Python versions.
+2. Run the repository's `tests` and `BB sender evaluation (local SMTP sink)` GitHub Actions workflows; record exact commit SHA, run URL, job matrix and conclusion. A green prior head does not prove a new head passes.
+3. For each proposed MTA, pin an upstream release/container digest, record exact local commands, configure an isolated .test-only sink, capture acceptance vs destination delivery separately, and inject timeout, 4xx, 5xx, restart and duplicate-event scenarios. Never connect to public recipients in CI.
+4. Require a documented provider-side idempotency/reconciliation contract before enabling automatic replay of any send whose remote acceptance is unknown. Quarantine ambiguous sends for manual review otherwise.
+5. Keep all production, domain, DNS, credentials, and deployment changes outside this PR until separately approved.
