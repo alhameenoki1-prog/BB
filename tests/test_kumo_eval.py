@@ -38,7 +38,8 @@ async def test_kumo_eval_builds_mime_and_requires_api_acceptance(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "error"),
-    [(401, AuthError), (403, AuthError), (429, TransientError),
+    [(401, AuthError), (403, AuthError), (408, TransientError),
+     (425, TransientError), (429, TransientError),
      (503, TransientError), (400, PermanentError)],
 )
 async def test_kumo_eval_classifies_http_failures(monkeypatch, status, error):
