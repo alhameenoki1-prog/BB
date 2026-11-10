@@ -95,3 +95,60 @@ async def test_graph_draft_send_uses_delegated_mailbox_and_preserves_reply_to(mo
     ]
     assert calls[1] == ("POST", "/me/messages/mock-draft/send", None)
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_graph_app_only_sends_from_configured_mailbox(monkeypatch):
+    """Application credentials use /users/{mailbox}, never an unrelated /me."""
+    calls = []
+
+    async def fake_call(self, method, path, *, params=None, json=None, absolute=False):
+        calls.append((method, path, json))
+        if method == "POST" and path == "/users/sender@example.test/messages":
+            return {"id": "app-draft", "conversationId": "app-thread"}
+        if method == "POST" and path == "/users/sender@example.test/messages/app-draft/send":
+            return {}
+        raise AssertionError(f"Unexpected Graph call: {method} {path}")
+
+    monkeypatch.setattr(GraphAccount, "_call", fake_call)
+    account = GraphAccount(
+        {"address": "sender@example.test"},
+        {"tenant_id": "tenant.test", "client_id": "client.test", "client_secret": "not-real"},
+        {},
+    )
+    result = await account.send(
+        to=["recipient@example.test"], subject="App-only local test",
+        body_text="Local only", body_html="",
+    )
+    assert result[1:] == ("", "app-thread")
+    assert result[0].startswith("<") and result[0].endswith(">")
+    assert len(calls) == 2
+    assert all(path.startswith("/users/sender@example.test/") for _, path, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_graph_rejected_send_is_not_reported_as_accepted(monkeypatch):
+    """A rejected draft send must propagate rather than produce a success tuple."""
+    calls = []
+
+    async def fake_call(self, method, path, *, params=None, json=None, absolute=False):
+        calls.append((method, path))
+        if method == "POST" and path == "/me/messages":
+            return {"id": "rejected-draft"}
+        if method == "POST" and path == "/me/messages/rejected-draft/send":
+            raise AuthError("mock Graph 403")
+        raise AssertionError(f"Unexpected Graph call: {method} {path}")
+
+    monkeypatch.setattr(GraphAccount, "_call", fake_call)
+    account = GraphAccount(
+        {"address": "sender@example.test"}, {"refresh_token": "unused"}, {},
+    )
+    with pytest.raises(AuthError, match="403"):
+        await account.send(
+            to=["recipient@example.test"], subject="Not sent",
+            body_text="Local only", body_html="",
+        )
+    assert calls == [
+        ("POST", "/me/messages"),
+        ("POST", "/me/messages/rejected-draft/send"),
+    ]
