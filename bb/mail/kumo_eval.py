@@ -72,6 +72,9 @@ class KumoLocalSink:
             raise TransientError("KumoMTA returned a non-JSON acknowledgement") from exc
         if not isinstance(result, dict):
             raise TransientError("KumoMTA returned an invalid acknowledgement object")
+        if (type(result.get("success_count")) is not int
+                or type(result.get("fail_count")) is not int):
+            raise TransientError("KumoMTA returned an invalid acknowledgement count type")
         if result.get("success_count") != 1 or result.get("fail_count") != 0:
             raise PermanentError("KumoMTA did not confirm acceptance of the test recipient")
         return SinkReceipt(message_id=msg["Message-ID"], accepted_recipients=1)
