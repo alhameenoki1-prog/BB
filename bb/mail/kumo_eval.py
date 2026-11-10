@@ -62,7 +62,9 @@ class KumoLocalSink:
             raise PermanentError("KumoMTA test endpoint redirected; redirects are not permitted")
         if response.status_code in (401, 403):
             raise AuthError("The KumoMTA test listener rejected this client")
-        if response.status_code >= 500 or response.status_code == 429:
+        # A server-side request timeout or Too Early response does not establish
+        # rejection of the recipient. Never record these as permanent failures.
+        if response.status_code in (408, 425, 429) or response.status_code >= 500:
             raise TransientError(f"KumoMTA local service returned HTTP {response.status_code}")
         if response.status_code >= 400:
             raise PermanentError(f"KumoMTA rejected this test message: HTTP {response.status_code}")
