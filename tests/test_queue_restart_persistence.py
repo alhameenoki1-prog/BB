@@ -75,3 +75,51 @@ async def test_manual_retry_after_restart_is_explicit_and_single_claim(tmp_path)
     assert claimed is not None and claimed["id"] == send_id
     assert claimed["attempts"] == 1
     assert await restarted.claim() is None
+
+
+@pytest.mark.asyncio
+async def test_restart_preserves_future_due_time_for_safe_job(tmp_path):
+    """A new worker must not claim scheduled read-only work prematurely."""
+    path = tmp_path / "delayed.db"
+    original = MailDB(path)
+    await original.init()
+    delayed_id = await Jobs(original).enqueue(
+        "check_mailbox", "reader.test", delay_seconds=3600
+    )
+    restarted = Jobs(MailDB(path))
+    assert await restarted.claim() is None
+    row = await restarted.db.one(
+        "SELECT status, attempts FROM jobs WHERE id = ?", (delayed_id,)
+    )
+    assert row == {"status": "queued", "attempts": 0}
+    await restarted.db.execute(
+        "UPDATE jobs SET run_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+        (delayed_id,),
+    )
+    claimed = await restarted.claim()
+    assert claimed is not None and claimed["id"] == delayed_id
+    assert claimed["attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_send_is_not_replayed_after_restart(tmp_path):
+    """A recorded completion survives process replacement and is not requeued."""
+    path = tmp_path / "completed.db"
+    original = MailDB(path)
+    await original.init()
+    worker = Jobs(original)
+    send_id = await worker.enqueue(
+        "send_draft", "sender.test", {"draft_id": "completed.test"}
+    )
+    assert (await worker.claim())["id"] == send_id
+    await worker.complete(send_id, status="sent")
+    restarted = Jobs(MailDB(path))
+    assert await restarted.claim() is None
+    row = await restarted.db.one(
+        "SELECT status, attempts, locked_at, finished_at FROM jobs WHERE id = ?",
+        (send_id,),
+    )
+    assert row["status"] == "done"
+    assert row["attempts"] == 1
+    assert row["locked_at"] is None
+    assert row["finished_at"] is not None
