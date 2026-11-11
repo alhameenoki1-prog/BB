@@ -160,3 +160,31 @@ async def test_concurrent_workers_cannot_claim_same_job(tmp_path):
     )
     assert row["status"] == "running"
     assert row["attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_independent_database_connections_do_not_double_claim_send(tmp_path):
+    """Separate worker processes sharing SQLite must not claim the same send."""
+    import asyncio
+
+    path = tmp_path / "multi-connection-claim.db"
+    initial = MailDB(path)
+    await initial.init()
+    job_id = await Jobs(initial).enqueue(
+        "send_draft", "sender-a", {"draft_id": "shared-claim.test"}
+    )
+    first_db = MailDB(path)
+    second_db = MailDB(path)
+    await asyncio.gather(first_db.init(), second_db.init())
+
+    first, second = await asyncio.gather(
+        Jobs(first_db).claim(), Jobs(second_db).claim()
+    )
+    claims = [job for job in (first, second) if job is not None]
+    assert len(claims) == 1
+    assert claims[0]["id"] == job_id
+    assert claims[0]["attempts"] == 1
+    row = await initial.one(
+        "SELECT status, attempts FROM jobs WHERE id = ?", (job_id,)
+    )
+    assert row == {"status": "running", "attempts": 1}
