@@ -178,7 +178,14 @@ class Worker:
             await asyncio.shield(self.jobs.release(job["id"], "worker stopped"))
             raise
         except Exception as e:
-            status = await self.jobs.fail(job["id"], f"{type(e).__name__}: {str(e)[:300]}")
+            if job["kind"] == "send_draft":
+                # A timeout or disconnect can occur after remote acceptance.
+                # Without provider-side idempotency, automatic retry risks
+                # delivering a duplicate. Require explicit reconciliation.
+                await self.jobs.release(job["id"], "send failed; delivery status uncertain")
+                status = "dead"
+            else:
+                status = await self.jobs.fail(job["id"], f"{type(e).__name__}: {str(e)[:300]}")
             logger.warning("job %s (%s) failed: %s → %s", job["id"], job["kind"], e, status)
             if status == "dead":
                 await self.db.log("warning", f"A background task ({job['kind'].replace('_', ' ')}) failed "
