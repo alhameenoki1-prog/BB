@@ -19,7 +19,7 @@ def test_manual_draft_keeps_content_and_normalizes_newlines():
     ("Subject\x00", "Body"),
     ("Subject", "a" * 100001),
     ("Subject", "NUL\x00inside"),
-])
+], ids=["empty-subject", "empty-body", "long-subject", "header-injection", "control-subject", "oversized-body", "nul-body"])
 def test_invalid_manual_drafts_are_rejected(subject, body):
     with pytest.raises(ValueError):
         validate_manual_draft(subject, body)
