@@ -9,6 +9,7 @@ import os
 import time
 from pathlib import Path
 
+import aiosmtplib
 import httpx
 import pytest
 
@@ -19,6 +20,23 @@ pytestmark = pytest.mark.skipif(
     os.getenv("BB_MAILPIT_TEST") != "1",
     reason="requires the isolated Mailpit service; disabled in normal test suite",
 )
+
+
+@pytest.fixture(autouse=True)
+def _use_stable_loopback_ehlo_hostname(monkeypatch):
+    """Avoid platform-dependent FQDN lookup during the local Mailpit handshake.
+
+    Scope this override to the isolated integration tests. Production SMTP
+    clients retain aiosmtplib's normal hostname selection and TLS behavior.
+    """
+    original_send = aiosmtplib.send
+
+    async def local_send(*args, **kwargs):
+        assert kwargs.get("hostname") == "127.0.0.1"
+        kwargs.setdefault("local_hostname", "localhost")
+        return await original_send(*args, **kwargs)
+
+    monkeypatch.setattr(aiosmtplib, "send", local_send)
 
 
 async def _wait_for_mailpit() -> None:
