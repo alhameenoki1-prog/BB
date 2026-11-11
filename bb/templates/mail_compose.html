@@ -21,6 +21,24 @@
 </div>
 {% endif %}
 <div class="card">
+  <h2>Write your own email</h2>
+  <p class="small muted">No AI required. Write the subject and message yourself, then review the final version before sending. Links can be added to selected words in the draft editor.</p>
+  <form method="post" action="/mail/compose">
+    <input type="hidden" name="compose_mode" value="manual">
+    <div class="row">
+      <div><label for="manual-mailbox">From</label><select id="manual-mailbox" name="mailbox" required>{% for m in ready %}<option value="{{ m.id }}">{{ m.address }}{{ '' if m.ready else ' (needs signature & link)' }}</option>{% endfor %}</select></div>
+      <div><label for="manual-to">To</label><input id="manual-to" type="email" name="to" required maxlength="254" placeholder="recipient@example.test"></div>
+      <div><label for="manual-name">Recipient name (optional)</label><input id="manual-name" type="text" name="to_name" maxlength="150"></div>
+    </div>
+    <label for="manual-subject">Subject</label>
+    <input id="manual-subject" name="subject" required maxlength="200" placeholder="Meeting request">
+    <label for="manual-body">Message</label>
+    <textarea id="manual-body" name="body" rows="10" required maxlength="100000" placeholder="Write your message here. You can add links after creating the draft."></textarea>
+    <div class="hint">The existing signature, profile link, delivery limits and mailbox checks still apply. No message is sent until you explicitly approve the reviewed draft.</div>
+    <div class="actions" style="margin-top:12px"><button type="submit">Save draft for review</button></div>
+  </form>
+</div>
+<div class="card">
   <h2>{{ 'Another one' if draft else 'Write one' }}</h2>
   <form method="post" action="/mail/compose">
     <div class="row">
