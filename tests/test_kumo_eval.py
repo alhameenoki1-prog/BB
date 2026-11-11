@@ -140,3 +140,31 @@ async def test_kumo_eval_requires_integer_acknowledgement_counts(monkeypatch, ac
             sender="sender@example.test", recipient="recipient@example.test",
             subject="Invalid count types", body_text="local-only",
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ack", [
+    {"success_count": 0, "fail_count": 0},
+    {"success_count": 1, "fail_count": 1},
+    {"success_count": 2, "fail_count": 0},
+])
+async def test_kumo_eval_never_accepts_partial_or_inconsistent_receipts(monkeypatch, ack):
+    """Only exactly one accepted and zero rejected recipients is a receipt."""
+    _fake_client(monkeypatch, lambda request: httpx.Response(202, json=ack))
+    with pytest.raises(PermanentError, match="did not confirm acceptance"):
+        await kumo_eval.KumoLocalSink().submit(
+            sender="sender@example.test", recipient="recipient@example.test",
+            subject="Unconfirmed acceptance", body_text="local-only",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [b"", b"not json", b"{"])
+async def test_kumo_eval_never_accepts_missing_or_invalid_json_receipts(monkeypatch, body):
+    """Even HTTP 2xx is not proof of a successful sink acknowledgement."""
+    _fake_client(monkeypatch, lambda request: httpx.Response(202, content=body))
+    with pytest.raises(TransientError, match="non-JSON acknowledgement"):
+        await kumo_eval.KumoLocalSink().submit(
+            sender="sender@example.test", recipient="recipient@example.test",
+            subject="Missing acknowledgement", body_text="local-only",
+        )
