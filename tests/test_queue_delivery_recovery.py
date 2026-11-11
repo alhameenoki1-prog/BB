@@ -115,3 +115,54 @@ def test_sender_without_configured_window_is_unrestricted_by_hours():
 
     settings = SimpleNamespace(hours_start="", hours_end="")
     assert within_hours(settings, datetime(2026, 1, 1, 3, 0))
+
+
+@pytest.mark.asyncio
+async def test_worker_quarantines_failed_send_without_automatic_retry(tmp_path):
+    """A lost SMTP acknowledgement must not cause an unattended second send."""
+    from bb.mail.worker import Worker
+
+    worker = Worker(tmp_path, "test-only-secret", {})
+    await worker.db.init()
+    job_id = await worker.jobs.enqueue(
+        "send_draft", "mailbox.test", {"draft_id": "local-only.test"}, max_attempts=5
+    )
+    job = await worker.jobs.claim()
+    assert job is not None and job["id"] == job_id
+
+    async def uncertain_delivery(_job):
+        raise TimeoutError("mock SMTP acknowledgement lost")
+
+    worker.handlers.run = uncertain_delivery
+    await worker._run_job(job)
+    row = await worker.db.one(
+        "SELECT status, attempts, last_error FROM jobs WHERE id = ?", (job_id,)
+    )
+    assert row["status"] == "dead"
+    assert row["attempts"] == 1
+    assert "may have succeeded" in row["last_error"]
+    assert await worker.jobs.claim() is None
+
+
+@pytest.mark.asyncio
+async def test_worker_still_retries_failed_read_only_job(tmp_path):
+    """Conservative send handling must not disable normal safe-job retries."""
+    from bb.mail.worker import Worker
+
+    worker = Worker(tmp_path, "test-only-secret", {})
+    await worker.db.init()
+    job_id = await worker.jobs.enqueue("check_mailbox", "mailbox.test")
+    job = await worker.jobs.claim()
+    assert job is not None and job["id"] == job_id
+
+    async def failed_read(_job):
+        raise TimeoutError("mock mailbox read timed out")
+
+    worker.handlers.run = failed_read
+    await worker._run_job(job)
+    row = await worker.db.one(
+        "SELECT status, attempts, last_error FROM jobs WHERE id = ?", (job_id,)
+    )
+    assert row["status"] == "queued"
+    assert row["attempts"] == 1
+    assert "TimeoutError" in row["last_error"]
