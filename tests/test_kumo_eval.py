@@ -168,3 +168,17 @@ async def test_kumo_eval_never_accepts_missing_or_invalid_json_receipts(monkeypa
             sender="sender@example.test", recipient="recipient@example.test",
             subject="Missing acknowledgement", body_text="local-only",
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [101, 206, 207])
+async def test_kumo_eval_rejects_ambiguous_http_status_even_with_success_counts(monkeypatch, status):
+    """Informational, partial, and multi-status replies cannot confirm a submission."""
+    _fake_client(monkeypatch, lambda request: httpx.Response(
+        status, json={"success_count": 1, "fail_count": 0}
+    ))
+    with pytest.raises(TransientError, match="ambiguous HTTP"):
+        await kumo_eval.KumoLocalSink().submit(
+            sender="sender@example.test", recipient="recipient@example.test",
+            subject="Ambiguous status", body_text="local-only",
+        )
