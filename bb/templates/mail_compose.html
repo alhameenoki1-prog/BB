@@ -28,8 +28,39 @@
       <div><label>To (email)</label><input type="email" name="to" required placeholder="john@example.com"></div>
       <div><label>Their name</label><input type="text" name="to_name" placeholder="John"></div>
     </div>
-    <label>What should it say?</label>
-    <textarea name="instruction" rows="4" required placeholder="Ask John whether Thursday's call can move to Friday afternoon; mention I'll send the agenda before."></textarea>
+    <label for="compose-instruction">What should it say?</label>
+    <p class="small muted">Start with a writing guide or describe your own message. Nothing is sent until you review the draft.</p>
+    <div class="actions" role="group" aria-label="Writing guides" style="margin:8px 0">
+      <button type="button" class="secondary" data-compose-guide="follow-up">Follow-up</button>
+      <button type="button" class="secondary" data-compose-guide="meeting">Meeting request</button>
+      <button type="button" class="secondary" data-compose-guide="introduction">Introduction</button>
+      <button type="button" class="secondary" data-compose-guide="thank-you">Thank-you</button>
+    </div>
+    <textarea name="instruction" id="compose-instruction" rows="6" required minlength="5" maxlength="5000" placeholder="Describe the message, tone, context and any information that must be included."></textarea>
+    <p class="small muted" id="compose-guide-status" role="status" aria-live="polite">Choose a guide to fill the instructions; you can edit everything before drafting.</p>
+    <script>
+    (() => {
+      const instruction = document.getElementById('compose-instruction');
+      const status = document.getElementById('compose-guide-status');
+      if (!instruction || !status) return;
+      const guides = {
+        'follow-up': 'Write a concise, friendly follow-up to my previous message. Refer to the earlier discussion only if I provide its details. State the next step clearly. Do not invent facts or promises.',
+        'meeting': 'Write a professional meeting request. Explain the reason for meeting, propose a time only if I specify one, and ask the recipient to confirm availability. Do not claim a calendar invitation has been sent.',
+        'introduction': 'Write a brief, personalized introduction explaining who I am, why I am reaching out, and a clear, respectful next step. Use only the facts I provide.',
+        'thank-you': 'Write a warm, professional thank-you email. Mention the specific reason for gratitude only if I provide it, and close naturally without inventing commitments.'
+      };
+      document.querySelectorAll('[data-compose-guide]').forEach(button => {
+        button.addEventListener('click', () => {
+          const guide = guides[button.dataset.composeGuide];
+          if (!guide) return;
+          if (instruction.value.trim() && !window.confirm('Replace your current instructions with this writing guide?')) return;
+          instruction.value = guide;
+          status.textContent = 'Writing guide inserted. Edit it to add your specific details.';
+          instruction.focus();
+        });
+      });
+    })();
+    </script>
     <p class="actions" style="margin-top:10px"><button type="submit">{{ icon('spark', 15) }} Draft it</button></p>
   </form>
 </div>
