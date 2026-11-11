@@ -111,18 +111,22 @@ class Jobs:
     async def fail(self, job_id: str, error: str) -> str:
         """Retry with backoff, or mark dead after the last attempt. Returns
         the new status."""
-        job = await self.db.one("SELECT attempts, max_attempts FROM jobs WHERE id = ?", (job_id,))
+        job = await self.db.one("SELECT attempts, max_attempts, status FROM jobs WHERE id = ?", (job_id,))
+        # A late worker failure must not revive a quarantined, completed, or
+        # explicitly discarded job after another worker changed its state.
+        if job and job["status"] != "running":
+            return job["status"]
         if not job:
             return "missing"
         now = datetime.now(timezone.utc)
         if job["attempts"] >= job["max_attempts"]:
             await self.db.execute(
                 "UPDATE jobs SET status = 'dead', locked_at = NULL, last_error = ?, updated_at = ?, finished_at = ? "
-                "WHERE id = ?", (error[:600], _iso(now), _iso(now), job_id))
+                "WHERE id = ? AND status = 'running'", (error[:600], _iso(now), _iso(now), job_id))
             return "dead"
         wait = min(BACKOFF_CAP_SECONDS, BACKOFF_BASE_SECONDS * (2 ** (job["attempts"] - 1)))
         await self.db.execute(
-            "UPDATE jobs SET status = 'queued', locked_at = NULL, last_error = ?, run_at = ?, updated_at = ? WHERE id = ?",
+            "UPDATE jobs SET status = 'queued', locked_at = NULL, last_error = ?, run_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
             (error[:600], _iso(now + timedelta(seconds=wait)), _iso(now), job_id))
         return "queued"
 
