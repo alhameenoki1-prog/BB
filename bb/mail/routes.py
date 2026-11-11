@@ -877,6 +877,33 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         to_email = str(form.get("to", "") or "").strip().lower()
         to_name = str(form.get("to_name", "") or "").strip()
         instruction = str(form.get("instruction", "") or "").strip()
+        manual = str(form.get("compose_mode", "") or "") == "manual"
+        if manual:
+            from email.utils import parseaddr
+            from bb.mail.composer import validate_manual_draft
+            try:
+                subject, body = validate_manual_draft(
+                    str(form.get("subject", "") or ""),
+                    str(form.get("body", "") or ""),
+                )
+            except ValueError as exc:
+                return _redirect("/mail/compose", error=str(exc))
+            parsed_name, parsed_address = parseaddr(to_email)
+            if (not box or not box.get("enabled") or parsed_name or
+                    parsed_address != to_email or len(to_email) > 254 or
+                    to_email.count("@") != 1 or not to_email.split("@")[1].count(".")):
+                return _redirect("/mail/compose", error="Select an enabled mailbox and enter one valid recipient email.")
+            draft_id = service.new_id()
+            now = service.now_iso()
+            await c["db"].execute(
+                "INSERT INTO drafts(id, mailbox_id, kind, to_json, reply_to, subject, body, status, qa_json, confidence, created_at, updated_at) "
+                "VALUES (?, ?, 'new', ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?)",
+                (draft_id, box["id"], json.dumps([{"name": to_name, "email": to_email}]),
+                 service.settings_of(box).reply_to, subject, body,
+                 json.dumps({"ok": True, "reasons": [], "manual": True}),
+                 "manual", now, now),
+            )
+            return _redirect(f"/mail/compose?draft={draft_id}", msg="Manual draft saved for review. Nothing has been sent.")
         if not box or "@" not in to_email or len(instruction) < 5:
             return _redirect("/mail/compose", error="Pick a mailbox, enter the recipient, and say what the email should do.")
         try:
