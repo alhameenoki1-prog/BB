@@ -60,7 +60,7 @@ class KumoLocalSink:
             raise TransientError("The local KumoMTA test service could not be reached") from exc
         if 300 <= response.status_code < 400:
             raise PermanentError("KumoMTA test endpoint redirected; redirects are not permitted")
-        if response.status_code in (401, 403):
+        # Only ordinary successful submission responses can carry a receipt.\n        # 1xx, 206 Partial Content and 207 Multi-Status do not establish\n        # unambiguous acceptance of the single submitted recipient.\n        if response.status_code < 200 or response.status_code in (206, 207):\n            raise TransientError(f"KumoMTA returned an ambiguous HTTP {response.status_code} response")\n        if response.status_code in (401, 403):
             raise AuthError("The KumoMTA test listener rejected this client")
         # A server-side request timeout or Too Early response does not establish
         # rejection of the recipient. Never record these as permanent failures.
