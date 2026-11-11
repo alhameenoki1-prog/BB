@@ -126,3 +126,34 @@ async def test_release_interrupted_send_requires_manual_retry(tmp_path):
     retried = await jobs.claim()
     assert retried is not None and retried["id"] == send_id
     assert retried["attempts"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("settled", ["done", "dead", "cancelled"])
+async def test_late_worker_failure_cannot_requeue_settled_job(tmp_path, settled):
+    """A delayed error callback cannot resurrect a completed or held send."""
+    db = MailDB(tmp_path / "late-failure.db")
+    await db.init()
+    jobs = Jobs(db)
+    job_id = await jobs.enqueue("send_draft", "sender.test", {"draft_id": "local.test"})
+    assert (await jobs.claim())["id"] == job_id
+    if settled == "done":
+        await jobs.complete(job_id, status="sent")
+    elif settled == "dead":
+        await jobs.release(job_id)
+    else:
+        await jobs.release(job_id)
+        assert await jobs.discard(job_id) is True
+
+    before = await db.one(
+        "SELECT status, attempts, finished_at, last_error FROM jobs WHERE id = ?",
+        (job_id,),
+    )
+    assert before["status"] == settled
+    assert await jobs.fail(job_id, "late mock transport timeout") == settled
+    after = await db.one(
+        "SELECT status, attempts, finished_at, last_error FROM jobs WHERE id = ?",
+        (job_id,),
+    )
+    assert after == before
+    assert await jobs.claim() is None
