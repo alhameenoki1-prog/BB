@@ -191,7 +191,9 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
         raise SendRefused("the mailbox no longer exists")
     env = await env_for_draft(db, env, draft, mailbox)
     settings = service.settings_of(mailbox)
-    ok, why = service.ready_to_send(mailbox)
+    import json as _json
+    is_manual = bool(_json.loads(draft.get("qa_json") or "{}").get("manual"))
+    ok, why = service.ready_to_send(mailbox, manual=is_manual)
     if not ok:
         raise SendRefused(why)
     answer = await is_answer(db, draft)
