@@ -25,12 +25,15 @@ def settings_of(mailbox: dict) -> MailboxSettings:
         return MailboxSettings()
 
 
-def ready_to_send(mailbox: dict) -> tuple[bool, str]:
-    """A mailbox sends only with a signature and a project link, and only
-    while its connection works."""
-    ok, why = settings_of(mailbox).ready_to_send()
-    if not ok:
-        return False, why
+def ready_to_send(mailbox: dict, *, manual: bool = False) -> tuple[bool, str]:
+    """Require a campaign signature/link for campaign messages, not personal drafts.
+
+    Both types still require an enabled, connected sender account.
+    """
+    if not manual:
+        ok, why = settings_of(mailbox).ready_to_send()
+        if not ok:
+            return False, why
     if mailbox.get("status") == "reconnect":
         return False, "This mailbox needs reconnecting before it can send."
     if not mailbox.get("enabled", 1):
