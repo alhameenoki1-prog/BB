@@ -856,6 +856,30 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                                   (service.now_iso(), r["id"]))
         return _redirect("/mail/review", msg=f"Discarded {len(rows)} draft(s).")
 
+    @app.get("/mail/studio/thread-preview", response_class=HTMLResponse)
+    async def studio_fictional_thread_preview(
+        request: Request, user: dict = Depends(current_user),
+        to: str = "john.smith@example.test", to_name: str = "John Smith",
+        sender: str = "Project Team", subject: str = "Project scope discussion",
+        topic: str = "the proposed project scope",
+    ):
+        """Authenticated, visual-only fictional thread; never queues messages."""
+        from bb.mail.thread_preview import fictional_conversation
+        from email.utils import parseaddr
+
+        if len(to) > 254 or parseaddr(to)[1] != to or "@" not in to:
+            raise HTTPException(status_code=422, detail="Invalid recipient address")
+        try:
+            page = fictional_conversation(
+                recipient={"email": to, "name": to_name}, sender_name=sender,
+                subject=subject, topic=topic,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return HTMLResponse(page, headers={"Cache-Control": "no-store",
+                                           "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+                                           "X-Content-Type-Options": "nosniff"})
+
     @app.get("/mail/compose", response_class=HTMLResponse)
     async def mail_compose(request: Request, user: dict = Depends(current_user), draft: str = ""):
         c = await ctx(user)
