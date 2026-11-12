@@ -53,12 +53,12 @@ def parse_copy_recipients(raw: str, *, field_name: str, limit: int = 20) -> list
 
     Addresses are returned in original order and normalized for comparison.
     """
-    from email.utils import getaddresses, parseaddr
+    from email.utils import parseaddr
 
     raw = (raw or "").strip()
     if not raw:
         return []
-    if len(raw) > 4096 or any(ch in raw for ch in "\\r\\n\\x00"):
+    if len(raw) > 4096 or any(ch in raw for ch in "\r\n\x00"):
         raise ValueError(f"{field_name}: invalid address list")
     tokens = [part.strip() for part in raw.replace(";", ",").split(",")]
     if any(not part for part in tokens) or len(tokens) > limit:
