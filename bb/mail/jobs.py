@@ -41,12 +41,35 @@ class Jobs:
                 return row["id"]
         jid = new_id()
         now = datetime.now(timezone.utc)
-        await self.db.execute(
+        async with self.db._connect() as db:
+            await self._insert(db, jid, kind, mailbox_id, payload or {}, now, delay_seconds, max_attempts, lane)
+            await db.commit()
+        return jid
+
+    @staticmethod
+    async def _insert(db, jid, kind, mailbox_id, payload, now, delay_seconds, max_attempts, lane):
+        await db.execute(
             "INSERT INTO jobs(id, kind, mailbox_id, payload_json, status, run_at, max_attempts, created_at, updated_at, lane) "
             "VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
-            (jid, kind, mailbox_id, json.dumps(payload or {}), _iso(now + timedelta(seconds=delay_seconds)),
+            (jid, kind, mailbox_id, json.dumps(payload), _iso(now + timedelta(seconds=delay_seconds)),
              max_attempts, _iso(now), _iso(now), lane))
-        return jid
+
+    async def approve_draft(self, draft: dict, *, body: str, subject: str, reply_to: str,
+                            dry_run: bool = False, saw_thread: bool = False) -> bool:
+        """Approve and queue a pending draft in the same transaction."""
+        now = datetime.now(timezone.utc)
+        async with self.db._connect() as db:
+            changed = await db.execute(
+                "UPDATE drafts SET body = ?, subject = ?, reply_to = ?, status = 'approved', error = '', updated_at = ? "
+                "WHERE id = ? AND status = 'pending_review'",
+                (body, subject, reply_to, _iso(now), draft["id"]),
+            )
+            if not changed.rowcount:
+                return False
+            payload = {"draft_id": draft["id"], "dry_run": dry_run, "saw_thread": saw_thread}
+            await self._insert(db, new_id(), "send_draft", draft["mailbox_id"], payload, now, 0, 4, "")
+            await db.commit()
+        return True
 
     async def claim(self, exclude_mailboxes: set[str] | None = None, exclude_kinds=()) -> dict | None:
         """The next due job, marked running by the caller in one statement.
@@ -80,7 +103,10 @@ class Jobs:
             cur = await db.execute(
                 f"""UPDATE jobs SET status = 'running', locked_at = ?, attempts = attempts + 1, updated_at = ?
                     WHERE id = (SELECT id FROM jobs WHERE status = 'queued' AND run_at <= ?{not_busy}
-                                ORDER BY run_at LIMIT 1)
+                                AND NOT EXISTS (SELECT 1 FROM jobs AS running WHERE running.status = 'running'
+                                    AND COALESCE(NULLIF(running.lane, ''), running.mailbox_id) =
+                                        COALESCE(NULLIF(jobs.lane, ''), jobs.mailbox_id))
+                                ORDER BY run_at, created_at, id LIMIT 1)
                     RETURNING *""", (now, now, now, *exclude))
             row = await cur.fetchone()
             cols = [c[0] for c in cur.description] if cur.description else []

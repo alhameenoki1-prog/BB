@@ -3,8 +3,12 @@
 The existing send queue and MIME builder remain the only delivery path.
 """
 
+import re
+from email.errors import HeaderParseError
+from email.headerregistry import Address
 
-def validate_manual_draft(subject: str, body: str) -> tuple[str, str]:
+
+def validate_manual_draft(subject: str, body: str, *, allow_empty: bool = False) -> tuple[str, str]:
     """Reject empty, oversized, or header-injection-prone manual drafts."""
     subject = subject.strip()
     body = body.replace("\r\n", "\n").replace("\r", "\n").strip()
@@ -12,16 +16,14 @@ def validate_manual_draft(subject: str, body: str) -> tuple[str, str]:
         raise ValueError("Subject must contain 1 to 200 characters.")
     if "\n" in subject or any(ord(ch) < 32 for ch in subject):
         raise ValueError("Subject cannot contain line breaks or control characters.")
-    if not body or len(body) > 100_000:
+    if (not body and not allow_empty) or len(body) > 100_000:
         raise ValueError("Message must contain 1 to 100,000 characters.")
     if "\x00" in body:
         raise ValueError("Message cannot contain NUL characters.")
     return subject, body
 
-import re
-
 _TOKEN_RE = re.compile(r"\{\{\s*(email|name|first_name)\s*\}\}", re.IGNORECASE)
-_NAME_PARTS = re.compile(r"[._+-]+")
+_NAME_PARTS = re.compile(r"[._-]+")
 
 
 def recipient_fields(recipient: dict) -> dict[str, str]:
@@ -32,19 +34,26 @@ def recipient_fields(recipient: dict) -> dict[str, str]:
     """
     address = str(recipient.get("email") or "").strip()
     saved = str(recipient.get("name") or "").strip()
-    local = address.partition("@")[0]
+    local = address.partition("@")[0].partition("+")[0]
     derived = " ".join(part.capitalize() for part in _NAME_PARTS.split(local)
                        if part and part.isalpha()) if not saved else ""
     name = saved or derived
     return {"email": address, "name": name, "first_name": name.split()[0] if name else ""}
 
 
-def render_recipient_tokens(value: str, recipient: dict) -> str:
+def has_recipient_tokens(*values: str) -> bool:
+    return any(_TOKEN_RE.search(value) for value in values)
+
+
+def render_recipient_tokens(value: str, recipient: dict, *, html: bool = False) -> str:
     """Resolve only explicit, allowlisted Studio tokens, case-insensitively.
 
     Unknown tokens are left unchanged rather than silently fabricated.
     """
     fields = recipient_fields(recipient)
+    if html:
+        from html import escape
+        fields = {key: escape(text, quote=True) for key, text in fields.items()}
     return _TOKEN_RE.sub(lambda match: fields[match.group(1).lower()], value)
 
 
@@ -53,24 +62,26 @@ def parse_copy_recipients(raw: str, *, field_name: str, limit: int = 20) -> list
 
     Addresses are returned in original order and normalized for comparison.
     """
-    from email.utils import parseaddr
-
-    raw = (raw or "").strip()
+    raw = raw or ""
+    if len(raw) > 4096 or any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        raise ValueError(f"{field_name} contains an invalid address list.")
+    raw = raw.strip()
     if not raw:
         return []
-    if len(raw) > 4096 or any(ch in raw for ch in "\r\n\x00"):
-        raise ValueError(f"{field_name}: invalid address list")
     tokens = [part.strip() for part in raw.replace(";", ",").split(",")]
     if any(not part for part in tokens) or len(tokens) > limit:
-        raise ValueError(f"{field_name}: enter 1 to {limit} email addresses")
+        raise ValueError(f"Enter up to {limit} email addresses in {field_name}, separated by commas.")
     addresses = []
     for token in tokens:
-        name, address = parseaddr(token)
-        if (name or address != token or len(address) > 254 or
-                address.count("@") != 1 or "." not in address.split("@", 1)[1] or
-                any(ch.isspace() for ch in address)):
-            raise ValueError(f"{field_name}: invalid email address")
-        normalized = address.lower()
+        try:
+            address = Address(addr_spec=token)
+        except (HeaderParseError, ValueError) as exc:
+            raise ValueError(f"Enter a valid email address in {field_name}.") from exc
+        if (address.addr_spec != token or len(token) > 254 or not address.username or
+                "." not in address.domain or address.domain.startswith("[") or
+                any(ch.isspace() for ch in token)):
+            raise ValueError(f"Enter a valid email address in {field_name}.")
+        normalized = token.lower()
         if normalized not in addresses:
             addresses.append(normalized)
     return addresses

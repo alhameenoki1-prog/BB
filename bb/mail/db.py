@@ -8,6 +8,7 @@ process loses nothing.
 """
 
 import json
+import sqlite3
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
@@ -207,6 +208,19 @@ MIGRATIONS = [
     ALTER TABLE reply_runs ADD COLUMN since TEXT NOT NULL DEFAULT '';
     ALTER TABLE reply_runs ADD COLUMN paused_at TEXT;
     CREATE INDEX IF NOT EXISTS jobs_lane ON jobs(lane, status);
+    """,
+    """
+    ALTER TABLE drafts ADD COLUMN studio_id TEXT NOT NULL DEFAULT '';
+    CREATE INDEX drafts_studio ON drafts(studio_id) WHERE studio_id != '';
+    CREATE TABLE studio_files (
+        studio_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        content_id TEXT NOT NULL,
+        data BLOB NOT NULL,
+        PRIMARY KEY(studio_id, position)
+    );
     """
 ]
 
@@ -241,10 +255,20 @@ class MailDB:
             await db.execute("PRAGMA busy_timeout=15000")
             async with db.execute("PRAGMA user_version") as cur:
                 version = (await cur.fetchone())[0]
-            for i, script in enumerate(MIGRATIONS, start=1):
-                if version < i:
-                    await db.executescript(script)
-                    await db.execute(f"PRAGMA user_version={i}")
+            if version >= len(MIGRATIONS):
+                return
+            # The web app and worker can start against the same workspace.
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute("PRAGMA user_version") as cur:
+                version = (await cur.fetchone())[0]
+            for script in MIGRATIONS[version:]:
+                statement = ""
+                for line in script.splitlines(keepends=True):
+                    statement += line
+                    if sqlite3.complete_statement(statement):
+                        await db.execute(statement)
+                        statement = ""
+            await db.execute(f"PRAGMA user_version={len(MIGRATIONS)}")
             await db.commit()
 
     async def journal_mode(self) -> str:
@@ -267,6 +291,53 @@ class MailDB:
             cur = await db.execute(sql, params)
             await db.commit()
             return cur.rowcount
+
+    async def save_studio_drafts(self, mailbox_id: str, recipients: list[list[dict]], *,
+                                 reply_to: str, subject: str, body: str, options: dict, files: list) -> list[str]:
+        """Save reviewed content and one immutable attachment bundle per submission."""
+        ids = [new_id() for _ in recipients]
+        bundle = ids[0] if files else ""
+        current = now_iso()
+        async with self._connect() as db:
+            await db.executemany(
+                "INSERT INTO drafts(id, mailbox_id, kind, to_json, reply_to, subject, body, status, qa_json, "
+                "confidence, created_at, updated_at, studio_id) "
+                "VALUES (?, ?, 'new', ?, ?, ?, ?, 'pending_review', ?, 'manual', ?, ?, ?)",
+                [(draft_id, mailbox_id, json.dumps(to), reply_to, subject, body, json.dumps(options),
+                  current, current, bundle) for draft_id, to in zip(ids, recipients)],
+            )
+            await db.executemany(
+                "INSERT INTO studio_files(studio_id, position, name, content_type, content_id, data) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(bundle, i, file.name, file.content_type, file.content_id, file.data) for i, file in enumerate(files)],
+            )
+            await db.commit()
+        return ids
+
+    async def studio_files(self, bundle: str, *, include_data: bool = False, inline_only: bool = False) -> list[dict]:
+        if not bundle:
+            return []
+        columns = "name, content_type, content_id, data" if include_data else "name, content_id, length(data) AS size"
+        inline = " AND content_id != ''" if inline_only else ""
+        return await self.query(f"SELECT {columns} FROM studio_files WHERE studio_id = ?{inline} ORDER BY position", (bundle,))
+
+    async def discard_draft(self, draft_id: str) -> bool:
+        async with self._connect() as db:
+            result = await db.execute(
+                "UPDATE drafts SET status = 'rejected', updated_at = ? WHERE id = ? AND status = 'pending_review'",
+                (now_iso(), draft_id),
+            )
+            if result.rowcount:
+                await self._purge_unused_studio_files(db)
+            await db.commit()
+            return bool(result.rowcount)
+
+    @staticmethod
+    async def _purge_unused_studio_files(db):
+        await db.execute(
+            "DELETE FROM studio_files WHERE NOT EXISTS (SELECT 1 FROM drafts "
+            "WHERE drafts.studio_id = studio_files.studio_id AND drafts.status != 'rejected')"
+        )
 
     # ── settings (scope, migration marks) ──
 
@@ -336,6 +407,7 @@ class MailDB:
         async with self._connect() as db:
             for table in ("messages", "threads", "drafts", "run_items", "jobs", "rules"):
                 await db.execute(f"DELETE FROM {table} WHERE mailbox_id = ?", (mailbox_id,))
+            await self._purge_unused_studio_files(db)
             await db.execute("DELETE FROM mailboxes WHERE id = ?", (mailbox_id,))
             await db.commit()
 

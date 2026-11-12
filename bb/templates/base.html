@@ -193,7 +193,7 @@
       <a href="/mail/threads" class="{{ 'active' if path.startswith('/mail/threads') else '' }}">{{ icon('chat') }}<span class="t">Threads</span></a>
       <a href="/mail/runs" class="{{ 'active' if path.startswith('/mail/runs') else '' }}">{{ icon('play') }}<span class="t">Reply runs</span></a>
       <a href="/mail/review" class="{{ 'active' if path.startswith('/mail/review') else '' }}">{{ icon('eye') }}<span class="t">Review</span></a>
-      <a href="/mail/compose" class="{{ 'active' if path.startswith('/mail/compose') else '' }}">{{ icon('send') }}<span class="t">Compose</span></a>
+      <a href="/mail/compose" class="{{ 'active' if path.startswith('/mail/compose') else '' }}">{{ icon('send') }}<span class="t">Studio</span></a>
       <a href="/mail/accounts" class="{{ 'active' if path.startswith('/mail/accounts') or path.startswith('/mail/gmail') else '' }}">{{ icon('users') }}<span class="t">Accounts</span></a>
       <a href="/mail/jobs" class="{{ 'active' if path.startswith('/mail/jobs') else '' }}">{{ icon('clock') }}<span class="t">Jobs</span></a>
       <a href="/mail/audit" class="{{ 'active' if path.startswith('/mail/audit') else '' }}">{{ icon('shield') }}<span class="t">Audit log</span></a>
@@ -291,24 +291,31 @@
       for (let d = box.closest('details'); d; d = d.parentElement && d.parentElement.closest('details')) d.addEventListener('toggle', fit);
       const source = box.dataset.source && document.getElementById(box.dataset.source);
       if (!source || !box.dataset.previewUrl) return;
+      const form = source.closest('form');
+      const subject = form?.elements.namedItem('subject');
+      const client = box.querySelector('[data-preview-client]');
       let timer, asked = 0;
-      source.addEventListener('input', () => {
+      const refresh = delay => {
         clearTimeout(timer);
+        const mine = ++asked;
         timer = setTimeout(async () => {
-          const mine = ++asked;
           try {
             const url = new URL(box.dataset.previewUrl, location.href);
-            const form = source.closest('form');
             const c = form && new URL(form.getAttribute('action') || location.pathname, location.href).searchParams.get('c');
             if (c && !url.searchParams.has('c')) url.searchParams.set('c', c);
             const data = new FormData(); data.append('body', source.value);
+            if (subject) data.append('subject', subject.value);
+            if (client) data.append('client', client.value);
             const r = await fetch(url, {method: 'POST', body: data, credentials: 'same-origin'});
             if (!r.ok || mine !== asked) return;
             const j = await r.json();
             if (j.doc) frame.srcdoc = j.doc;
           } catch (e) {}
-        }, 500);
-      });
+        }, delay);
+      };
+      source.addEventListener('input', () => refresh(500));
+      subject?.addEventListener('input', () => refresh(500));
+      client?.addEventListener('change', () => refresh(0));
     });
   });
 </script>

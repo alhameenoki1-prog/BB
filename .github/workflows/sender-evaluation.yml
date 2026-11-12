@@ -8,6 +8,7 @@ on:
       - 'bb/mail/**'
       - 'tests/test_mailpit_transport_integration.py'
       - 'tests/test_smtp_failure_classification.py'
+      - 'tests/test_studio_delivery.py'
       - 'tests/test_kumo_eval.py'
       - 'tests/evaluation/**'
       - '.github/workflows/sender-evaluation.yml'
@@ -47,7 +48,7 @@ jobs:
       - name: Real BB SMTP adapter to local Mailpit only
         env:
           BB_MAILPIT_TEST: '1'
-        run: python -m pytest -q -s tests/test_mailpit_transport_integration.py tests/test_smtp_failure_classification.py tests/test_kumo_eval.py
+        run: python -m pytest -q -s tests/test_mailpit_transport_integration.py tests/test_smtp_failure_classification.py tests/test_studio_delivery.py tests/test_kumo_eval.py
 
   kumo-null-queue:
     runs-on: ubuntu-latest

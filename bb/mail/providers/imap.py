@@ -14,7 +14,7 @@ import ssl
 from datetime import datetime, timedelta, timezone
 
 from bb.mail.parse import parse_rfc822
-from bb.mail.providers.base import AuthError, MailAccount, PermanentError, TransientError
+from bb.mail.providers.base import AuthError, MailAccount, PartialDeliveryError, PermanentError, TransientError
 
 BATCH = 40
 SENT_NAMES = ("[Gmail]/Sent Mail", "Sent", "Sent Items", "Sent Messages", "INBOX.Sent", "Sent Mail")
@@ -110,7 +110,7 @@ class ImapAccount(MailAccount):
             if refused:
                 # Some recipients may already have been accepted: never
                 # blindly replay a partially accepted transaction.
-                raise PermanentError("SMTP accepted only some recipients; review the delivery before resending")
+                raise PartialDeliveryError("SMTP accepted only some recipients; check delivery before resending")
         except aiosmtplib.SMTPAuthenticationError as e:
             raise AuthError(f"SMTP sign-in refused: {str(e)[:160]}") from e
         except aiosmtplib.SMTPRecipientsRefused as e:
@@ -128,8 +128,7 @@ class ImapAccount(MailAccount):
                 raise PermanentError(f"SMTP permanently refused the message ({code})") from e
             raise TransientError(f"SMTP rejected the send ({code}); retry if temporary") from e
         except (aiosmtplib.SMTPException, OSError) as e:
-            # Disconnects and timeouts can happen after acceptance. The
-            # worker may retry; future idempotency work must reconcile this.
+            # Disconnects and timeouts can happen after acceptance.
             raise TransientError(f"SMTP submission uncertain: {type(e).__name__}") from e
         message_id = msg["Message-ID"]
         # Best effort: a copy in the Sent folder, so the mailbox itself shows it.

@@ -33,6 +33,14 @@ class MailboxSettings(BaseModel):
     hours_end: str = ""
     color: str = "blue"
 
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def _display_name(cls, value) -> str:
+        value = str(value or "").strip()
+        if len(value) > 150 or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+            raise ValueError("Sender name must be at most 150 characters on one line.")
+        return value
+
     @field_validator("project_link", mode="before")
     @classmethod
     def _link(cls, v) -> str:

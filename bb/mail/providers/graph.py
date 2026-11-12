@@ -16,12 +16,13 @@ An **admin app** (creds hold tenant id, client id and client secret, the
 Either way threading uses Graph's conversationId and replies are created
 with createReply so Outlook keeps the thread."""
 
+import base64
 import time
 from email.utils import make_msgid
 
 import httpx
 
-from bb.mail.providers.base import AuthError, MailAccount, RawMessage, TransientError
+from bb.mail.providers.base import Attachment, AuthError, MailAccount, PermanentError, RawMessage, TransientError
 
 LOGIN = "https://login.microsoftonline.com"
 GRAPH = "https://graph.microsoft.com/v1.0"
@@ -241,8 +242,12 @@ class GraphAccount(MailAccount):
         recipients = [{"emailAddress": {"address": a}} for a in to]
         cc_recipients = [{"emailAddress": {"address": a}} for a in (cc or [])]
         bcc_recipients = [{"emailAddress": {"address": a}} for a in (bcc or [])]
-        patch = {"subject": subject, "body": {"contentType": "HTML", "content": body_html or body_text},
+        content_type = "HTML" if body_html else "Text"
+        patch = {"subject": subject, "body": {"contentType": content_type, "content": body_html or body_text},
                  "toRecipients": recipients, "ccRecipients": cc_recipients, "bccRecipients": bcc_recipients}
+        files = [item for source in (attachments or []) if (item := Attachment.from_source(source)) is not None]
+        if any(len(item.data) >= 3_000_000 for item in files):
+            raise PermanentError("Microsoft Graph requires attachments smaller than 3 MB for this sending method.")
         if reply_to and reply_to.lower() != self.address:
             patch["replyTo"] = [{"emailAddress": {"address": reply_to}}]
         draft = None
@@ -259,17 +264,12 @@ class GraphAccount(MailAccount):
                 draft = await self._call("PATCH", f"{self._me}/messages/{draft['id']}", json=patch) or draft
         if draft is None:
             draft = await self._call("POST", f"{self._me}/messages", json=patch)
-        for path in attachments or []:
-            # A file attachment on the draft before it is sent (Graph takes up
-            # to 3 MB this way, which is what a brief is).
-            import base64 as _b64
-            from pathlib import Path as _Path
-            p = _Path(path)
-            if not p.is_file():
-                continue
-            await self._call("POST", f"{self._me}/messages/{draft['id']}/attachments",
-                             json={"@odata.type": "#microsoft.graph.fileAttachment", "name": p.name,
-                                   "contentBytes": _b64.b64encode(p.read_bytes()).decode()})
+        for item in files:
+            file_payload = {"@odata.type": "#microsoft.graph.fileAttachment", "name": item.name,
+                            "contentType": item.content_type, "contentBytes": base64.b64encode(item.data).decode("ascii")}
+            if item.content_id:
+                file_payload.update(isInline=True, contentId=item.content_id)
+            await self._call("POST", f"{self._me}/messages/{draft['id']}/attachments", json=file_payload)
         await self._call("POST", f"{self._me}/messages/{draft['id']}/send", json=None)
         message_id = draft.get("internetMessageId") or make_msgid(domain=self.address.split("@")[-1])
         return message_id, "", draft.get("conversationId") or ""

@@ -701,12 +701,25 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         except Exception as e:
             logger.debug("editor body failed: %s", e)
             draft["body_md"], draft["default_link"] = draft.get("body") or "", ""
+        draft["files"] = await c["db"].studio_files(draft.get("studio_id", ""))
 
-    async def _preview_doc(c, draft: dict, body: str) -> str:
+    async def _preview_doc(c, draft: dict, body: str, *, client: str = "gmail", subject: str | None = None) -> str:
         """The draft as it would go out (links on their words), as a page for the preview frame."""
         from bb.mail.sending import preview_document, preview_html
+        from bb.mail.composer import render_recipient_tokens
         try:
-            return preview_document(await preview_html(c["db"], {"HARVEY_HOME": str(c["ws"].user_root)}, draft, body))
+            html = await preview_html(c["db"], {"HARVEY_HOME": str(c["ws"].user_root)}, draft, body)
+            if not draft["qa"].get("studio_format"):
+                return preview_document(html)
+            box = next(m for m in c["mailboxes"] if m["id"] == draft["mailbox_id"])
+            to = draft["to"]
+            recipient = to[0] if len(to) == 1 else {}
+            display_name = box["settings_model"].display_name if box["provider"] != "graph" else ""
+            sender = f"{display_name} <{box['address']}>" if display_name else box["address"]
+            return preview_document(
+                html, client=client, sender=sender, to=", ".join(row["email"] for row in to),
+                subject=render_recipient_tokens(subject if subject is not None else draft["subject"], recipient),
+            )
         except Exception as e:
             logger.debug("preview failed: %s", e)
             return ""
@@ -718,7 +731,12 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         if not d:
             raise HTTPException(404)
         form = dict(await request.form())
-        return JSONResponse({"doc": await _preview_doc(c, d, str(form.get("body", "") or ""))})
+        body = str(form.get("body", d["body"]) or "")
+        subject = str(form.get("subject", d["subject"]) or "")
+        if len(body) > 100_000 or len(subject) > 200:
+            raise HTTPException(422, "The draft is too large to preview.")
+        return JSONResponse({"doc": await _preview_doc(c, d, body, client=str(form.get("client", "gmail")), subject=subject)},
+                            headers={"Cache-Control": "no-store"})
 
     async def _draft_row(db, draft_id: str) -> dict | None:
         d = await db.one("SELECT * FROM drafts WHERE id = ?", (draft_id,))
@@ -772,29 +790,39 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         d = await _draft_row(db, draft_id)
         if not d:
             raise HTTPException(404)
-        if d["status"] in ("sent", "dry_run"):
-            return _redirect(f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review",
-                             error="That draft was already sent.")
+        back = f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review"
+        review = f"{back}?draft={draft_id}" if d["thread_id"] else f"/mail/compose?draft={draft_id}"
+        if d["status"] != "pending_review":
+            return _redirect(back, error="That draft is already queued or closed.")
         form = dict(await request.form())
         from harvey.integrations.mail_provider import normalize_newlines
-        body = normalize_newlines(str(form.get("body", "") or d["body"])).strip()
-        subject = str(form.get("subject", "") or d["subject"]).strip()[:200]
+        body = normalize_newlines(str(form.get("body", d["body"]) or "")).strip()
+        subject = str(form.get("subject", d["subject"]) or "").strip()
         reply_to = str(form.get("reply_to", "") or "").strip().lower()
         box = await db.mailbox(d["mailbox_id"])
-        is_manual = bool(json.loads(d.get("qa_json") or "{}").get("manual"))
-        ok, why = service.ready_to_send(box, manual=is_manual) if box else (False, "mailbox missing")
+        mode = d["qa"].get("studio_format")
+        ok, why = service.ready_to_send(box, manual=bool(d["qa"].get("manual"))) if box else (False, "mailbox missing")
         if not ok:
-            return _redirect(f"/mail/threads/{d['thread_id']}?draft={draft_id}" if d["thread_id"] else "/mail/review", error=why)
-        if not body:
-            return _redirect(f"/mail/threads/{d['thread_id']}?draft={draft_id}", error="The reply is empty.")
+            return _redirect(review, error=why)
+        from bb.mail.composer import has_recipient_tokens, parse_copy_recipients, validate_manual_draft
+        try:
+            if mode:
+                subject, body = validate_manual_draft(subject, body, allow_empty=mode == "image")
+                if len(d["to"]) > 1 and has_recipient_tokens(subject, body):
+                    raise ValueError("Use a separate draft for each To recipient when personalizing a message.")
+            elif not body:
+                raise ValueError("The reply is empty.")
+            if reply_to:
+                reply_to = parse_copy_recipients(reply_to, field_name="Reply-To", limit=1)[0]
+        except ValueError as exc:
+            return _redirect(review, error=str(exc))
         dry = bool(form.get("dry_run"))
-        await db.execute("UPDATE drafts SET body = ?, subject = ?, reply_to = ?, status = 'approved', error = '', updated_at = ? WHERE id = ?",
-                         (body, subject, reply_to, service.now_iso(), draft_id))
-        await Jobs(db).enqueue("send_draft", d["mailbox_id"], {"draft_id": draft_id, "dry_run": dry,
-                                                               "saw_thread": bool(form.get("from_thread"))}, max_attempts=4)
+        queued = await Jobs(db).approve_draft(d, body=body, subject=subject[:200], reply_to=reply_to,
+                                              dry_run=dry, saw_thread=bool(form.get("from_thread")))
+        if not queued:
+            return _redirect(back, error="That draft is already queued or closed.")
         if not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
-        back = f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review"
         return _redirect(back, msg="Dry run queued; nothing will be sent." if dry else "Sending…")
 
     @app.post("/mail/drafts/{draft_id}/reject")
@@ -803,9 +831,10 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         d = await _draft_row(c["db"], draft_id)
         if not d:
             raise HTTPException(404)
-        await c["db"].execute("UPDATE drafts SET status = 'rejected', updated_at = ? WHERE id = ? AND status != 'sent'",
-                              (service.now_iso(), draft_id))
-        return _redirect(f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review", msg="Draft discarded.")
+        discarded = await c["db"].discard_draft(draft_id)
+        return _redirect(f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review",
+                         msg="Draft discarded." if discarded else "",
+                         error="" if discarded else "That draft is already queued or closed.")
 
     @app.get("/mail/review", response_class=HTMLResponse)
     async def mail_review(request: Request, user: dict = Depends(current_user)):
@@ -820,6 +849,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             r["to"] = json.loads(r.get("to_json") or "[]")
             r["qa"] = json.loads(r.get("qa_json") or "{}")
             r["box"] = boxes.get(r["mailbox_id"])
+            r["ready"], r["ready_why"] = service.ready_to_send(r["box"], manual=bool(r["qa"].get("manual")))
             await _for_editor(c, r)
             r["preview"] = await _preview_doc(c, r, r.get("body") or "")
         recent = await c["db"].query(
@@ -832,18 +862,21 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
     @app.post("/mail/review/approve-all")
     async def mail_review_approve_all(user: dict = Depends(current_user)):
         c = await ctx(user)
-        ids = [m["id"] for m in c["selected"] if m["ready"]]
+        boxes = {m["id"]: m for m in c["selected"]}
+        ids = list(boxes)
         marks = ",".join("?" for _ in ids) or "''"
         from bb.mail import runs as runs_mod
         await runs_mod.supersede_stale_followups(c["db"])     # a follow-up they wrote back to since is not sent blind
-        rows = await c["db"].query(f"SELECT id, mailbox_id FROM drafts WHERE mailbox_id IN ({marks}) AND status = 'pending_review'", ids)
+        rows = await c["db"].query(f"SELECT * FROM drafts WHERE mailbox_id IN ({marks}) AND status = 'pending_review'", ids)
         jobs = Jobs(c["db"])
+        queued = 0
         for r in rows:
-            await c["db"].execute("UPDATE drafts SET status = 'approved', error = '', updated_at = ? WHERE id = ?", (service.now_iso(), r["id"]))
-            await jobs.enqueue("send_draft", r["mailbox_id"], {"draft_id": r["id"]}, max_attempts=4)
-        if rows and not c["ws"].mail_worker_running():
+            qa = json.loads(r["qa_json"] or "{}")
+            if service.ready_to_send(boxes[r["mailbox_id"]], manual=bool(qa.get("manual")))[0]:
+                queued += await jobs.approve_draft(r, body=r["body"], subject=r["subject"], reply_to=r["reply_to"])
+        if queued and not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
-        return _redirect("/mail/review", msg=f"Approved {len(rows)}; sending.")
+        return _redirect("/mail/review", msg=f"Approved {queued}; sending." if queued else "No ready drafts to approve.")
 
     @app.post("/mail/review/reject-all")
     async def mail_review_reject_all(user: dict = Depends(current_user)):
@@ -852,27 +885,21 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         marks = ",".join("?" for _ in ids) or "''"
         rows = await c["db"].query(
             f"SELECT id FROM drafts WHERE mailbox_id IN ({marks}) AND status = 'pending_review'", ids)
+        discarded = 0
         for r in rows:
-            await c["db"].execute("UPDATE drafts SET status = 'rejected', updated_at = ? WHERE id = ? AND status != 'sent'",
-                                  (service.now_iso(), r["id"]))
-        return _redirect("/mail/review", msg=f"Discarded {len(rows)} draft(s).")
+            discarded += await c["db"].discard_draft(r["id"])
+        return _redirect("/mail/review", msg=f"Discarded {discarded} draft(s).")
 
-    @app.get("/mail/studio/thread-preview", response_class=HTMLResponse)
-    async def studio_fictional_thread_preview(
-        request: Request, user: dict = Depends(current_user),
-        to: str = "john.smith@example.test", to_name: str = "John Smith",
-        sender: str = "Project Team", subject: str = "Project scope discussion",
-        topic: str = "the proposed project scope",
-    ):
-        """Authenticated, visual-only fictional thread; never queues messages."""
+    def _fictional_preview(to: str, to_name: str, sender: str, subject: str, topic: str):
         from bb.mail.thread_preview import fictional_conversation
-        from email.utils import parseaddr
+        from bb.mail.composer import parse_copy_recipients
 
-        if len(to) > 254 or parseaddr(to)[1] != to or "@" not in to:
-            raise HTTPException(status_code=422, detail="Invalid recipient address")
         try:
+            addresses = parse_copy_recipients(to, field_name="To", limit=1)
+            if not addresses or len(to_name) > 150:
+                raise ValueError("Enter a recipient address and a name of up to 150 characters.")
             page = fictional_conversation(
-                recipient={"email": to, "name": to_name}, sender_name=sender,
+                recipient={"email": addresses[0], "name": to_name}, sender_name=sender,
                 subject=subject, topic=topic,
             )
         except ValueError as exc:
@@ -881,58 +908,91 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                                            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
                                            "X-Content-Type-Options": "nosniff"})
 
+    @app.get("/mail/studio/thread-preview", response_class=HTMLResponse)
+    async def studio_fictional_thread_preview(
+        user: dict = Depends(current_user),
+        to: str = "john.smith@example.test", to_name: str = "John Smith",
+        sender: str = "Project Team", subject: str = "Project scope discussion",
+        topic: str = "the proposed project scope",
+    ):
+        return _fictional_preview(to, to_name, sender, subject, topic)
+
+    @app.post("/mail/studio/thread-preview", response_class=HTMLResponse)
+    async def studio_fictional_thread_preview_form(request: Request, user: dict = Depends(current_user)):
+        async with request.form(max_files=0, max_fields=5) as form:
+            return _fictional_preview(*(str(form.get(field, "")) for field in ("to", "to_name", "sender", "subject", "topic")))
+
     @app.get("/mail/compose", response_class=HTMLResponse)
     async def mail_compose(request: Request, user: dict = Depends(current_user), draft: str = ""):
         c = await ctx(user)
         d = await _draft_row(c["db"], draft) if draft else None
         preview = ""
+        if d and d["status"] != "pending_review":
+            return _redirect("/mail/review", msg="This draft is in your recent activity.")
         if d:
             await _for_editor(c, d)
             preview = await _preview_doc(c, d, d.get("body") or "")
         return await render(request, "mail_compose.html", user, **page_ctx(c), draft=d, draft_preview=preview,
-                            ready=[m for m in c["mailboxes"] if m["enabled"]])
+                            ready=[m for m in c["mailboxes"] if m["enabled"]], saved_files=c["ws"].attachments())
+
+    async def _compose_manual(c, box, form):
+        from bb.mail import studio
+        from bb.mail.composer import has_recipient_tokens, parse_copy_recipients, render_recipient_tokens, validate_manual_draft
+
+        if not box or not box.get("enabled"):
+            raise ValueError("Select an enabled sending mailbox.")
+        message_format = form.get("message_format", "rich")
+        if message_format not in studio.FORMATS:
+            raise ValueError("Choose a supported message format.")
+        subject, body = validate_manual_draft(str(form.get("subject", "")), str(form.get("body", "")),
+                                              allow_empty=message_format == "image")
+        to = parse_copy_recipients(str(form.get("to", "")), field_name="To")
+        cc = parse_copy_recipients(str(form.get("cc", "")), field_name="Cc")
+        bcc = parse_copy_recipients(str(form.get("bcc", "")), field_name="Bcc")
+        if not to:
+            raise ValueError("Enter at least one To email address.")
+        if len(set(to + cc + bcc)) != len(to) + len(cc) + len(bcc):
+            raise ValueError("A recipient cannot appear in more than one of To, Cc and Bcc.")
+        separate = len(to) > 1 and (form.get("separate") == "1" or has_recipient_tokens(subject, body))
+        if separate and (cc or bcc):
+            raise ValueError("Leave Cc and Bcc empty to create separate drafts for multiple To recipients.")
+        name = str(form.get("to_name", "")).strip() if len(to) == 1 else ""
+        if len(name) > 150 or any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+            raise ValueError("Recipient name must be at most 150 characters on one line.")
+        contacts = [{"name": name, "email": address} for address in to]
+        groups = [[contact] for contact in contacts] if separate else [contacts]
+        for group in groups:
+            validate_manual_draft(render_recipient_tokens(subject, group[0]), body, allow_empty=message_format == "image")
+        image_link = str(form.get("image_link", "")).strip() if message_format == "image" else ""
+        if image_link and (len(image_link) > 2048 or not studio.web_url(image_link)):
+            raise ValueError("Enter a valid web address for the image link.")
+        if message_format == "html" and not studio.sanitize_html(body).strip():
+            raise ValueError("Enter some visible HTML content for the message.")
+        files = await studio.collect_attachments(form, c["ws"], box["provider"], message_format)
+        options = {"ok": True, "reasons": [], "manual": True, "cc": cc, "bcc": bcc,
+                   "studio_format": message_format, "image_link": image_link}
+        return await c["db"].save_studio_drafts(box["id"], groups, reply_to=service.settings_of(box).reply_to,
+                                                subject=subject, body=body, options=options, files=files)
 
     @app.post("/mail/compose")
     async def mail_compose_draft(request: Request, user: dict = Depends(current_user)):
         from bb.mail.brain import BrainError
         from bb.mail.drafting import draft_new
         c = await ctx(user)
-        form = dict(await request.form())
-        box = await c["db"].mailbox(str(form.get("mailbox", "")))
+        async with request.form(max_files=11, max_fields=40) as form:
+            box = await c["db"].mailbox(str(form.get("mailbox", "")))
+            if form.get("compose_mode") == "manual":
+                try:
+                    ids = await _compose_manual(c, box, form)
+                except (ValueError, OSError) as exc:
+                    return _redirect("/mail/compose", error=str(exc))
+                if len(ids) > 1:
+                    return _redirect("/mail/review", msg=f"Saved {len(ids)} individual drafts for review.")
+                return _redirect(f"/mail/compose?draft={ids[0]}", msg="Draft saved for review.")
+            form = dict(form)
         to_email = str(form.get("to", "") or "").strip().lower()
         to_name = str(form.get("to_name", "") or "").strip()
         instruction = str(form.get("instruction", "") or "").strip()
-        manual = str(form.get("compose_mode", "") or "") == "manual"
-        if manual:
-            from email.utils import parseaddr
-            from bb.mail.composer import validate_manual_draft, parse_copy_recipients
-            try:
-                subject, body = validate_manual_draft(
-                    str(form.get("subject", "") or ""),
-                    str(form.get("body", "") or ""),
-                )
-                cc = parse_copy_recipients(str(form.get("cc", "") or ""), field_name="Cc")
-                bcc = parse_copy_recipients(str(form.get("bcc", "") or ""), field_name="Bcc")
-            except ValueError as exc:
-                return _redirect("/mail/compose", error=str(exc))
-            parsed_name, parsed_address = parseaddr(to_email)
-            if (not box or not box.get("enabled") or parsed_name or
-                    parsed_address != to_email or len(to_email) > 254 or
-                    to_email.count("@") != 1 or not to_email.split("@")[1].count(".")):
-                return _redirect("/mail/compose", error="Select an enabled mailbox and enter one valid recipient email.")
-            if len({to_email, *cc, *bcc}) != 1 + len(cc) + len(bcc):
-                return _redirect("/mail/compose", error="A recipient cannot appear in more than one of To, Cc and Bcc.")
-            draft_id = service.new_id()
-            now = service.now_iso()
-            await c["db"].execute(
-                "INSERT INTO drafts(id, mailbox_id, kind, to_json, reply_to, subject, body, status, qa_json, confidence, created_at, updated_at) "
-                "VALUES (?, ?, 'new', ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?)",
-                (draft_id, box["id"], json.dumps([{"name": to_name, "email": to_email}]),
-                 service.settings_of(box).reply_to, subject, body,
-                 json.dumps({"ok": True, "reasons": [], "manual": True, "cc": cc, "bcc": bcc}),
-                 "manual", now, now),
-            )
-            return _redirect(f"/mail/compose?draft={draft_id}", msg="Manual draft saved for review. Nothing has been sent.")
         if not box or "@" not in to_email or len(instruction) < 5:
             return _redirect("/mail/compose", error="Pick a mailbox, enter the recipient, and say what the email should do.")
         try:

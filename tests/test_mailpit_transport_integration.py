@@ -40,7 +40,7 @@ def _use_stable_loopback_ehlo_hostname(monkeypatch):
 
 
 async def _wait_for_mailpit() -> None:
-    async with httpx.AsyncClient(timeout=3) as client:
+    async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
         for _ in range(40):
             try:
                 response = await client.get("http://127.0.0.1:8025/api/v1/messages")
@@ -90,7 +90,7 @@ async def test_bb_smtp_adapter_delivers_40_unique_messages_to_mailpit(tmp_path: 
     message_ids = await asyncio.gather(*(send_one(i) for i in range(40)))
     assert len(set(message_ids)) == 40
 
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
         results = []
         for _ in range(20):
             response = await client.get("http://127.0.0.1:8025/api/v1/messages", params={"limit": 100})

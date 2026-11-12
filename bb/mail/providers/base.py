@@ -1,6 +1,8 @@
 """What every mailbox adapter provides."""
 
 from dataclasses import dataclass, field
+import mimetypes
+from pathlib import Path
 
 
 class AuthError(Exception):
@@ -13,6 +15,33 @@ class TransientError(Exception):
 
 class PermanentError(Exception):
     """Provider explicitly refused a message: hold for review, never auto-retry."""
+
+
+class PartialDeliveryError(PermanentError):
+    """The server accepted the message for only a subset of recipients."""
+
+
+@dataclass(frozen=True)
+class Attachment:
+    name: str
+    data: bytes
+    content_type: str
+    content_id: str = ""
+
+    @classmethod
+    def from_source(cls, source):
+        if isinstance(source, cls):
+            return source
+        path = Path(source)
+        if path.is_file():
+            return cls(path.name, path.read_bytes(), cls.media_type(path.name))
+        return None
+
+    @staticmethod
+    def media_type(name: str) -> str:
+        content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        # The email package reserves message/* for structured MIME parts.
+        return "application/octet-stream" if content_type.startswith(("message/", "multipart/")) else content_type
 
 
 @dataclass
@@ -66,13 +95,12 @@ class MailAccount:
 
     def build_mime(self, *, to, subject, body_text, body_html, in_reply_to="", references="",
                    reply_to="", from_name="", attachments=None, cc=None, bcc=None):
-        import mimetypes
+        from email.headerregistry import Address
         from email.message import EmailMessage
         from email.utils import make_msgid
-        from pathlib import Path
 
         msg = EmailMessage()
-        msg["From"] = f"{from_name} <{self.address}>" if from_name else self.address
+        msg["From"] = Address(display_name=from_name or "", addr_spec=self.address) if from_name else self.address
         msg["To"] = ", ".join(to)
         if cc:
             msg["Cc"] = ", ".join(cc)
@@ -88,11 +116,16 @@ class MailAccount:
         msg.set_content(body_text)
         if body_html:
             msg.add_alternative(body_html, subtype="html")
-        for path in attachments or []:
-            p = Path(path)
-            if not p.is_file():
+        html_part = msg.get_body(preferencelist=("html",)) if body_html else None
+        for source in attachments or []:
+            attachment = Attachment.from_source(source)
+            if attachment is None:
                 continue
-            ctype, _enc = mimetypes.guess_type(p.name)
-            maintype, subtype = (ctype or "application/octet-stream").split("/", 1)
-            msg.add_attachment(p.read_bytes(), maintype=maintype, subtype=subtype, filename=p.name)
+            maintype, subtype = attachment.content_type.split("/", 1)
+            if attachment.content_id and html_part is not None:
+                html_part.add_related(attachment.data, maintype, subtype, cte="base64",
+                                      cid=f"<{attachment.content_id}>", filename=attachment.name,
+                                      disposition="inline")
+            else:
+                msg.add_attachment(attachment.data, maintype, subtype, cte="base64", filename=attachment.name)
         return msg
