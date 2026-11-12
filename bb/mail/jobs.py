@@ -92,8 +92,14 @@ class Jobs:
         return job
 
     async def progress(self, job_id: str, **progress):
-        await self.db.execute("UPDATE jobs SET progress_json = ?, updated_at = ? WHERE id = ?",
-                              (json.dumps(progress), now_iso(), job_id))
+        # Ignore late progress from workers whose jobs were completed,
+        # quarantined, or discarded during recovery. Do not alter audit
+        # metadata for a settled delivery.
+        await self.db.execute(
+            "UPDATE jobs SET progress_json = ?, updated_at = ? "
+            "WHERE id = ? AND status = 'running'",
+            (json.dumps(progress), now_iso(), job_id),
+        )
 
     async def complete(self, job_id: str, **result):
         """Mark done; the result is merged into the progress already recorded."""
