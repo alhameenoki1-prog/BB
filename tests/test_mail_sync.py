@@ -286,13 +286,14 @@ async def test_worker_backfills_then_syncs_and_counts(tmp_path, monkeypatch):
     assert any(t.startswith("Finished syncing me@mine.example: 3 messages in 2 conversations") for t in texts)
     # Incremental is scheduled only once the interval has passed.
     await service.schedule_syncs(db, jobs)
-    assert not await jobs.list("queued")
+    assert not [j for j in await jobs.list("queued") if j["kind"].startswith("sync_")]
     await db.update_mailbox(mid, last_sync_at="2000-01-01T00:00:00Z")
     await service.schedule_syncs(db, jobs)
-    assert [j["kind"] for j in await jobs.list("queued")] == ["sync_incremental"]
+    assert [j["kind"] for j in await jobs.list("queued") if j["kind"].startswith("sync_")] == ["sync_incremental"]
     # An expired sign-in during sync becomes a reconnect banner, not a dead job.
     FakeIMAP.store["INBOX"]["msgs"][3] = rfc("a3", "Ann <ann@x.example>", ME, "Re: Quote", "Tuesday works.", in_reply_to="a2")
     await db.update_mailbox(mid, creds=crypto.seal_json("s", {**creds, "password": "bad"}))
-    job = await jobs.claim()
+    job = await jobs.claim(exclude_kinds=("check_mailbox",))
+    assert job is not None and job["kind"] == "sync_incremental"
     result = await worker.handlers.run(job)
     assert result["status"] == "reconnect" and (await db.mailbox(mid))["status"] == "reconnect"
