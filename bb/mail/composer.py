@@ -46,3 +46,31 @@ def render_recipient_tokens(value: str, recipient: dict) -> str:
     """
     fields = recipient_fields(recipient)
     return _TOKEN_RE.sub(lambda match: fields[match.group(1).lower()], value)
+
+
+def parse_copy_recipients(raw: str, *, field_name: str, limit: int = 20) -> list[str]:
+    """Parse a comma/semicolon separated Cc/Bcc list without accepting headers.
+
+    Addresses are returned in original order and normalized for comparison.
+    """
+    from email.utils import getaddresses, parseaddr
+
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    if len(raw) > 4096 or any(ch in raw for ch in "\\r\\n\\x00"):
+        raise ValueError(f"{field_name}: invalid address list")
+    tokens = [part.strip() for part in raw.replace(";", ",").split(",")]
+    if any(not part for part in tokens) or len(tokens) > limit:
+        raise ValueError(f"{field_name}: enter 1 to {limit} email addresses")
+    addresses = []
+    for token in tokens:
+        name, address = parseaddr(token)
+        if (name or address != token or len(address) > 254 or
+                address.count("@") != 1 or "." not in address.split("@", 1)[1] or
+                any(ch.isspace() for ch in address)):
+            raise ValueError(f"{field_name}: invalid email address")
+        normalized = address.lower()
+        if normalized not in addresses:
+            addresses.append(normalized)
+    return addresses
