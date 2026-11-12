@@ -11,6 +11,7 @@ from pathlib import Path
 from bb.mail import service
 from bb.mail.db import MailDB, now_iso
 from bb.mail.drafting import finalize
+from bb.mail.composer import render_recipient_tokens
 from bb.mail.ingest import Ingest
 from bb.mail.providers import AuthError, TransientError, account_for
 from bb.mail.providers.base import PermanentError, RawMessage
@@ -105,7 +106,7 @@ async def preview_html(db: MailDB, env: dict, draft: dict, body: str) -> str:
     settings = service.settings_of(mailbox)
     to = _json.loads(draft.get("to_json") or "[]")
     name = (to[0].get("name") if to else "") or ""
-    return finalize(body or "", settings, greeting_name=name, link_labels=_link_labels(env))[1]
+    return finalize(render_recipient_tokens(body or "", to[0] if to else {}), settings, greeting_name=name, link_labels=_link_labels(env))[1]
 
 
 def _today_utc() -> str:
@@ -219,7 +220,7 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     from bb.mail.runs import is_excluded
     if is_excluded(settings, recipient.get("email", "")):
         raise SendRefused(f"{recipient.get('email')} is on {mailbox['address']}'s excluded list (they asked not to be contacted)")
-    plain, html = finalize(draft["body"], settings, greeting_name=recipient.get("name") or "",
+    plain, html = finalize(render_recipient_tokens(draft["body"], recipient), settings, greeting_name=recipient.get("name") or "",
                            link_labels=_link_labels(env))
     reply_to = (draft.get("reply_to") or settings.reply_to or "").strip()
     if dry_run:
