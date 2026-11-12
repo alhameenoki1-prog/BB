@@ -87,12 +87,15 @@ class ImapAccount(MailAccount):
     # ── sending ──
 
     async def send(self, *, to, subject, body_text, body_html, in_reply_to="", references="",
-                   reply_to="", from_name="", attachments=None) -> tuple[str, str, str]:
+                   reply_to="", from_name="", attachments=None, cc=None, bcc=None) -> tuple[str, str, str]:
         import aiosmtplib
 
         msg = self.build_mime(to=to, subject=subject, body_text=body_text, body_html=body_html,
                               in_reply_to=in_reply_to, references=references, reply_to=reply_to, from_name=from_name,
-                              attachments=attachments)
+                              attachments=attachments, cc=cc, bcc=bcc)
+        # Bcc is envelope-only for SMTP; never expose it in transmitted headers.
+        if msg.get("Bcc"):
+            del msg["Bcc"]
         c = self.creds
         port = int(c.get("smtp_port") or 587)
         try:
@@ -102,7 +105,7 @@ class ImapAccount(MailAccount):
             refused, _response = await aiosmtplib.send(
                 msg, hostname=c["smtp_host"], port=port, username=c["username"], password=c["password"],
                 start_tls=False if use_tls else (True if port in (587, 2587) else None),
-                use_tls=use_tls, timeout=40,
+                use_tls=use_tls, timeout=40, recipients=list(dict.fromkeys([*to, *(cc or []), *(bcc or [])])),
             )
             if refused:
                 # Some recipients may already have been accepted: never
