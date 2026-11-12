@@ -20,7 +20,7 @@ def validate_manual_draft(subject: str, body: str) -> tuple[str, str]:
 
 import re
 
-_TOKEN_RE = re.compile(r"\\{\\{\\s*(email|name|first_name)\\s*\\}\\}", re.IGNORECASE)
+_TOKEN_RE = re.compile(r"\{\{\s*(email|name|first_name)\s*\}\}", re.IGNORECASE)
 _NAME_PARTS = re.compile(r"[._+-]+")
 
 
