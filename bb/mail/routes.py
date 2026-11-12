@@ -904,12 +904,14 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         manual = str(form.get("compose_mode", "") or "") == "manual"
         if manual:
             from email.utils import parseaddr
-            from bb.mail.composer import validate_manual_draft
+            from bb.mail.composer import validate_manual_draft, parse_copy_recipients
             try:
                 subject, body = validate_manual_draft(
                     str(form.get("subject", "") or ""),
                     str(form.get("body", "") or ""),
                 )
+                cc = parse_copy_recipients(str(form.get("cc", "") or ""), field_name="Cc")
+                bcc = parse_copy_recipients(str(form.get("bcc", "") or ""), field_name="Bcc")
             except ValueError as exc:
                 return _redirect("/mail/compose", error=str(exc))
             parsed_name, parsed_address = parseaddr(to_email)
@@ -917,6 +919,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                     parsed_address != to_email or len(to_email) > 254 or
                     to_email.count("@") != 1 or not to_email.split("@")[1].count(".")):
                 return _redirect("/mail/compose", error="Select an enabled mailbox and enter one valid recipient email.")
+            if len({to_email, *cc, *bcc}) != 1 + len(cc) + len(bcc):
+                return _redirect("/mail/compose", error="A recipient cannot appear in more than one of To, Cc and Bcc.")
             draft_id = service.new_id()
             now = service.now_iso()
             await c["db"].execute(
@@ -924,7 +928,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                 "VALUES (?, ?, 'new', ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?)",
                 (draft_id, box["id"], json.dumps([{"name": to_name, "email": to_email}]),
                  service.settings_of(box).reply_to, subject, body,
-                 json.dumps({"ok": True, "reasons": [], "manual": True}),
+                 json.dumps({"ok": True, "reasons": [], "manual": True, "cc": cc, "bcc": bcc}),
                  "manual", now, now),
             )
             return _redirect(f"/mail/compose?draft={draft_id}", msg="Manual draft saved for review. Nothing has been sent.")
