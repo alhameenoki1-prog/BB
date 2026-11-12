@@ -13,6 +13,7 @@
     <div class="row"><div><label>To</label><input type="text" value="{{ draft.to[0].name ~ ' <' ~ draft.to[0].email ~ '>' if draft.to else '' }}" readonly></div>
       <div><label>Subject</label><input type="text" name="subject" value="{{ draft.subject }}" maxlength="200"></div>
       <div><label>Reply-To</label><input type="email" name="reply_to" value="{{ draft.reply_to }}" placeholder="blank = the sending mailbox"></div></div>
+    {% if draft.qa.manual and (draft.qa.cc or draft.qa.bcc) %}<div class="row">{% if draft.qa.cc %}<div><label>Cc</label><input readonly value="{{ draft.qa.cc|join(', ') }}"></div>{% endif %}{% if draft.qa.bcc %}<div><label>Bcc (private)</label><input readonly value="{{ draft.qa.bcc|join(', ') }}"></div>{% endif %}</div>{% endif %}
     <label>Email</label><textarea name="body" rows="9" id="draft-body-{{ draft.id }}" data-rich data-default-link="{{ draft.default_link }}">{{ draft.body_md }}</textarea>
     <div class="hint">Greeting, signature and project link are added at send time. Every link goes out on its words, as it shows here.</div>
     {{ as_sent(draft_preview, '/mail/drafts/' ~ draft.id ~ '/preview', 'draft-body-' ~ draft.id) }}
@@ -30,6 +31,8 @@
       <div><label for="manual-to">To</label><input id="manual-to" type="email" name="to" required maxlength="254" placeholder="recipient@example.test"></div>
       <div><label for="manual-name">Recipient name (optional)</label><input id="manual-name" type="text" name="to_name" maxlength="150"></div>
     </div>
+    <div class="row"><div><label for="manual-cc">Cc (optional)</label><input id="manual-cc" type="text" name="cc" maxlength="4096" placeholder="colleague@example.test"></div><div><label for="manual-bcc">Bcc (optional)</label><input id="manual-bcc" type="text" name="bcc" maxlength="4096" placeholder="private@example.test"></div></div>
+    <p class="small muted">Separate multiple addresses with commas; Bcc recipients will not appear in the transmitted message headers.</p>
     <label for="manual-subject">Subject</label>
     <input id="manual-subject" name="subject" required maxlength="200" placeholder="Meeting request">
     <div class="actions" role="group" aria-label="Insert recipient details" style="margin:8px 0">
