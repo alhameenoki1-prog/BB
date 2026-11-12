@@ -148,7 +148,8 @@ async def connect_gmail(db: MailDB, secret: str, *, address: str, refresh_token:
     return mid, note
 
 
-async def connect_microsoft(db: MailDB, secret: str, *, address: str, refresh_token: str, env: dict) -> tuple[str, str]:
+async def connect_microsoft(db: MailDB, secret: str, *, address: str, refresh_token: str, env: dict,
+                            calendar: bool = False) -> tuple[str, str]:
     """Store a mailbox from a completed Microsoft sign-in (Outlook, Hotmail
     or Microsoft 365 as the person themselves) and verify it. The refresh
     token is the credential; a rotation during the check is kept."""
@@ -156,6 +157,8 @@ async def connect_microsoft(db: MailDB, secret: str, *, address: str, refresh_to
     if "@" not in address:
         raise ValueError("Microsoft did not say which mailbox this is.")
     creds = {"refresh_token": refresh_token}
+    if calendar:
+        creds["calendar"] = True
     probe = {"address": address, "provider": "graph"}
     account = account_for(probe, creds, env)
     note = await account.test()
@@ -347,7 +350,12 @@ async def schedule_checks(db: MailDB, jobs: Jobs):
         except ValueError:
             last_dt = None
         if last_dt is None or last_dt < cutoff:
-            await jobs.enqueue("check_mailbox", m["id"], dedupe=True)
+            syncing = await db.one(
+                "SELECT 1 FROM jobs WHERE mailbox_id = ? AND kind IN ('sync_backfill', 'sync_incremental') "
+                "AND status IN ('queued', 'running') LIMIT 1", (m["id"],),
+            )
+            if not syncing:
+                await jobs.enqueue("check_mailbox", m["id"], dedupe=True)
 
 
 # ── scope: which mailboxes every view works on ──

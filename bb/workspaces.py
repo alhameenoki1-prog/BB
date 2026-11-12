@@ -1741,6 +1741,17 @@ class Workspace:
             "SELECT first_name, last_name, email, company, title, status, email_status, created_at "
             "FROM prospects ORDER BY created_at DESC LIMIT ?", (limit,))
 
+    async def studio_contacts(self, addresses: list[str]) -> dict:
+        if not addresses or not await self._table_exists("prospects"):
+            return {}
+        placeholders = ", ".join("?" for _ in addresses)
+        rows = await self._query(
+            f"SELECT email, first_name, last_name, company FROM prospects "
+            f"WHERE lower(email) IN ({placeholders}) ORDER BY created_at",
+            addresses,
+        )
+        return {row["email"].lower(): row for row in rows}
+
     async def clean_list(self) -> dict:
         """Verify every recipient with free checks (syntax, live domain,
         disposable, role) and move the provably-invalid ones to the Excluded

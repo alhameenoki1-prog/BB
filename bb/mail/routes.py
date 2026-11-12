@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from bb import gmail_oauth, microsoft_oauth
 from bb.mail import service
-from bb.mail.jobs import Jobs
+from bb.mail.jobs import DELIVERY_KINDS, Jobs
 from bb.mail import scope as scope_mod
 from bb.mail.models import COLORS, MailboxSettings
 from bb.mail.providers import AuthError, TransientError
@@ -540,9 +540,13 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                                                       "Microsoft 365 admin app or the password sign-in for now.")
         form = dict(await request.form())
         nonce = secrets.token_urlsafe(16)
+        calendar = form.get("calendar") == "1"
+        if calendar:
+            nonce += ".calendar"
         state = microsoft_oauth.sign_state(settings.secret_key(), user["id"], nonce)
         redirect = settings.base_url + "/mail/microsoft/callback"
-        url = microsoft_oauth.auth_url(settings, state, login_hint=str(form.get("email", "") or ""), redirect=redirect)
+        url = microsoft_oauth.auth_url(settings, state, login_hint=str(form.get("email", "") or ""),
+                                     redirect=redirect, calendar=calendar)
         response = _redirect(url)
         response.set_cookie(MS_STATE_COOKIE, nonce, max_age=600, httponly=True, samesite="lax",
                             secure=settings.base_url.startswith("https://"), path="/")
@@ -558,17 +562,25 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             return _redirect("/mail/accounts", error="The sign-in did not match this session. Try again.")
         c = await ctx(user)
         redirect = settings.base_url + "/mail/microsoft/callback"
+        calendar = nonce.endswith(".calendar")
         try:
-            data = await microsoft_oauth.exchange_code(settings, code, redirect=redirect)
+            if calendar:
+                data = await microsoft_oauth.exchange_code(settings, code, redirect=redirect, calendar=True)
+                if not microsoft_oauth.has_calendar_access(data.get("scope") or ""):
+                    raise ValueError("Microsoft did not grant calendar access to this connection.")
+            else:
+                data = await microsoft_oauth.exchange_code(settings, code, redirect=redirect)
             email = await microsoft_oauth.account_email(data["access_token"])
             mid, detail = await service.connect_microsoft(c["db"], settings.secret_key(), address=email,
-                                                          refresh_token=data["refresh_token"], env=settings.worker_env())
+                                                          refresh_token=data["refresh_token"], env=settings.worker_env(),
+                                                          calendar=calendar)
         except (AuthError, TransientError, KeyError, RuntimeError, ValueError) as e:
             return _redirect("/mail/accounts", error=f"Microsoft sign-in failed: {e}")
         await c["ws"].main().account_changed(mid)
         if not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
-        response = _redirect(f"/mail/accounts/{mid}", msg=f"Connected {email} through Microsoft. {detail}")
+        back = "/mail/studio/calendar" if calendar else f"/mail/accounts/{mid}"
+        response = _redirect(back, msg=f"Connected {email} through Microsoft. {detail}")
         response.delete_cookie(MS_STATE_COOKIE, path="/")
         return response
 
@@ -804,12 +816,14 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         ok, why = service.ready_to_send(box, manual=bool(d["qa"].get("manual"))) if box else (False, "mailbox missing")
         if not ok:
             return _redirect(review, error=why)
-        from bb.mail.composer import has_recipient_tokens, parse_copy_recipients, validate_manual_draft
+        from bb.mail.composer import has_recipient_tokens, needs_company, parse_copy_recipients, validate_manual_draft
         try:
             if mode:
                 subject, body = validate_manual_draft(subject, body, allow_empty=mode == "image")
                 if len(d["to"]) > 1 and has_recipient_tokens(subject, body):
                     raise ValueError("Use a separate draft for each To recipient when personalizing a message.")
+                if needs_company(subject, body) and any(not contact.get("company") for contact in d["to"]):
+                    raise ValueError("The recipient needs a company name before you can use the company field.")
             elif not body:
                 raise ValueError("The reply is empty.")
             if reply_to:
@@ -932,12 +946,108 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         if d:
             await _for_editor(c, d)
             preview = await _preview_doc(c, d, d.get("body") or "")
+        saved_templates = await c["db"].query("SELECT name, subject, body, format FROM studio_templates ORDER BY name")
         return await render(request, "mail_compose.html", user, **page_ctx(c), draft=d, draft_preview=preview,
-                            ready=[m for m in c["mailboxes"] if m["enabled"]], saved_files=c["ws"].attachments())
+                            ready=[m for m in c["mailboxes"] if m["enabled"]], saved_files=c["ws"].attachments(),
+                            saved_templates=saved_templates)
+
+    @app.post("/mail/studio/templates/{action}")
+    async def mail_studio_template(request: Request, action: str, user: dict = Depends(current_user)):
+        from bb.mail.composer import validate_manual_draft
+        from bb.mail.studio import FORMATS
+
+        c = await ctx(user)
+        async with request.form(max_files=11, max_fields=40) as form:
+            name = str(form.get("template_name", "")).strip()
+            if not name or len(name) > 80 or any(ord(ch) < 32 for ch in name):
+                return _redirect("/mail/compose", error="Enter a template name of up to 80 characters.")
+            if action == "delete":
+                removed = await c["db"].execute("DELETE FROM studio_templates WHERE name = ?", (name,))
+                return _redirect("/mail/compose", msg="Template deleted." if removed else "",
+                                 error="" if removed else "Template not found.")
+            if action != "save":
+                raise HTTPException(404)
+            mode = str(form.get("message_format", "rich"))
+            if mode not in FORMATS:
+                return _redirect("/mail/compose", error="Choose a supported message format.")
+            try:
+                subject, body = validate_manual_draft(str(form.get("subject", "")), str(form.get("body", "")),
+                                                      allow_empty=mode == "image")
+            except ValueError as exc:
+                return _redirect("/mail/compose", error=str(exc))
+            await c["db"].execute(
+                "INSERT INTO studio_templates(name, subject, body, format) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET subject = excluded.subject, body = excluded.body, format = excluded.format",
+                (name, subject, body, mode),
+            )
+        return _redirect("/mail/compose", msg=f"Saved template {name!r}.")
+
+    @app.get("/mail/studio/calendar", response_class=HTMLResponse)
+    async def mail_calendar(request: Request, user: dict = Depends(current_user), draft: str = ""):
+        from bb.mail.teams_calendar import calendar_connection
+
+        c = await ctx(user)
+        boxes = {m["id"]: m for m in c["mailboxes"]}
+        organizers = [box for box in boxes.values() if service.ready_to_send(box, manual=True)[0]
+                      and calendar_connection(box, service.open_creds(settings.secret_key(), box))]
+        rows = await c["db"].query(
+            "SELECT i.*, j.status AS job_status, j.last_error AS job_error FROM calendar_invites i "
+            "LEFT JOIN jobs j ON i.job_id = j.id ORDER BY i.updated_at DESC LIMIT 40"
+        )
+        selected = None
+        for row in rows:
+            row["event"] = json.loads(row["event_json"])
+            row["display"] = json.loads(row["display_json"])
+            row["result"] = json.loads(row["result_json"])
+            row["organizer"] = boxes.get(row["mailbox_id"], {}).get("address", "")
+            if row["id"] == draft:
+                selected = row
+        return await render(request, "mail_calendar.html", user, **page_ctx(c), organizers=organizers,
+                            invites=rows, invite=selected, ms_ready=bool(settings.ms_client_id))
+
+    @app.post("/mail/studio/calendar")
+    async def mail_calendar_draft(request: Request, user: dict = Depends(current_user)):
+        from bb.mail.teams_calendar import calendar_connection, studio_invitation
+
+        c = await ctx(user)
+        form = await request.form()
+        box = await c["db"].mailbox(str(form.get("mailbox", "")))
+        if (not box or not service.ready_to_send(box, manual=True)[0] or
+                not calendar_connection(box, service.open_creds(settings.secret_key(), box))):
+            return _redirect("/mail/studio/calendar", error="Choose an enabled Microsoft mailbox with calendar access.")
+        try:
+            event, display = studio_invitation(form)
+        except ValueError as exc:
+            return _redirect("/mail/studio/calendar", error=str(exc))
+        invite_id, now = service.new_id(), service.now_iso()
+        await c["db"].execute(
+            "INSERT INTO calendar_invites(id, mailbox_id, event_json, display_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (invite_id, box["id"], json.dumps(event), json.dumps(display), now, now),
+        )
+        return _redirect(f"/mail/studio/calendar?draft={invite_id}", msg="Invitation saved for review.")
+
+    @app.post("/mail/studio/calendar/{invite_id}/{action}")
+    async def mail_calendar_action(invite_id: str, action: str, user: dict = Depends(current_user)):
+        c = await ctx(user)
+        db = c["db"]
+        if action == "send":
+            invite = await db.one("SELECT * FROM calendar_invites WHERE id = ?", (invite_id,))
+            if not invite or not await Jobs(db).approve_invite(invite):
+                return _redirect("/mail/studio/calendar", error="That invitation is already queued or closed.")
+            if not c["ws"].mail_worker_running():
+                c["ws"].start_mail_worker()
+            return _redirect(f"/mail/studio/calendar?draft={invite_id}", msg="Invitation queued.")
+        if action == "discard":
+            discarded = await db.execute("DELETE FROM calendar_invites WHERE id = ? AND status = 'pending_review'", (invite_id,))
+            return _redirect("/mail/studio/calendar", msg="Draft discarded." if discarded else "",
+                             error="" if discarded else "Only a pending draft can be discarded here.")
+        raise HTTPException(404)
 
     async def _compose_manual(c, box, form):
+        from bb import campaigns as campaigns_mod
         from bb.mail import studio
-        from bb.mail.composer import has_recipient_tokens, parse_copy_recipients, render_recipient_tokens, validate_manual_draft
+        from bb.mail.composer import has_recipient_tokens, needs_company, parse_copy_recipients, render_recipient_tokens, validate_manual_draft
 
         if not box or not box.get("enabled"):
             raise ValueError("Select an enabled sending mailbox.")
@@ -959,7 +1069,27 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         name = str(form.get("to_name", "")).strip() if len(to) == 1 else ""
         if len(name) > 150 or any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
             raise ValueError("Recipient name must be at most 150 characters on one line.")
-        contacts = [{"name": name, "email": address} for address in to]
+        company = str(form.get("to_company", "")).strip() if len(to) == 1 else ""
+        if len(company) > 150 or any(ord(ch) < 32 or ord(ch) == 127 for ch in company):
+            raise ValueError("Company name must be at most 150 characters on one line.")
+        main = c["ws"].main()
+        records = await main.studio_contacts(to)
+        profile_id = campaigns_mod.profile_for_account(main.user_root, box["address"])
+        if profile_id != campaigns_mod.MAIN:
+            profile = main.campaign(profile_id)
+            if profile:
+                records.update(await profile.studio_contacts(to))
+        contacts = []
+        for address in to:
+            record = records.get(address, {})
+            stored_name = " ".join(filter(None, (record.get("first_name"), record.get("last_name"))))
+            contact = {"email": address, "name": name or " ".join(stored_name.split())[:150]}
+            company_name = company or " ".join(str(record.get("company") or "").split())[:150]
+            if company_name:
+                contact["company"] = company_name
+            elif needs_company(subject, body):
+                raise ValueError(f"Add a company name for {address} before using the company field.")
+            contacts.append(contact)
         groups = [[contact] for contact in contacts] if separate else [contacts]
         for group in groups:
             validate_manual_draft(render_recipient_tokens(subject, group[0]), body, allow_empty=message_format == "image")
@@ -1232,25 +1362,29 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         for r in rows:
             r["mailbox"] = names.get(r["mailbox_id"], "")
         return await render(request, "mail_jobs.html", user, **page_ctx(c), jobs=rows, status=status,
-                            counts=await jobs.counts())
+                            counts=await jobs.counts(), retryable_count=len(await jobs.retryable()),
+                            delivery_kinds=DELIVERY_KINDS)
 
     @app.post("/mail/jobs/retry-all")
     async def mail_jobs_retry_all(user: dict = Depends(current_user)):
         c = await ctx(user)
         jobs = Jobs(c["db"])
         n = 0
-        for j in await jobs.list("dead", limit=500):
-            n += 1 if await jobs.retry(j["id"]) else 0
+        for job_id in await jobs.retryable():
+            n += await jobs.retry(job_id)
         if n and not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
         return _redirect("/mail/jobs", msg=f"Queued {n} failed job{'s' if n != 1 else ''} again.")
 
     @app.post("/mail/jobs/{job_id}/{action}")
-    async def mail_job_action(job_id: str, action: str, user: dict = Depends(current_user)):
+    async def mail_job_action(request: Request, job_id: str, action: str, user: dict = Depends(current_user)):
         c = await ctx(user)
         jobs = Jobs(c["db"])
         if action == "retry":
-            ok = await jobs.retry(job_id)
+            form = await request.form()
+            ok = await jobs.retry(job_id, delivery_reviewed=form.get("delivery_reviewed") == "1")
+            if ok and not c["ws"].mail_worker_running():
+                c["ws"].start_mail_worker()
         elif action == "discard":
             ok = await jobs.discard(job_id)
         else:

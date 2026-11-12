@@ -19,6 +19,7 @@ with createReply so Outlook keeps the thread."""
 import base64
 import time
 from email.utils import make_msgid
+from urllib.parse import quote
 
 import httpx
 
@@ -43,6 +44,7 @@ class GraphAccount(MailAccount):
     def __init__(self, mailbox, creds, env):
         super().__init__(mailbox, creds, env)
         self._access, self._expires = "", 0.0
+        self._scope = ""
         self._sent_folder = ""
         self.creds_changed = False   # a rotated refresh token waits to be stored
 
@@ -53,13 +55,13 @@ class GraphAccount(MailAccount):
 
     @property
     def _me(self) -> str:
-        return "/me" if self.signed_in else f"/users/{self.address}"
+        return "/me" if self.signed_in else f"/users/{quote(self.address, safe='@')}"
 
-    async def _token(self) -> str:
-        if self._access and time.time() < self._expires - 60:
+    async def _token(self, scope: str = "") -> str:
+        if self._access and self._scope == scope and time.time() < self._expires - 60:
             return self._access
         if self.signed_in:
-            return await self._refresh_signed_in()
+            return await self._refresh_signed_in(scope) if scope else await self._refresh_signed_in()
         tenant, cid, secret = self.creds.get("tenant_id", ""), self.creds.get("client_id", ""), self.creds.get("client_secret", "")
         if not (tenant and cid and secret):
             raise AuthError("the tenant id, client id and client secret are all needed")
@@ -84,7 +86,7 @@ class GraphAccount(MailAccount):
             raise AuthError("Microsoft returned no access token")
         return self._access
 
-    async def _refresh_signed_in(self) -> str:
+    async def _refresh_signed_in(self, scope: str = "") -> str:
         """An access token from the stored refresh token, through the
         site's app registration (MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT)."""
         from harvey.integrations.microsoft import SCOPE as USER_SCOPE
@@ -92,7 +94,7 @@ class GraphAccount(MailAccount):
         if not cid:
             raise TransientError("the site has no Microsoft app registration configured")
         form = {"client_id": cid, "grant_type": "refresh_token", "refresh_token": self.creds["refresh_token"],
-                "scope": USER_SCOPE}
+                "scope": scope or USER_SCOPE}
         if self.env.get("MS_CLIENT_SECRET"):
             form["client_secret"] = self.env["MS_CLIENT_SECRET"]
         tenant = self.env.get("MS_TENANT") or "common"
@@ -115,6 +117,7 @@ class GraphAccount(MailAccount):
             raise TransientError(f"Microsoft sign-in answered {r.status_code}: {r.text[:160]}")
         data = r.json()
         self._access = data.get("access_token", "")
+        self._scope = scope
         self._expires = time.time() + int(data.get("expires_in") or 3600)
         if not self._access:
             raise AuthError("Microsoft returned no access token")
@@ -124,8 +127,8 @@ class GraphAccount(MailAccount):
             self.creds_changed = True
         return self._access
 
-    async def _call(self, method: str, path: str, *, params=None, json=None, absolute=False):
-        token = await self._token()
+    async def _call(self, method: str, path: str, *, params=None, json=None, absolute=False, scope: str = ""):
+        token = await self._token(scope) if scope else await self._token()
         url = path if absolute else GRAPH + path
         try:
             async with httpx.AsyncClient(timeout=60) as client:
@@ -146,6 +149,28 @@ class GraphAccount(MailAccount):
         if r.status_code in (202, 204) or not r.content:
             return {}
         return r.json()
+
+    async def create_calendar_event(self, payload: dict) -> dict:
+        """Create an event as the connected organizer using Graph's calendar permission."""
+        from bb.microsoft_oauth import CALENDAR_PERMISSION
+
+        token_options = {}
+        if self.signed_in:
+            if not self.creds.get("calendar"):
+                raise AuthError("Connect this Microsoft mailbox with calendar access.")
+            token_options["scope"] = CALENDAR_PERMISSION
+        try:
+            if payload.get("isOnlineMeeting"):
+                calendar = await self._call("GET", f"{self._me}/calendar",
+                                            params={"$select": "allowedOnlineMeetingProviders"}, **token_options)
+                if "teamsForBusiness" not in (calendar.get("allowedOnlineMeetingProviders") or []):
+                    raise PermanentError("The organizer's calendar does not support Microsoft Teams meetings.")
+            event = await self._call("POST", f"{self._me}/calendar/events", json=payload, **token_options)
+        except AuthError as exc:
+            raise AuthError("Microsoft Calendar access was denied. Grant Calendars.ReadWrite to this connection.") from exc
+        if not event.get("id"):
+            raise TransientError("Microsoft did not return an event identifier. Check the organizer's calendar.")
+        return event
 
     async def test(self) -> str:
         if self.signed_in:

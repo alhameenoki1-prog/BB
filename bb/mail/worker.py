@@ -17,7 +17,7 @@ from pathlib import Path
 
 from bb.mail import service
 from bb.mail.db import MailDB
-from bb.mail.jobs import Jobs
+from bb.mail.jobs import DELIVERY_KINDS, Jobs
 
 logger = logging.getLogger("bb.mailworker")
 
@@ -79,6 +79,11 @@ class Handlers:
                                   (f"Not sent: {e}", service.now_iso(), draft["id"]))
             await self.db.log("review", f"Held a reply to {draft['to_json'][:60]}: {e}", draft["mailbox_id"], draft_id=draft["id"])
             return {"status": "held", "reason": str(e)}
+
+    async def calendar_invite(self, job: dict):
+        from bb.mail.teams_calendar import send_invitation
+
+        return await send_invitation(self.db, self.secret, self.env, job["payload"].get("invite_id", ""), job["id"])
 
     async def _run_env(self, run: dict | None, mailbox: dict | None = None) -> tuple[dict, dict | None]:
         """The env and the profile (goal, brief, files) a run writes with on
@@ -178,18 +183,15 @@ class Worker:
             await asyncio.shield(self.jobs.release(job["id"], "worker stopped"))
             raise
         except Exception as e:
-            if job["kind"] == "send_draft":
-                # A timeout or disconnect can occur after remote acceptance.
-                # Without provider-side idempotency, automatic retry risks
-                # delivering a duplicate. Require explicit reconciliation.
+            if job["kind"] in DELIVERY_KINDS:
                 await self.jobs.release(job["id"], "send failed; delivery status uncertain")
                 status = "dead"
             else:
                 status = await self.jobs.fail(job["id"], f"{type(e).__name__}: {str(e)[:300]}")
             logger.warning("job %s (%s) failed: %s → %s", job["id"], job["kind"], e, status)
             if status == "dead":
-                await self.db.log("warning", f"A background task ({job['kind'].replace('_', ' ')}) failed "
-                                             "repeatedly and is waiting on the Jobs page.", job["mailbox_id"])
+                await self.db.log("warning", f"A background task ({job['kind'].replace('_', ' ')}) needs review "
+                                             "on the Jobs page.", job["mailbox_id"])
                 if job["kind"] in ("reply_run", "reply_campaign"):
                     from bb.mail import runs
                     await runs.job_died(self.db, job["payload"].get("run_id", ""), job["mailbox_id"], f"{type(e).__name__}: {e}")
@@ -208,8 +210,8 @@ class Worker:
                 pass
             if time.time() - last_schedule > SCHEDULE_EVERY:
                 try:
-                    await service.schedule_checks(self.db, self.jobs)
                     await service.schedule_syncs(self.db, self.jobs)
+                    await service.schedule_checks(self.db, self.jobs)
                     from bb.mail import runs
                     await runs.reconcile(self.db, self.jobs)
                     await self.jobs.prune()

@@ -15,6 +15,10 @@ UNCERTAIN_SEND_NOTE = (
     "Send was interrupted; delivery may have succeeded. Check the mailbox Sent folder "
     "and recipient status before manually retrying to avoid duplicate email."
 )
+UNCERTAIN_INVITE_NOTE = (
+    "The invitation may have been created. Check the organizer's Microsoft calendar before retrying."
+)
+DELIVERY_KINDS = ("send_draft", "calendar_invite")
 
 
 def _iso(dt: datetime) -> str:
@@ -67,7 +71,20 @@ class Jobs:
             if not changed.rowcount:
                 return False
             payload = {"draft_id": draft["id"], "dry_run": dry_run, "saw_thread": saw_thread}
-            await self._insert(db, new_id(), "send_draft", draft["mailbox_id"], payload, now, 0, 4, "")
+            await self._insert(db, new_id(), "send_draft", draft["mailbox_id"], payload, now, 0, 1, "")
+            await db.commit()
+        return True
+
+    async def approve_invite(self, invite: dict) -> bool:
+        now, job_id = datetime.now(timezone.utc), new_id()
+        async with self.db._connect() as db:
+            changed = await db.execute(
+                "UPDATE calendar_invites SET status = 'queued', job_id = ?, error = '', updated_at = ? "
+                "WHERE id = ? AND status = 'pending_review'", (job_id, _iso(now), invite["id"]),
+            )
+            if not changed.rowcount:
+                return False
+            await self._insert(db, job_id, "calendar_invite", invite["mailbox_id"], {"invite_id": invite["id"]}, now, 0, 1, "")
             await db.commit()
         return True
 
@@ -92,21 +109,21 @@ class Jobs:
             # Quarantine it in the existing dead-letter review UI rather than
             # automatically deliver the same message a second time.
             await db.execute(
-                "UPDATE jobs SET status = 'dead', locked_at = NULL, last_error = ?, "
+                "UPDATE jobs SET status = 'dead', locked_at = NULL, last_error = CASE kind WHEN 'calendar_invite' THEN ? ELSE ? END, "
                 "updated_at = ?, finished_at = ? "
-                "WHERE status = 'running' AND kind = 'send_draft' AND locked_at < ?",
-                (UNCERTAIN_SEND_NOTE, now, now, stale))
+                "WHERE status = 'running' AND kind IN (?, ?) AND locked_at < ?",
+                (UNCERTAIN_INVITE_NOTE, UNCERTAIN_SEND_NOTE, now, now, *DELIVERY_KINDS, stale))
             await db.execute(
                 "UPDATE jobs SET status = 'queued', locked_at = NULL, last_error = 'worker lost mid-run', "
-                "updated_at = ? WHERE status = 'running' AND locked_at < ? AND kind != 'send_draft'",
-                (now, stale))
+                "updated_at = ? WHERE status = 'running' AND locked_at < ? AND kind NOT IN (?, ?)",
+                (now, stale, *DELIVERY_KINDS))
             cur = await db.execute(
                 f"""UPDATE jobs SET status = 'running', locked_at = ?, attempts = attempts + 1, updated_at = ?
                     WHERE id = (SELECT id FROM jobs WHERE status = 'queued' AND run_at <= ?{not_busy}
                                 AND NOT EXISTS (SELECT 1 FROM jobs AS running WHERE running.status = 'running'
                                     AND COALESCE(NULLIF(running.lane, ''), running.mailbox_id) =
                                         COALESCE(NULLIF(jobs.lane, ''), jobs.mailbox_id))
-                                ORDER BY run_at, created_at, id LIMIT 1)
+                                ORDER BY run_at, rowid LIMIT 1)
                     RETURNING *""", (now, now, now, *exclude))
             row = await cur.fetchone()
             cols = [c[0] for c in cur.description] if cur.description else []
@@ -170,28 +187,60 @@ class Jobs:
         # Keep it in the dead-letter review instead of silently resending.
         current = now_iso()
         await self.db.execute(
-            "UPDATE jobs SET status = 'dead', locked_at = NULL, last_error = ?, "
+            "UPDATE jobs SET status = 'dead', locked_at = NULL, last_error = CASE kind WHEN 'calendar_invite' THEN ? ELSE ? END, "
             "updated_at = ?, finished_at = ? "
-            "WHERE id = ? AND status = 'running' AND kind = 'send_draft'",
-            (UNCERTAIN_SEND_NOTE, current, current, job_id))
+            "WHERE id = ? AND status = 'running' AND kind IN (?, ?)",
+            (UNCERTAIN_INVITE_NOTE, UNCERTAIN_SEND_NOTE, current, current, job_id, *DELIVERY_KINDS))
         await self.db.execute(
             "UPDATE jobs SET status = 'queued', locked_at = NULL, attempts = MAX(0, attempts - 1), last_error = ?, "
-            "updated_at = ? WHERE id = ? AND status = 'running' AND kind != 'send_draft'",
-            (note[:600], current, job_id))
+            "updated_at = ? WHERE id = ? AND status = 'running' AND kind NOT IN (?, ?)",
+            (note[:600], current, job_id, *DELIVERY_KINDS))
 
-    async def retry(self, job_id: str) -> bool:
+    async def retry(self, job_id: str, *, delivery_reviewed: bool = True) -> bool:
+        """Retry one selected job. Web callers supply the user's delivery confirmation."""
         now = now_iso()
         n = await self.db.execute(
-            "UPDATE jobs SET status = 'queued', attempts = 0, last_error = '', run_at = ?, updated_at = ?, "
-            "finished_at = NULL WHERE id = ? AND status IN ('dead', 'cancelled')", (now, now, job_id))
+            "UPDATE jobs SET status = 'queued', attempts = 0, last_error = CASE WHEN kind IN (?, ?) "
+            "THEN 'Retry queued after delivery review.' ELSE '' END, run_at = ?, updated_at = ?, "
+            "finished_at = NULL WHERE id = ? AND status IN ('dead', 'cancelled') "
+            "AND (kind NOT IN (?, ?) OR (? AND status = 'dead'))",
+            (*DELIVERY_KINDS, now, now, job_id, *DELIVERY_KINDS, delivery_reviewed))
         return n > 0
 
     async def discard(self, job_id: str) -> bool:
         now = now_iso()
-        n = await self.db.execute(
-            "UPDATE jobs SET status = 'cancelled', locked_at = NULL, updated_at = ?, finished_at = ? "
-            "WHERE id = ? AND status IN ('queued', 'dead')", (now, now, job_id))
-        return n > 0
+        async with self.db._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT kind, status, attempts, last_error, payload_json FROM jobs WHERE id = ? AND status IN ('queued', 'dead')",
+                (job_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return False
+            kind, previous_status, attempts, last_error, payload = row
+            await db.execute("UPDATE jobs SET status = 'cancelled', locked_at = NULL, updated_at = ?, finished_at = ? "
+                             "WHERE id = ?", (now, now, job_id))
+            if kind in DELIVERY_KINDS:
+                unattempted = previous_status == "queued" and attempts == 0 and not last_error
+                status = "pending_review" if unattempted else "failed"
+                error = "Cancelled before submission." if unattempted else (
+                    UNCERTAIN_SEND_NOTE if kind == "send_draft" else UNCERTAIN_INVITE_NOTE
+                )
+                table, previous, field = ("drafts", "approved", "draft_id") if kind == "send_draft" else (
+                    "calendar_invites", "queued", "invite_id"
+                )
+                await db.execute(f"UPDATE {table} SET status = ?, error = ?, updated_at = ? WHERE id = ? AND status = ?",
+                                 (status, error, now, json.loads(payload).get(field), previous))
+            await db.commit()
+        return True
+
+    async def retryable(self, limit: int = 500) -> list[str]:
+        rows = await self.db.query(
+            "SELECT id FROM jobs WHERE status = 'dead' AND kind NOT IN (?, ?) ORDER BY updated_at LIMIT ?",
+            (*DELIVERY_KINDS, limit),
+        )
+        return [row["id"] for row in rows]
 
     async def list(self, status: str | None = None, limit: int = 100) -> list[dict]:
         if status:

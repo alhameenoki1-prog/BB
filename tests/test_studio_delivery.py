@@ -138,6 +138,29 @@ def test_excluded_copy_recipient_holds_message_before_submission(studio_client, 
     assert asyncio.run(_work(db, secret))["status"] == "held"
 
 
+def test_template_and_workspace_contact_data_are_available_in_studio(studio_client, monkeypatch):
+    client, db, _, mailbox, _ = studio_client
+    response = client.post("/mail/studio/templates/save", data={
+        "template_name": "Project check-in", "message_format": "text",
+        "subject": "Question for {{company}}", "body": "Hi {{first_name}}, could we review the scope?",
+    })
+    assert "Saved%20template" in response.headers["location"]
+    assert "Project check-in" in client.get("/mail/compose").text
+
+    async def contacts(_self, addresses):
+        assert addresses == ["john.smith@example.test"]
+        return {addresses[0]: {"first_name": "Jonathan", "last_name": "Smith", "company": "Example Engineering"}}
+
+    monkeypatch.setattr(Workspace, "studio_contacts", contacts)
+    response = _create(client, mailbox, message_format="text", subject="Question for {{company}}", body="Hi {{first_name}}.")
+    assert "draft=" in response.headers["location"]
+    draft = asyncio.run(db.one("SELECT * FROM drafts"))
+    preview = client.post(f"/mail/drafts/{draft['id']}/preview").json()["doc"]
+    assert "Question for Example Engineering" in preview and "Hi Jonathan." in preview
+    assert "Template%20deleted" in client.post("/mail/studio/templates/delete",
+                                               data={"template_name": "Project check-in"}).headers["location"]
+
+
 @pytest.mark.skipif(os.getenv("BB_MAILPIT_TEST") != "1", reason="requires isolated Mailpit")
 def test_studio_inline_image_reaches_local_smtp_after_review(studio_client, monkeypatch):
     client, db, secret, mailbox, _ = studio_client

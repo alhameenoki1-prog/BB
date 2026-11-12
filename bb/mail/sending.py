@@ -14,7 +14,7 @@ from pathlib import Path
 from bb.mail import service, studio
 from bb.mail.db import MailDB, now_iso
 from bb.mail.drafting import finalize
-from bb.mail.composer import has_recipient_tokens, render_recipient_tokens, validate_manual_draft
+from bb.mail.composer import has_recipient_tokens, needs_company, render_recipient_tokens, validate_manual_draft
 from bb.mail.ingest import Ingest
 from bb.mail.providers import AuthError, TransientError, account_for
 from bb.mail.providers.base import Attachment, PartialDeliveryError, PermanentError, RawMessage
@@ -272,6 +272,8 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
             raise SendRefused("The inline image is missing from this draft.")
         if len(to) > 1 and has_recipient_tokens(draft["subject"], draft["body"]):
             raise SendRefused("Use one personalized draft per To recipient.")
+        if needs_company(draft["subject"], draft["body"]) and not recipient.get("company"):
+            raise SendRefused("The recipient needs a company name before you can use the company field.")
     subject = render_recipient_tokens(draft["subject"], recipient) if mode else draft["subject"]
     try:
         if mode:

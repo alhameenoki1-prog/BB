@@ -221,6 +221,26 @@ MIGRATIONS = [
         data BLOB NOT NULL,
         PRIMARY KEY(studio_id, position)
     );
+    """,
+    """
+    CREATE TABLE calendar_invites (
+        id TEXT PRIMARY KEY,
+        mailbox_id TEXT NOT NULL,
+        event_json TEXT NOT NULL,
+        display_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending_review',
+        job_id TEXT NOT NULL DEFAULT '',
+        result_json TEXT NOT NULL DEFAULT '{}',
+        error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE studio_templates (
+        name TEXT PRIMARY KEY COLLATE NOCASE,
+        subject TEXT NOT NULL,
+        body TEXT NOT NULL,
+        format TEXT NOT NULL
+    );
     """
 ]
 
@@ -405,7 +425,7 @@ class MailDB:
 
     async def remove_mailbox(self, mailbox_id: str):
         async with self._connect() as db:
-            for table in ("messages", "threads", "drafts", "run_items", "jobs", "rules"):
+            for table in ("messages", "threads", "drafts", "run_items", "jobs", "rules", "calendar_invites"):
                 await db.execute(f"DELETE FROM {table} WHERE mailbox_id = ?", (mailbox_id,))
             await self._purge_unused_studio_files(db)
             await db.execute("DELETE FROM mailboxes WHERE id = ?", (mailbox_id,))

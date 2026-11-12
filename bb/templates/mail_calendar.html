@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Calendar invitations{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Calendar invitations</h1><p class="lead">Create an Outlook event or a Teams meeting from a connected Microsoft calendar.</p></div>
+  <div class="actions"><a class="btn secondary" href="/mail/compose">Back to Studio</a><a class="btn secondary" href="/mail/jobs">Jobs</a></div>
+</div>
+{% if invite %}
+<div class="card">
+  <h2>{{ invite.event.subject }}</h2>
+  <p class="small">{{ invite.organizer }} · {{ invite.display.start }} to {{ invite.display.end }} ({{ invite.display.timezone }})</p>
+  <p class="small"><strong>Attendees</strong> · {{ invite.event.attendees|map(attribute='emailAddress.address')|join(', ') }}</p>
+  <p class="small">{{ 'Teams meeting' if invite.event.isOnlineMeeting else 'Outlook calendar event' }}</p>
+  {% if invite.display.description %}<p style="white-space:pre-wrap">{{ invite.display.description }}</p>{% endif %}
+  {% if invite.display.project_url %}<p><a href="{{ invite.display.project_url }}" target="_blank" rel="noopener noreferrer">Project scope</a></p>{% endif %}
+  {% if invite.status == 'pending_review' %}
+  <div class="actions">
+    <form method="post" action="/mail/studio/calendar/{{ invite.id }}/send"><button type="submit">Create event and invite attendees</button></form>
+    <form method="post" action="/mail/studio/calendar/{{ invite.id }}/discard"><button type="submit" class="secondary">Discard draft</button></form>
+  </div>
+  {% elif invite.status == 'sent' %}
+  <p class="tag good">Created in Outlook</p>
+  {% if invite.result.outlook %}<p><a href="{{ invite.result.outlook }}" target="_blank" rel="noopener noreferrer">Open Outlook event</a></p>{% endif %}
+  {% if invite.result.teams %}<p><a href="{{ invite.result.teams }}" target="_blank" rel="noopener noreferrer">Open Teams meeting</a></p>{% endif %}
+  {% elif invite.job_status == 'dead' %}
+  <p class="small" style="color:var(--bad)">{{ invite.job_error }}</p>
+  <a href="/mail/jobs?status=dead">Review the delivery job</a>
+  {% elif invite.error %}
+  <p class="small" style="color:var(--bad)">{{ invite.error }}</p>
+  {% else %}
+  <p class="tag">Queued</p>
+  {% endif %}
+</div>
+{% endif %}
+<div class="card">
+  <h2>New invitation</h2>
+  {% if organizers %}
+  <form method="post" action="/mail/studio/calendar">
+    <div class="row">
+      <div><label for="invite-mailbox">Organizer</label><select name="mailbox" id="invite-mailbox" required>
+        {% for box in organizers %}<option value="{{ box.id }}">{{ box.address }}</option>{% endfor %}
+      </select></div>
+      <div><label for="invite-attendees">Attendees</label><input id="invite-attendees" name="attendees" maxlength="4096" required placeholder="Separate addresses with commas"></div>
+    </div>
+    <label for="invite-subject">Subject</label><input id="invite-subject" name="subject" required maxlength="255">
+    <div class="row">
+      <div><label for="invite-start">Start</label><input type="datetime-local" id="invite-start" name="start" required></div>
+      <div><label for="invite-end">End</label><input type="datetime-local" id="invite-end" name="end" required></div>
+      <div><label for="invite-timezone">Time zone</label><input name="timezone" id="invite-timezone" required maxlength="80" value="UTC"></div>
+    </div>
+    <label for="invite-description">Description</label><textarea id="invite-description" name="description" rows="4" maxlength="10000"></textarea>
+    <label for="invite-project">Project scope link (optional)</label><input type="url" id="invite-project" name="project_url" maxlength="2048">
+    <label class="check"><input type="checkbox" name="teams" value="1"> Include a Microsoft Teams meeting</label>
+    <div class="actions" style="margin-top:12px"><button type="submit">Review invitation</button></div>
+  </form>
+  <script>document.getElementById('invite-timezone').value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';</script>
+  {% else %}
+  <p>Connect a Microsoft mailbox with calendar access to start.</p>
+  {% endif %}
+  {% if ms_ready %}
+  <form method="post" action="/mail/microsoft/connect" style="margin-top:12px">
+    <input type="hidden" name="calendar" value="1"><button type="submit" class="secondary">Connect Microsoft calendar</button>
+  </form>
+  {% else %}
+  <p class="small muted">Use a <a href="/mail/accounts">Microsoft 365 app connection</a> with Calendars.ReadWrite granted by its tenant.</p>
+  {% endif %}
+</div>
+{% if invites %}
+<div class="card">
+  <h2>Recent invitations</h2>
+  <table>
+    <thead><tr><th>Invitation</th><th>Organizer</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for row in invites %}<tr>
+        <td><a href="/mail/studio/calendar?draft={{ row.id }}">{{ row.event.subject }}</a></td>
+        <td>{{ row.organizer }}</td>
+        <td>{{ 'Needs review' if row.job_status == 'dead' else ('Created' if row.status == 'sent' else row.status.replace('_', ' ')|capitalize) }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

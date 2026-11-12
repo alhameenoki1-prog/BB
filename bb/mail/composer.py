@@ -22,7 +22,7 @@ def validate_manual_draft(subject: str, body: str, *, allow_empty: bool = False)
         raise ValueError("Message cannot contain NUL characters.")
     return subject, body
 
-_TOKEN_RE = re.compile(r"\{\{\s*(email|name|first_name)\s*\}\}", re.IGNORECASE)
+_TOKEN_RE = re.compile(r"\{\{\s*(email|name|first_name|company)\s*\}\}", re.IGNORECASE)
 _NAME_PARTS = re.compile(r"[._-]+")
 
 
@@ -38,7 +38,10 @@ def recipient_fields(recipient: dict) -> dict[str, str]:
     derived = " ".join(part.capitalize() for part in _NAME_PARTS.split(local)
                        if part and part.isalpha()) if not saved else ""
     name = saved or derived
-    return {"email": address, "name": name, "first_name": name.split()[0] if name else ""}
+    fields = {"email": address, "name": name, "first_name": name.split()[0] if name else ""}
+    if recipient.get("company"):
+        fields["company"] = str(recipient["company"]).strip()
+    return fields
 
 
 def has_recipient_tokens(*values: str) -> bool:
@@ -54,7 +57,11 @@ def render_recipient_tokens(value: str, recipient: dict, *, html: bool = False) 
     if html:
         from html import escape
         fields = {key: escape(text, quote=True) for key, text in fields.items()}
-    return _TOKEN_RE.sub(lambda match: fields[match.group(1).lower()], value)
+    return _TOKEN_RE.sub(lambda match: fields.get(match.group(1).lower(), match.group(0)), value)
+
+
+def needs_company(*values: str) -> bool:
+    return any(match.group(1).lower() == "company" for value in values for match in _TOKEN_RE.finditer(value))
 
 
 def parse_copy_recipients(raw: str, *, field_name: str, limit: int = 20) -> list[str]:
