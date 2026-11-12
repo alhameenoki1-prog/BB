@@ -241,6 +241,21 @@ MIGRATIONS = [
         body TEXT NOT NULL,
         format TEXT NOT NULL
     );
+    """,
+    """
+    DROP INDEX mailboxes_address;
+    CREATE UNIQUE INDEX mailboxes_inbox_address ON mailboxes(lower(address)) WHERE provider != 'ses';
+    CREATE UNIQUE INDEX mailboxes_ses_address ON mailboxes(lower(address)) WHERE provider = 'ses';
+    CREATE TABLE ses_events (
+        mailbox_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        PRIMARY KEY(mailbox_id, event_id, recipient)
+    );
+    CREATE INDEX ses_events_recipient ON ses_events(mailbox_id, recipient, event_type);
     """
 ]
 
@@ -400,8 +415,9 @@ class MailDB:
     async def mailbox(self, mailbox_id: str) -> dict | None:
         return self._mailbox(await self.one("SELECT * FROM mailboxes WHERE id = ?", (mailbox_id,)))
 
-    async def mailbox_by_address(self, address: str) -> dict | None:
-        return self._mailbox(await self.one("SELECT * FROM mailboxes WHERE lower(address) = ?",
+    async def mailbox_by_address(self, address: str, *, ses: bool = False) -> dict | None:
+        provider = "provider = 'ses'" if ses else "provider != 'ses'"
+        return self._mailbox(await self.one(f"SELECT * FROM mailboxes WHERE lower(address) = ? AND {provider}",
                                             ((address or "").strip().lower(),)))
 
     async def update_mailbox(self, mailbox_id: str, **fields):
@@ -425,7 +441,7 @@ class MailDB:
 
     async def remove_mailbox(self, mailbox_id: str):
         async with self._connect() as db:
-            for table in ("messages", "threads", "drafts", "run_items", "jobs", "rules", "calendar_invites"):
+            for table in ("messages", "threads", "drafts", "run_items", "jobs", "rules", "calendar_invites", "ses_events"):
                 await db.execute(f"DELETE FROM {table} WHERE mailbox_id = ?", (mailbox_id,))
             await self._purge_unused_studio_files(db)
             await db.execute("DELETE FROM mailboxes WHERE id = ?", (mailbox_id,))

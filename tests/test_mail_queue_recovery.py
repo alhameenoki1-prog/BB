@@ -38,13 +38,14 @@ async def test_stale_delivery_is_quarantined_and_late_worker_cannot_complete(
     assert row["locked_at"] is None
     assert row["last_error"] == expected_note
     assert row["finished_at"]
+    previous_progress = row["progress_json"]
 
     await jobs.progress(job_id, phase="late")
     await jobs.complete(job_id, delivered=True)
     assert await jobs.fail(job_id, "late error") == "dead"
     row = await db.one("SELECT * FROM jobs WHERE id = ?", (job_id,))
     assert row["status"] == "dead"
-    assert not row["progress_json"]
+    assert row["progress_json"] == previous_progress
 
 
 @pytest.mark.asyncio

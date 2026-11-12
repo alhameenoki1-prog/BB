@@ -265,6 +265,10 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     for address in recipients:
         if is_excluded(settings, address):
             raise SendRefused(f"{address} is on {mailbox['address']}'s excluded list (they asked not to be contacted)")
+        if mailbox["provider"] == "ses" and await db.one(
+                "SELECT 1 FROM ses_events WHERE mailbox_id = ? AND recipient = ? AND event_type IN ('hard bounce', 'complaint')",
+                (mailbox["id"], address)):
+            raise SendRefused(f"Amazon SES reported a permanent bounce or complaint for {address}.")
     attachments = await _reply_attachments(db, env, draft)
     if mode:
         attachments.extend(Attachment(**row) for row in await db.studio_files(draft.get("studio_id", ""), include_data=True))

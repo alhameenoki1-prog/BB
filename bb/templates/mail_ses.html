@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Amazon SES{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Amazon SES</h1><p class="lead">Connect a verified sender in your AWS account and check its delivery events.</p></div>
+  <div class="actions"><a class="btn secondary" href="/mail/accounts">Sender accounts</a><a class="btn secondary" href="/mail/compose">Studio</a></div>
+</div>
+{% if accounts %}
+<div class="card">
+  <h2>Connected senders</h2>
+  <table>
+    <thead><tr><th>Sender</th><th>Connection and quota</th><th>Feedback</th><th></th></tr></thead>
+    <tbody>{% for box in accounts %}<tr>
+      <td><a href="/mail/accounts/{{ box.id }}">{{ box.address }}</a></td>
+      <td>{{ box.status_detail or box.status }}{% if not box.enabled %} · Disabled{% endif %}</td>
+      <td>{{ 'SQS configured' if box.sync.ses_feedback else 'No event queue' }}</td>
+      <td><a href="/mail/ses?mailbox={{ box.id }}">Connection settings</a></td>
+    </tr>{% endfor %}</tbody>
+  </table>
+</div>
+{% endif %}
+<div class="card">
+  <h2>{{ 'Update sender connection' if sender else 'Connect a sender' }}</h2>
+  {% if enabled %}
+  <ol>
+    <li>Verify your email address or domain in the SES region you plan to use.</li>
+    <li>Create an IAM role using the trust policy below. Grant SES account and identity read access and permission to send from the verified identity.</li>
+    <li>For feedback, publish Delivery, Bounce, Complaint and Reject events through an SES configuration set to an SNS topic and a dedicated SQS queue. Restrict the queue to the topic.</li>
+  </ol>
+  <details><summary>IAM trust policy for this workspace</summary><pre style="overflow:auto">{{ trust }}</pre></details>
+  <form method="post" action="/mail/ses" style="margin-top:12px">
+    <div class="row">
+      <div><label for="ses-address">Verified sender address</label><input type="email" id="ses-address" name="address" value="{{ sender }}" maxlength="254" required></div>
+      <div><label for="ses-account">AWS account ID</label><input id="ses-account" name="account_id" value="{{ connection.account_id }}" inputmode="numeric" pattern="[0-9]{12}" maxlength="12" required></div>
+      <div><label for="ses-region">SES region</label><input id="ses-region" name="region" value="{{ connection.region }}" placeholder="us-east-1" maxlength="31" required></div>
+    </div>
+    <label for="ses-role">IAM role ARN</label><input id="ses-role" name="role_arn" value="{{ connection.role_arn }}" maxlength="650" placeholder="arn:aws:iam::123456789012:role/BB-SESSender" required>
+    <div class="row">
+      <div><label for="ses-config">Configuration set (optional)</label><input id="ses-config" name="configuration_set" maxlength="64" value="{{ connection.configuration_set }}"></div>
+      <div><label for="ses-queue">Feedback queue URL (optional)</label><input type="url" id="ses-queue" name="queue_url" maxlength="300" value="{{ connection.queue_url }}"></div>
+    </div>
+    <div class="actions" style="margin-top:12px"><button type="submit">Verify and connect</button></div>
+  </form>
+  {% else %}
+  <p>To enable Amazon SES, install BB with the <code>ses</code> extra and configure the site's AWS role.</p>
+  {% endif %}
+</div>
+<div class="card">
+  <h2>Delivery feedback</h2>
+  <p class="small muted">Delivered means the recipient's mail server accepted the message.</p>
+  {% if events %}
+  <table>
+    <thead><tr><th>Sender</th><th>Recipient</th><th>Subject</th><th>Event</th><th>Recorded</th></tr></thead>
+    <tbody>{% for event in events %}<tr>
+      <td>{{ event.address }}</td><td>{{ event.recipient }}</td><td>{{ event.subject or event.provider_id }}</td>
+      <td><span class="tag {{ 'good' if event.event_type == 'delivered' else 'warn' }}">{{ event.event_type }}</span></td>
+      <td class="small">{{ event.received_at }}</td>
+    </tr>{% endfor %}</tbody>
+  </table>
+  {% else %}<p class="small muted">No delivery events have been recorded.</p>{% endif %}
+</div>
+{% endblock %}

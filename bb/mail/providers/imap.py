@@ -45,7 +45,7 @@ class ImapAccount(MailAccount):
         host, port = c["smtp_host"], int(c.get("smtp_port") or 587)
         try:
             ctx = ssl.create_default_context()  # the stdlib default verifies nothing
-            if port == 465:
+            if port in (465, 2465):
                 s = smtplib.SMTP_SSL(host, port, timeout=20, context=ctx)
             else:
                 s = smtplib.SMTP(host, port, timeout=20)
@@ -99,12 +99,14 @@ class ImapAccount(MailAccount):
         c = self.creds
         port = int(c.get("smtp_port") or 587)
         try:
-            # Implicit TLS on 465/2465, STARTTLS required on 587/2587, and
-            # whenever offered on any other port: never a password in clear.
+            # Match the connection check on remote SMTP servers. The
+            # loopback exception is for local test sinks such as Mailpit.
             use_tls = port in (465, 2465)
+            loopback = c["smtp_host"].lower() in ("localhost", "127.0.0.1", "::1")
+            start_tls = False if use_tls else (None if loopback else True)
             refused, _response = await aiosmtplib.send(
                 msg, hostname=c["smtp_host"], port=port, username=c["username"], password=c["password"],
-                start_tls=False if use_tls else (True if port in (587, 2587) else None),
+                start_tls=start_tls,
                 use_tls=use_tls, timeout=40, recipients=list(dict.fromkeys([*to, *(cc or []), *(bcc or [])])),
             )
             if refused:

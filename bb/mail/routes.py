@@ -590,6 +590,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         m = await c["db"].mailbox(mailbox_id)
         if not m:
             raise HTTPException(404)
+        if m["provider"] == "ses":
+            return _redirect("/mail/ses", error="Amazon SES accounts send email and report delivery events.")
         jobs = Jobs(c["db"])
         kind = "sync_incremental" if (m.get("sync") or {}).get("backfill_done") else "sync_backfill"
         await jobs.enqueue(kind, mailbox_id, dedupe=True, max_attempts=8)
@@ -605,6 +607,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         m = await c["db"].mailbox(mailbox_id)
         if not m:
             raise HTTPException(404)
+        if m["provider"] == "ses":
+            return _redirect("/mail/ses", error="Amazon SES accounts send email and report delivery events.")
         await c["db"].update_mailbox(mailbox_id, sync={})
         await Jobs(c["db"]).enqueue("sync_backfill", mailbox_id, dedupe=True, max_attempts=8)
         return _redirect(f"/mail/accounts/{mailbox_id}", msg="A full re-sync is queued.")
@@ -982,6 +986,41 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             )
         return _redirect("/mail/compose", msg=f"Saved template {name!r}.")
 
+    @app.get("/mail/ses", response_class=HTMLResponse)
+    async def mail_ses(request: Request, user: dict = Depends(current_user), mailbox: str = ""):
+        from bb.mail.ses import available, external_id, trust_policy
+
+        c = await ctx(user)
+        enabled = available(settings)
+        identifier = await external_id(c["db"]) if enabled else ""
+        boxes = [m for m in c["mailboxes"] if m["provider"] == "ses"]
+        box = next((m for m in boxes if m["id"] == mailbox), None)
+        creds = service.open_creds(settings.secret_key(), box) if box else {}
+        events = await c["db"].query(
+            "SELECT e.*, m.subject, b.address FROM ses_events e "
+            "LEFT JOIN messages m ON e.mailbox_id = m.mailbox_id AND e.provider_id = m.provider_id "
+            "JOIN mailboxes b ON e.mailbox_id = b.id ORDER BY e.received_at DESC LIMIT 100"
+        )
+        return await render(request, "mail_ses.html", user, **page_ctx(c), enabled=enabled, accounts=boxes,
+                            events=events, connection=creds, sender=box["address"] if box else "",
+                            trust=json.dumps(trust_policy(settings.ses_principal_arn, identifier), indent=2) if enabled else "")
+
+    @app.post("/mail/ses")
+    async def mail_ses_connect(request: Request, user: dict = Depends(current_user)):
+        from bb.mail.ses import available, connect_ses
+        from bb.mail.providers.base import PermanentError
+
+        if not available(settings):
+            return _redirect("/mail/ses", error="Amazon SES is unavailable on this BB installation.")
+        c = await ctx(user)
+        try:
+            mailbox, _ = await connect_ses(c["db"], settings.secret_key(), await request.form(), settings.worker_env())
+        except (AuthError, TransientError, PermanentError, RuntimeError, ValueError) as exc:
+            return _redirect("/mail/ses", error=str(exc))
+        if not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        return _redirect(f"/mail/ses?mailbox={mailbox}", msg="Connected and verified the Amazon SES sender.")
+
     @app.get("/mail/studio/calendar", response_class=HTMLResponse)
     async def mail_calendar(request: Request, user: dict = Depends(current_user), draft: str = ""):
         from bb.mail.teams_calendar import calendar_connection
@@ -1063,6 +1102,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             raise ValueError("Enter at least one To email address.")
         if len(set(to + cc + bcc)) != len(to) + len(cc) + len(bcc):
             raise ValueError("A recipient cannot appear in more than one of To, Cc and Bcc.")
+        if box["provider"] == "ses" and len(to) + len(cc) + len(bcc) > 50:
+            raise ValueError("Amazon SES allows up to 50 recipients per message.")
         separate = len(to) > 1 and (form.get("separate") == "1" or has_recipient_tokens(subject, body))
         if separate and (cc or bcc):
             raise ValueError("Leave Cc and Bcc empty to create separate drafts for multiple To recipients.")
@@ -1123,7 +1164,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         to_email = str(form.get("to", "") or "").strip().lower()
         to_name = str(form.get("to_name", "") or "").strip()
         instruction = str(form.get("instruction", "") or "").strip()
-        if not box or "@" not in to_email or len(instruction) < 5:
+        if not box or box["provider"] == "ses" or "@" not in to_email or len(instruction) < 5:
             return _redirect("/mail/compose", error="Pick a mailbox, enter the recipient, and say what the email should do.")
         try:
             result = await draft_new(_brain(c["ws"]), service.settings_of(box), box, to_name, to_email, instruction,

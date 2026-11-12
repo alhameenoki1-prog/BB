@@ -90,3 +90,15 @@ async def test_smtp_local_success_has_message_id(monkeypatch):
     msg_id, provider_id, thread = await _send(_account())
     assert msg_id.startswith("<") and msg_id.endswith(">")
     assert provider_id == thread == ""
+
+
+@pytest.mark.asyncio
+async def test_smtp_requires_tls_on_remote_submission_ports(monkeypatch):
+    async def accepted(*args, **kwargs):
+        assert kwargs["start_tls"] is True and kwargs["use_tls"] is False
+        return {}, "250 accepted by mock"
+
+    monkeypatch.setattr(aiosmtplib, "send", accepted)
+    account = _account()
+    account.creds.update(smtp_host="smtp.example.test", smtp_port=2525)
+    await _send(account)

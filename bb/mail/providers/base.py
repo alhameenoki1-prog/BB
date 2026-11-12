@@ -97,7 +97,7 @@ class MailAccount:
                    reply_to="", from_name="", attachments=None, cc=None, bcc=None):
         from email.headerregistry import Address
         from email.message import EmailMessage
-        from email.utils import make_msgid
+        from email.utils import formatdate, make_msgid
 
         msg = EmailMessage()
         msg["From"] = Address(display_name=from_name or "", addr_spec=self.address) if from_name else self.address
@@ -107,6 +107,7 @@ class MailAccount:
         if bcc:
             msg["Bcc"] = ", ".join(bcc)
         msg["Subject"] = subject
+        msg["Date"] = formatdate(usegmt=True)
         msg["Message-ID"] = make_msgid(domain=self.address.split("@")[-1])
         if reply_to and reply_to.lower() != self.address:
             msg["Reply-To"] = reply_to

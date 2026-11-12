@@ -32,7 +32,7 @@
   <form method="post" action="/mail/compose" enctype="multipart/form-data" id="studio-form">
     <input type="hidden" name="compose_mode" value="manual">
     <div class="row">
-      <div><label for="manual-mailbox">From</label><select id="manual-mailbox" name="mailbox" required>{% for m in ready %}<option value="{{ m.id }}" data-sender="{{ m.settings_model.display_name or m.address }}">{{ (m.settings_model.display_name ~ ' · ') if m.settings_model.display_name else '' }}{{ m.address }}</option>{% endfor %}</select></div>
+      <div><label for="manual-mailbox">From</label><select id="manual-mailbox" name="mailbox" required>{% for m in ready %}<option value="{{ m.id }}" data-sender="{{ m.settings_model.display_name or m.address }}">{{ (m.settings_model.display_name ~ ' · ') if m.settings_model.display_name else '' }}{{ m.address }}{{ ' · Amazon SES' if m.provider == 'ses' else '' }}</option>{% endfor %}</select></div>
       <div><label for="manual-to">To</label><input id="manual-to" type="text" name="to" required maxlength="4096" placeholder="john@example.test, ann@example.test"></div>
       <div><label for="manual-name">Name (for one To address)</label><input id="manual-name" type="text" name="to_name" maxlength="150"></div>
       <div><label for="manual-company">Company (for one To address)</label><input id="manual-company" type="text" name="to_company" maxlength="150"></div>
@@ -158,7 +158,7 @@
   <h2>{{ 'Another one' if draft else 'Write one' }}</h2>
   <form method="post" action="/mail/compose">
     <div class="row">
-      <div><label>From</label><select name="mailbox">{% for m in ready %}<option value="{{ m.id }}">{{ m.address }}{{ '' if m.ready else ' (needs signature & link)' }}</option>{% endfor %}</select></div>
+      <div><label>From</label><select name="mailbox">{% for m in ready if m.provider != 'ses' %}<option value="{{ m.id }}">{{ m.address }}{{ '' if m.ready else ' (needs signature & link)' }}</option>{% endfor %}</select></div>
       <div><label>To (email)</label><input type="email" name="to" required placeholder="john@example.com"></div>
       <div><label>Their name</label><input type="text" name="to_name" placeholder="John"></div>
     </div>

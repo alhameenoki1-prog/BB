@@ -85,6 +85,14 @@ class Handlers:
 
         return await send_invitation(self.db, self.secret, self.env, job["payload"].get("invite_id", ""), job["id"])
 
+    async def ses_feedback(self, job: dict):
+        from bb.mail.ses import poll_feedback
+
+        mailbox = await self.db.mailbox(job["mailbox_id"])
+        if not mailbox or not mailbox["enabled"] or mailbox["provider"] != "ses":
+            return {"status": "skipped"}
+        return await poll_feedback(self.db, self.secret, self.env, mailbox)
+
     async def _run_env(self, run: dict | None, mailbox: dict | None = None) -> tuple[dict, dict | None]:
         """The env and the profile (goal, brief, files) a run writes with on
         this account: the campaign the run was given, else the outreach
@@ -212,6 +220,9 @@ class Worker:
                 try:
                     await service.schedule_syncs(self.db, self.jobs)
                     await service.schedule_checks(self.db, self.jobs)
+                    for box in await self.db.mailboxes(include_disabled=False):
+                        if box["provider"] == "ses" and box["status"] == "ok" and box["sync"].get("ses_feedback"):
+                            await self.jobs.enqueue("ses_feedback", box["id"], dedupe=True)
                     from bb.mail import runs
                     await runs.reconcile(self.db, self.jobs)
                     await self.jobs.prune()

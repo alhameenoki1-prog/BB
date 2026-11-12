@@ -30,6 +30,8 @@ def ready_to_send(mailbox: dict, *, manual: bool = False) -> tuple[bool, str]:
 
     Both types still require an enabled, connected sender account.
     """
+    if mailbox.get("provider") == "ses" and not manual:
+        return False, "Choose this send-only account in Studio."
     if not manual:
         ok, why = settings_of(mailbox).ready_to_send()
         if not ok:
@@ -71,6 +73,8 @@ def provider_daily_limit(mailbox: dict, creds: dict | None = None) -> int:
     domain = address.rsplit("@", 1)[-1]
     consumer = domain in CONSUMER_DOMAINS
     provider = mailbox.get("provider") or ""
+    if provider == "ses":
+        return 0  # AWS enforces the verified account's regional recipient quota.
     host = str((creds or {}).get("smtp_host") or "").lower()
     if host.startswith("smtp-relay.") or any(s in host for s in SENDING_SERVICES):
         return 0          # a sending service: its own plan sets the limit, nothing to split
@@ -92,7 +96,7 @@ def masked_creds(secret: str, mailbox: dict) -> dict:
     creds = open_creds(secret, mailbox)
     out = {}
     for k, v in creds.items():
-        out[k] = crypto.mask(str(v)) if any(s in k for s in ("password", "token", "secret")) else v
+        out[k] = crypto.mask(str(v)) if any(s in k for s in ("password", "token", "secret", "external_id")) else v
     return out
 
 
@@ -279,6 +283,8 @@ async def run_sync(db: MailDB, secret: str, mailbox: dict, env: dict, jobs: Jobs
     an auth failure turns into the Reconnect banner."""
     from bb.mail.ingest import Ingest
 
+    if mailbox.get("provider") == "ses":
+        return {"status": "send_only"}
     creds = open_creds(secret, mailbox)
     account = account_for(mailbox, creds, env)
     ingest = Ingest(db, mailbox)
@@ -326,7 +332,7 @@ async def schedule_syncs(db: MailDB, jobs: Jobs):
     independently and the worker runs them side by side."""
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=SYNC_EVERY_SECONDS)).replace(microsecond=0)
     for m in await db.mailboxes(include_disabled=False):
-        if m.get("status") in ("reconnect", "disabled"):
+        if m.get("provider") == "ses" or m.get("status") in ("reconnect", "disabled"):
             continue
         if not (m.get("sync") or {}).get("backfill_done"):
             await jobs.enqueue("sync_backfill", m["id"], dedupe=True, max_attempts=8)

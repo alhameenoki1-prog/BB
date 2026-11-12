@@ -15,4 +15,7 @@ def account_for(mailbox: dict, creds: dict, env: dict) -> "MailAccount":
     if provider == "graph":
         from bb.mail.providers.graph import GraphAccount
         return GraphAccount(mailbox, creds, env)
+    if provider == "ses":
+        from bb.mail.ses import SESAccount
+        return SESAccount(mailbox, creds, env)
     raise ValueError(f"unknown provider {provider!r}")

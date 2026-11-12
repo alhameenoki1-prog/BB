@@ -4,7 +4,7 @@ import re
 
 from pydantic import BaseModel, Field, field_validator
 
-PROVIDERS = ("gmail", "imap", "graph")
+PROVIDERS = ("gmail", "imap", "graph", "ses")
 MODES = ("full", "limited")
 STATUSES = ("new", "ok", "reconnect", "error", "disabled")
 COLORS = ("blue", "green", "orange", "purple", "pink", "teal", "red", "slate")
