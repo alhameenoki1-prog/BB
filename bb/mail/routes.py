@@ -781,7 +781,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         subject = str(form.get("subject", "") or d["subject"]).strip()[:200]
         reply_to = str(form.get("reply_to", "") or "").strip().lower()
         box = await db.mailbox(d["mailbox_id"])
-        ok, why = service.ready_to_send(box) if box else (False, "mailbox missing")
+        is_manual = bool(json.loads(d.get("qa_json") or "{}").get("manual"))
+        ok, why = service.ready_to_send(box, manual=is_manual) if box else (False, "mailbox missing")
         if not ok:
             return _redirect(f"/mail/threads/{d['thread_id']}?draft={draft_id}" if d["thread_id"] else "/mail/review", error=why)
         if not body:
