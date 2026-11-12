@@ -27,7 +27,7 @@
   <form method="post" action="/mail/compose">
     <input type="hidden" name="compose_mode" value="manual">
     <div class="row">
-      <div><label for="manual-mailbox">From</label><select id="manual-mailbox" name="mailbox" required>{% for m in ready %}<option value="{{ m.id }}">{{ m.address }}{{ '' if m.ready else ' (needs signature & link)' }}</option>{% endfor %}</select></div>
+      <div><label for="manual-mailbox">From</label><select id="manual-mailbox" name="mailbox" required>{% for m in ready %}<option value="{{ m.id }}">{{ m.address }}{{ '' if m.ready else ' (campaign profile incomplete; manual send allowed)' }}</option>{% endfor %}</select></div>
       <div><label for="manual-to">To</label><input id="manual-to" type="email" name="to" required maxlength="254" placeholder="recipient@example.test"></div>
       <div><label for="manual-name">Recipient name (optional)</label><input id="manual-name" type="text" name="to_name" maxlength="150"></div>
     </div>
