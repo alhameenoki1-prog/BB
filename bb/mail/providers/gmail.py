@@ -145,10 +145,10 @@ class GmailAccount(MailAccount):
         )
 
     async def send(self, *, to, subject, body_text, body_html, in_reply_to="", references="",
-                   reply_to="", from_name="", attachments=None) -> tuple[str, str, str]:
+                   reply_to="", from_name="", attachments=None, cc=None, bcc=None) -> tuple[str, str, str]:
         msg = self.build_mime(to=to, subject=subject, body_text=body_text, body_html=body_html,
                               in_reply_to=in_reply_to, references=references, reply_to=reply_to, from_name=from_name,
-                              attachments=attachments)
+                              attachments=attachments, cc=cc, bcc=bcc)
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         body = {"raw": raw}
         token = await self._token()
