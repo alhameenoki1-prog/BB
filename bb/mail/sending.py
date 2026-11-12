@@ -217,6 +217,12 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
     if not to:
         raise SendRefused("no recipient")
     recipient = to[0]
+    import json as _json
+    qa = _json.loads(draft.get("qa_json") or "{}")
+    cc = qa.get("cc", []) if qa.get("manual") else []
+    bcc = qa.get("bcc", []) if qa.get("manual") else []
+    if not isinstance(cc, list) or not isinstance(bcc, list):
+        raise SendRefused("Invalid Cc/Bcc draft metadata")
     from bb.mail.runs import is_excluded
     if is_excluded(settings, recipient.get("email", "")):
         raise SendRefused(f"{recipient.get('email')} is on {mailbox['address']}'s excluded list (they asked not to be contacted)")
@@ -271,6 +277,7 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
             to=[recipient["email"]], subject=draft["subject"], body_text=plain, body_html=html,
             in_reply_to=draft.get("in_reply_to") or "", references=draft.get("references_text") or "",
             reply_to=reply_to, from_name=settings.display_name, attachments=attachments or None,
+            cc=cc, bcc=bcc,
         )
     except PermanentError as e:
         if led is not None:
