@@ -166,3 +166,67 @@ async def test_worker_still_retries_failed_read_only_job(tmp_path):
     assert row["status"] == "queued"
     assert row["attempts"] == 1
     assert "TimeoutError" in row["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_worker_transport_exception_quarantines_send_without_replay(tmp_path, monkeypatch):
+    """Exercise the actual worker exception path without SMTP or API access."""
+    from bb.mail.worker import Worker
+
+    worker = Worker(tmp_path, "unused-local-test-secret", {})
+    await worker.db.init()
+    job_id = await worker.jobs.enqueue(
+        "send_draft", "sender@example.test", {"draft_id": "local-only.test"}
+    )
+    claimed = await worker.jobs.claim()
+    assert claimed is not None and claimed["id"] == job_id
+
+    async def uncertain_transport(_job):
+        raise TimeoutError("mock acknowledgement lost after possible acceptance")
+
+    monkeypatch.setattr(worker.handlers, "run", uncertain_transport)
+    await worker._run_job(claimed)
+
+    held = await worker.db.one(
+        "SELECT status, attempts, locked_at, finished_at, last_error "
+        "FROM jobs WHERE id = ?", (job_id,),
+    )
+    assert held["status"] == "dead"
+    assert held["attempts"] == 1
+    assert held["locked_at"] is None
+    assert held["finished_at"] is not None
+    assert "may have succeeded" in held["last_error"]
+    assert await worker.jobs.claim() is None
+    assert worker.busy == set()
+    assert worker.tasks == set()
+    assert worker.long_running == 0
+
+
+@pytest.mark.asyncio
+async def test_worker_read_failure_remains_retryable(tmp_path, monkeypatch):
+    """Read-only work retains backoff retries after a worker exception."""
+    from bb.mail.worker import Worker
+
+    worker = Worker(tmp_path, "unused-local-test-secret", {})
+    await worker.db.init()
+    job_id = await worker.jobs.enqueue("check_mailbox", "reader@example.test")
+    claimed = await worker.jobs.claim()
+    assert claimed is not None and claimed["id"] == job_id
+
+    async def failed_read(_job):
+        raise TimeoutError("mock local read failure")
+
+    monkeypatch.setattr(worker.handlers, "run", failed_read)
+    await worker._run_job(claimed)
+
+    queued = await worker.db.one(
+        "SELECT status, attempts, locked_at, finished_at, last_error "
+        "FROM jobs WHERE id = ?", (job_id,),
+    )
+    assert queued["status"] == "queued"
+    assert queued["attempts"] == 1
+    assert queued["locked_at"] is None
+    assert queued["finished_at"] is None
+    assert "TimeoutError" in queued["last_error"]
+    assert await worker.jobs.claim() is None  # backoff still applies
+    assert worker.busy == set()
