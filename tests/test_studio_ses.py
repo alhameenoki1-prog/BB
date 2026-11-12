@@ -110,3 +110,28 @@ def test_ses_never_assumes_a_role_for_another_account_or_uses_an_unrelated_queue
     result = client.post("/mail/ses", data={**form, "queue_url": QUEUE.replace(ACCOUNT, "000000000000")})
     assert "standard%20SQS%20queue%20URL" in result.headers["location"]
     assert not ids and not asyncio.run(Jobs(db).list())
+
+
+@pytest.mark.parametrize("error_code", ["NotFoundException", "AccessDeniedException"])
+def test_ses_accepts_sender_under_verified_parent_domain(studio_client, aws, error_code):
+    client, db, _, _, _ = studio_client
+    mock_ses, _, _ = aws
+    address = "ann@news.example.test"
+
+    class IdentityUnavailable(Exception):
+        response = {"Error": {"Code": error_code}}
+
+    def identity(*, EmailIdentity):
+        if EmailIdentity == "example.test":
+            return {"VerifiedForSendingStatus": True}
+        raise IdentityUnavailable()
+
+    mock_ses.get_email_identity.side_effect = identity
+    response = client.post("/mail/ses", data={
+        "address": address, "account_id": ACCOUNT, "role_arn": ROLE, "region": REGION,
+    })
+    assert response.headers["location"].startswith("/mail/ses?mailbox=")
+    assert asyncio.run(db.mailbox_by_address(address, ses=True))
+    assert [call.kwargs["EmailIdentity"] for call in mock_ses.get_email_identity.call_args_list] == [
+        address, "news.example.test", "example.test",
+    ]

@@ -67,14 +67,22 @@ class SESAccount(MailAccount):
         capacity = await transport.capacity()
         if not capacity.sending_enabled:
             raise AuthError("SES sending is disabled for this account and region.")
-        for identity in (self.address, self.address.rsplit("@", 1)[-1]):
+        labels = self.address.rsplit("@", 1)[-1].split(".")
+        domains = (".".join(labels[offset:]) for offset in range(len(labels) - 1))
+        denied = False
+        for identity in (self.address, *domains):
             try:
                 info = await transport.identity(identity)
+            except AuthError:
+                denied = True
+                continue
             except PermanentError:
                 continue
             if info.get("VerifiedForSendingStatus"):
                 break
         else:
+            if denied:
+                raise AuthError("Grant the AWS role ses:GetEmailIdentity access to the verified sending address or domain.")
             raise AuthError("Verify the sending address or its domain in this SES region.")
         tier = "Production access" if capacity.production_access else "Sandbox"
         return (f"{tier} · {capacity.remaining:,} of {int(capacity.max_24_hour_send):,} recipient slots "

@@ -10,6 +10,7 @@ from email.parser import BytesParser
 import aiosmtplib
 import httpx
 import pytest
+from bs4 import BeautifulSoup
 
 from bb.accounts import Accounts
 from bb.mail import sending, service
@@ -145,7 +146,11 @@ def test_template_and_workspace_contact_data_are_available_in_studio(studio_clie
         "subject": "Question for {{company}}", "body": "Hi {{first_name}}, could we review the scope?",
     })
     assert "Saved%20template" in response.headers["location"]
-    assert "Project check-in" in client.get("/mail/compose").text
+    page = BeautifulSoup(client.get("/mail/compose").text, "html.parser")
+    assert page.find("option", string="Project check-in")
+    default_submit = page.select_one('#studio-form button[type="submit"]')
+    assert default_submit.get_text(strip=True) == "Save draft for review"
+    assert not default_submit.has_attr("formaction")
 
     async def contacts(_self, addresses):
         assert addresses == ["john.smith@example.test"]

@@ -40,19 +40,6 @@
     <div class="row"><div><label for="manual-cc">Cc (optional)</label><input id="manual-cc" type="text" name="cc" maxlength="4096" placeholder="colleague@example.test"></div><div><label for="manual-bcc">Bcc (optional)</label><input id="manual-bcc" type="text" name="bcc" maxlength="4096" placeholder="private@example.test"></div></div>
     <p class="small muted">Separate addresses with commas. Bcc addresses are hidden from recipients.</p>
     <label class="check"><input type="checkbox" name="separate" value="1"> Create one draft per To address</label>
-    <details style="margin:12px 0">
-      <summary>Saved templates</summary>
-      <div class="row" style="margin-top:8px">
-        {% if saved_templates %}<div><label for="studio-template">Load template</label><select id="studio-template">
-          <option value="">Choose a template</option>{% for template in saved_templates %}<option value="{{ loop.index0 }}">{{ template.name }}</option>{% endfor %}
-        </select></div>{% endif %}
-        <div><label for="studio-template-name">Template name</label><input id="studio-template-name" name="template_name" maxlength="80"></div>
-      </div>
-      <div class="actions" style="margin-top:8px">
-        <button type="submit" class="secondary" formaction="/mail/studio/templates/save" formnovalidate>Save subject and message</button>
-        {% if saved_templates %}<button type="submit" class="secondary" formaction="/mail/studio/templates/delete" formnovalidate>Delete named template</button>{% endif %}
-      </div>
-    </details>
     <div class="row">
       <div><label for="manual-subject">Subject</label><input id="manual-subject" name="subject" required maxlength="200" placeholder="Meeting request"></div>
       <div><label for="manual-format">Format</label><select id="manual-format" name="message_format">
@@ -78,6 +65,19 @@
     </fieldset>{% endif %}
     <p class="small muted">Up to 10 files and 15 MB total. Outlook files must each be under 3 MB.</p>
     <div class="actions" style="margin-top:12px"><button type="submit" {{ '' if ready else 'disabled' }}>Save draft for review</button></div>
+    <details style="margin:12px 0">
+      <summary>Saved templates</summary>
+      <div class="row" style="margin-top:8px">
+        {% if saved_templates %}<div><label for="studio-template">Load template</label><select id="studio-template">
+          <option value="">Choose a template</option>{% for template in saved_templates %}<option value="{{ loop.index0 }}">{{ template.name }}</option>{% endfor %}
+        </select></div>{% endif %}
+        <div><label for="studio-template-name">Template name</label><input id="studio-template-name" name="template_name" maxlength="80"></div>
+      </div>
+      <div class="actions" style="margin-top:8px">
+        <button type="submit" class="secondary" formaction="/mail/studio/templates/save" formnovalidate>Save subject and message</button>
+        {% if saved_templates %}<button type="submit" class="secondary" formaction="/mail/studio/templates/delete" formnovalidate>Delete named template</button>{% endif %}
+      </div>
+    </details>
   </form>
   <details style="margin-top:16px">
     <summary>Fictional conversation preview</summary>
@@ -139,7 +139,8 @@
         form.method = 'post';
         form.action = '/mail/studio/thread-preview';
         form.target = '_blank';
-        form.rel = 'noopener noreferrer';
+        // Preserve the Origin header for the same-origin POST check.
+        form.rel = 'noopener';
         for (const [name, value] of Object.entries(fields)) {
           const field = document.createElement('input');
           field.type = 'hidden';

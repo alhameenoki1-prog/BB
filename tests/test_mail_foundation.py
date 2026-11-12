@@ -240,10 +240,13 @@ def test_mailbox_settings_validation():
 def mail_client(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "account_for", lambda m, c, e: _FakeAccount(m, c, e))
     monkeypatch.setattr("bb.app.check_domain", lambda d: asyncio.sleep(0, result=None))
-    # Route/preview tests should never launch a real bb.mail.worker process.
-    # Those workers outlive the fake TestClient and can interfere with the
-    # Windows console. Dedicated worker tests exercise process behavior.
+    # Some page tests simulate a running worker with a synthetic PID. Keep
+    # both worker lifecycle actions inside the fixture.
+    async def stop_mail_worker(_workspace):
+        return True, "Test mail worker stub"
+
     monkeypatch.setattr(Workspace, "start_mail_worker", lambda self: (True, "Test mail worker stub"))
+    monkeypatch.setattr(Workspace, "stop_mail_worker", stop_mail_worker)
     settings = _settings(tmp_path, GMAIL_CLIENT_ID="", GMAIL_CLIENT_SECRET="")
     with TestClient(create_app(settings), follow_redirects=False) as c:
         c.settings = settings
