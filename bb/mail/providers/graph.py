@@ -237,10 +237,12 @@ class GraphAccount(MailAccount):
         return state
 
     async def send(self, *, to, subject, body_text, body_html, in_reply_to="", references="",
-                   reply_to="", from_name="", attachments=None) -> tuple[str, str, str]:
+                   reply_to="", from_name="", attachments=None, cc=None, bcc=None) -> tuple[str, str, str]:
         recipients = [{"emailAddress": {"address": a}} for a in to]
+        cc_recipients = [{"emailAddress": {"address": a}} for a in (cc or [])]
+        bcc_recipients = [{"emailAddress": {"address": a}} for a in (bcc or [])]
         patch = {"subject": subject, "body": {"contentType": "HTML", "content": body_html or body_text},
-                 "toRecipients": recipients}
+                 "toRecipients": recipients, "ccRecipients": cc_recipients, "bccRecipients": bcc_recipients}
         if reply_to and reply_to.lower() != self.address:
             patch["replyTo"] = [{"emailAddress": {"address": reply_to}}]
         draft = None
