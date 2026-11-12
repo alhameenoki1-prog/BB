@@ -157,3 +157,53 @@ async def test_late_worker_failure_cannot_requeue_settled_job(tmp_path, settled)
     )
     assert after == before
     assert await jobs.claim() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("settled", ["done", "dead", "cancelled"])
+async def test_late_progress_cannot_mutate_settled_send(tmp_path, settled):
+    """A delayed worker callback must not alter completed/reviewed job audit data."""
+    db = MailDB(tmp_path / "late-progress.db")
+    await db.init()
+    jobs = Jobs(db)
+    job_id = await jobs.enqueue(
+        "send_draft", "sender@example.test", {"draft_id": "local-only.test"}
+    )
+    assert (await jobs.claim())["id"] == job_id
+    await jobs.progress(job_id, phase="smtp-submission")
+    if settled == "done":
+        await jobs.complete(job_id, status="sent")
+    else:
+        await jobs.release(job_id)
+        if settled == "cancelled":
+            assert await jobs.discard(job_id) is True
+
+    before = await db.one(
+        "SELECT status, progress_json, updated_at, finished_at FROM jobs WHERE id = ?",
+        (job_id,),
+    )
+    assert before["status"] == settled
+    await jobs.progress(job_id, phase="late-worker-callback")
+    after = await db.one(
+        "SELECT status, progress_json, updated_at, finished_at FROM jobs WHERE id = ?",
+        (job_id,),
+    )
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_progress_updates_running_job(tmp_path):
+    """Normal in-flight progress reporting remains functional."""
+    import json
+
+    db = MailDB(tmp_path / "active-progress.db")
+    await db.init()
+    jobs = Jobs(db)
+    job_id = await jobs.enqueue("check_mailbox", "reader@example.test")
+    assert (await jobs.claim())["id"] == job_id
+    await jobs.progress(job_id, scanned=12)
+    row = await db.one(
+        "SELECT status, progress_json FROM jobs WHERE id = ?", (job_id,)
+    )
+    assert row["status"] == "running"
+    assert json.loads(row["progress_json"]) == {"scanned": 12}
