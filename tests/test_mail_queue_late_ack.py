@@ -49,4 +49,4 @@ async def test_discarded_delivery_cannot_be_retried_or_acknowledged(tmp_path):
     )
     assert row["status"] == "cancelled"
     assert row["attempts"] == 0
-    assert row["progress_json"] is None
+    assert row["progress_json"] == "{}"
