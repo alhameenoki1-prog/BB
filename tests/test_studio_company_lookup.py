@@ -24,8 +24,12 @@ async def test_lookup_uses_saved_domain_and_shares_a_single_public_fetch(monkeyp
         ))
 
     client = httpx.AsyncClient
+    def isolated_client(**kwargs):
+        assert kwargs["trust_env"] is False  # Ignore HTTP(S)_PROXY and ALL_PROXY.
+        return client(transport=httpx.MockTransport(serve), **kwargs)
+
     monkeypatch.setattr(alerts, "_addresses", addresses)
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(transport=httpx.MockTransport(serve), **kwargs))
+    monkeypatch.setattr(httpx, "AsyncClient", isolated_client)
     matches = await company_lookup.lookup_companies(
         ["ann@example.com", "john@gmail.com", "unknown@gmail.com"],
         {"john@gmail.com": {"company_domain": "example.com"}},
