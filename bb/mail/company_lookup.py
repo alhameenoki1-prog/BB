@@ -59,7 +59,7 @@ async def _read_homepage(client: httpx.AsyncClient, url: httpx.URL, hosts: set[s
 async def _public_company(domain: str) -> dict:
     hosts = (domain, f"www.{domain}") if len(domain) <= 249 else (domain,)
     allowed_hosts = set(hosts)
-    async with httpx.AsyncClient(timeout=3, follow_redirects=False,
+    async with httpx.AsyncClient(timeout=3, follow_redirects=False, trust_env=False,
                                  headers={"Accept": "text/html", "Accept-Encoding": "identity"},
                                  limits=httpx.Limits(max_keepalive_connections=0)) as client:
         for host in hosts:
