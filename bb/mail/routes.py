@@ -103,6 +103,18 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         target = main.campaign(campaigns_mod.profile_for_account(main.user_root, address)) if address else main
         return scope_mod.from_config((target or main).config())
 
+    async def _studio_contacts(workspace, sender: str, addresses: list[str]) -> dict:
+        from bb import campaigns as campaigns_mod
+
+        main = workspace.main()
+        records = await main.studio_contacts(addresses)
+        profile_id = campaigns_mod.profile_for_account(main.user_root, sender)
+        if profile_id != campaigns_mod.MAIN:
+            profile = main.campaign(profile_id)
+            if profile:
+                records.update(await profile.studio_contacts(addresses))
+        return records
+
     # ── overview ──
 
     @app.get("/mail", response_class=HTMLResponse)
@@ -1046,7 +1058,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
 
     @app.post("/mail/studio/calendar")
     async def mail_calendar_draft(request: Request, user: dict = Depends(current_user)):
-        from bb.mail.teams_calendar import calendar_connection, studio_invitation
+        from bb.mail.company_lookup import lookup_companies
+        from bb.mail.teams_calendar import calendar_connection, include_attendee_companies, studio_invitation
 
         c = await ctx(user)
         form = await request.form()
@@ -1058,6 +1071,10 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             event, display = studio_invitation(form)
         except ValueError as exc:
             return _redirect("/mail/studio/calendar", error=str(exc))
+        if form.get("company_lookup") == "1":
+            addresses = [attendee["emailAddress"]["address"] for attendee in event["attendees"]]
+            contacts = await _studio_contacts(c["ws"], box["address"], addresses)
+            include_attendee_companies(event, display, await lookup_companies(addresses, contacts))
         invite_id, now = service.new_id(), service.now_iso()
         await c["db"].execute(
             "INSERT INTO calendar_invites(id, mailbox_id, event_json, display_json, created_at, updated_at) "
@@ -1084,8 +1101,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         raise HTTPException(404)
 
     async def _compose_manual(c, box, form):
-        from bb import campaigns as campaigns_mod
         from bb.mail import studio
+        from bb.mail.company_lookup import lookup_companies
         from bb.mail.composer import has_recipient_tokens, needs_company, parse_copy_recipients, render_recipient_tokens, validate_manual_draft
 
         if not box or not box.get("enabled"):
@@ -1113,22 +1130,24 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         company = str(form.get("to_company", "")).strip() if len(to) == 1 else ""
         if len(company) > 150 or any(ord(ch) < 32 or ord(ch) == 127 for ch in company):
             raise ValueError("Company name must be at most 150 characters on one line.")
-        main = c["ws"].main()
-        records = await main.studio_contacts(to)
-        profile_id = campaigns_mod.profile_for_account(main.user_root, box["address"])
-        if profile_id != campaigns_mod.MAIN:
-            profile = main.campaign(profile_id)
-            if profile:
-                records.update(await profile.studio_contacts(to))
+        records = await _studio_contacts(c["ws"], box["address"], to)
+        company_needed = needs_company(subject, body)
+        looked_up = {}
+        if company_needed and not company:
+            missing = [address for address in to
+                       if not str(records.get(address, {}).get("company") or "").strip()]
+            if missing:
+                looked_up = await lookup_companies(missing, records)
         contacts = []
         for address in to:
             record = records.get(address, {})
             stored_name = " ".join(filter(None, (record.get("first_name"), record.get("last_name"))))
             contact = {"email": address, "name": name or " ".join(stored_name.split())[:150]}
-            company_name = company or " ".join(str(record.get("company") or "").split())[:150]
+            company_name = (company or " ".join(str(record.get("company") or "").split())[:150]
+                            or looked_up.get(address, {}).get("name", ""))
             if company_name:
                 contact["company"] = company_name
-            elif needs_company(subject, body):
+            elif company_needed:
                 raise ValueError(f"Add a company name for {address} before using the company field.")
             contacts.append(contact)
         groups = [[contact] for contact in contacts] if separate else [contacts]

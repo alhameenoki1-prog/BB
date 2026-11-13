@@ -34,7 +34,7 @@ def build_teams_event(*, subject: str, start: str, end: str, timezone: str,
     body = escape(description).replace("\n", "<br>")
     if link:
         safe_link = escape(link, quote=True)
-        body += f'<p>Project scope: <a href="{safe_link}">{safe_link}</a></p>'
+        body += f'<p><a href="{safe_link}">Project scope</a></p>'
     event = {
         "subject": subject.strip(),
         "start": {"dateTime": start, "timeZone": timezone.strip()},
@@ -73,6 +73,18 @@ def studio_invitation(form) -> tuple[dict, dict]:
     display = {"start": start.replace("T", " "), "end": end.replace("T", " "), "timezone": timezone,
                "description": description, "project_url": project_url}
     return event, display
+
+
+def include_attendee_companies(event: dict, display: dict, companies: dict[str, dict]) -> None:
+    details = list({(row["name"].casefold(), row.get("website")): row for row in companies.values()}.values())
+    display["attendee_companies"] = companies
+    if details:
+        items = []
+        for company in details:
+            name = escape(company["name"])
+            description = escape(company.get("description", ""))
+            items.append(f"<li><strong>{name}</strong>{' — ' + description if description else ''}</li>")
+        event["body"]["content"] += "<p>Attendee companies</p><ul>" + "".join(items) + "</ul>"
 
 
 def calendar_connection(mailbox: dict, creds: dict) -> bool:

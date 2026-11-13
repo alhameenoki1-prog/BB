@@ -13,6 +13,19 @@
   <p class="small">{{ 'Teams meeting' if invite.event.isOnlineMeeting else 'Outlook calendar event' }}</p>
   {% if invite.display.description %}<p style="white-space:pre-wrap">{{ invite.display.description }}</p>{% endif %}
   {% if invite.display.project_url %}<p><a href="{{ invite.display.project_url }}" target="_blank" rel="noopener noreferrer">Project scope</a></p>{% endif %}
+  {% if invite.display.attendee_companies is defined %}
+  <h3>Attendee companies</h3>
+  <ul>
+    {% for attendee in invite.event.attendees %}
+    {% set address = attendee.emailAddress.address %}
+    {% set company = invite.display.attendee_companies.get(address) %}
+    <li>{{ address }} · {% if company %}<strong>{{ company.name }}</strong>
+      {% if company.description %} — {{ company.description }}{% endif %}
+      {% if company.website %}<a href="{{ company.website }}" target="_blank" rel="noopener noreferrer">Company website</a>{% endif %}
+      {% else %}No company details found{% endif %}
+    </li>{% endfor %}
+  </ul>
+  {% endif %}
   {% if invite.status == 'pending_review' %}
   <div class="actions">
     <form method="post" action="/mail/studio/calendar/{{ invite.id }}/send"><button type="submit">Create event and invite attendees</button></form>
@@ -50,6 +63,8 @@
     </div>
     <label for="invite-description">Description</label><textarea id="invite-description" name="description" rows="4" maxlength="10000"></textarea>
     <label for="invite-project">Project scope link (optional)</label><input type="url" id="invite-project" name="project_url" maxlength="2048">
+    <label class="check"><input type="checkbox" name="company_lookup" value="1" checked> Look up attendee companies</label>
+    <p class="small muted">Company details from saved contacts and public websites will appear in the invitation for review.</p>
     <label class="check"><input type="checkbox" name="teams" value="1"> Include a Microsoft Teams meeting</label>
     <div class="actions" style="margin-top:12px"><button type="submit">Review invitation</button></div>
   </form>

@@ -1746,8 +1746,10 @@ class Workspace:
             return {}
         placeholders = ", ".join("?" for _ in addresses)
         rows = await self._query(
-            f"SELECT email, first_name, last_name, company FROM prospects "
-            f"WHERE lower(email) IN ({placeholders}) ORDER BY created_at",
+            f"SELECT p.email, p.first_name, p.last_name, p.company, "
+            f"c.name AS company_name, c.domain AS company_domain FROM prospects p "
+            f"LEFT JOIN companies c ON c.id = p.company_id "
+            f"WHERE lower(p.email) IN ({placeholders}) ORDER BY p.created_at, p.id",
             addresses,
         )
         return {row["email"].lower(): row for row in rows}

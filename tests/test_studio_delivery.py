@@ -166,6 +166,21 @@ def test_template_and_workspace_contact_data_are_available_in_studio(studio_clie
                                                data={"template_name": "Project check-in"}).headers["location"]
 
 
+def test_studio_looks_up_a_missing_company_when_the_draft_uses_it(studio_client, monkeypatch):
+    client, db, _, mailbox, _ = studio_client
+
+    async def lookup(addresses, contacts):
+        assert addresses == ["john.smith@example.test"] and not contacts
+        return {addresses[0]: {"name": "Example Engineering"}}
+
+    monkeypatch.setattr("bb.mail.company_lookup.lookup_companies", lookup)
+    response = _create(client, mailbox, subject="Question for {{company}}")
+    assert "draft=" in response.headers["location"]
+    draft = asyncio.run(db.one("SELECT id FROM drafts"))
+    preview = client.post(f"/mail/drafts/{draft['id']}/preview").json()["doc"]
+    assert "Question for Example Engineering" in preview
+
+
 @pytest.mark.skipif(os.getenv("BB_MAILPIT_TEST") != "1", reason="requires isolated Mailpit")
 def test_studio_inline_image_reaches_local_smtp_after_review(studio_client, monkeypatch):
     client, db, secret, mailbox, _ = studio_client
