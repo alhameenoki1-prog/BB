@@ -292,8 +292,10 @@ class MailDB:
 
     async def init(self):
         async with self._connect() as db:
-            await db.execute("PRAGMA journal_mode=WAL")
+            # Configure contention handling before WAL setup: concurrent startup
+            # can otherwise fail at journal_mode before busy_timeout is active.
             await db.execute("PRAGMA busy_timeout=15000")
+            await db.execute("PRAGMA journal_mode=WAL")
             async with db.execute("PRAGMA user_version") as cur:
                 version = (await cur.fetchone())[0]
             if version >= len(MIGRATIONS):
