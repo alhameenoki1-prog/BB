@@ -37,15 +37,24 @@ class Jobs:
         ``lane`` is what may not run twice at once; it defaults to the
         mailbox. A campaign's run gets a lane of its own on its mailbox, so
         a reply campaign and a scan on one account go side by side."""
-        if dedupe:
-            row = await self.db.one(
-                "SELECT id FROM jobs WHERE kind = ? AND mailbox_id = ? AND lane = ? AND status IN ('queued', 'running') LIMIT 1",
-                (kind, mailbox_id, lane))
-            if row:
-                return row["id"]
         jid = new_id()
         now = datetime.now(timezone.utc)
         async with self.db._connect() as db:
+            if dedupe:
+                # Serialize the lookup and insert across independent workers.
+                # A pre-transaction SELECT lets concurrent enqueuers both see
+                # no job and create duplicates.
+                await db.execute("PRAGMA busy_timeout=15000")
+                await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    "SELECT id FROM jobs WHERE kind = ? AND mailbox_id = ? AND lane = ? "
+                    "AND status IN ('queued', 'running') LIMIT 1",
+                    (kind, mailbox_id, lane),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row:
+                    await db.commit()
+                    return row[0]
             await self._insert(db, jid, kind, mailbox_id, payload or {}, now, delay_seconds, max_attempts, lane)
             await db.commit()
         return jid
