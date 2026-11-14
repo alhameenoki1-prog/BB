@@ -1,35 +1,202 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
 {% from "_as_sent.html" import as_sent %}
-{% block title %}Compose{% endblock %}
+{% block title %}Studio{% endblock %}
 {% block content %}
-<div class="page-head"><div><div class="eyebrow">Mail</div><h1>New email</h1><p class="lead">One-to-one, written for this person from your instruction. You edit before it goes.</p></div></div>
+<div class="page-head">
+  <div><h1>BB Studio</h1><p class="lead">Compose and review email from a connected mailbox.</p></div>
+  <div class="actions"><a class="btn secondary" href="/mail/accounts">Sender accounts</a><a class="btn secondary" href="/mail/review">Review queue</a><a class="btn secondary" href="/mail/studio/calendar">Calendar invitations</a></div>
+</div>
 {% if draft %}
 <div class="card">
   <h2>Your draft</h2>
-  <div class="actions" style="margin:6px 0 10px"><span class="tag {{ 'good' if draft.confidence == 'high' else ('warn' if draft.confidence == 'low' else '') }}">confidence: {{ draft.confidence }}</span>{% if draft.qa.ok %}<span class="tag good">passed the writing check</span>{% else %}<span class="tag warn">{{ draft.qa.reasons|join('; ') }}</span>{% endif %}</div>
+  {% if not draft.qa.manual %}<div class="actions" style="margin:6px 0 10px"><span class="tag {{ 'good' if draft.confidence == 'high' else ('warn' if draft.confidence == 'low' else '') }}">confidence: {{ draft.confidence }}</span>{% if draft.qa.ok %}<span class="tag good">passed the writing check</span>{% else %}<span class="tag warn">{{ draft.qa.reasons|join('; ') }}</span>{% endif %}</div>{% endif %}
   {% if draft.error %}<p class="small" style="color:var(--bad)">{{ draft.error }}</p>{% endif %}
   <form method="post" action="/mail/drafts/{{ draft.id }}/send">
-    <div class="row"><div><label>To</label><input type="text" value="{{ draft.to[0].name ~ ' <' ~ draft.to[0].email ~ '>' if draft.to else '' }}" readonly></div>
-      <div><label>Subject</label><input type="text" name="subject" value="{{ draft.subject }}" maxlength="200"></div>
-      <div><label>Reply-To</label><input type="email" name="reply_to" value="{{ draft.reply_to }}" placeholder="blank = the sending mailbox"></div></div>
-    <label>Email</label><textarea name="body" rows="9" id="draft-body-{{ draft.id }}" data-rich data-default-link="{{ draft.default_link }}">{{ draft.body_md }}</textarea>
-    <div class="hint">Greeting, signature and project link are added at send time. Every link goes out on its words, as it shows here.</div>
-    {{ as_sent(draft_preview, '/mail/drafts/' ~ draft.id ~ '/preview', 'draft-body-' ~ draft.id) }}
+    <div class="row"><div><label for="review-to">To</label><input id="review-to" type="text" value="{{ draft.to|map(attribute='email')|join(', ') }}" readonly></div>
+      <div><label for="review-subject">Subject</label><input id="review-subject" type="text" name="subject" value="{{ draft.subject }}" maxlength="200" required></div>
+      <div><label for="review-reply-to">Reply-To</label><input id="review-reply-to" type="email" name="reply_to" value="{{ draft.reply_to }}" placeholder="Mailbox default"></div></div>
+    {% if draft.qa.manual and (draft.qa.cc or draft.qa.bcc) %}<div class="row">{% if draft.qa.cc %}<div><label>Cc</label><input readonly value="{{ draft.qa.cc|join(', ') }}"></div>{% endif %}{% if draft.qa.bcc %}<div><label>Bcc (private)</label><input readonly value="{{ draft.qa.bcc|join(', ') }}"></div>{% endif %}</div>{% endif %}
+    <label for="draft-body-{{ draft.id }}">{{ 'HTML source' if draft.qa.studio_format == 'html' else 'Message' }}</label>
+    <textarea name="body" rows="9" id="draft-body-{{ draft.id }}" {% if draft.qa.studio_format not in ['text', 'html'] %}data-rich data-default-link="{{ draft.default_link }}"{% endif %}>{{ draft.body_md }}</textarea>
+    {% if draft.files %}<p class="small"><strong>Files</strong> · {% for file in draft.files %}{{ file.name }}{{ ' (inline image)' if file.content_id else '' }}{{ ', ' if not loop.last else '' }}{% endfor %}</p>{% endif %}
+    {% if not draft.qa.studio_format %}<div class="hint">The mailbox greeting, signature and project link are added at send time.</div>{% endif %}
+    {{ as_sent(draft_preview, '/mail/drafts/' ~ draft.id ~ '/preview', 'draft-body-' ~ draft.id, studio=draft.qa.studio_format) }}
     <div class="actions" style="margin-top:12px"><button type="submit">{{ icon('send', 15) }} Send</button><button type="submit" name="dry_run" value="1" class="secondary">Dry run</button><button type="submit" formaction="/mail/drafts/{{ draft.id }}/reject" class="secondary danger">Discard</button></div>
   </form>
 </div>
 {% endif %}
 <div class="card">
+  <h2>New email</h2>
+  {% if not ready %}<p class="small"><a href="/mail/accounts">Connect a mailbox</a> to create a draft.</p>{% endif %}
+  <form method="post" action="/mail/compose" enctype="multipart/form-data" id="studio-form">
+    <input type="hidden" name="compose_mode" value="manual">
+    <div class="row">
+      <div><label for="manual-mailbox">From</label><select id="manual-mailbox" name="mailbox" required>{% for m in ready %}<option value="{{ m.id }}" data-sender="{{ m.settings_model.display_name or m.address }}">{{ (m.settings_model.display_name ~ ' · ') if m.settings_model.display_name else '' }}{{ m.address }}{% if m.provider == 'ses' %} · Amazon SES{% elif m.provider == 'azure_smtp' %} · Azure Email SMTP{% endif %}</option>{% endfor %}</select></div>
+      <div><label for="manual-to">To</label><input id="manual-to" type="text" name="to" required maxlength="4096" placeholder="john@example.test, ann@example.test"></div>
+      <div><label for="manual-name">Name (for one To address)</label><input id="manual-name" type="text" name="to_name" maxlength="150"></div>
+      <div><label for="manual-company">Company (for one To address)</label><input id="manual-company" type="text" name="to_company" maxlength="150"></div>
+    </div>
+    <div class="row"><div><label for="manual-cc">Cc (optional)</label><input id="manual-cc" type="text" name="cc" maxlength="4096" placeholder="colleague@example.test"></div><div><label for="manual-bcc">Bcc (optional)</label><input id="manual-bcc" type="text" name="bcc" maxlength="4096" placeholder="private@example.test"></div></div>
+    <p class="small muted">Separate addresses with commas. Bcc addresses are hidden from recipients.</p>
+    <label class="check"><input type="checkbox" name="separate" value="1"> Create one draft per To address</label>
+    <label for="manual-reply-to">Reply-To (optional)</label><input id="manual-reply-to" type="email" name="reply_to" maxlength="254" placeholder="Use the sender account default">
+    <div class="row">
+      <div><label for="manual-subject">Subject</label><input id="manual-subject" name="subject" required maxlength="200" placeholder="Meeting request"></div>
+      <div><label for="manual-format">Format</label><select id="manual-format" name="message_format">
+        <option value="rich">Rich text</option><option value="text">Plain text</option><option value="html">HTML source</option><option value="image">Inline image</option>
+      </select></div>
+    </div>
+    <div class="actions" role="group" aria-label="Insert recipient details" style="margin:8px 0">
+      <button type="button" class="secondary" data-autograb="&#123;&#123;name&#125;&#125;">Insert name</button>
+      <button type="button" class="secondary" data-autograb="&#123;&#123;first_name&#125;&#125;">Insert first name</button>
+      <button type="button" class="secondary" data-autograb="&#123;&#123;email&#125;&#125;">Insert email</button>
+      <button type="button" class="secondary" data-autograb="&#123;&#123;company&#125;&#125;">Insert company</button>
+    </div>
+    <label for="manual-body">Message</label>
+    <textarea id="manual-body" name="body" rows="10" maxlength="100000" placeholder="Write your message. Add links in the review editor."></textarea>
+    <p class="small muted">Autograb uses names and companies from saved contacts. With multiple To addresses, leave Cc and Bcc empty to create individual drafts.</p>
+    <div class="row" id="studio-image-options">
+      <div><label for="manual-image">Inline image</label><input type="file" id="manual-image" name="inline_image" accept="image/png,image/jpeg,image/gif"></div>
+      <div><label for="manual-image-link">Image link (optional)</label><input type="url" id="manual-image-link" name="image_link" maxlength="2048" placeholder="https://example.test/project"></div>
+    </div>
+    <label for="studio-files">Attachments</label><input type="file" id="studio-files" name="files" multiple>
+    {% if saved_files %}<fieldset style="margin-top:10px"><legend>Saved files</legend>
+      {% for file in saved_files %}<label class="check"><input type="checkbox" name="saved_files" value="{{ file.name }}"> {{ file.name }}</label>{% endfor %}
+    </fieldset>{% endif %}
+    <p class="small muted">Up to 10 files and 15 MB total. Outlook files must each be under 3 MB. Azure Email allows up to 7 MB of files in BB.</p>
+    <div class="actions" style="margin-top:12px"><button type="submit" {{ '' if ready else 'disabled' }}>Save draft for review</button></div>
+    <details style="margin:12px 0">
+      <summary>Saved templates</summary>
+      <div class="row" style="margin-top:8px">
+        {% if saved_templates %}<div><label for="studio-template">Load template</label><select id="studio-template">
+          <option value="">Choose a template</option>{% for template in saved_templates %}<option value="{{ loop.index0 }}">{{ template.name }}</option>{% endfor %}
+        </select></div>{% endif %}
+        <div><label for="studio-template-name">Template name</label><input id="studio-template-name" name="template_name" maxlength="80"></div>
+      </div>
+      <div class="actions" style="margin-top:8px">
+        <button type="submit" class="secondary" formaction="/mail/studio/templates/save" formnovalidate>Save subject and message</button>
+        {% if saved_templates %}<button type="submit" class="secondary" formaction="/mail/studio/templates/delete" formnovalidate>Delete named template</button>{% endif %}
+      </div>
+    </details>
+  </form>
+  <details style="margin-top:16px">
+    <summary>Fictional conversation preview</summary>
+    <p class="small muted">Generate an internal example around a topic.</p>
+    <label for="fictional-topic">Topic</label><input type="text" id="fictional-topic" maxlength="2000" placeholder="the proposed project scope">
+    <div class="actions" style="margin-top:8px"><button type="button" class="secondary" id="fictional-thread-preview">Open simulated conversation</button></div>
+  </details>
+    <script>
+    (() => {
+      const body = document.getElementById('manual-body');
+      const subject = document.getElementById('manual-subject');
+      const format = document.getElementById('manual-format');
+      const imageOptions = document.getElementById('studio-image-options');
+      const image = document.getElementById('manual-image');
+      let target = body;
+      subject.addEventListener('focus', () => { target = subject; });
+      body.addEventListener('focus', () => { target = body; });
+      const updateFormat = () => {
+        const isImage = format.value === 'image';
+        imageOptions.style.display = isImage ? '' : 'none';
+        image.disabled = !isImage;
+        document.getElementById('manual-image-link').disabled = !isImage;
+        image.required = isImage;
+        body.required = !isImage;
+        body.placeholder = format.value === 'html' ? 'Paste or write HTML source.' : 'Write your message.';
+      };
+      format.addEventListener('change', updateFormat);
+      updateFormat();
+      const templates = {{ saved_templates|tojson }};
+      const templatePicker = document.getElementById('studio-template');
+      templatePicker?.addEventListener('change', () => {
+        if (templatePicker.value === '') return;
+        const template = templates[Number(templatePicker.value)];
+        if (!template) return;
+        subject.value = template.subject;
+        body.value = template.body;
+        format.value = template.format;
+        document.getElementById('studio-template-name').value = template.name;
+        updateFormat();
+      });
+      document.querySelectorAll('[data-autograb]').forEach(button => {
+        button.addEventListener('click', () => {
+          const token = button.dataset.autograb;
+          target.setRangeText(token, target.selectionStart, target.selectionEnd, 'end');
+          target.focus();
+        });
+      });
+      const preview = document.getElementById('fictional-thread-preview');
+      preview.addEventListener('click', () => {
+        const to = document.getElementById('manual-to').value.split(/[,;]/)[0].trim();
+        const fields = {
+          to: to || 'john.smith@example.test',
+          to_name: document.getElementById('manual-name').value,
+          sender: document.getElementById('manual-mailbox').selectedOptions[0]?.dataset.sender || 'Project Team',
+          subject: subject.value,
+          topic: document.getElementById('fictional-topic').value,
+        };
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.action = '/mail/studio/thread-preview';
+        form.target = '_blank';
+        // Preserve the Origin header for the same-origin POST check.
+        form.rel = 'noopener';
+        for (const [name, value] of Object.entries(fields)) {
+          const field = document.createElement('input');
+          field.type = 'hidden';
+          field.name = name;
+          field.value = value;
+          form.append(field);
+        }
+        document.body.append(form);
+        form.submit();
+        form.remove();
+      });
+    })();
+    </script>
+</div>
+<div class="card">
   <h2>{{ 'Another one' if draft else 'Write one' }}</h2>
   <form method="post" action="/mail/compose">
     <div class="row">
-      <div><label>From</label><select name="mailbox">{% for m in ready %}<option value="{{ m.id }}">{{ m.address }}{{ '' if m.ready else ' (needs signature & link)' }}</option>{% endfor %}</select></div>
+      <div><label>From</label><select name="mailbox">{% for m in ready if m.provider not in send_only_providers %}<option value="{{ m.id }}">{{ m.address }}{{ '' if m.ready else ' (needs signature & link)' }}</option>{% endfor %}</select></div>
       <div><label>To (email)</label><input type="email" name="to" required placeholder="john@example.com"></div>
       <div><label>Their name</label><input type="text" name="to_name" placeholder="John"></div>
     </div>
-    <label>What should it say?</label>
-    <textarea name="instruction" rows="4" required placeholder="Ask John whether Thursday's call can move to Friday afternoon; mention I'll send the agenda before."></textarea>
+    <label for="compose-instruction">What should it say?</label>
+    <p class="small muted">Start with a writing guide or describe your own message. Nothing is sent until you review the draft.</p>
+    <div class="actions" role="group" aria-label="Writing guides" style="margin:8px 0">
+      <button type="button" class="secondary" data-compose-guide="follow-up">Follow-up</button>
+      <button type="button" class="secondary" data-compose-guide="meeting">Meeting request</button>
+      <button type="button" class="secondary" data-compose-guide="introduction">Introduction</button>
+      <button type="button" class="secondary" data-compose-guide="thank-you">Thank-you</button>
+    </div>
+    <textarea name="instruction" id="compose-instruction" rows="6" required minlength="5" maxlength="5000" placeholder="Describe the message, tone, context and any information that must be included."></textarea>
+    <p class="small muted" id="compose-guide-status" role="status" aria-live="polite">Choose a guide to fill the instructions; you can edit everything before drafting.</p>
+    <script>
+    (() => {
+      const instruction = document.getElementById('compose-instruction');
+      const status = document.getElementById('compose-guide-status');
+      if (!instruction || !status) return;
+      const guides = {
+        'follow-up': 'Write a concise, friendly follow-up to my previous message. Refer to the earlier discussion only if I provide its details. State the next step clearly. Do not invent facts or promises.',
+        'meeting': 'Write a professional meeting request. Explain the reason for meeting, propose a time only if I specify one, and ask the recipient to confirm availability. Do not claim a calendar invitation has been sent.',
+        'introduction': 'Write a brief, personalized introduction explaining who I am, why I am reaching out, and a clear, respectful next step. Use only the facts I provide.',
+        'thank-you': 'Write a warm, professional thank-you email. Mention the specific reason for gratitude only if I provide it, and close naturally without inventing commitments.'
+      };
+      document.querySelectorAll('[data-compose-guide]').forEach(button => {
+        button.addEventListener('click', () => {
+          const guide = guides[button.dataset.composeGuide];
+          if (!guide) return;
+          if (instruction.value.trim() && !window.confirm('Replace your current instructions with this writing guide?')) return;
+          instruction.value = guide;
+          status.textContent = 'Writing guide inserted. Edit it to add your specific details.';
+          instruction.focus();
+        });
+      });
+    })();
+    </script>
     <p class="actions" style="margin-top:10px"><button type="submit">{{ icon('spark', 15) }} Draft it</button></p>
   </form>
 </div>

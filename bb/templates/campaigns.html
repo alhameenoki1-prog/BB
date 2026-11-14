@@ -101,6 +101,10 @@
     <div class="for for-outreach">
       <label style="margin-top:10px">Goal for these campaigns (optional, replaces the copied one)</label>
       <textarea name="goal" rows="2" placeholder="e.g. Get permission to send the project brief; every first email ends offering it."></textarea>
+      <label for="outreach-booking-url" style="margin-top:10px">Your calendar booking link (optional)</label>
+      <input id="outreach-booking-url" type="url" name="booking_url" inputmode="url" maxlength="2048"
+             pattern="https://.+" placeholder="https://calendar.example.test/book/meeting">
+      <div class="hint">Use the HTTPS scheduling link from your existing calendar (Microsoft Bookings, Calendly, Cal.com or another provider). It overrides the copied profile's booking link for this campaign. Recipients choose a time on your calendar; your calendar provider handles confirmations and Outlook invitations. BB does not create or alter invitations here.</div>
       <div class="row" style="margin-top:10px">
         <div><label>Leads (CSV, optional)</label><input type="file" name="leads" accept=".csv,text/csv,text/plain"><div class="hint">Or add them later on each campaign's Recipients page. Nobody lands on two lists, and anyone who asked any campaign to stop is left out.</div></div>
         <div><label>How to share them out</label>

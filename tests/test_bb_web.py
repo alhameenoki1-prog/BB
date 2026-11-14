@@ -4,6 +4,7 @@ the web redirect flow, and the worker process (stubbed)."""
 
 import asyncio
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -14,7 +15,7 @@ from fastapi.testclient import TestClient
 
 import bb.workspaces as ws_mod
 from bb import gmail_oauth
-from bb.accounts import Accounts, hash_password, verify_password
+from bb.accounts import Accounts, MIN_PASSWORD, hash_password, verify_password
 from bb.app import create_app
 from bb.settings import Settings
 from bb.workspaces import Workspace
@@ -51,6 +52,10 @@ async def _dns_stub(domain):
 @pytest.fixture
 def client(settings, monkeypatch):
     monkeypatch.setattr("bb.app.check_domain", _dns_stub)  # never touch real DNS in tests
+    # Web/route tests use isolated in-process workspaces. Connecting a fake
+    # mailbox must not spawn an actual mail-worker subprocess, especially on
+    # Windows where its console signals can interrupt pytest.
+    monkeypatch.setattr(Workspace, "start_mail_worker", lambda self: (True, "Test mail worker stub"))
     with TestClient(create_app(settings), follow_redirects=False) as c:
         c.settings = settings
         yield c
@@ -64,6 +69,32 @@ def _login(client, email, password):
 def _admin(client):
     assert _login(client, **ADMIN).status_code == 303
     return client
+
+
+def test_authenticator_enrollment_survives_sign_out_and_requires_a_code(client):
+    from bb import totp
+
+    _admin(client)
+    accounts = Accounts(client.settings.accounts_db)
+    user = accounts.get_by_email(ADMIN["email"])
+    setup = client.get("/security/mfa")
+    assert setup.status_code == 200 and setup.headers["Cache-Control"] == "no-store"
+    key = client.settings.secret_key()
+    secret = accounts.totp_secret(user["id"], key, confirmed_only=False)
+    code = totp.current_code(secret)
+    assert client.post("/security/mfa/confirm", data={"code": code}).status_code == 303
+    client.post("/logout")
+
+    login = _login(client, **ADMIN)
+    assert login.headers["location"] == "/login/totp"
+    ticket = client.cookies.get("bb_mfa_pending")
+    assert ticket and not client.cookies.get("bb_session")
+    assert client.get("/mail/accounts").headers["location"] == "/login"
+    wrong = "123456" if code != "123456" else "654321"
+    assert "Incorrect or expired authenticator code" in client.post("/login/totp", data={"code": wrong}).text
+    assert client.post("/login/totp", data={"code": code}).headers["location"] == "/"
+    assert accounts.complete_mfa_challenge(ticket, key, code) is None
+    assert client.get("/mail/accounts").status_code == 200
 
 
 def _make_user(client):
@@ -128,7 +159,7 @@ def test_login_is_throttled(client):
 def test_admin_creates_users_and_users_are_not_admins(client):
     _admin(client)
     weak = client.post("/admin/users", data={"email": USER["email"], "password": "short"})
-    assert "at%20least%2010" in weak.headers["location"]
+    assert f"at%20least%20{MIN_PASSWORD}" in weak.headers["location"]
     user = _make_user(client)
     assert user["role"] == "user" and not user["disabled"]
     dup = client.post("/admin/users", data={"email": USER["email"], "password": USER["password"]})
@@ -435,7 +466,8 @@ def test_ai_provider_anthropic_is_checked_and_stored_per_user(client, monkeypatc
     assert "wrkspc_01ABC" in client.get("/apikey").text
     client.post("/apikey", data={"provider": "anthropic", "api_key": "sk-ant-abcdefghijklmnop"})
     assert ws.llm()["workspace_id"] == "" and "ANTHROPIC_WORKSPACE_ID" not in ws.worker_env()
-    assert oct(ws.secrets_file.stat().st_mode)[-3:] == "600"
+    if os.name == "posix":
+        assert oct(ws.secrets_file.stat().st_mode)[-3:] == "600"  # Unix file permission; Windows chmod differs
     page = client.get("/apikey")
     assert "Anthropic Claude" in page.text and "sk-ant-abcdefghijklmnop" not in page.text  # masked
     assert client.get("/api/summary").json()["api_key"] is True
@@ -548,7 +580,7 @@ def test_mailbox_smtp_settings(client, monkeypatch):
     seen = {}
     monkeypatch.setattr("bb.app.check_anthropic_key", _accept_key)
     client.post("/apikey", data={"api_key": "sk-ant-user-key-2"})
-    monkeypatch.setattr(ws_mod.subprocess, "Popen", lambda cmd, **kw: seen.update(kw) or _FakeProc())
+    _stub_worker_spawn(monkeypatch, seen)
     monkeypatch.setattr(ws_mod.os, "kill", lambda pid, sig: None)
     assert "Started" in client.post("/worker/start").headers["location"]
     env = seen["env"]
@@ -593,6 +625,26 @@ def test_attachments_upload_and_delete(client):
     assert client.post("/attachments", files=[("files", ("", b"", "text/plain"))]).headers["location"].startswith("/profile?error")
 
 
+def _stub_worker_spawn(monkeypatch, seen):
+    """Intercept only BB worker launches; preserve subprocess for OS inspection.
+
+    Patching subprocess.Popen on a module also patches the global subprocess
+    module, which subprocess.run uses internally (including process inspection).
+    """
+    real_popen = ws_mod.subprocess.Popen
+
+    def spawn(cmd, **kwargs):
+        env = kwargs.get("env") or {}
+        if "ANTHROPIC_API_KEY" in env and (
+            "SMTP_HOST" in env or "M365_CLIENT_ID" in env
+        ):
+            seen.update(kwargs)
+            return _FakeProc()
+        return real_popen(cmd, **kwargs)
+
+    monkeypatch.setattr(ws_mod.subprocess, "Popen", spawn)
+
+
 class _FakeProc:
     def __init__(self):
         self.pid = 4242
@@ -626,7 +678,7 @@ def test_worker_start_stop(client, monkeypatch):
         if pid == 4242:
             if sig == 0 and 4242 in alive:
                 return None
-            if sig in (ws_mod.signal.SIGTERM, ws_mod.signal.SIGKILL):
+            if sig in (ws_mod.signal.SIGTERM, getattr(ws_mod.signal, "SIGKILL", ws_mod.signal.SIGTERM)):
                 alive.discard(4242)
                 return None
             raise ProcessLookupError
@@ -761,7 +813,7 @@ def test_cli_creates_and_resets_accounts(tmp_path, monkeypatch, capsys):
     assert "already exists" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         cli.main(["create-user", "weak@example.com", "--password", "short"])
-    assert "at least 10" in capsys.readouterr().out
+    assert f"at least {MIN_PASSWORD}" in capsys.readouterr().out
 
     cli.main(["reset-password", "boss@example.com", "--password", "another-long-one-2"])
     assert "Password changed" in capsys.readouterr().out
@@ -900,7 +952,7 @@ def test_mailbox_microsoft_admin_app(client, monkeypatch):
     seen = {}
     monkeypatch.setattr("bb.app.check_anthropic_key", _accept_key)
     client.post("/apikey", data={"api_key": "sk-ant-user-key-3"})
-    monkeypatch.setattr(ws_mod.subprocess, "Popen", lambda cmd, **kw: seen.update(kw) or _FakeProc())
+    _stub_worker_spawn(monkeypatch, seen)
     monkeypatch.setattr(ws_mod.os, "kill", lambda pid, sig: None)
     assert "Started" in client.post("/worker/start").headers["location"]
     env = seen["env"]
@@ -1463,7 +1515,18 @@ def test_workers_on_old_code_are_restarted_when_the_site_starts(client, monkeypa
     ws.save_secrets(smtp_host="smtp.example.com", smtp_port=587, smtp_username="me@example.com", smtp_password="pw")
     ws.set_mail_provider("smtp")
     starts = []
-    monkeypatch.setattr(ws_mod.subprocess, "Popen", lambda cmd, **kw: starts.append(cmd) or _FakeProc() if "harvey.main" in cmd else _FakeProc())
+    # Patch only the worker spawn; subprocess is a shared module and Windows
+    # process identity checks use subprocess.run/Popen under the hood.
+    real_popen = ws_mod.subprocess.Popen
+
+    def fake_worker_popen(cmd, **kw):
+        if isinstance(cmd, (list, tuple)) and "harvey.main" in cmd:
+            starts.append(cmd)
+            return _FakeProc()
+        return real_popen(cmd, **kw)
+
+    monkeypatch.setattr(ws_mod.subprocess, "Popen", fake_worker_popen)
+    monkeypatch.setattr(ws_mod, "_is_harvey_process", lambda pid: pid == 4242)
     monkeypatch.setattr(ws_mod.os, "kill", lambda pid, sig: None)
     monkeypatch.setattr(ws_mod, "STOP_GRACE_SECONDS", 0.5)
     monkeypatch.setattr(ws_mod, "code_version", lambda: "v1")
@@ -1595,3 +1658,26 @@ def test_a_bound_campaign_takes_the_admin_app_accounts_reply_to(client, monkeypa
     assert ws.worker_env().get("M365_REPLY_TO") == "replies@corp.example"
     before = ws.binding_file.read_text()
     assert ws.bind_account() == "" and ws.binding_file.read_text() == before     # up to date: left alone
+
+
+def test_mail_sender_pages_are_integrated_and_session_protected(client):
+    """The existing hosted site exposes mail operations only to signed-in users."""
+    for path in ("/mail", "/mail/accounts", "/mail/jobs"):
+        response = client.get(path)
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/login")
+
+    _admin(client)
+    overview = client.get("/mail")
+    assert overview.status_code == 200
+    assert "Command center" in overview.text
+    assert "/mail/accounts" in overview.text
+    assert "/mail/jobs" in overview.text
+    assert client.get("/mail/accounts").status_code == 200
+    assert client.get("/mail/jobs").status_code == 200
+
+    client.cookies.clear()
+    for path in ("/mail", "/mail/accounts", "/mail/jobs"):
+        response = client.get(path)
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/login")

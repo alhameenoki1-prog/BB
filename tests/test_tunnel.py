@@ -5,6 +5,7 @@ reported missing. A fake cloudflared stands in for the real one."""
 import asyncio
 import os
 import stat
+import sys
 import time
 
 import pytest
@@ -26,9 +27,26 @@ while true; do sleep 0.2; done
 
 
 def _fake(tmp_path, body=FAKE):
-    path = tmp_path / "cloudflared"
-    path.write_text(body)
-    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    if sys.platform == "win32":
+        # Windows cannot execute the POSIX shell-script fake. Use a real
+        # cmd.exe child instead, exercising tunnel startup and log parsing.
+        path = tmp_path / "cloudflared.cmd"
+        named = "Registered tunnel connection connIndex=0" in body
+        line = ("Registered tunnel connection connIndex=0" if named else
+                "https://sunny-ridge-example.trycloudflare.com")
+        path.write_text(
+            "@echo off\n"
+            "echo INF Requesting new quick Tunnel on trycloudflare.com... 1>&2\n"
+            "ping -n 2 127.0.0.1 >nul\n"
+            f"echo INF {line} 1>&2\n"
+            ":again\n"
+            "ping -n 2 127.0.0.1 >nul\n"
+            "goto again\n"
+        )
+    else:
+        path = tmp_path / "cloudflared"
+        path.write_text(body)
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
     return str(path)
 
 
@@ -38,6 +56,26 @@ async def _until(t, status, tries=60):
         if t.status == status:
             return True
     return False
+
+
+def test_stale_tunnel_state_cannot_adopt_or_kill_current_process(tmp_path, monkeypatch):
+    """Even if process command line contains 'cloudflared', BB's PID is not a tunnel."""
+    import json
+    import bb.tunnel as tunnel_module
+
+    state = tmp_path / "home"
+    state.mkdir()
+    (state / "tunnel.json").write_text(json.dumps({
+        "mode": "quick", "port": 8000, "pid": os.getpid(),
+        "url": "https://stale.trycloudflare.com", "started_at": 1,
+    }))
+    monkeypatch.setattr(tunnel_module, "_command_of",
+                        lambda pid: "python -m pytest cloudflared.cmd")
+    instance = Tunnel("quick", 8000, binary="cloudflared.cmd", state_dir=state)
+    assert instance.recorded_process()["alive"] is False
+    assert instance._adopt() is False
+    assert instance.kill_recorded() is False
+    assert not (state / "tunnel.json").exists()
 
 
 @pytest.mark.asyncio
@@ -50,8 +88,19 @@ async def test_quick_tunnel_reports_its_address_and_restarts(tmp_path):
     assert await _until(t, "up")
     assert t.url == "https://sunny-ridge-example.trycloudflare.com" and seen == [t.url]
     assert t.describe()["changes"] is True and t.pid and not t.adopted
+    # Windows process enumeration can lag behind a newly detached cmd.exe.
+    # Require the real persisted process identity to become visible; do not
+    # replace it with a mocked identity or weaken the assertion.
     rec = t.recorded_process()
-    assert rec["alive"] and rec["pid"] == t.pid and rec["url"] == t.url and (state / "tunnel.log").exists()
+    for _ in range(20):
+        if rec["alive"]:
+            break
+        await asyncio.sleep(0.1)
+        rec = t.recorded_process()
+    assert rec["alive"] and rec["pid"] == t.pid and rec["url"] == t.url and (state / "tunnel.log").exists(), (
+        f"detached tunnel identity unavailable: pid={t.pid}, "
+        f"returncode={t._proc.poll() if t._proc else None}, record={rec}"
+    )
     # The process dies: the tunnel notes it and comes back with the backoff.
     t._proc.kill()
     assert await _until(t, "down", 30)
@@ -69,7 +118,13 @@ async def test_the_tunnel_outlives_the_site_and_is_adopted_on_the_next_start(tmp
     pid, url = first.pid, first.url
     # The site stops (an update, a restart): the tunnel is left running on purpose.
     await first.stop()
-    assert first.status == "off" and first.recorded_process()["alive"]
+    rec_after_stop = first.recorded_process()
+    assert first.status == "off" and rec_after_stop["alive"], (
+        f"detached tunnel not recognized: pid={pid}, returncode="
+        f"{first._proc.poll() if first._proc else None}, "
+        f"command={__import__('bb.tunnel', fromlist=['_command_of'])._command_of(pid)!r}, "
+        f"record={rec_after_stop}"
+    )
     seen = []
     second = Tunnel("quick", 8000, binary=_fake(tmp_path), on_url=seen.append, state_dir=state)
     await second.start()

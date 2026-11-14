@@ -34,7 +34,7 @@
     <h2>Create a login</h2>
     <form method="post" action="/admin/users">
       <label>Email</label><input type="email" name="email" required>
-      <label>Password <span class="muted" style="font-weight:400">(10+ characters)</span></label><input type="text" name="password" minlength="10" required autocomplete="off">
+      <label>Password <span class="muted" style="font-weight:400">(14+ characters)</span></label><input type="text" name="password" minlength="14" required autocomplete="off">
       <label>Role</label><select name="role"><option value="user">User</option><option value="admin">Admin</option></select>
       <p class="actions" style="margin-top:14px"><button type="submit">{{ icon('users', 15) }} Create account</button></p>
     </form>
@@ -49,7 +49,7 @@
         <td>{% if u.disabled %}<span class="tag bad">disabled</span>{% else %}<span class="tag good">active</span>{% endif %}<div class="tiny" style="margin-top:4px">{% if u.running %}worker running{% else %}worker stopped{% endif %}</div></td>
         <td class="tiny">{{ '✓' if u.configured else '✗' }} profile<br>{{ '✓' if u.gmail else '✗' }} mailbox</td>
         <td>
-          <form class="inline" method="post" action="/admin/users/{{ u.id }}/password" style="display:flex;gap:6px;align-items:center"><input type="text" name="password" placeholder="new password" minlength="10" style="width:150px;padding:6px 10px" autocomplete="off"><button class="small secondary" type="submit">Reset</button></form>
+          <form class="inline" method="post" action="/admin/users/{{ u.id }}/password" style="display:flex;gap:6px;align-items:center"><input type="text" name="password" placeholder="new password" minlength="14" style="width:150px;padding:6px 10px" autocomplete="off"><button class="small secondary" type="submit">Reset</button></form>
           {% if u.id != user.id %}
             {% if u.disabled %}
               <form class="inline" method="post" action="/admin/users/{{ u.id }}/enable" style="margin-top:6px"><button class="small secondary" type="submit">Enable</button></form>

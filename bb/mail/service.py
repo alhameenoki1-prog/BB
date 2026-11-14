@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from bb.mail import crypto
 from bb.mail.db import MailDB, new_id, now_iso  # noqa: F401  (re-exported for routes)
 from bb.mail.jobs import Jobs
-from bb.mail.models import MailboxSettings
+from bb.mail.models import MailboxSettings, SEND_ONLY_PROVIDERS
 from bb.mail.providers import AuthError, TransientError, account_for
 
 logger = logging.getLogger("bb.mail")
@@ -25,12 +25,17 @@ def settings_of(mailbox: dict) -> MailboxSettings:
         return MailboxSettings()
 
 
-def ready_to_send(mailbox: dict) -> tuple[bool, str]:
-    """A mailbox sends only with a signature and a project link, and only
-    while its connection works."""
-    ok, why = settings_of(mailbox).ready_to_send()
-    if not ok:
-        return False, why
+def ready_to_send(mailbox: dict, *, manual: bool = False) -> tuple[bool, str]:
+    """Require a campaign signature/link for campaign messages, not personal drafts.
+
+    Both types still require an enabled, connected sender account.
+    """
+    if mailbox.get("provider") in SEND_ONLY_PROVIDERS and not manual:
+        return False, "Choose this send-only account in Studio."
+    if not manual:
+        ok, why = settings_of(mailbox).ready_to_send()
+        if not ok:
+            return False, why
     if mailbox.get("status") == "reconnect":
         return False, "This mailbox needs reconnecting before it can send."
     if not mailbox.get("enabled", 1):
@@ -68,6 +73,8 @@ def provider_daily_limit(mailbox: dict, creds: dict | None = None) -> int:
     domain = address.rsplit("@", 1)[-1]
     consumer = domain in CONSUMER_DOMAINS
     provider = mailbox.get("provider") or ""
+    if provider in SEND_ONLY_PROVIDERS:
+        return 0  # The sending service enforces its own quotas.
     host = str((creds or {}).get("smtp_host") or "").lower()
     if host.startswith("smtp-relay.") or any(s in host for s in SENDING_SERVICES):
         return 0          # a sending service: its own plan sets the limit, nothing to split
@@ -89,7 +96,7 @@ def masked_creds(secret: str, mailbox: dict) -> dict:
     creds = open_creds(secret, mailbox)
     out = {}
     for k, v in creds.items():
-        out[k] = crypto.mask(str(v)) if any(s in k for s in ("password", "token", "secret")) else v
+        out[k] = crypto.mask(str(v)) if any(s in k for s in ("password", "token", "secret", "external_id")) else v
     return out
 
 
@@ -123,6 +130,30 @@ async def connect_imap(db: MailDB, secret: str, *, address: str, smtp: dict, env
     return mid, note
 
 
+async def connect_azure_smtp(db: MailDB, secret: str, *, address: str, username: str,
+                             password: str, env: dict) -> tuple[str, str]:
+    """Check SMTP authentication and store an Azure sender for Studio."""
+    from bb.mail.composer import parse_copy_recipients
+
+    addresses = parse_copy_recipients(address, field_name="Azure MailFrom", limit=1)
+    username = username.strip()
+    if not addresses or not username or not password:
+        raise ValueError("Enter the Azure MailFrom address, SMTP username, and Microsoft Entra client secret.")
+    if any(len(value) > 512 or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+           for value in (username, password)):
+        raise ValueError("Enter the Azure SMTP username and client secret on one line.")
+    address = addresses[0]
+    creds = {"username": username, "password": password}
+    account = account_for({"address": address, "provider": "azure_smtp"}, creds, env)
+    note = await account.test()
+    mailbox_id = await db.save_azure_smtp(
+        address=address, creds=crypto.seal_json(secret, account.creds), status_detail=note,
+        settings=MailboxSettings(color=_next_color(await db.mailboxes())).model_dump(),
+    )
+    await db.log("connected", f"Connected {address} through Azure Email SMTP.", mailbox_id)
+    return mailbox_id, note
+
+
 async def connect_gmail(db: MailDB, secret: str, *, address: str, refresh_token: str, env: dict) -> tuple[str, str]:
     """Store a Gmail mailbox from a completed OAuth exchange and verify it."""
     address = (address or "").strip().lower()
@@ -145,7 +176,8 @@ async def connect_gmail(db: MailDB, secret: str, *, address: str, refresh_token:
     return mid, note
 
 
-async def connect_microsoft(db: MailDB, secret: str, *, address: str, refresh_token: str, env: dict) -> tuple[str, str]:
+async def connect_microsoft(db: MailDB, secret: str, *, address: str, refresh_token: str, env: dict,
+                            calendar: bool = False) -> tuple[str, str]:
     """Store a mailbox from a completed Microsoft sign-in (Outlook, Hotmail
     or Microsoft 365 as the person themselves) and verify it. The refresh
     token is the credential; a rotation during the check is kept."""
@@ -153,6 +185,8 @@ async def connect_microsoft(db: MailDB, secret: str, *, address: str, refresh_to
     if "@" not in address:
         raise ValueError("Microsoft did not say which mailbox this is.")
     creds = {"refresh_token": refresh_token}
+    if calendar:
+        creds["calendar"] = True
     probe = {"address": address, "provider": "graph"}
     account = account_for(probe, creds, env)
     note = await account.test()
@@ -273,6 +307,8 @@ async def run_sync(db: MailDB, secret: str, mailbox: dict, env: dict, jobs: Jobs
     an auth failure turns into the Reconnect banner."""
     from bb.mail.ingest import Ingest
 
+    if mailbox.get("provider") in SEND_ONLY_PROVIDERS:
+        return {"status": "send_only"}
     creds = open_creds(secret, mailbox)
     account = account_for(mailbox, creds, env)
     ingest = Ingest(db, mailbox)
@@ -320,7 +356,7 @@ async def schedule_syncs(db: MailDB, jobs: Jobs):
     independently and the worker runs them side by side."""
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=SYNC_EVERY_SECONDS)).replace(microsecond=0)
     for m in await db.mailboxes(include_disabled=False):
-        if m.get("status") in ("reconnect", "disabled"):
+        if m.get("provider") in SEND_ONLY_PROVIDERS or m.get("status") in ("reconnect", "disabled"):
             continue
         if not (m.get("sync") or {}).get("backfill_done"):
             await jobs.enqueue("sync_backfill", m["id"], dedupe=True, max_attempts=8)
@@ -344,7 +380,12 @@ async def schedule_checks(db: MailDB, jobs: Jobs):
         except ValueError:
             last_dt = None
         if last_dt is None or last_dt < cutoff:
-            await jobs.enqueue("check_mailbox", m["id"], dedupe=True)
+            syncing = await db.one(
+                "SELECT 1 FROM jobs WHERE mailbox_id = ? AND kind IN ('sync_backfill', 'sync_incremental') "
+                "AND status IN ('queued', 'running') LIMIT 1", (m["id"],),
+            )
+            if not syncing:
+                await jobs.enqueue("check_mailbox", m["id"], dedupe=True)
 
 
 # ── scope: which mailboxes every view works on ──

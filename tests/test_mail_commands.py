@@ -8,7 +8,7 @@ import json
 import pytest
 
 from bb.mail import commands, crypto
-from bb.mail.brain import MailBrain
+from bb.mail.brain import BrainError, MailBrain
 from bb.mail.commands import CommandCenter
 from bb.mail.db import MailDB
 from bb.mail.models import MailboxSettings
@@ -115,9 +115,15 @@ async def test_sends_wait_for_confirmation_and_confirm_executes(tmp_path):
     center = CommandCenter(db, brain, boxes, boxes, user_email="me")
     out = await center.run("send the draft to Ann")
     assert out["pending"]["kind"] == "send_reply" and "Ann 0" in out["pending"]["description"]
-    await commands.confirm(CommandCenter(db, brain, boxes, boxes, user_email="me"), out["pending"])
+    confirmations = await asyncio.gather(
+        *(commands.confirm(CommandCenter(db, brain, boxes, boxes, user_email="me"), out["pending"])
+          for _ in range(2)),
+        return_exceptions=True,
+    )
+    assert confirmations.count("Sending.") == 1
+    assert sum(isinstance(result, BrainError) for result in confirmations) == 1
     assert (await db.one("SELECT status FROM drafts WHERE id = 'd1'"))["status"] == "approved"
-    assert await db.one("SELECT id FROM jobs WHERE kind = 'send_draft'")
+    assert len(await db.query("SELECT id FROM jobs WHERE kind = 'send_draft'")) == 1
     # history + pending persistence
     await commands.remember(db, "send the draft to Ann", out["reply"], out["steps"])
     await commands.set_pending(db, out["pending"])

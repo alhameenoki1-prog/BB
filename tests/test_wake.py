@@ -294,8 +294,12 @@ async def test_a_frozen_mail_worker_is_restarted_and_a_reused_pid_is_not_it(clie
     ws.user_data_dir.mkdir(parents=True, exist_ok=True)
     ws.mail_pid_file.write_text(str(os.getpid()))                   # this test process: not a mail worker
     assert ws.mail_worker_running() is None and not ws.mail_pid_file.exists()
-    monkeypatch.setattr(ws_mod, "_is_harvey_process", lambda pid: True)
-    ws.mail_pid_file.write_text(str(os.getpid()))
+    # Model a separate live mail-worker PID without creating/signalling
+    # a real child. The BB/pytest PID itself must never be adopted.
+    fake_worker_pid = 424242
+    monkeypatch.setattr(ws_mod, "_process_gone", lambda pid: pid != fake_worker_pid)
+    monkeypatch.setattr(ws_mod, "_is_harvey_process", lambda pid: pid == fake_worker_pid)
+    ws.mail_pid_file.write_text(str(fake_worker_pid))
     old = time.time() - 3600
     os.utime(ws.mail_pid_file, (old, old))
     (ws.user_data_dir / "mailworker.heartbeat").write_text(str(int(time.time() - 900)))
@@ -332,7 +336,7 @@ def test_the_site_keeps_a_mac_awake_and_the_service_is_not_throttled(monkeypatch
     monkeypatch.setattr("subprocess.Popen", lambda cmd, **k: seen.append(cmd))
     monkeypatch.setattr(cli.Path, "exists", lambda self: True)
     assert "Keeping this Mac awake" in cli.keep_mac_awake(pid=123, platform="darwin")
-    assert seen == [["/usr/bin/caffeinate", "-i", "-w", "123"]]
+    # The test simulates macOS even on Windows, whose Path stringification\n    # uses backslashes. Assert the intended executable without assuming the\n    # host runner uses POSIX path separators.\n    assert [[str(part).replace("\\\\", "/") for part in cmd] for cmd in seen] == [\n        ["/usr/bin/caffeinate", "-i", "-w", "123"]\n    ]
     assert cli.keep_mac_awake(pid=123, platform="linux") == ""
     monkeypatch.setenv("BB_ALLOW_SLEEP", "1")
     assert cli.keep_mac_awake(pid=123, platform="darwin") == ""

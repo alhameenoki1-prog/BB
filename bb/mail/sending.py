@@ -5,14 +5,19 @@ sends through the mailbox's own provider with proper threading headers
 and Reply-To, mirrors the sent message into the database so the thread
 state updates at once, and writes the activity line."""
 
-from datetime import datetime, timedelta, timezone
+import base64
+import json
+from datetime import datetime, timezone
+from html import escape
+from pathlib import Path
 
-from bb.mail import service
+from bb.mail import service, studio
 from bb.mail.db import MailDB, now_iso
 from bb.mail.drafting import finalize
+from bb.mail.composer import has_recipient_tokens, needs_company, render_recipient_tokens, validate_manual_draft
 from bb.mail.ingest import Ingest
 from bb.mail.providers import AuthError, TransientError, account_for
-from bb.mail.providers.base import RawMessage
+from bb.mail.providers.base import Attachment, PartialDeliveryError, PermanentError, RawMessage
 
 
 class SendRefused(Exception):
@@ -81,30 +86,65 @@ async def editor_body(db: MailDB, env: dict, draft: dict) -> tuple[str, str]:
     if mailbox:
         labels = _link_labels(await env_for_draft(db, env, draft, mailbox))
     default = next(iter(labels), "") or ((service.settings_of(mailbox).project_link or "") if mailbox else "")
-    return embed_links(draft.get("body") or "", labels), default
+    body = draft.get("body") or ""
+    if json.loads(draft.get("qa_json") or "{}").get("studio_format") in ("text", "html"):
+        return body, default
+    return embed_links(body, labels), default
 
 
-def preview_document(html: str) -> str:
+def preview_document(html: str, *, client: str = "", subject: str = "", sender: str = "", to: str = "") -> str:
     """A whole page around an email's HTML for the editors' preview frame:
     links open in a new tab, and nothing in it can reach the page."""
     if not html:
         return ""
-    return ('<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><base target="_blank">'
-            '<style>body{margin:14px 16px;background:#fff}a{cursor:pointer}</style></head><body>' + html + "</body></html>")
+    header = ""
+    theme = ""
+    if client:
+        outlook = client == "outlook"
+        theme = "background:#f5f7fa;font-family:'Segoe UI',sans-serif" if outlook else "font-family:Arial,sans-serif"
+        header = (
+            f'<header><h2>{escape(subject)}</h2><strong>{escape(sender)}</strong>'
+            f'<div>To {escape(to)}</div></header>'
+        )
+    return (
+        '<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer">'
+        '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; style-src \'unsafe-inline\'; form-action \'none\'">'
+        '<base target="_blank"><style>body{margin:14px 16px;background:#fff;color:#222;' + theme +
+        '}a{cursor:pointer}img{max-width:100%}header{font:14px sans-serif;padding:0 0 12px;border-bottom:1px solid #ddd;'
+        'margin-bottom:14px}header h2{font-size:19px;margin:0 0 9px}</style></head><body>' + header + html + "</body></html>"
+    )
+
+
+def _draft_parts(body: str, recipient: dict, settings, env: dict, options: dict, attachments: list) -> tuple[str, str]:
+    mode = options.get("studio_format")
+    if mode:
+        image = next((file for file in attachments if isinstance(file, Attachment) and file.content_id), None)
+        return studio.message_parts(body, recipient, settings.signature_html, mode,
+                                    image=image, image_link=options.get("image_link", ""))
+    return finalize(render_recipient_tokens(body, recipient), settings, greeting_name=recipient.get("name") or "",
+                    link_labels=_link_labels(env))
 
 
 async def preview_html(db: MailDB, env: dict, draft: dict, body: str) -> str:
     """The HTML of this draft exactly as it would go out now (greeting,
     links on their words, signature), for the editor's preview."""
-    import json as _json
     mailbox = await db.mailbox(draft["mailbox_id"])
     if not mailbox:
         return ""
     env = await env_for_draft(db, env, draft, mailbox)
     settings = service.settings_of(mailbox)
-    to = _json.loads(draft.get("to_json") or "[]")
-    name = (to[0].get("name") if to else "") or ""
-    return finalize(body or "", settings, greeting_name=name, link_labels=_link_labels(env))[1]
+    to = json.loads(draft.get("to_json") or "[]")
+    options = json.loads(draft.get("qa_json") or "{}")
+    files = [Attachment(**row) for row in await db.studio_files(draft.get("studio_id", ""), include_data=True, inline_only=True)]
+    recipient = to[0] if len(to) == 1 else {}
+    plain, html = _draft_parts(body, recipient, settings, env, options, files)
+    if not html:
+        return f'<pre style="white-space:pre-wrap;font:14px monospace">{escape(plain)}</pre>'
+    if files:
+        image = files[0]
+        data_url = f"data:{image.content_type};base64,{base64.b64encode(image.data).decode('ascii')}"
+        html = html.replace(f'src="cid:{image.content_id}"', f'src="{data_url}"')
+    return html
 
 
 def _today_utc() -> str:
@@ -183,13 +223,15 @@ async def prior_replies(db: MailDB, thread_id: str, exclude_draft: str = "") -> 
 async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run: bool = False, pressed: bool = False,
                      saw_thread: bool = False) -> dict:
     """Send one approved draft. Returns {status, message_id}. Raises
-    SendRefused for a rule, AuthError / TransientError from the provider."""
+    SendRefused for a rule or permanent rejection; AuthError / TransientError for recoverable provider trouble."""
     mailbox = await db.mailbox(draft["mailbox_id"])
     if not mailbox:
         raise SendRefused("the mailbox no longer exists")
     env = await env_for_draft(db, env, draft, mailbox)
     settings = service.settings_of(mailbox)
-    ok, why = service.ready_to_send(mailbox)
+    options = json.loads(draft.get("qa_json") or "{}")
+    mode = options.get("studio_format")
+    ok, why = service.ready_to_send(mailbox, manual=bool(options.get("manual")))
     if not ok:
         raise SendRefused(why)
     answer = await is_answer(db, draft)
@@ -210,21 +252,47 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
         if scan and await db.one("SELECT 1 FROM messages WHERE thread_id = ? AND direction = 'inbound' AND sent_at > ? LIMIT 1",
                                  (draft["thread_id"], draft["created_at"])):
             raise StaleFollowUp("they wrote again after this follow-up was written; sending it would ignore what they said")
-    import json
     to = json.loads(draft.get("to_json") or "[]")
     if not to:
         raise SendRefused("no recipient")
     recipient = to[0]
+    cc = options.get("cc", []) if options.get("manual") else []
+    bcc = options.get("bcc", []) if options.get("manual") else []
+    if not isinstance(cc, list) or not isinstance(bcc, list):
+        raise SendRefused("Invalid Cc/Bcc draft metadata")
+    recipients = [row["email"] for row in to] + cc + bcc
     from bb.mail.runs import is_excluded
-    if is_excluded(settings, recipient.get("email", "")):
-        raise SendRefused(f"{recipient.get('email')} is on {mailbox['address']}'s excluded list (they asked not to be contacted)")
-    plain, html = finalize(draft["body"], settings, greeting_name=recipient.get("name") or "",
-                           link_labels=_link_labels(env))
+    for address in recipients:
+        if is_excluded(settings, address):
+            raise SendRefused(f"{address} is on {mailbox['address']}'s excluded list (they asked not to be contacted)")
+        if mailbox["provider"] == "ses" and await db.one(
+                "SELECT 1 FROM ses_events WHERE mailbox_id = ? AND recipient = ? AND event_type IN ('hard bounce', 'complaint')",
+                (mailbox["id"], address)):
+            raise SendRefused(f"Amazon SES reported a permanent bounce or complaint for {address}.")
+    attachments = await _reply_attachments(db, env, draft)
+    if mode:
+        attachments.extend(Attachment(**row) for row in await db.studio_files(draft.get("studio_id", ""), include_data=True))
+        if mode == "image" and not any(isinstance(file, Attachment) and file.content_id for file in attachments):
+            raise SendRefused("The inline image is missing from this draft.")
+        if len(to) > 1 and has_recipient_tokens(draft["subject"], draft["body"]):
+            raise SendRefused("Use one personalized draft per To recipient.")
+        if needs_company(draft["subject"], draft["body"]) and not recipient.get("company"):
+            raise SendRefused("The recipient needs a company name before you can use the company field.")
+    subject = render_recipient_tokens(draft["subject"], recipient) if mode else draft["subject"]
+    try:
+        if mode:
+            subject, _ = validate_manual_draft(subject, draft["body"], allow_empty=mode == "image")
+    except ValueError as exc:
+        raise SendRefused(str(exc)) from exc
+    plain, html = _draft_parts(draft["body"], recipient if len(to) == 1 else {}, settings, env, options, attachments)
+    if mode and not plain and not html:
+        raise SendRefused("The message has no usable content.")
+    saved_body = draft["body"] if mode else plain
     reply_to = (draft.get("reply_to") or settings.reply_to or "").strip()
     if dry_run:
         await db.execute("UPDATE drafts SET status = 'dry_run', body = ?, updated_at = ? WHERE id = ?",
-                         (plain, now_iso(), draft["id"]))
-        await db.log("review", f"Dry run: would have replied to {recipient.get('name') or recipient['email']} — \"{draft['subject']}\"",
+                         (saved_body, now_iso(), draft["id"]))
+        await db.log("review", f"Dry run: would have emailed {', '.join(row['email'] for row in to)} — \"{subject}\"",
                      mailbox["id"], draft_id=draft["id"])
         return {"status": "dry_run", "message_id": ""}
     # One slot of the account's daily limit, shared with every other
@@ -258,18 +326,27 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
                                     priority=True, kind=draft.get("kind") or "reply", free=answer)
         if slot is None:
             raise ShareUsed(pic["reason"])
-        if led.is_suppressed(recipient.get("email", "")):
-            led.release(slot)
-            raise SendRefused(f"{recipient.get('email')} asked not to be contacted (in another campaign)")
+        for address in recipients:
+            if led.is_suppressed(address):
+                led.release(slot)
+                raise SendRefused(f"{address} asked not to be contacted (in another campaign)")
     creds = service.open_creds(secret, mailbox)
     account = account_for(mailbox, creds, env)
-    attachments = await _reply_attachments(db, env, draft)
     try:
         message_id, provider_id, thread_key = await account.send(
-            to=[recipient["email"]], subject=draft["subject"], body_text=plain, body_html=html,
+            to=[row["email"] for row in to], subject=subject, body_text=plain, body_html=html,
             in_reply_to=draft.get("in_reply_to") or "", references=draft.get("references_text") or "",
             reply_to=reply_to, from_name=settings.display_name, attachments=attachments or None,
+            cc=cc, bcc=bcc,
         )
+    except PermanentError as e:
+        if isinstance(e, PartialDeliveryError):
+            raise
+        if led is not None:
+            led.release(slot)
+        # Both manual Send and automatic campaign senders already know how
+        # to move SendRefused drafts into Review instead of blindly retrying.
+        raise SendRefused(f"provider permanently refused the message: {e}") from e
     except BaseException:
         if led is not None:
             led.release(slot)
@@ -289,16 +366,17 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
         except Exception:
             pass   # the send went; a missed note only means a later check reads the thread
     if attachments:
-        await db.log("send", f"Attached {', '.join(a.rsplit('/', 1)[-1] for a in attachments)} to the reply to "
+        names = [file.name if isinstance(file, Attachment) else Path(file).name for file in attachments]
+        await db.log("send", f"Attached {', '.join(names)} to the message for "
                              f"{recipient.get('name') or recipient['email']}", mailbox["id"], draft_id=draft["id"])
     now = now_iso()
-    await db.execute("UPDATE drafts SET status = 'sent', body = ?, sent_message_id = ?, sent_at = ?, updated_at = ? WHERE id = ?",
-                     (plain, message_id, now, now, draft["id"]))
+    await db.execute("UPDATE drafts SET status = 'sent', body = ?, subject = ?, sent_message_id = ?, sent_at = ?, updated_at = ? WHERE id = ?",
+                     (saved_body, subject, message_id, now, now, draft["id"]))
     # Mirror the sent message so the thread's state flips right away.
     raw = RawMessage(provider_id=provider_id or f"sent:{message_id}", thread_key=thread_key or "", message_id=message_id,
                      in_reply_to=draft.get("in_reply_to") or "", references=draft.get("references_text") or "",
                      from_email=mailbox["address"], from_name=settings.display_name,
-                     to=[{"name": recipient.get("name", ""), "email": recipient["email"]}], subject=draft["subject"],
+                     to=to, cc=[{"name": "", "email": address} for address in cc], subject=subject,
                      body=plain, folder="SENT", sent_at=now, outbound=True)
     ingest = Ingest(db, mailbox)
     if draft.get("thread_id"):
@@ -315,6 +393,6 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
         await ingest.store_batch([raw])
         await db.execute("UPDATE messages SET sent_by = 'ai' WHERE mailbox_id = ? AND provider_id = ?", (mailbox["id"], raw.provider_id))
     kind = "replied" if draft.get("kind") == "reply" else "sent"
-    await db.log("replied", f"{'Replied to' if kind == 'replied' else 'Emailed'} {recipient.get('name') or recipient['email']} — \"{draft['subject']}\"",
+    await db.log(kind, f"{'Replied to' if kind == 'replied' else 'Emailed'} {', '.join(row.get('name') or row['email'] for row in to)} — \"{subject}\"",
                  mailbox["id"], draft_id=draft["id"], message_id=message_id)
     return {"status": "sent", "message_id": message_id}

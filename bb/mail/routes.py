@@ -13,9 +13,9 @@ from pydantic import ValidationError
 
 from bb import gmail_oauth, microsoft_oauth
 from bb.mail import service
-from bb.mail.jobs import Jobs
+from bb.mail.jobs import DELIVERY_KINDS, Jobs
 from bb.mail import scope as scope_mod
-from bb.mail.models import COLORS, MailboxSettings
+from bb.mail.models import COLORS, MailboxSettings, SEND_ONLY_PROVIDERS
 from bb.mail.providers import AuthError, TransientError
 from bb.mail_autoconfig import guess_settings
 from bb.mail_paste import parse_pasted_login, to_smtp_fields
@@ -93,7 +93,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                 "revived": revived, "colors": COLORS}
 
     def page_ctx(c: dict) -> dict:
-        return {k: v for k, v in c.items() if k not in ("ws", "db")}
+        return {**{k: v for k, v in c.items() if k not in ("ws", "db")}, "send_only_providers": SEND_ONLY_PROVIDERS}
 
     def _scope_for(c: dict, address: str = "") -> dict:
         """The goal and brief an account writes with: the outreach campaign
@@ -102,6 +102,18 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         main = c["ws"].main()
         target = main.campaign(campaigns_mod.profile_for_account(main.user_root, address)) if address else main
         return scope_mod.from_config((target or main).config())
+
+    async def _studio_contacts(workspace, sender: str, addresses: list[str]) -> dict:
+        from bb import campaigns as campaigns_mod
+
+        main = workspace.main()
+        records = await main.studio_contacts(addresses)
+        profile_id = campaigns_mod.profile_for_account(main.user_root, sender)
+        if profile_id != campaigns_mod.MAIN:
+            profile = main.campaign(profile_id)
+            if profile:
+                records.update(await profile.studio_contacts(addresses))
+        return records
 
     # ── overview ──
 
@@ -205,6 +217,20 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                             ms_available=bool(settings.ms_client_id),
                             redirect_uri=settings.base_url + "/mail/gmail/callback",
                             ms_redirect_uri=settings.base_url + "/mail/microsoft/callback")
+
+    @app.post("/mail/accounts/azure-smtp")
+    async def mail_connect_azure_smtp(request: Request, user: dict = Depends(current_user)):
+        c = await ctx(user)
+        async with request.form(max_files=0, max_fields=3) as form:
+            try:
+                mailbox_id, note = await service.connect_azure_smtp(
+                    c["db"], settings.secret_key(), address=str(form.get("email", "")),
+                    username=str(form.get("username", "")), password=str(form.get("client_secret", "")),
+                    env=settings.worker_env(),
+                )
+            except (AuthError, TransientError, ValueError) as exc:
+                return _redirect("/mail/accounts", error=str(exc))
+        return _redirect(f"/mail/accounts/{mailbox_id}", msg=note)
 
     @app.post("/mail/accounts/graph")
     async def mail_connect_graph(request: Request, user: dict = Depends(current_user)):
@@ -540,9 +566,13 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                                                       "Microsoft 365 admin app or the password sign-in for now.")
         form = dict(await request.form())
         nonce = secrets.token_urlsafe(16)
+        calendar = form.get("calendar") == "1"
+        if calendar:
+            nonce += ".calendar"
         state = microsoft_oauth.sign_state(settings.secret_key(), user["id"], nonce)
         redirect = settings.base_url + "/mail/microsoft/callback"
-        url = microsoft_oauth.auth_url(settings, state, login_hint=str(form.get("email", "") or ""), redirect=redirect)
+        url = microsoft_oauth.auth_url(settings, state, login_hint=str(form.get("email", "") or ""),
+                                     redirect=redirect, calendar=calendar)
         response = _redirect(url)
         response.set_cookie(MS_STATE_COOKIE, nonce, max_age=600, httponly=True, samesite="lax",
                             secure=settings.base_url.startswith("https://"), path="/")
@@ -558,17 +588,25 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             return _redirect("/mail/accounts", error="The sign-in did not match this session. Try again.")
         c = await ctx(user)
         redirect = settings.base_url + "/mail/microsoft/callback"
+        calendar = nonce.endswith(".calendar")
         try:
-            data = await microsoft_oauth.exchange_code(settings, code, redirect=redirect)
+            if calendar:
+                data = await microsoft_oauth.exchange_code(settings, code, redirect=redirect, calendar=True)
+                if not microsoft_oauth.has_calendar_access(data.get("scope") or ""):
+                    raise ValueError("Microsoft did not grant calendar access to this connection.")
+            else:
+                data = await microsoft_oauth.exchange_code(settings, code, redirect=redirect)
             email = await microsoft_oauth.account_email(data["access_token"])
             mid, detail = await service.connect_microsoft(c["db"], settings.secret_key(), address=email,
-                                                          refresh_token=data["refresh_token"], env=settings.worker_env())
+                                                          refresh_token=data["refresh_token"], env=settings.worker_env(),
+                                                          calendar=calendar)
         except (AuthError, TransientError, KeyError, RuntimeError, ValueError) as e:
             return _redirect("/mail/accounts", error=f"Microsoft sign-in failed: {e}")
         await c["ws"].main().account_changed(mid)
         if not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
-        response = _redirect(f"/mail/accounts/{mid}", msg=f"Connected {email} through Microsoft. {detail}")
+        back = "/mail/studio/calendar" if calendar else f"/mail/accounts/{mid}"
+        response = _redirect(back, msg=f"Connected {email} through Microsoft. {detail}")
         response.delete_cookie(MS_STATE_COOKIE, path="/")
         return response
 
@@ -578,6 +616,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         m = await c["db"].mailbox(mailbox_id)
         if not m:
             raise HTTPException(404)
+        if m["provider"] in SEND_ONLY_PROVIDERS:
+            return _redirect("/mail/accounts", error="This sender has no inbox to sync.")
         jobs = Jobs(c["db"])
         kind = "sync_incremental" if (m.get("sync") or {}).get("backfill_done") else "sync_backfill"
         await jobs.enqueue(kind, mailbox_id, dedupe=True, max_attempts=8)
@@ -593,6 +633,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         m = await c["db"].mailbox(mailbox_id)
         if not m:
             raise HTTPException(404)
+        if m["provider"] in SEND_ONLY_PROVIDERS:
+            return _redirect("/mail/accounts", error="This sender has no inbox to sync.")
         await c["db"].update_mailbox(mailbox_id, sync={})
         await Jobs(c["db"]).enqueue("sync_backfill", mailbox_id, dedupe=True, max_attempts=8)
         return _redirect(f"/mail/accounts/{mailbox_id}", msg="A full re-sync is queued.")
@@ -623,8 +665,9 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         for r in rows:
             r["box"] = boxes.get(r["mailbox_id"])
         state_counts = {}
+        placeholders = ",".join("?" for _ in boxes) or "''"
         for r in await c["db"].query(
-                f"SELECT state, COUNT(*) AS n FROM threads WHERE mailbox_id IN ({','.join('?' for _ in boxes) or "''"}) GROUP BY state",
+                f"SELECT state, COUNT(*) AS n FROM threads WHERE mailbox_id IN ({placeholders}) GROUP BY state",
                 list(boxes)):
             state_counts[r["state"]] = r["n"]
         return await render(request, "mail_threads.html", user, **page_ctx(c), threads=rows, state=state,
@@ -700,12 +743,25 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         except Exception as e:
             logger.debug("editor body failed: %s", e)
             draft["body_md"], draft["default_link"] = draft.get("body") or "", ""
+        draft["files"] = await c["db"].studio_files(draft.get("studio_id", ""))
 
-    async def _preview_doc(c, draft: dict, body: str) -> str:
+    async def _preview_doc(c, draft: dict, body: str, *, client: str = "gmail", subject: str | None = None) -> str:
         """The draft as it would go out (links on their words), as a page for the preview frame."""
         from bb.mail.sending import preview_document, preview_html
+        from bb.mail.composer import render_recipient_tokens
         try:
-            return preview_document(await preview_html(c["db"], {"HARVEY_HOME": str(c["ws"].user_root)}, draft, body))
+            html = await preview_html(c["db"], {"HARVEY_HOME": str(c["ws"].user_root)}, draft, body)
+            if not draft["qa"].get("studio_format"):
+                return preview_document(html)
+            box = next(m for m in c["mailboxes"] if m["id"] == draft["mailbox_id"])
+            to = draft["to"]
+            recipient = to[0] if len(to) == 1 else {}
+            display_name = box["settings_model"].display_name if box["provider"] != "graph" else ""
+            sender = f"{display_name} <{box['address']}>" if display_name else box["address"]
+            return preview_document(
+                html, client=client, sender=sender, to=", ".join(row["email"] for row in to),
+                subject=render_recipient_tokens(subject if subject is not None else draft["subject"], recipient),
+            )
         except Exception as e:
             logger.debug("preview failed: %s", e)
             return ""
@@ -717,7 +773,12 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         if not d:
             raise HTTPException(404)
         form = dict(await request.form())
-        return JSONResponse({"doc": await _preview_doc(c, d, str(form.get("body", "") or ""))})
+        body = str(form.get("body", d["body"]) or "")
+        subject = str(form.get("subject", d["subject"]) or "")
+        if len(body) > 100_000 or len(subject) > 200:
+            raise HTTPException(422, "The draft is too large to preview.")
+        return JSONResponse({"doc": await _preview_doc(c, d, body, client=str(form.get("client", "gmail")), subject=subject)},
+                            headers={"Cache-Control": "no-store"})
 
     async def _draft_row(db, draft_id: str) -> dict | None:
         d = await db.one("SELECT * FROM drafts WHERE id = ?", (draft_id,))
@@ -771,28 +832,41 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         d = await _draft_row(db, draft_id)
         if not d:
             raise HTTPException(404)
-        if d["status"] in ("sent", "dry_run"):
-            return _redirect(f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review",
-                             error="That draft was already sent.")
+        back = f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review"
+        review = f"{back}?draft={draft_id}" if d["thread_id"] else f"/mail/compose?draft={draft_id}"
+        if d["status"] != "pending_review":
+            return _redirect(back, error="That draft is already queued or closed.")
         form = dict(await request.form())
         from harvey.integrations.mail_provider import normalize_newlines
-        body = normalize_newlines(str(form.get("body", "") or d["body"])).strip()
-        subject = str(form.get("subject", "") or d["subject"]).strip()[:200]
-        reply_to = str(form.get("reply_to", "") or "").strip().lower()
+        body = normalize_newlines(str(form.get("body", d["body"]) or "")).strip()
+        subject = str(form.get("subject", d["subject"]) or "").strip()
+        reply_to = str(form.get("reply_to", d["reply_to"]) or "").strip().lower()
         box = await db.mailbox(d["mailbox_id"])
-        ok, why = service.ready_to_send(box) if box else (False, "mailbox missing")
+        mode = d["qa"].get("studio_format")
+        ok, why = service.ready_to_send(box, manual=bool(d["qa"].get("manual"))) if box else (False, "mailbox missing")
         if not ok:
-            return _redirect(f"/mail/threads/{d['thread_id']}?draft={draft_id}" if d["thread_id"] else "/mail/review", error=why)
-        if not body:
-            return _redirect(f"/mail/threads/{d['thread_id']}?draft={draft_id}", error="The reply is empty.")
+            return _redirect(review, error=why)
+        from bb.mail.composer import has_recipient_tokens, needs_company, parse_copy_recipients, validate_manual_draft
+        try:
+            if mode:
+                subject, body = validate_manual_draft(subject, body, allow_empty=mode == "image")
+                if len(d["to"]) > 1 and has_recipient_tokens(subject, body):
+                    raise ValueError("Use a separate draft for each To recipient when personalizing a message.")
+                if needs_company(subject, body) and any(not contact.get("company") for contact in d["to"]):
+                    raise ValueError("The recipient needs a company name before you can use the company field.")
+            elif not body:
+                raise ValueError("The reply is empty.")
+            if reply_to:
+                reply_to = parse_copy_recipients(reply_to, field_name="Reply-To", limit=1)[0]
+        except ValueError as exc:
+            return _redirect(review, error=str(exc))
         dry = bool(form.get("dry_run"))
-        await db.execute("UPDATE drafts SET body = ?, subject = ?, reply_to = ?, status = 'approved', error = '', updated_at = ? WHERE id = ?",
-                         (body, subject, reply_to, service.now_iso(), draft_id))
-        await Jobs(db).enqueue("send_draft", d["mailbox_id"], {"draft_id": draft_id, "dry_run": dry,
-                                                               "saw_thread": bool(form.get("from_thread"))}, max_attempts=4)
+        queued = await Jobs(db).approve_draft(d, body=body, subject=subject[:200], reply_to=reply_to,
+                                              dry_run=dry, saw_thread=bool(form.get("from_thread")))
+        if not queued:
+            return _redirect(back, error="That draft is already queued or closed.")
         if not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
-        back = f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review"
         return _redirect(back, msg="Dry run queued; nothing will be sent." if dry else "Sending…")
 
     @app.post("/mail/drafts/{draft_id}/reject")
@@ -801,9 +875,10 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         d = await _draft_row(c["db"], draft_id)
         if not d:
             raise HTTPException(404)
-        await c["db"].execute("UPDATE drafts SET status = 'rejected', updated_at = ? WHERE id = ? AND status != 'sent'",
-                              (service.now_iso(), draft_id))
-        return _redirect(f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review", msg="Draft discarded.")
+        discarded = await c["db"].discard_draft(draft_id)
+        return _redirect(f"/mail/threads/{d['thread_id']}" if d["thread_id"] else "/mail/review",
+                         msg="Draft discarded." if discarded else "",
+                         error="" if discarded else "That draft is already queued or closed.")
 
     @app.get("/mail/review", response_class=HTMLResponse)
     async def mail_review(request: Request, user: dict = Depends(current_user)):
@@ -818,6 +893,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             r["to"] = json.loads(r.get("to_json") or "[]")
             r["qa"] = json.loads(r.get("qa_json") or "{}")
             r["box"] = boxes.get(r["mailbox_id"])
+            r["ready"], r["ready_why"] = service.ready_to_send(r["box"], manual=bool(r["qa"].get("manual")))
             await _for_editor(c, r)
             r["preview"] = await _preview_doc(c, r, r.get("body") or "")
         recent = await c["db"].query(
@@ -830,18 +906,21 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
     @app.post("/mail/review/approve-all")
     async def mail_review_approve_all(user: dict = Depends(current_user)):
         c = await ctx(user)
-        ids = [m["id"] for m in c["selected"] if m["ready"]]
+        boxes = {m["id"]: m for m in c["selected"]}
+        ids = list(boxes)
         marks = ",".join("?" for _ in ids) or "''"
         from bb.mail import runs as runs_mod
         await runs_mod.supersede_stale_followups(c["db"])     # a follow-up they wrote back to since is not sent blind
-        rows = await c["db"].query(f"SELECT id, mailbox_id FROM drafts WHERE mailbox_id IN ({marks}) AND status = 'pending_review'", ids)
+        rows = await c["db"].query(f"SELECT * FROM drafts WHERE mailbox_id IN ({marks}) AND status = 'pending_review'", ids)
         jobs = Jobs(c["db"])
+        queued = 0
         for r in rows:
-            await c["db"].execute("UPDATE drafts SET status = 'approved', error = '', updated_at = ? WHERE id = ?", (service.now_iso(), r["id"]))
-            await jobs.enqueue("send_draft", r["mailbox_id"], {"draft_id": r["id"]}, max_attempts=4)
-        if rows and not c["ws"].mail_worker_running():
+            qa = json.loads(r["qa_json"] or "{}")
+            if service.ready_to_send(boxes[r["mailbox_id"]], manual=bool(qa.get("manual")))[0]:
+                queued += await jobs.approve_draft(r, body=r["body"], subject=r["subject"], reply_to=r["reply_to"])
+        if queued and not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
-        return _redirect("/mail/review", msg=f"Approved {len(rows)}; sending.")
+        return _redirect("/mail/review", msg=f"Approved {queued}; sending." if queued else "No ready drafts to approve.")
 
     @app.post("/mail/review/reject-all")
     async def mail_review_reject_all(user: dict = Depends(current_user)):
@@ -850,33 +929,282 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         marks = ",".join("?" for _ in ids) or "''"
         rows = await c["db"].query(
             f"SELECT id FROM drafts WHERE mailbox_id IN ({marks}) AND status = 'pending_review'", ids)
+        discarded = 0
         for r in rows:
-            await c["db"].execute("UPDATE drafts SET status = 'rejected', updated_at = ? WHERE id = ? AND status != 'sent'",
-                                  (service.now_iso(), r["id"]))
-        return _redirect("/mail/review", msg=f"Discarded {len(rows)} draft(s).")
+            discarded += await c["db"].discard_draft(r["id"])
+        return _redirect("/mail/review", msg=f"Discarded {discarded} draft(s).")
+
+    def _fictional_preview(to: str, to_name: str, sender: str, subject: str, topic: str):
+        from bb.mail.thread_preview import fictional_conversation
+        from bb.mail.composer import parse_copy_recipients
+
+        try:
+            addresses = parse_copy_recipients(to, field_name="To", limit=1)
+            if not addresses or len(to_name) > 150:
+                raise ValueError("Enter a recipient address and a name of up to 150 characters.")
+            page = fictional_conversation(
+                recipient={"email": addresses[0], "name": to_name}, sender_name=sender,
+                subject=subject, topic=topic,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return HTMLResponse(page, headers={"Cache-Control": "no-store",
+                                           "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+                                           "X-Content-Type-Options": "nosniff"})
+
+    @app.get("/mail/studio/thread-preview", response_class=HTMLResponse)
+    async def studio_fictional_thread_preview(
+        user: dict = Depends(current_user),
+        to: str = "john.smith@example.test", to_name: str = "John Smith",
+        sender: str = "Project Team", subject: str = "Project scope discussion",
+        topic: str = "the proposed project scope",
+    ):
+        return _fictional_preview(to, to_name, sender, subject, topic)
+
+    @app.post("/mail/studio/thread-preview", response_class=HTMLResponse)
+    async def studio_fictional_thread_preview_form(request: Request, user: dict = Depends(current_user)):
+        async with request.form(max_files=0, max_fields=5) as form:
+            return _fictional_preview(*(str(form.get(field, "")) for field in ("to", "to_name", "sender", "subject", "topic")))
 
     @app.get("/mail/compose", response_class=HTMLResponse)
     async def mail_compose(request: Request, user: dict = Depends(current_user), draft: str = ""):
         c = await ctx(user)
         d = await _draft_row(c["db"], draft) if draft else None
         preview = ""
+        if d and d["status"] != "pending_review":
+            return _redirect("/mail/review", msg="This draft is in your recent activity.")
         if d:
             await _for_editor(c, d)
             preview = await _preview_doc(c, d, d.get("body") or "")
+        saved_templates = await c["db"].query("SELECT name, subject, body, format FROM studio_templates ORDER BY name")
         return await render(request, "mail_compose.html", user, **page_ctx(c), draft=d, draft_preview=preview,
-                            ready=[m for m in c["mailboxes"] if m["enabled"]])
+                            ready=[m for m in c["mailboxes"] if m["enabled"]], saved_files=c["ws"].attachments(),
+                            saved_templates=saved_templates)
+
+    @app.post("/mail/studio/templates/{action}")
+    async def mail_studio_template(request: Request, action: str, user: dict = Depends(current_user)):
+        from bb.mail.composer import validate_manual_draft
+        from bb.mail.studio import FORMATS
+
+        c = await ctx(user)
+        async with request.form(max_files=11, max_fields=40) as form:
+            name = str(form.get("template_name", "")).strip()
+            if not name or len(name) > 80 or any(ord(ch) < 32 for ch in name):
+                return _redirect("/mail/compose", error="Enter a template name of up to 80 characters.")
+            if action == "delete":
+                removed = await c["db"].execute("DELETE FROM studio_templates WHERE name = ?", (name,))
+                return _redirect("/mail/compose", msg="Template deleted." if removed else "",
+                                 error="" if removed else "Template not found.")
+            if action != "save":
+                raise HTTPException(404)
+            mode = str(form.get("message_format", "rich"))
+            if mode not in FORMATS:
+                return _redirect("/mail/compose", error="Choose a supported message format.")
+            try:
+                subject, body = validate_manual_draft(str(form.get("subject", "")), str(form.get("body", "")),
+                                                      allow_empty=mode == "image")
+            except ValueError as exc:
+                return _redirect("/mail/compose", error=str(exc))
+            await c["db"].execute(
+                "INSERT INTO studio_templates(name, subject, body, format) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET subject = excluded.subject, body = excluded.body, format = excluded.format",
+                (name, subject, body, mode),
+            )
+        return _redirect("/mail/compose", msg=f"Saved template {name!r}.")
+
+    @app.get("/mail/ses", response_class=HTMLResponse)
+    async def mail_ses(request: Request, user: dict = Depends(current_user), mailbox: str = ""):
+        from bb.mail.ses import available, external_id, trust_policy
+
+        c = await ctx(user)
+        enabled = available(settings)
+        identifier = await external_id(c["db"]) if enabled else ""
+        boxes = [m for m in c["mailboxes"] if m["provider"] == "ses"]
+        box = next((m for m in boxes if m["id"] == mailbox), None)
+        creds = service.open_creds(settings.secret_key(), box) if box else {}
+        events = await c["db"].query(
+            "SELECT e.*, m.subject, b.address FROM ses_events e "
+            "LEFT JOIN messages m ON e.mailbox_id = m.mailbox_id AND e.provider_id = m.provider_id "
+            "JOIN mailboxes b ON e.mailbox_id = b.id ORDER BY e.received_at DESC LIMIT 100"
+        )
+        return await render(request, "mail_ses.html", user, **page_ctx(c), enabled=enabled, accounts=boxes,
+                            events=events, connection=creds, sender=box["address"] if box else "",
+                            trust=json.dumps(trust_policy(settings.ses_principal_arn, identifier), indent=2) if enabled else "")
+
+    @app.post("/mail/ses")
+    async def mail_ses_connect(request: Request, user: dict = Depends(current_user)):
+        from bb.mail.ses import available, connect_ses
+        from bb.mail.providers.base import PermanentError
+
+        if not available(settings):
+            return _redirect("/mail/ses", error="Amazon SES is unavailable on this BB installation.")
+        c = await ctx(user)
+        try:
+            mailbox, _ = await connect_ses(c["db"], settings.secret_key(), await request.form(), settings.worker_env())
+        except (AuthError, TransientError, PermanentError, RuntimeError, ValueError) as exc:
+            return _redirect("/mail/ses", error=str(exc))
+        if not c["ws"].mail_worker_running():
+            c["ws"].start_mail_worker()
+        return _redirect(f"/mail/ses?mailbox={mailbox}", msg="Connected and verified the Amazon SES sender.")
+
+    @app.get("/mail/studio/calendar", response_class=HTMLResponse)
+    async def mail_calendar(request: Request, user: dict = Depends(current_user), draft: str = ""):
+        from bb.mail.teams_calendar import calendar_connection
+
+        c = await ctx(user)
+        boxes = {m["id"]: m for m in c["mailboxes"]}
+        organizers = [box for box in boxes.values() if service.ready_to_send(box, manual=True)[0]
+                      and calendar_connection(box, service.open_creds(settings.secret_key(), box))]
+        rows = await c["db"].query(
+            "SELECT i.*, j.status AS job_status, j.last_error AS job_error FROM calendar_invites i "
+            "LEFT JOIN jobs j ON i.job_id = j.id ORDER BY i.updated_at DESC LIMIT 40"
+        )
+        selected = None
+        for row in rows:
+            row["event"] = json.loads(row["event_json"])
+            row["display"] = json.loads(row["display_json"])
+            row["result"] = json.loads(row["result_json"])
+            row["organizer"] = boxes.get(row["mailbox_id"], {}).get("address", "")
+            if row["id"] == draft:
+                selected = row
+        return await render(request, "mail_calendar.html", user, **page_ctx(c), organizers=organizers,
+                            invites=rows, invite=selected, ms_ready=bool(settings.ms_client_id))
+
+    @app.post("/mail/studio/calendar")
+    async def mail_calendar_draft(request: Request, user: dict = Depends(current_user)):
+        from bb.mail.company_lookup import lookup_companies
+        from bb.mail.teams_calendar import calendar_connection, include_attendee_companies, studio_invitation
+
+        c = await ctx(user)
+        form = await request.form()
+        box = await c["db"].mailbox(str(form.get("mailbox", "")))
+        if (not box or not service.ready_to_send(box, manual=True)[0] or
+                not calendar_connection(box, service.open_creds(settings.secret_key(), box))):
+            return _redirect("/mail/studio/calendar", error="Choose an enabled Microsoft mailbox with calendar access.")
+        try:
+            event, display = studio_invitation(form)
+        except ValueError as exc:
+            return _redirect("/mail/studio/calendar", error=str(exc))
+        if form.get("company_lookup") == "1":
+            addresses = [attendee["emailAddress"]["address"] for attendee in event["attendees"]]
+            contacts = await _studio_contacts(c["ws"], box["address"], addresses)
+            include_attendee_companies(event, display, await lookup_companies(addresses, contacts))
+        invite_id, now = service.new_id(), service.now_iso()
+        await c["db"].execute(
+            "INSERT INTO calendar_invites(id, mailbox_id, event_json, display_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (invite_id, box["id"], json.dumps(event), json.dumps(display), now, now),
+        )
+        return _redirect(f"/mail/studio/calendar?draft={invite_id}", msg="Invitation saved for review.")
+
+    @app.post("/mail/studio/calendar/{invite_id}/{action}")
+    async def mail_calendar_action(invite_id: str, action: str, user: dict = Depends(current_user)):
+        c = await ctx(user)
+        db = c["db"]
+        if action == "send":
+            invite = await db.one("SELECT * FROM calendar_invites WHERE id = ?", (invite_id,))
+            if not invite or not await Jobs(db).approve_invite(invite):
+                return _redirect("/mail/studio/calendar", error="That invitation is already queued or closed.")
+            if not c["ws"].mail_worker_running():
+                c["ws"].start_mail_worker()
+            return _redirect(f"/mail/studio/calendar?draft={invite_id}", msg="Invitation queued.")
+        if action == "discard":
+            discarded = await db.execute("DELETE FROM calendar_invites WHERE id = ? AND status = 'pending_review'", (invite_id,))
+            return _redirect("/mail/studio/calendar", msg="Draft discarded." if discarded else "",
+                             error="" if discarded else "Only a pending draft can be discarded here.")
+        raise HTTPException(404)
+
+    async def _compose_manual(c, box, form):
+        from bb.mail import studio
+        from bb.mail.company_lookup import lookup_companies
+        from bb.mail.composer import has_recipient_tokens, needs_company, parse_copy_recipients, render_recipient_tokens, validate_manual_draft
+        from bb.mail.providers.smtp import AZURE_MAX_RECIPIENTS
+
+        if not box or not box.get("enabled"):
+            raise ValueError("Select an enabled sending mailbox.")
+        message_format = form.get("message_format", "rich")
+        if message_format not in studio.FORMATS:
+            raise ValueError("Choose a supported message format.")
+        subject, body = validate_manual_draft(str(form.get("subject", "")), str(form.get("body", "")),
+                                              allow_empty=message_format == "image")
+        address_limit = AZURE_MAX_RECIPIENTS if box["provider"] == "azure_smtp" else 20
+        to = parse_copy_recipients(str(form.get("to", "")), field_name="To", limit=address_limit)
+        cc = parse_copy_recipients(str(form.get("cc", "")), field_name="Cc", limit=address_limit)
+        bcc = parse_copy_recipients(str(form.get("bcc", "")), field_name="Bcc", limit=address_limit)
+        reply_to = service.settings_of(box).reply_to
+        if str(form.get("reply_to", "")).strip():
+            reply_to = parse_copy_recipients(str(form["reply_to"]), field_name="Reply-To", limit=1)[0]
+        if not to:
+            raise ValueError("Enter at least one To email address.")
+        if len(set(to + cc + bcc)) != len(to) + len(cc) + len(bcc):
+            raise ValueError("A recipient cannot appear in more than one of To, Cc and Bcc.")
+        if box["provider"] == "ses" and len(to) + len(cc) + len(bcc) > 50:
+            raise ValueError("Amazon SES allows up to 50 recipients per message.")
+        if box["provider"] == "azure_smtp" and len(to) + len(cc) + len(bcc) > AZURE_MAX_RECIPIENTS:
+            raise ValueError(f"Azure Email allows up to {AZURE_MAX_RECIPIENTS} recipients per message.")
+        separate = len(to) > 1 and (form.get("separate") == "1" or has_recipient_tokens(subject, body))
+        if separate and (cc or bcc):
+            raise ValueError("Leave Cc and Bcc empty to create separate drafts for multiple To recipients.")
+        name = str(form.get("to_name", "")).strip() if len(to) == 1 else ""
+        if len(name) > 150 or any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+            raise ValueError("Recipient name must be at most 150 characters on one line.")
+        company = str(form.get("to_company", "")).strip() if len(to) == 1 else ""
+        if len(company) > 150 or any(ord(ch) < 32 or ord(ch) == 127 for ch in company):
+            raise ValueError("Company name must be at most 150 characters on one line.")
+        records = await _studio_contacts(c["ws"], box["address"], to)
+        company_needed = needs_company(subject, body)
+        looked_up = {}
+        if company_needed and not company:
+            missing = [address for address in to
+                       if not str(records.get(address, {}).get("company") or "").strip()]
+            if missing:
+                looked_up = await lookup_companies(missing, records)
+        contacts = []
+        for address in to:
+            record = records.get(address, {})
+            stored_name = " ".join(filter(None, (record.get("first_name"), record.get("last_name"))))
+            contact = {"email": address, "name": name or " ".join(stored_name.split())[:150]}
+            company_name = (company or " ".join(str(record.get("company") or "").split())[:150]
+                            or looked_up.get(address, {}).get("name", ""))
+            if company_name:
+                contact["company"] = company_name
+            elif company_needed:
+                raise ValueError(f"Add a company name for {address} before using the company field.")
+            contacts.append(contact)
+        groups = [[contact] for contact in contacts] if separate else [contacts]
+        for group in groups:
+            validate_manual_draft(render_recipient_tokens(subject, group[0]), body, allow_empty=message_format == "image")
+        image_link = str(form.get("image_link", "")).strip() if message_format == "image" else ""
+        if image_link and (len(image_link) > 2048 or not studio.web_url(image_link)):
+            raise ValueError("Enter a valid web address for the image link.")
+        if message_format == "html" and not studio.sanitize_html(body).strip():
+            raise ValueError("Enter some visible HTML content for the message.")
+        files = await studio.collect_attachments(form, c["ws"], box["provider"], message_format)
+        options = {"ok": True, "reasons": [], "manual": True, "cc": cc, "bcc": bcc,
+                   "studio_format": message_format, "image_link": image_link}
+        return await c["db"].save_studio_drafts(box["id"], groups, reply_to=reply_to,
+                                                subject=subject, body=body, options=options, files=files)
 
     @app.post("/mail/compose")
     async def mail_compose_draft(request: Request, user: dict = Depends(current_user)):
         from bb.mail.brain import BrainError
         from bb.mail.drafting import draft_new
         c = await ctx(user)
-        form = dict(await request.form())
-        box = await c["db"].mailbox(str(form.get("mailbox", "")))
+        async with request.form(max_files=11, max_fields=40) as form:
+            box = await c["db"].mailbox(str(form.get("mailbox", "")))
+            if form.get("compose_mode") == "manual":
+                try:
+                    ids = await _compose_manual(c, box, form)
+                except (ValueError, OSError) as exc:
+                    return _redirect("/mail/compose", error=str(exc))
+                if len(ids) > 1:
+                    return _redirect("/mail/review", msg=f"Saved {len(ids)} individual drafts for review.")
+                return _redirect(f"/mail/compose?draft={ids[0]}", msg="Draft saved for review.")
+            form = dict(form)
         to_email = str(form.get("to", "") or "").strip().lower()
         to_name = str(form.get("to_name", "") or "").strip()
         instruction = str(form.get("instruction", "") or "").strip()
-        if not box or "@" not in to_email or len(instruction) < 5:
+        if not box or box["provider"] in SEND_ONLY_PROVIDERS or "@" not in to_email or len(instruction) < 5:
             return _redirect("/mail/compose", error="Pick a mailbox, enter the recipient, and say what the email should do.")
         try:
             result = await draft_new(_brain(c["ws"]), service.settings_of(box), box, to_name, to_email, instruction,
@@ -1115,25 +1443,29 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         for r in rows:
             r["mailbox"] = names.get(r["mailbox_id"], "")
         return await render(request, "mail_jobs.html", user, **page_ctx(c), jobs=rows, status=status,
-                            counts=await jobs.counts())
+                            counts=await jobs.counts(), retryable_count=len(await jobs.retryable()),
+                            delivery_kinds=DELIVERY_KINDS)
 
     @app.post("/mail/jobs/retry-all")
     async def mail_jobs_retry_all(user: dict = Depends(current_user)):
         c = await ctx(user)
         jobs = Jobs(c["db"])
         n = 0
-        for j in await jobs.list("dead", limit=500):
-            n += 1 if await jobs.retry(j["id"]) else 0
+        for job_id in await jobs.retryable():
+            n += await jobs.retry(job_id)
         if n and not c["ws"].mail_worker_running():
             c["ws"].start_mail_worker()
         return _redirect("/mail/jobs", msg=f"Queued {n} failed job{'s' if n != 1 else ''} again.")
 
     @app.post("/mail/jobs/{job_id}/{action}")
-    async def mail_job_action(job_id: str, action: str, user: dict = Depends(current_user)):
+    async def mail_job_action(request: Request, job_id: str, action: str, user: dict = Depends(current_user)):
         c = await ctx(user)
         jobs = Jobs(c["db"])
         if action == "retry":
-            ok = await jobs.retry(job_id)
+            form = await request.form()
+            ok = await jobs.retry(job_id, delivery_reviewed=form.get("delivery_reviewed") == "1")
+            if ok and not c["ws"].mail_worker_running():
+                c["ws"].start_mail_worker()
         elif action == "discard":
             ok = await jobs.discard(job_id)
         else:

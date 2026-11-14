@@ -4,8 +4,9 @@ import re
 
 from pydantic import BaseModel, Field, field_validator
 
-PROVIDERS = ("gmail", "imap", "graph")
-MODES = ("full", "limited")
+PROVIDERS = ("gmail", "imap", "graph", "ses", "azure_smtp")
+SEND_ONLY_PROVIDERS = frozenset(("ses", "azure_smtp"))
+MODES = ("full", "limited", "send_only")
 STATUSES = ("new", "ok", "reconnect", "error", "disabled")
 COLORS = ("blue", "green", "orange", "purple", "pink", "teal", "red", "slate")
 
@@ -32,6 +33,14 @@ class MailboxSettings(BaseModel):
     hours_start: str = ""   # "09:00" or blank for any time
     hours_end: str = ""
     color: str = "blue"
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def _display_name(cls, value) -> str:
+        value = str(value or "").strip()
+        if len(value) > 150 or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+            raise ValueError("Sender name must be at most 150 characters on one line.")
+        return value
 
     @field_validator("project_link", mode="before")
     @classmethod
