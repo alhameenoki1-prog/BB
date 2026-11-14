@@ -256,7 +256,13 @@ MIGRATIONS = [
         PRIMARY KEY(mailbox_id, event_id, recipient)
     );
     CREATE INDEX ses_events_recipient ON ses_events(mailbox_id, recipient, event_type);
+    """,
     """
+    DROP INDEX mailboxes_inbox_address;
+    CREATE UNIQUE INDEX mailboxes_inbox_address ON mailboxes(lower(address))
+        WHERE provider NOT IN ('ses', 'azure_smtp');
+    CREATE UNIQUE INDEX mailboxes_azure_smtp_address ON mailboxes(lower(address)) WHERE provider = 'azure_smtp';
+    """,
 ]
 
 
@@ -296,6 +302,12 @@ class MailDB:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute("PRAGMA user_version") as cur:
                 version = (await cur.fetchone())[0]
+            if version == 5:
+                # The deployed BB branch used version 5 for Microsoft account
+                # metadata. Its workspaces still need the Studio migration.
+                async with db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='studio_files'") as cur:
+                    if await cur.fetchone() is None:
+                        version = 4
             for script in MIGRATIONS[version:]:
                 statement = ""
                 for line in script.splitlines(keepends=True):
@@ -416,9 +428,24 @@ class MailDB:
         return self._mailbox(await self.one("SELECT * FROM mailboxes WHERE id = ?", (mailbox_id,)))
 
     async def mailbox_by_address(self, address: str, *, ses: bool = False) -> dict | None:
-        provider = "provider = 'ses'" if ses else "provider != 'ses'"
+        provider = "provider = 'ses'" if ses else "provider NOT IN ('ses', 'azure_smtp')"
         return self._mailbox(await self.one(f"SELECT * FROM mailboxes WHERE lower(address) = ? AND {provider}",
                                             ((address or "").strip().lower(),)))
+
+    async def save_azure_smtp(self, *, address: str, creds: str, status_detail: str, settings: dict) -> str:
+        now = now_iso()
+        async with self._connect() as db:
+            async with db.execute(
+                "INSERT INTO mailboxes(id, address, provider, mode, creds, status, status_detail, settings_json, "
+                "last_checked_at, created_at, updated_at) VALUES (?, ?, 'azure_smtp', 'send_only', ?, 'ok', ?, ?, ?, ?, ?) "
+                "ON CONFLICT(lower(address)) WHERE provider = 'azure_smtp' DO UPDATE SET "
+                "creds=excluded.creds, status='ok', status_detail=excluded.status_detail, enabled=1, "
+                "last_checked_at=excluded.last_checked_at, updated_at=excluded.updated_at RETURNING id",
+                (new_id(), address, creds, status_detail, json.dumps(settings), now, now, now),
+            ) as cur:
+                row = await cur.fetchone()
+            await db.commit()
+        return row[0]
 
     async def update_mailbox(self, mailbox_id: str, **fields):
         allowed = {"address", "provider", "mode", "creds", "status", "status_detail", "last_sync_at",

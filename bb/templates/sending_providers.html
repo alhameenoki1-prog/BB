@@ -13,7 +13,7 @@
   <section class="card" style="padding:20px"><h3>Gmail</h3><p class="muted">Connect using Google OAuth.</p><p>{{ 'Connected' if gmail_connected else 'Not connected' }}</p><a href="/mailbox">Configure Gmail</a></section>
   <section class="card" style="padding:20px"><h3>Microsoft 365</h3><p class="muted">Use your authorized Microsoft mailbox or configured application.</p><p>{{ 'Connected' if microsoft_connected else 'Not connected' }}</p><a href="/mailbox">Configure Microsoft</a></section>
   <section class="card" style="padding:20px"><h3>SMTP / IMAP</h3><p class="muted">Use your own authenticated SMTP connection.</p><p>{{ 'Configured' if smtp_connected else 'Not configured' }}</p><a href="/mailbox">Configure SMTP</a></section>
-  <section class="card" style="padding:20px"><h3>Amazon SES</h3><p class="muted">User-owned AWS SES API integration is being developed. Connection setup and sending are not enabled yet.</p><p><strong>Coming soon — not connected</strong></p><span class="muted">No credentials are collected on this page.</span></section>
+  <section class="card" style="padding:20px"><h3>Amazon SES</h3><p class="muted">Send through a verified AWS identity and view configured delivery feedback.</p><p>{{ 'Connected' if 'ses' in studio_providers else 'Setup required' }}</p><a href="/mail/ses">Configure Amazon SES</a></section>
+  <section class="card" style="padding:20px"><h3>Azure Email SMTP</h3><p class="muted">Use an Azure Communication Services MailFrom address in Studio.</p><p>{{ 'Connected' if 'azure_smtp' in studio_providers else 'Setup required' }}</p><a href="/mail/accounts#azure-email">Configure Azure Email</a></section>
 </div>
-<p class="small muted" style="margin-top:22px">Only connected and authorized providers can send. Amazon SES is not available for live sending from this interface.</p>
 {% endblock %}

@@ -18,4 +18,7 @@ def account_for(mailbox: dict, creds: dict, env: dict) -> "MailAccount":
     if provider == "ses":
         from bb.mail.ses import SESAccount
         return SESAccount(mailbox, creds, env)
+    if provider == "azure_smtp":
+        from bb.mail.providers.smtp import AzureSmtpAccount
+        return AzureSmtpAccount(mailbox, creds, env)
     raise ValueError(f"unknown provider {provider!r}")

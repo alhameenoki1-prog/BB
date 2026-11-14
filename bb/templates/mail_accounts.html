@@ -12,16 +12,29 @@
   <table><thead><tr><th>Mailbox</th><th>How</th><th>Status</th><th>Sending</th><th></th></tr></thead><tbody>
   {% for m in mailboxes %}
   <tr><td><a href="/mail/accounts/{{ m.id }}"><span class="acct acct-{{ m.settings_model.color }}">{{ m.address }}</span></a>{% if m.settings_model.display_name %} <span class="muted small">{{ m.settings_model.display_name }}</span>{% endif %}</td>
-    <td class="small">{% if m.provider == 'graph' and m.signin %}Microsoft sign-in{% else %}{{ {'gmail':'Google sign-in','imap':'Password (limited mode)','graph':'Microsoft 365 app','ses':'Amazon SES'}[m.provider] }}{% endif %}</td>
+    <td class="small">{% if m.provider == 'graph' and m.signin %}Microsoft sign-in{% else %}{{ {'gmail':'Google sign-in','imap':'Password (limited mode)','graph':'Microsoft 365 app','ses':'Amazon SES','azure_smtp':'Azure Email SMTP'}[m.provider] }}{% endif %}</td>
     <td>{% if not m.enabled %}<span class="tag">disabled</span>{% elif m.status == 'ok' %}<span class="tag good">connected</span>{% elif m.status == 'reconnect' %}<span class="tag bad">reconnect</span>
       {% if m.provider == 'gmail' and gmail_available %}<form class="inline" method="post" action="/mail/gmail/connect"><input type="hidden" name="email" value="{{ m.address }}"><button class="small" type="submit">Reconnect</button></form>
       {% elif m.provider == 'graph' and m.signin and ms_available %}<form class="inline" method="post" action="/mail/microsoft/connect"><input type="hidden" name="email" value="{{ m.address }}"><button class="small" type="submit">Reconnect</button></form>
       {% else %}<a href="/mail/accounts/{{ m.id }}" class="small">Reconnect</a>{% endif %}
     {% elif m.status == 'error' %}<span class="tag warn">unreachable</span>{% else %}<span class="tag">{{ m.status }}</span>{% endif %}</td>
-    <td>{% if m.provider == 'ses' %}<span class="tag">Studio sender</span>{% elif m.ready %}<span class="tag good">ready</span>{% else %}<span class="tag warn" title="{{ m.ready_why }}">needs signature &amp; link for campaigns</span>{% endif %}</td>
+    <td>{% if m.provider in send_only_providers %}<span class="tag">Studio sender</span>{% elif m.ready %}<span class="tag good">ready</span>{% else %}<span class="tag warn" title="{{ m.ready_why }}">needs signature &amp; link for campaigns</span>{% endif %}</td>
     <td style="text-align:right"><a href="/mail/accounts/{{ m.id }}" class="small">Settings</a></td></tr>
   {% endfor %}</tbody></table>
   {% else %}<div class="empty">{{ icon('mail') }}<div>No mailboxes connected yet.</div></div>{% endif %}
+</div>
+
+<div class="card" id="azure-email">
+  <h2>Azure Email SMTP</h2>
+  <p class="muted small">Use an Azure Communication Services resource linked to a verified email domain. Get the MailFrom address from your email domain and the SMTP username and client secret from its Entra app setup.</p>
+  <form method="post" action="/mail/accounts/azure-smtp">
+    <div class="row">
+      <div><label for="azure-email-address">Verified MailFrom address</label><input id="azure-email-address" type="email" name="email" required maxlength="254" placeholder="updates@example.com"></div>
+      <div><label for="azure-email-username">Azure SMTP username</label><input id="azure-email-username" type="text" name="username" required maxlength="512" autocomplete="username"></div>
+      <div><label for="azure-email-secret">Entra client secret</label><input id="azure-email-secret" type="password" name="client_secret" required maxlength="512" autocomplete="new-password"></div>
+    </div>
+    <div class="actions" style="margin-top:12px"><button type="submit">Connect Azure sender</button></div>
+  </form>
 </div>
 
 {{ browser_signin('/mail/gmail/connect', '/mail/microsoft/connect', gmail_available, ms_available, user.role == 'admin') }}

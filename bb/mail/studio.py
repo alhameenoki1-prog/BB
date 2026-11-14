@@ -9,6 +9,7 @@ from starlette.datastructures import UploadFile
 
 from bb.mail.composer import render_recipient_tokens
 from bb.mail.providers.base import Attachment
+from bb.mail.providers.smtp import AZURE_MAX_ATTACHMENT_BYTES
 from harvey.integrations.mail_provider import body_to_html, html_to_text, links_to_text
 
 FORMATS = ("rich", "text", "html", "image")
@@ -106,9 +107,11 @@ async def collect_attachments(form, workspace, provider: str, message_format: st
         raise ValueError("Select an image to use the Image format.")
     if len(uploads) + len(saved) + bool(inline) > MAX_FILES:
         raise ValueError(f"Select up to {MAX_FILES} files in total.")
-    per_file = GRAPH_FILE_LIMIT - 1 if provider == "graph" else MAX_TOTAL_BYTES
+    total_limit = AZURE_MAX_ATTACHMENT_BYTES if provider == "azure_smtp" else MAX_TOTAL_BYTES
+    per_file = GRAPH_FILE_LIMIT - 1 if provider == "graph" else total_limit
     files = []
-    remaining = MAX_TOTAL_BYTES
+    remaining = total_limit
+    size_error = f"The message's files must total {total_limit // 1_000_000} MB or less."
 
     def add(name: str, data: bytes, *, is_image: bool = False):
         nonlocal remaining
@@ -116,9 +119,9 @@ async def collect_attachments(form, workspace, provider: str, message_format: st
             raise ValueError("A selected file has no usable name.")
         if len(data) > per_file:
             raise ValueError("Outlook attachments must each be smaller than 3 MB." if provider == "graph"
-                             else "The message's files must total 15 MB or less.")
+                             else size_error)
         if len(data) > remaining:
-            raise ValueError("The message's files must total 15 MB or less.")
+            raise ValueError(size_error)
         remaining -= len(data)
         content_type = _image_type(data) if is_image else Attachment.media_type(name)
         files.append(Attachment(name, data, content_type, IMAGE_ID if is_image else ""))

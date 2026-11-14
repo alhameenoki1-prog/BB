@@ -8,13 +8,13 @@ whose UIDVALIDITY changed."""
 import asyncio
 import imaplib
 import re
-import smtplib
 import socket
 import ssl
 from datetime import datetime, timedelta, timezone
 
 from bb.mail.parse import parse_rfc822
-from bb.mail.providers.base import AuthError, MailAccount, PartialDeliveryError, PermanentError, TransientError
+from bb.mail.providers.base import AuthError, TransientError
+from bb.mail.providers.smtp import SmtpAccount
 
 BATCH = 40
 SENT_NAMES = ("[Gmail]/Sent Mail", "Sent", "Sent Items", "Sent Messages", "INBOX.Sent", "Sent Mail")
@@ -22,7 +22,7 @@ ALL_MAIL = "[Gmail]/All Mail"
 _LIST_RE = re.compile(r'\((?P<flags>[^)]*)\)\s+"?(?P<delim>[^"\s]+)"?\s+"?(?P<name>.+?)"?$')
 
 
-class ImapAccount(MailAccount):
+class ImapAccount(SmtpAccount):
     name = "imap"
 
     # ── connections ──
@@ -39,30 +39,6 @@ class ImapAccount(MailAccount):
         except imaplib.IMAP4.error as e:
             raise AuthError(f"IMAP sign-in refused: {str(e)[:160]}") from e
         return conn
-
-    def _smtp_check(self):
-        c = self.creds
-        host, port = c["smtp_host"], int(c.get("smtp_port") or 587)
-        try:
-            ctx = ssl.create_default_context()  # the stdlib default verifies nothing
-            if port in (465, 2465):
-                s = smtplib.SMTP_SSL(host, port, timeout=20, context=ctx)
-            else:
-                s = smtplib.SMTP(host, port, timeout=20)
-                s.starttls(context=ctx)
-        except (socket.gaierror, socket.timeout, OSError, ssl.SSLError, smtplib.SMTPException) as e:
-            raise TransientError(f"could not reach {host}: {e}") from e
-        try:
-            s.login(c["username"], c["password"])
-        except smtplib.SMTPAuthenticationError as e:
-            raise AuthError(f"SMTP sign-in refused: {str(e)[:160]}") from e
-        except smtplib.SMTPException as e:
-            raise TransientError(f"SMTP error: {e}") from e
-        finally:
-            try:
-                s.quit()
-            except Exception:
-                pass
 
     def _test_sync(self) -> str:
         conn = self._imap()
@@ -86,59 +62,11 @@ class ImapAccount(MailAccount):
 
     # ── sending ──
 
-    async def send(self, *, to, subject, body_text, body_html, in_reply_to="", references="",
-                   reply_to="", from_name="", attachments=None, cc=None, bcc=None) -> tuple[str, str, str]:
-        import aiosmtplib
-
-        msg = self.build_mime(to=to, subject=subject, body_text=body_text, body_html=body_html,
-                              in_reply_to=in_reply_to, references=references, reply_to=reply_to, from_name=from_name,
-                              attachments=attachments, cc=cc, bcc=bcc)
-        # Bcc is envelope-only for SMTP; never expose it in transmitted headers.
-        if msg.get("Bcc"):
-            del msg["Bcc"]
-        c = self.creds
-        port = int(c.get("smtp_port") or 587)
+    async def _record_sent_copy(self, message):
         try:
-            # Match the connection check on remote SMTP servers. The
-            # loopback exception is for local test sinks such as Mailpit.
-            use_tls = port in (465, 2465)
-            loopback = c["smtp_host"].lower() in ("localhost", "127.0.0.1", "::1")
-            start_tls = False if use_tls else (None if loopback else True)
-            refused, _response = await aiosmtplib.send(
-                msg, hostname=c["smtp_host"], port=port, username=c["username"], password=c["password"],
-                start_tls=start_tls,
-                use_tls=use_tls, timeout=40, recipients=list(dict.fromkeys([*to, *(cc or []), *(bcc or [])])),
-            )
-            if refused:
-                # Some recipients may already have been accepted: never
-                # blindly replay a partially accepted transaction.
-                raise PartialDeliveryError("SMTP accepted only some recipients; check delivery before resending")
-        except aiosmtplib.SMTPAuthenticationError as e:
-            raise AuthError(f"SMTP sign-in refused: {str(e)[:160]}") from e
-        except aiosmtplib.SMTPRecipientsRefused as e:
-            codes = [int(getattr(item, "code", 0)) for item in e.recipients]
-            if codes and all(500 <= code < 600 for code in codes):
-                raise PermanentError("SMTP permanently refused all recipients (5xx); verify addresses and content") from e
-            # A mixed batch is not safe to blindly retry: some 5xx refusals
-            # will never succeed even if other addresses were deferred.
-            if any(500 <= code < 600 for code in codes):
-                raise PermanentError("SMTP reported mixed permanent/temporary recipient refusals; review the recipients") from e
-            raise TransientError("SMTP temporarily refused recipients; retry after backoff") from e
-        except aiosmtplib.SMTPResponseException as e:
-            code = int(getattr(e, "code", 0))
-            if 500 <= code < 600:
-                raise PermanentError(f"SMTP permanently refused the message ({code})") from e
-            raise TransientError(f"SMTP rejected the send ({code}); retry if temporary") from e
-        except (aiosmtplib.SMTPException, OSError) as e:
-            # Disconnects and timeouts can happen after acceptance.
-            raise TransientError(f"SMTP submission uncertain: {type(e).__name__}") from e
-        message_id = msg["Message-ID"]
-        # Best effort: a copy in the Sent folder, so the mailbox itself shows it.
-        try:
-            await asyncio.get_event_loop().run_in_executor(None, self._append_sent, msg.as_bytes())
+            await asyncio.to_thread(self._append_sent, message.as_bytes())
         except Exception:
             pass
-        return message_id, "", ""
 
     def _append_sent(self, raw: bytes):
         import imaplib as _imaplib

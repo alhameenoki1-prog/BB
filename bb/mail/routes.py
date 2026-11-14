@@ -15,7 +15,7 @@ from bb import gmail_oauth, microsoft_oauth
 from bb.mail import service
 from bb.mail.jobs import DELIVERY_KINDS, Jobs
 from bb.mail import scope as scope_mod
-from bb.mail.models import COLORS, MailboxSettings
+from bb.mail.models import COLORS, MailboxSettings, SEND_ONLY_PROVIDERS
 from bb.mail.providers import AuthError, TransientError
 from bb.mail_autoconfig import guess_settings
 from bb.mail_paste import parse_pasted_login, to_smtp_fields
@@ -93,7 +93,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                 "revived": revived, "colors": COLORS}
 
     def page_ctx(c: dict) -> dict:
-        return {k: v for k, v in c.items() if k not in ("ws", "db")}
+        return {**{k: v for k, v in c.items() if k not in ("ws", "db")}, "send_only_providers": SEND_ONLY_PROVIDERS}
 
     def _scope_for(c: dict, address: str = "") -> dict:
         """The goal and brief an account writes with: the outreach campaign
@@ -217,6 +217,20 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                             ms_available=bool(settings.ms_client_id),
                             redirect_uri=settings.base_url + "/mail/gmail/callback",
                             ms_redirect_uri=settings.base_url + "/mail/microsoft/callback")
+
+    @app.post("/mail/accounts/azure-smtp")
+    async def mail_connect_azure_smtp(request: Request, user: dict = Depends(current_user)):
+        c = await ctx(user)
+        async with request.form(max_files=0, max_fields=3) as form:
+            try:
+                mailbox_id, note = await service.connect_azure_smtp(
+                    c["db"], settings.secret_key(), address=str(form.get("email", "")),
+                    username=str(form.get("username", "")), password=str(form.get("client_secret", "")),
+                    env=settings.worker_env(),
+                )
+            except (AuthError, TransientError, ValueError) as exc:
+                return _redirect("/mail/accounts", error=str(exc))
+        return _redirect(f"/mail/accounts/{mailbox_id}", msg=note)
 
     @app.post("/mail/accounts/graph")
     async def mail_connect_graph(request: Request, user: dict = Depends(current_user)):
@@ -602,8 +616,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         m = await c["db"].mailbox(mailbox_id)
         if not m:
             raise HTTPException(404)
-        if m["provider"] == "ses":
-            return _redirect("/mail/ses", error="Amazon SES accounts send email and report delivery events.")
+        if m["provider"] in SEND_ONLY_PROVIDERS:
+            return _redirect("/mail/accounts", error="This sender has no inbox to sync.")
         jobs = Jobs(c["db"])
         kind = "sync_incremental" if (m.get("sync") or {}).get("backfill_done") else "sync_backfill"
         await jobs.enqueue(kind, mailbox_id, dedupe=True, max_attempts=8)
@@ -619,8 +633,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         m = await c["db"].mailbox(mailbox_id)
         if not m:
             raise HTTPException(404)
-        if m["provider"] == "ses":
-            return _redirect("/mail/ses", error="Amazon SES accounts send email and report delivery events.")
+        if m["provider"] in SEND_ONLY_PROVIDERS:
+            return _redirect("/mail/accounts", error="This sender has no inbox to sync.")
         await c["db"].update_mailbox(mailbox_id, sync={})
         await Jobs(c["db"]).enqueue("sync_backfill", mailbox_id, dedupe=True, max_attempts=8)
         return _redirect(f"/mail/accounts/{mailbox_id}", msg="A full re-sync is queued.")
@@ -826,7 +840,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         from harvey.integrations.mail_provider import normalize_newlines
         body = normalize_newlines(str(form.get("body", d["body"]) or "")).strip()
         subject = str(form.get("subject", d["subject"]) or "").strip()
-        reply_to = str(form.get("reply_to", "") or "").strip().lower()
+        reply_to = str(form.get("reply_to", d["reply_to"]) or "").strip().lower()
         box = await db.mailbox(d["mailbox_id"])
         mode = d["qa"].get("studio_format")
         ok, why = service.ready_to_send(box, manual=bool(d["qa"].get("manual"))) if box else (False, "mailbox missing")
@@ -1104,6 +1118,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         from bb.mail import studio
         from bb.mail.company_lookup import lookup_companies
         from bb.mail.composer import has_recipient_tokens, needs_company, parse_copy_recipients, render_recipient_tokens, validate_manual_draft
+        from bb.mail.providers.smtp import AZURE_MAX_RECIPIENTS
 
         if not box or not box.get("enabled"):
             raise ValueError("Select an enabled sending mailbox.")
@@ -1112,15 +1127,21 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             raise ValueError("Choose a supported message format.")
         subject, body = validate_manual_draft(str(form.get("subject", "")), str(form.get("body", "")),
                                               allow_empty=message_format == "image")
-        to = parse_copy_recipients(str(form.get("to", "")), field_name="To")
-        cc = parse_copy_recipients(str(form.get("cc", "")), field_name="Cc")
-        bcc = parse_copy_recipients(str(form.get("bcc", "")), field_name="Bcc")
+        address_limit = AZURE_MAX_RECIPIENTS if box["provider"] == "azure_smtp" else 20
+        to = parse_copy_recipients(str(form.get("to", "")), field_name="To", limit=address_limit)
+        cc = parse_copy_recipients(str(form.get("cc", "")), field_name="Cc", limit=address_limit)
+        bcc = parse_copy_recipients(str(form.get("bcc", "")), field_name="Bcc", limit=address_limit)
+        reply_to = service.settings_of(box).reply_to
+        if str(form.get("reply_to", "")).strip():
+            reply_to = parse_copy_recipients(str(form["reply_to"]), field_name="Reply-To", limit=1)[0]
         if not to:
             raise ValueError("Enter at least one To email address.")
         if len(set(to + cc + bcc)) != len(to) + len(cc) + len(bcc):
             raise ValueError("A recipient cannot appear in more than one of To, Cc and Bcc.")
         if box["provider"] == "ses" and len(to) + len(cc) + len(bcc) > 50:
             raise ValueError("Amazon SES allows up to 50 recipients per message.")
+        if box["provider"] == "azure_smtp" and len(to) + len(cc) + len(bcc) > AZURE_MAX_RECIPIENTS:
+            raise ValueError(f"Azure Email allows up to {AZURE_MAX_RECIPIENTS} recipients per message.")
         separate = len(to) > 1 and (form.get("separate") == "1" or has_recipient_tokens(subject, body))
         if separate and (cc or bcc):
             raise ValueError("Leave Cc and Bcc empty to create separate drafts for multiple To recipients.")
@@ -1161,7 +1182,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         files = await studio.collect_attachments(form, c["ws"], box["provider"], message_format)
         options = {"ok": True, "reasons": [], "manual": True, "cc": cc, "bcc": bcc,
                    "studio_format": message_format, "image_link": image_link}
-        return await c["db"].save_studio_drafts(box["id"], groups, reply_to=service.settings_of(box).reply_to,
+        return await c["db"].save_studio_drafts(box["id"], groups, reply_to=reply_to,
                                                 subject=subject, body=body, options=options, files=files)
 
     @app.post("/mail/compose")
@@ -1183,7 +1204,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         to_email = str(form.get("to", "") or "").strip().lower()
         to_name = str(form.get("to_name", "") or "").strip()
         instruction = str(form.get("instruction", "") or "").strip()
-        if not box or box["provider"] == "ses" or "@" not in to_email or len(instruction) < 5:
+        if not box or box["provider"] in SEND_ONLY_PROVIDERS or "@" not in to_email or len(instruction) < 5:
             return _redirect("/mail/compose", error="Pick a mailbox, enter the recipient, and say what the email should do.")
         try:
             result = await draft_new(_brain(c["ws"]), service.settings_of(box), box, to_name, to_email, instruction,

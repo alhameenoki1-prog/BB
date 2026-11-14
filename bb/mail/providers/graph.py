@@ -90,14 +90,14 @@ class GraphAccount(MailAccount):
         """An access token from the stored refresh token, through the
         site's app registration (MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT)."""
         from harvey.integrations.microsoft import SCOPE as USER_SCOPE
-        cid = self.env.get("MS_CLIENT_ID", "")
+        cid = self.creds.get("client_id") or self.env.get("MS_CLIENT_ID", "")
         if not cid:
             raise TransientError("the site has no Microsoft app registration configured")
         form = {"client_id": cid, "grant_type": "refresh_token", "refresh_token": self.creds["refresh_token"],
                 "scope": scope or USER_SCOPE}
-        if self.env.get("MS_CLIENT_SECRET"):
+        if not self.creds.get("public_client") and self.env.get("MS_CLIENT_SECRET"):
             form["client_secret"] = self.env["MS_CLIENT_SECRET"]
-        tenant = self.env.get("MS_TENANT") or "common"
+        tenant = self.creds.get("tenant") or self.env.get("MS_TENANT") or "common"
         try:
             async with httpx.AsyncClient(timeout=20) as client:
                 r = await client.post(f"{LOGIN}/{tenant}/oauth2/v2.0/token", data=form)

@@ -202,6 +202,7 @@
       <a href="/sending-providers" class="{{ 'active' if path.startswith('/sending-providers') else '' }}">{{ icon('mail') }}<span class="t">Sending providers</span></a>
       <a href="/mailbox" class="{{ 'active' if path.startswith('/mailbox') or path.startswith('/gmail') else '' }}">{{ icon('mail') }}<span class="t">Mailbox</span></a>
       <a href="/apikey" class="{{ 'active' if path.startswith('/apikey') else '' }}">{{ icon('key') }}<span class="t">AI provider</span></a>
+      <a href="/security/mfa" class="{{ 'active' if path.startswith('/security/mfa') else '' }}">{{ icon('shield') }}<span class="t">Account security</span></a>
     </nav>
     {% if campaign_nav %}<script>
       // Every form on this page acts on the campaign this page shows, even if

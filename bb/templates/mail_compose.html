@@ -32,7 +32,7 @@
   <form method="post" action="/mail/compose" enctype="multipart/form-data" id="studio-form">
     <input type="hidden" name="compose_mode" value="manual">
     <div class="row">
-      <div><label for="manual-mailbox">From</label><select id="manual-mailbox" name="mailbox" required>{% for m in ready %}<option value="{{ m.id }}" data-sender="{{ m.settings_model.display_name or m.address }}">{{ (m.settings_model.display_name ~ ' · ') if m.settings_model.display_name else '' }}{{ m.address }}{{ ' · Amazon SES' if m.provider == 'ses' else '' }}</option>{% endfor %}</select></div>
+      <div><label for="manual-mailbox">From</label><select id="manual-mailbox" name="mailbox" required>{% for m in ready %}<option value="{{ m.id }}" data-sender="{{ m.settings_model.display_name or m.address }}">{{ (m.settings_model.display_name ~ ' · ') if m.settings_model.display_name else '' }}{{ m.address }}{% if m.provider == 'ses' %} · Amazon SES{% elif m.provider == 'azure_smtp' %} · Azure Email SMTP{% endif %}</option>{% endfor %}</select></div>
       <div><label for="manual-to">To</label><input id="manual-to" type="text" name="to" required maxlength="4096" placeholder="john@example.test, ann@example.test"></div>
       <div><label for="manual-name">Name (for one To address)</label><input id="manual-name" type="text" name="to_name" maxlength="150"></div>
       <div><label for="manual-company">Company (for one To address)</label><input id="manual-company" type="text" name="to_company" maxlength="150"></div>
@@ -40,6 +40,7 @@
     <div class="row"><div><label for="manual-cc">Cc (optional)</label><input id="manual-cc" type="text" name="cc" maxlength="4096" placeholder="colleague@example.test"></div><div><label for="manual-bcc">Bcc (optional)</label><input id="manual-bcc" type="text" name="bcc" maxlength="4096" placeholder="private@example.test"></div></div>
     <p class="small muted">Separate addresses with commas. Bcc addresses are hidden from recipients.</p>
     <label class="check"><input type="checkbox" name="separate" value="1"> Create one draft per To address</label>
+    <label for="manual-reply-to">Reply-To (optional)</label><input id="manual-reply-to" type="email" name="reply_to" maxlength="254" placeholder="Use the sender account default">
     <div class="row">
       <div><label for="manual-subject">Subject</label><input id="manual-subject" name="subject" required maxlength="200" placeholder="Meeting request"></div>
       <div><label for="manual-format">Format</label><select id="manual-format" name="message_format">
@@ -63,7 +64,7 @@
     {% if saved_files %}<fieldset style="margin-top:10px"><legend>Saved files</legend>
       {% for file in saved_files %}<label class="check"><input type="checkbox" name="saved_files" value="{{ file.name }}"> {{ file.name }}</label>{% endfor %}
     </fieldset>{% endif %}
-    <p class="small muted">Up to 10 files and 15 MB total. Outlook files must each be under 3 MB.</p>
+    <p class="small muted">Up to 10 files and 15 MB total. Outlook files must each be under 3 MB. Azure Email allows up to 7 MB of files in BB.</p>
     <div class="actions" style="margin-top:12px"><button type="submit" {{ '' if ready else 'disabled' }}>Save draft for review</button></div>
     <details style="margin:12px 0">
       <summary>Saved templates</summary>
@@ -159,7 +160,7 @@
   <h2>{{ 'Another one' if draft else 'Write one' }}</h2>
   <form method="post" action="/mail/compose">
     <div class="row">
-      <div><label>From</label><select name="mailbox">{% for m in ready if m.provider != 'ses' %}<option value="{{ m.id }}">{{ m.address }}{{ '' if m.ready else ' (needs signature & link)' }}</option>{% endfor %}</select></div>
+      <div><label>From</label><select name="mailbox">{% for m in ready if m.provider not in send_only_providers %}<option value="{{ m.id }}">{{ m.address }}{{ '' if m.ready else ' (needs signature & link)' }}</option>{% endfor %}</select></div>
       <div><label>To (email)</label><input type="email" name="to" required placeholder="john@example.com"></div>
       <div><label>Their name</label><input type="text" name="to_name" placeholder="John"></div>
     </div>

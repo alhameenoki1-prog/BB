@@ -3,19 +3,19 @@
 {% block title %}{{ box.address }}{% endblock %}
 {% block content %}
 {% set s = box.settings_model %}
-<div class="page-head"><div><div class="eyebrow">Mail · account</div><h1>{{ box.address }}</h1><p class="lead">{% if box.provider == 'graph' and box.signin %}Connected through Microsoft (full mode).{% else %}{{ {'gmail':'Connected through Google (full mode).','imap':'Connected with a password (limited mode: polled, not pushed).','graph':'Microsoft 365 through the Graph API (full mode).','ses':'Connected through Amazon SES.'}[box.provider] }}{% endif %} {% if box.status == 'ok' %}{{ box.status_detail }}{% endif %}</p></div>
+<div class="page-head"><div><div class="eyebrow">Mail · account</div><h1>{{ box.address }}</h1><p class="lead">{% if box.provider == 'graph' and box.signin %}Connected through Microsoft (full mode).{% else %}{{ {'gmail':'Connected through Google (full mode).','imap':'Connected with a password (limited mode: polled, not pushed).','graph':'Microsoft 365 through the Graph API (full mode).','ses':'Connected through Amazon SES.','azure_smtp':'Connected through Azure Email SMTP.'}[box.provider] }}{% endif %} {% if box.status == 'ok' %}{{ box.status_detail }}{% endif %}</p></div>
   <div class="actions"><form class="inline" method="post" action="/mail/accounts/{{ box.id }}/check"><button class="secondary small" type="submit">Test connection</button></form></div></div>
 
 {% if box.status == 'reconnect' %}
 <div class="card flat" style="border-color:var(--bad)"><b>This mailbox needs reconnecting.</b> {{ box.status_detail }}
   {% if box.provider == 'gmail' %}{% if gmail_available %}<form class="inline" method="post" action="/mail/gmail/connect" style="margin-left:8px"><input type="hidden" name="email" value="{{ box.address }}"><button class="small" type="submit">Reconnect with Google</button></form>{% else %}The site's Google client is missing; the admin must add it.{% endif %}
   {% elif box.provider == 'graph' and box.signin %}{% if ms_available %}<form class="inline" method="post" action="/mail/microsoft/connect" style="margin-left:8px"><input type="hidden" name="email" value="{{ box.address }}"><button class="small" type="submit">Reconnect with Microsoft</button></form>{% else %}The site's Microsoft app registration is missing; the admin must add it.{% endif %}
-  {% elif box.provider == 'graph' %}Enter the app's client secret again below (a new one if the old one expired).{% elif box.provider == 'ses' %}<a href="/mail/ses?mailbox={{ box.id }}">Review the AWS connection</a>.{% else %}Enter the password again below.{% endif %}
+  {% elif box.provider == 'graph' %}Enter the app's client secret again below (a new one if the old one expired).{% elif box.provider == 'ses' %}<a href="/mail/ses?mailbox={{ box.id }}">Review the AWS connection</a>.{% elif box.provider == 'azure_smtp' %}Enter the Azure SMTP username and Entra client secret below.{% else %}Enter the password again below.{% endif %}
 </div>
 {% elif box.status == 'error' %}
 <div class="card flat" style="border-color:var(--warn)"><b>Could not reach the mailbox just now.</b> {{ box.status_detail }} The worker keeps trying; nothing else is affected.</div>
 {% endif %}
-{% if box.provider == 'ses' %}<p><a href="/mail/ses?mailbox={{ box.id }}">AWS connection and feedback</a></p>{% elif not box.ready %}<div class="card flat" style="border-color:var(--warn)"><b>Not ready to send campaign mail.</b> {{ box.ready_why }}</div>{% endif %}
+{% if box.provider == 'ses' %}<p><a href="/mail/ses?mailbox={{ box.id }}">AWS connection and feedback</a></p>{% elif box.provider == 'azure_smtp' %}<p><a href="/mail/compose">Write a message in Studio</a></p>{% elif not box.ready %}<div class="card flat" style="border-color:var(--warn)"><b>Not ready to send campaign mail.</b> {{ box.ready_why }}</div>{% endif %}
 
 <form method="post" action="/mail/accounts/{{ box.id }}">
 <div class="card">
@@ -64,8 +64,21 @@
     <form method="post" action="/mail/accounts/imap" style="margin-top:8px"><input type="hidden" name="email" value="{{ box.address }}"><div class="row"><div><label>New password / app password</label><input type="password" name="password" required></div><div style="display:flex;align-items:flex-end"><button class="secondary" type="submit">Reconnect</button></div></div></form>
   </details>
   {% endif %}
+  {% if box.provider == 'azure_smtp' %}
+  <details style="margin-top:10px" {{ 'open' if box.status == 'reconnect' else '' }}>
+    <summary class="small muted">Reconnect Azure sender</summary>
+    <form method="post" action="/mail/accounts/azure-smtp" style="margin-top:8px">
+      <input type="hidden" name="email" value="{{ box.address }}">
+      <div class="row">
+        <div><label for="azure-reconnect-user">Azure SMTP username</label><input id="azure-reconnect-user" name="username" value="{{ creds.username }}" required maxlength="512" autocomplete="username"></div>
+        <div><label for="azure-reconnect-secret">Entra client secret</label><input id="azure-reconnect-secret" type="password" name="client_secret" required maxlength="512" autocomplete="new-password"></div>
+      </div>
+      <div class="actions" style="margin-top:8px"><button class="secondary" type="submit">Reconnect Azure sender</button></div>
+    </form>
+  </details>
+  {% endif %}
   <div class="actions" style="margin-top:14px">
-    {% if box.provider != 'ses' %}
+    {% if box.provider not in send_only_providers %}
     <form class="inline" method="post" action="/mail/accounts/{{ box.id }}/sync"><button class="secondary small" type="submit">Sync now</button></form>
     <form class="inline" method="post" action="/mail/accounts/{{ box.id }}/resync" onsubmit="return confirm('Read the whole mailbox again? Nothing is duplicated.')"><button class="secondary small" type="submit">Full re-sync</button></form>
     {% endif %}

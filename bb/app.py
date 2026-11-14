@@ -439,9 +439,67 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             throttle.record(key)
             return await render(request, "login.html", error="Wrong email or password.")
         throttle.reset(key)
+        if accounts.totp_enabled(user["id"]):
+            response = _redirect("/login/totp")
+            response.set_cookie("bb_mfa_pending", accounts.new_mfa_challenge(user["id"]), max_age=300,
+                                httponly=True, samesite="lax", secure=settings.secure_cookies, path="/login")
+            return response
         token = accounts.create_session(user["id"], settings.session_days * 86400)
         response = _redirect("/")
         set_session_cookie(response, token)
+        return response
+
+    @app.get("/login/totp", response_class=HTMLResponse)
+    async def login_totp(request: Request):
+        if not request.cookies.get("bb_mfa_pending"):
+            return _redirect("/login", error="Your verification session expired. Sign in again.")
+        return await render(request, "login_totp.html")
+
+    @app.post("/login/totp")
+    async def login_totp_verify(request: Request, code: str = Form("")):
+        key = "totp:" + (request.client.host if request.client else "unknown")
+        if not throttle.allow(key):
+            return await render(request, "login_totp.html", error="Too many attempts. Wait before trying again.")
+        user = accounts.complete_mfa_challenge(request.cookies.get("bb_mfa_pending", ""), settings.secret_key(), code)
+        if not user:
+            throttle.record(key)
+            return await render(request, "login_totp.html", error="Incorrect or expired authenticator code.")
+        throttle.reset(key)
+        response = _redirect("/")
+        set_session_cookie(response, accounts.create_session(user["id"], settings.session_days * 86400))
+        response.delete_cookie("bb_mfa_pending", path="/login")
+        return response
+
+    @app.get("/security/mfa", response_class=HTMLResponse)
+    async def security_mfa(request: Request, user: dict = Depends(current_user)):
+        from bb import totp
+
+        enabled = accounts.totp_enabled(user["id"])
+        secret = "" if enabled else accounts.totp_secret(user["id"], settings.secret_key(), confirmed_only=False)
+        if not enabled and not secret:
+            try:
+                secret = accounts.begin_totp_enrollment(user["id"], settings.secret_key())
+            except ValueError:
+                enabled = True
+        response = await render(request, "mfa_setup.html", user, mfa_enabled=enabled,
+                                mfa_secret=secret, mfa_uri=totp.provisioning_uri(user["email"], secret) if secret else "")
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post("/security/mfa/confirm")
+    async def security_mfa_confirm(user: dict = Depends(current_user), code: str = Form("")):
+        if not accounts.confirm_totp(user["id"], settings.secret_key(), code):
+            return _redirect("/security/mfa", error="The authenticator code did not match.")
+        response = _redirect("/security/mfa", msg="Authenticator verification enabled.")
+        set_session_cookie(response, accounts.create_session(user["id"], settings.session_days * 86400))
+        return response
+
+    @app.post("/security/mfa/disable")
+    async def security_mfa_disable(user: dict = Depends(current_user), code: str = Form("")):
+        if not accounts.disable_totp(user["id"], settings.secret_key(), code):
+            return _redirect("/security/mfa", error="Incorrect authenticator code.")
+        response = _redirect("/login", msg="Authenticator verification disabled. Sign in again.")
+        response.delete_cookie(SESSION_COOKIE, path="/")
         return response
 
     @app.post("/logout")
@@ -735,6 +793,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         provider = ws.mail_provider()
         labels = {"gmail": "Gmail", "microsoft": "Microsoft", "microsoft_app": "Microsoft 365 app",
                   "smtp": "SMTP / IMAP"}
+        mailboxes = []
+        if ws.mail_db_path.exists():
+            db = ws.mail_db()
+            await db.init()
+            mailboxes = await db.mailboxes(include_disabled=False)
         return await render(
             request, "sending_providers.html", user,
             active_label=labels.get(provider, "No provider selected"),
@@ -743,6 +806,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             gmail_connected=ws.gmail_connected(),
             microsoft_connected=ws.microsoft_connected() or ws.m365_configured(),
             smtp_connected=ws.smtp_configured(),
+            studio_providers={m["provider"] for m in mailboxes if m["status"] == "ok"},
         )
 
     # ── mailbox: Gmail (OAuth) or the mailbox's own SMTP/IMAP ──

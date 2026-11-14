@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 import bb.workspaces as ws_mod
 from bb import gmail_oauth
-from bb.accounts import Accounts, hash_password, verify_password
+from bb.accounts import Accounts, MIN_PASSWORD, hash_password, verify_password
 from bb.app import create_app
 from bb.settings import Settings
 from bb.workspaces import Workspace
@@ -69,6 +69,32 @@ def _login(client, email, password):
 def _admin(client):
     assert _login(client, **ADMIN).status_code == 303
     return client
+
+
+def test_authenticator_enrollment_survives_sign_out_and_requires_a_code(client):
+    from bb import totp
+
+    _admin(client)
+    accounts = Accounts(client.settings.accounts_db)
+    user = accounts.get_by_email(ADMIN["email"])
+    setup = client.get("/security/mfa")
+    assert setup.status_code == 200 and setup.headers["Cache-Control"] == "no-store"
+    key = client.settings.secret_key()
+    secret = accounts.totp_secret(user["id"], key, confirmed_only=False)
+    code = totp.current_code(secret)
+    assert client.post("/security/mfa/confirm", data={"code": code}).status_code == 303
+    client.post("/logout")
+
+    login = _login(client, **ADMIN)
+    assert login.headers["location"] == "/login/totp"
+    ticket = client.cookies.get("bb_mfa_pending")
+    assert ticket and not client.cookies.get("bb_session")
+    assert client.get("/mail/accounts").headers["location"] == "/login"
+    wrong = "123456" if code != "123456" else "654321"
+    assert "Incorrect or expired authenticator code" in client.post("/login/totp", data={"code": wrong}).text
+    assert client.post("/login/totp", data={"code": code}).headers["location"] == "/"
+    assert accounts.complete_mfa_challenge(ticket, key, code) is None
+    assert client.get("/mail/accounts").status_code == 200
 
 
 def _make_user(client):
@@ -133,7 +159,7 @@ def test_login_is_throttled(client):
 def test_admin_creates_users_and_users_are_not_admins(client):
     _admin(client)
     weak = client.post("/admin/users", data={"email": USER["email"], "password": "short"})
-    assert "at%20least%2010" in weak.headers["location"]
+    assert f"at%20least%20{MIN_PASSWORD}" in weak.headers["location"]
     user = _make_user(client)
     assert user["role"] == "user" and not user["disabled"]
     dup = client.post("/admin/users", data={"email": USER["email"], "password": USER["password"]})
@@ -787,7 +813,7 @@ def test_cli_creates_and_resets_accounts(tmp_path, monkeypatch, capsys):
     assert "already exists" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         cli.main(["create-user", "weak@example.com", "--password", "short"])
-    assert "at least 10" in capsys.readouterr().out
+    assert f"at least {MIN_PASSWORD}" in capsys.readouterr().out
 
     cli.main(["reset-password", "boss@example.com", "--password", "another-long-one-2"])
     assert "Password changed" in capsys.readouterr().out

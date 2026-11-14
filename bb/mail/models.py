@@ -4,8 +4,9 @@ import re
 
 from pydantic import BaseModel, Field, field_validator
 
-PROVIDERS = ("gmail", "imap", "graph", "ses")
-MODES = ("full", "limited")
+PROVIDERS = ("gmail", "imap", "graph", "ses", "azure_smtp")
+SEND_ONLY_PROVIDERS = frozenset(("ses", "azure_smtp"))
+MODES = ("full", "limited", "send_only")
 STATUSES = ("new", "ok", "reconnect", "error", "disabled")
 COLORS = ("blue", "green", "orange", "purple", "pink", "teal", "red", "slate")
 
