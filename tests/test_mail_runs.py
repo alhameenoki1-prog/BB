@@ -338,7 +338,7 @@ def test_mail_review_reject_all(mail_client, monkeypatch):
                          "VALUES ('dsent', ?, 'sent', ?, ?)", (mid, now, now))
     asyncio.run(seed())
 
-    assert "Reject all" in client.get("/mail/review").text
+    assert 'action="/mail/review/reject-all"' in client.get("/mail/review").text
 
     r = client.post("/mail/review/reject-all")
     assert r.status_code == 303 and "Discarded%203" in r.headers["location"]

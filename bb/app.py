@@ -17,6 +17,7 @@ from urllib.parse import quote, urlparse
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
@@ -25,6 +26,7 @@ from bb import gmail_oauth, microsoft_oauth, recipients as recipients_mod
 from bb.linkcheck import check_public_url
 from bb.mail_autoconfig import guess_settings
 from bb.mail_paste import parse_pasted_login, to_smtp_fields
+from bb.navigation import workspace_navigation
 from bb.accounts import Accounts, LoginThrottle
 from bb.settings import Settings
 from harvey.listclean import EMAIL_RE
@@ -311,6 +313,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                   "restart; `python -m bb tunnel stop` ends it.", flush=True)
 
     app = FastAPI(title="BB", docs_url=None, redoc_url=None, lifespan=lifespan)
+    app.mount("/assets/bb", StaticFiles(directory=TEMPLATES_DIR.parent / "static"), name="bb_assets")
+    fonts_dir = TEMPLATES_DIR.parents[1] / "harvey" / "web" / "fonts"
+    app.mount("/assets/fonts", StaticFiles(directory=fonts_dir), name="bb_fonts")
     app.state.settings = settings
     app.state.accounts = accounts
     app.state.tunnel = tunnel
@@ -402,6 +407,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             "main": current.is_main}
         return templates.TemplateResponse(request, name, {
             "user": user, "summary": summary, "settings": settings, "campaign_nav": campaign_nav,
+            "workspace_nav": workspace_navigation(request.url.path, user["role"] == "admin") if user else None,
             "msg": request.query_params.get("msg", ""),
             "error": ctx.pop("error", "") or request.query_params.get("error", ""),
             **ctx,
@@ -513,18 +519,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request, user: dict = Depends(current_user)):
+        from bb.mail import service as mail_service
+
         ws = workspace_for(user)
         revived = ws.revive_worker()
         health = await ws.mailbox_health()
         return await render(request, "dashboard.html", user, max_test_send=MAX_TEST_SEND, logs=ws.log_tail(40), activity=ws.recent_activity(30),
                             bounces=await ws.bounce_summary(), stale=await ws.stale_queued(), health=health,
+                            mail_overview=await mail_service.overview_counts(ws),
                             reconnect=ws.needs_reconnect(health),
                             problems=settings.problems() if user["role"] == "admin" else [],
                             msg=revived or request.query_params.get("msg", ""))
 
     @app.get("/api/summary")
-    async def api_summary(user: dict = Depends(current_user)):
+    async def api_summary(user: dict = Depends(current_user), c: str = ""):
         ws = workspace_for(user)
+        target = ws.campaign(c) if c else None
+        if target is not None:
+            ws = target.ensure()
         ws.revive_worker()
         return await ws.summary()
 

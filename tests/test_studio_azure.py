@@ -77,7 +77,7 @@ def test_azure_smtp_coexists_with_inbox_and_retains_reviewed_message(azure_studi
     assert not asyncio.run(Jobs(db).list())
 
     page = BeautifulSoup(client.get("/mail/compose").text, "html.parser")
-    assert "Azure Email SMTP" in page.select_one(f'#manual-mailbox option[value="{mailbox}"]').text
+    assert page.select_one(f'#manual-mailbox option[value="{mailbox}"]').get_text(strip=True).endswith(" · Azure Email")
     assert page.find("label", attrs={"for": "manual-reply-to"})
     response = _create(
         client, mailbox, subject="Original subject", reply_to="replies@example.test",

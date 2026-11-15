@@ -1269,14 +1269,14 @@ def test_cli_status_and_env_file(tmp_path, monkeypatch, capsys):
     assert "Admins (they see Users at https://site.test/admin/users): u@x.test" in capsys.readouterr().out
 
 
-def test_admin_link_sits_near_the_top_of_the_menu(client):
-    """The menu grew past a laptop screen once; the Admin entry must not
-    depend on scrolling, and the menu itself must scroll."""
+def test_admin_link_has_a_separate_settings_menu(client):
+    """Administration stays outside the scrolling list of daily tasks."""
+    from bs4 import BeautifulSoup
+
     _admin(client)
-    page = client.get("/").text
-    menu = page.split('<nav class="nav">')[1].split("</nav>")[0]
-    assert menu.index('href="/admin/users"') < menu.index('href="/mail"')
-    assert ".nav { flex:1 1 auto; min-height:0; overflow-y:auto;" in page
+    page = BeautifulSoup(client.get("/").text, "html.parser")
+    assert page.select_one('.side nav[aria-label="Workspace settings"] a[href="/admin/users"]')
+    assert not page.select_one('.side nav[aria-label="Workspace"] a[href="/admin/users"]')
     _make_user(client)
     client.cookies.clear()
     _login(client, **USER)
@@ -1670,7 +1670,7 @@ def test_mail_sender_pages_are_integrated_and_session_protected(client):
     _admin(client)
     overview = client.get("/mail")
     assert overview.status_code == 200
-    assert "Command center" in overview.text
+    assert "Mail status" in overview.text
     assert "/mail/accounts" in overview.text
     assert "/mail/jobs" in overview.text
     assert client.get("/mail/accounts").status_code == 200
