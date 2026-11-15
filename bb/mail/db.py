@@ -7,6 +7,7 @@ activity feed are tables, not memory: a closed tab or a restarted
 process loses nothing.
 """
 
+import asyncio
 import json
 import sqlite3
 import secrets
@@ -295,7 +296,17 @@ class MailDB:
             # Configure contention handling before WAL setup: concurrent startup
             # can otherwise fail at journal_mode before busy_timeout is active.
             await db.execute("PRAGMA busy_timeout=15000")
-            await db.execute("PRAGMA journal_mode=WAL")
+            # SQLite may return SQLITE_BUSY immediately when two connections
+            # switch/check journal mode concurrently, despite busy_timeout.
+            # Retry only transient lock errors; preserve other failures.
+            for attempt in range(6):
+                try:
+                    await db.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if exc.sqlite_errorcode not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) or attempt == 5:
+                        raise
+                    await asyncio.sleep(0.05 * (attempt + 1))
             async with db.execute("PRAGMA user_version") as cur:
                 version = (await cur.fetchone())[0]
             if version >= len(MIGRATIONS):
