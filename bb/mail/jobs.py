@@ -222,15 +222,21 @@ class Jobs:
         # A cancelled send could have already been accepted remotely.
         # Keep it in the dead-letter review instead of silently resending.
         current = now_iso()
-        await self.db.execute(
-            "UPDATE jobs SET status = 'dead', locked_at = NULL, last_error = CASE kind WHEN 'calendar_invite' THEN ? ELSE ? END, "
-            "updated_at = ?, finished_at = ? "
-            "WHERE id = ? AND status = 'running' AND kind IN (?, ?)",
-            (UNCERTAIN_INVITE_NOTE, UNCERTAIN_SEND_NOTE, current, current, job_id, *DELIVERY_KINDS))
-        await self.db.execute(
-            "UPDATE jobs SET status = 'queued', locked_at = NULL, attempts = MAX(0, attempts - 1), last_error = ?, "
-            "updated_at = ? WHERE id = ? AND status = 'running' AND kind NOT IN (?, ?)",
-            (note[:600], current, job_id, *DELIVERY_KINDS))
+        # Both transitions belong to one logical release. A competing claim
+        # must not observe the delivery quarantine committed separately from
+        # the safe-job requeue.
+        async with self.db._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                "UPDATE jobs SET status = 'dead', locked_at = NULL, last_error = CASE kind WHEN 'calendar_invite' THEN ? ELSE ? END, "
+                "updated_at = ?, finished_at = ? "
+                "WHERE id = ? AND status = 'running' AND kind IN (?, ?)",
+                (UNCERTAIN_INVITE_NOTE, UNCERTAIN_SEND_NOTE, current, current, job_id, *DELIVERY_KINDS))
+            await db.execute(
+                "UPDATE jobs SET status = 'queued', locked_at = NULL, attempts = MAX(0, attempts - 1), last_error = ?, "
+                "updated_at = ? WHERE id = ? AND status = 'running' AND kind NOT IN (?, ?)",
+                (note[:600], current, job_id, *DELIVERY_KINDS))
+            await db.commit()
 
     async def retry(self, job_id: str, *, delivery_reviewed: bool = True) -> bool:
         """Retry one selected job. Web callers supply the user's delivery confirmation."""
