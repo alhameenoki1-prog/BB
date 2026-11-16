@@ -83,6 +83,39 @@ def test_studio_campaign_accepts_more_than_fifty_addresses(studio_client):
     assert len(asyncio.run(db.query("SELECT id FROM drafts WHERE status = 'approved'"))) == 60
 
 
+def test_assisted_studio_draft_keeps_uploaded_file_for_delivery(studio_client, monkeypatch):
+    from bb.mail import drafting
+
+    async def fake_draft(*_args, **_kwargs):
+        return {"subject": "Scope", "body": "Please review the attached scope.",
+                "qa": {"ok": True}, "attempts": 1, "confidence_reason": "test", "confidence": "high"}
+
+    monkeypatch.setattr(drafting, "draft_new", fake_draft)
+    client, db, secret, mailbox, _ = studio_client
+    asyncio.run(db.execute("UPDATE mailboxes SET settings_json = ? WHERE id = ?",
+                           (json.dumps({"display_name": "Studio Team", "signature_html": "Studio Team",
+                                        "project_link": "https://example.test/scope"}), mailbox)))
+    response = client.post("/mail/compose", data={"mailbox": mailbox, "to": "john.smith@example.test",
+                       "instruction": "Describe the project scope"},
+                       files={"files": ("scope.pdf", b"PDF for testing", "application/pdf")})
+    assert "/mail/compose?draft=" in response.headers["location"]
+    draft = asyncio.run(db.one("SELECT * FROM drafts"))
+    files = asyncio.run(db.studio_files(draft["studio_id"], include_data=True))
+    assert [(f["name"], f["data"]) for f in files] == [("scope.pdf", b"PDF for testing")]
+    assert "scope.pdf" in client.get(response.headers["location"]).text
+    delivered = []
+
+    async def fake_send(message, **_options):
+        delivered.append(message.as_bytes())
+        return {}, "accepted"
+
+    monkeypatch.setattr(aiosmtplib, "send", fake_send)
+    client.post(f"/mail/drafts/{draft['id']}/send")
+    assert asyncio.run(_work(db, secret))["status"] == "sent"
+    parsed = BytesParser(policy=policy.default).parsebytes(delivered[0])
+    assert next(parsed.iter_attachments()).get_payload(decode=True) == b"PDF for testing"
+
+
 async def _work(db, secret):
     queue = Jobs(db)
     job = await queue.claim()

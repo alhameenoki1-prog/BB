@@ -199,7 +199,7 @@
 </div>
 <details class="card">
   <summary>Write with AI</summary>
-  <form method="post" action="/mail/compose">
+  <form method="post" action="/mail/compose" enctype="multipart/form-data">
     <div class="row">
       <div><label for="assisted-from">From</label><select id="assisted-from" name="mailbox">{% for m in ready if m.provider not in send_only_providers %}<option value="{{ m.id }}">{{ m.address }}{{ '' if m.ready else ' (needs signature & link)' }}</option>{% endfor %}</select></div>
       <div><label for="assisted-to">To (email)</label><input type="email" id="assisted-to" name="to" required placeholder="john@example.com"></div>
@@ -214,6 +214,8 @@
       <button type="button" class="secondary" data-compose-guide="thank-you">Thank-you</button>
     </div>
     <textarea name="instruction" id="compose-instruction" rows="6" required minlength="5" maxlength="5000" placeholder="Describe the message, tone, context and any information that must be included."></textarea>
+    <label for="assisted-files">Attachments <span class="optional-label">Optional</span></label>
+    <input id="assisted-files" type="file" name="files" multiple>
     <p class="small muted" id="compose-guide-status" role="status" aria-live="polite">Choose a guide to fill the instructions; you can edit everything before drafting.</p>
     <script>
     (() => {

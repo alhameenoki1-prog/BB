@@ -1236,12 +1236,20 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                 if len(ids) > 1:
                     return _redirect("/mail/review", msg=f"Saved {len(ids)} individual drafts for review.")
                 return _redirect(f"/mail/compose?draft={ids[0]}", msg="Draft saved for review.")
+            to_email = str(form.get("to", "") or "").strip().lower()
+            to_name = str(form.get("to_name", "") or "").strip()
+            instruction = str(form.get("instruction", "") or "").strip()
+            if not box or box["provider"] in SEND_ONLY_PROVIDERS or "@" not in to_email or len(instruction) < 5:
+                return _redirect("/mail/compose", error="Pick a mailbox, enter the recipient, and say what the email should do.")
+            try:
+                from bb.mail import studio
+                uploads = await studio.collect_attachments(form, c["ws"], box["provider"], "rich")
+            except (ValueError, OSError) as exc:
+                return _redirect("/mail/compose", error=str(exc))
             form = dict(form)
         to_email = str(form.get("to", "") or "").strip().lower()
         to_name = str(form.get("to_name", "") or "").strip()
         instruction = str(form.get("instruction", "") or "").strip()
-        if not box or box["provider"] in SEND_ONLY_PROVIDERS or "@" not in to_email or len(instruction) < 5:
-            return _redirect("/mail/compose", error="Pick a mailbox, enter the recipient, and say what the email should do.")
         try:
             result = await draft_new(_brain(c["ws"]), service.settings_of(box), box, to_name, to_email, instruction,
                                      scope=_scope_for(c, box["address"]))
@@ -1255,6 +1263,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
              result["subject"], result["body"], json.dumps({**result["qa"], "attempts": result["attempts"],
                                                           "confidence_reason": result["confidence_reason"]}),
              result["confidence"], now, now))
+        await c["db"].save_draft_files(draft_id, uploads)
         return _redirect(f"/mail/compose?draft={draft_id}", msg="Draft ready. Edit it, then send.")
 
     # ── reply runs: pick the unreplied threads, draft them all, route by mode ──

@@ -270,8 +270,8 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
                 (mailbox["id"], address)):
             raise SendRefused(f"Amazon SES reported a permanent bounce or complaint for {address}.")
     attachments = await _reply_attachments(db, env, draft)
+    attachments.extend(Attachment(**row) for row in await db.studio_files(draft.get("studio_id", ""), include_data=True))
     if mode:
-        attachments.extend(Attachment(**row) for row in await db.studio_files(draft.get("studio_id", ""), include_data=True))
         if mode == "image" and not any(isinstance(file, Attachment) and file.content_id for file in attachments):
             raise SendRefused("The inline image is missing from this draft.")
         if len(to) > 1 and has_recipient_tokens(draft["subject"], draft["body"]):

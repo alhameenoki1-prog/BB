@@ -381,6 +381,21 @@ class MailDB:
         inline = " AND content_id != ''" if inline_only else ""
         return await self.query(f"SELECT {columns} FROM studio_files WHERE studio_id = ?{inline} ORDER BY position", (bundle,))
 
+    async def save_draft_files(self, draft_id: str, files: list) -> None:
+        """Attach an immutable upload bundle to an assisted Studio draft."""
+        if not files:
+            return
+        async with self._connect() as db:
+            await db.execute("UPDATE drafts SET studio_id = ? WHERE id = ? AND status = 'pending_review'",
+                             (draft_id, draft_id))
+            await db.executemany(
+                "INSERT INTO studio_files(studio_id, position, name, content_type, content_id, data) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(draft_id, i, file.name, file.content_type, file.content_id, file.data)
+                 for i, file in enumerate(files)],
+            )
+            await db.commit()
+
     async def discard_draft(self, draft_id: str) -> bool:
         async with self._connect() as db:
             result = await db.execute(
