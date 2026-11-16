@@ -300,7 +300,7 @@ DEFAULT_BACKFILL_DAYS = 365
 
 
 async def run_sync(db: MailDB, secret: str, mailbox: dict, env: dict, jobs: Jobs, job_id: str,
-                   backfill: bool) -> dict:
+                   backfill: bool, expected_attempt: int | None = None) -> dict:
     """Mirror new mail into the database. Progress is written to the job
     as it goes ("Synced 2,340 / 11,200"), the mailbox's sync state is
     saved after every batch so a crash resumes rather than restarts, and
@@ -317,7 +317,7 @@ async def run_sync(db: MailDB, secret: str, mailbox: dict, env: dict, jobs: Jobs
     async def on_batch(msgs, done, total):
         totals["new"] += await ingest.store_batch(msgs)
         totals["seen"], totals["total"] = done, max(total, done)
-        await jobs.progress(job_id, done=done, total=totals["total"], new=totals["new"], phase="backfill" if backfill else "sync")
+        await jobs.progress(job_id, expected_attempt=expected_attempt, done=done, total=totals["total"], new=totals["new"], phase="backfill" if backfill else "sync")
 
     try:
         if backfill:
