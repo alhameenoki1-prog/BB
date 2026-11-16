@@ -233,9 +233,9 @@ class Jobs:
                 "WHERE id = ? AND status = 'running' AND kind IN (?, ?) AND (? IS NULL OR attempts = ?)",
                 (UNCERTAIN_INVITE_NOTE, UNCERTAIN_SEND_NOTE, current, current, job_id, *DELIVERY_KINDS, expected_attempt, expected_attempt))
             await db.execute(
-                "UPDATE jobs SET status = 'queued', locked_at = NULL, attempts = MAX(0, attempts - 1), last_error = ?, "
+                "UPDATE jobs SET status = 'queued', locked_at = NULL, attempts = CASE WHEN ? IS NULL THEN MAX(0, attempts - 1) ELSE attempts END, last_error = ?, "
                 "updated_at = ? WHERE id = ? AND status = 'running' AND kind NOT IN (?, ?) AND (? IS NULL OR attempts = ?)",
-                (note[:600], current, job_id, *DELIVERY_KINDS, expected_attempt, expected_attempt))
+                (expected_attempt, note[:600], current, job_id, *DELIVERY_KINDS, expected_attempt, expected_attempt))
             await db.commit()
 
     async def retry(self, job_id: str, *, delivery_reviewed: bool = True) -> bool:
