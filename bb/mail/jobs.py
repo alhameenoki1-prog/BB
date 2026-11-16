@@ -179,26 +179,41 @@ class Jobs:
             await db.commit()
 
     async def fail(self, job_id: str, error: str) -> str:
-        """Retry with backoff, or mark dead after the last attempt. Returns
-        the new status."""
-        job = await self.db.one("SELECT attempts, max_attempts, status FROM jobs WHERE id = ?", (job_id,))
-        # A late worker failure must not revive a quarantined, completed, or
-        # explicitly discarded job after another worker changed its state.
-        if job and job["status"] != "running":
-            return job["status"]
-        if not job:
-            return "missing"
+        """Atomically inspect the current attempt and schedule retry/death.
+
+        A competing completion or release must not change state between the
+        attempt-count read and this transition.
+        """
         now = datetime.now(timezone.utc)
-        if job["attempts"] >= job["max_attempts"]:
-            await self.db.execute(
-                "UPDATE jobs SET status = 'dead', locked_at = NULL, last_error = ?, updated_at = ?, finished_at = ? "
-                "WHERE id = ? AND status = 'running'", (error[:600], _iso(now), _iso(now), job_id))
-            return "dead"
-        wait = min(BACKOFF_CAP_SECONDS, BACKOFF_BASE_SECONDS * (2 ** (job["attempts"] - 1)))
-        await self.db.execute(
-            "UPDATE jobs SET status = 'queued', locked_at = NULL, last_error = ?, run_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
-            (error[:600], _iso(now + timedelta(seconds=wait)), _iso(now), job_id))
-        return "queued"
+        async with self.db._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT attempts, max_attempts, status FROM jobs WHERE id = ?", (job_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                await db.commit()
+                return "missing"
+            attempts, max_attempts, status = row
+            if status != "running":
+                await db.commit()
+                return status
+            if attempts >= max_attempts:
+                await db.execute(
+                    "UPDATE jobs SET status = 'dead', locked_at = NULL, last_error = ?, updated_at = ?, finished_at = ? "
+                    "WHERE id = ? AND status = 'running'",
+                    (error[:600], _iso(now), _iso(now), job_id),
+                )
+                await db.commit()
+                return "dead"
+            wait = min(BACKOFF_CAP_SECONDS, BACKOFF_BASE_SECONDS * (2 ** (attempts - 1)))
+            await db.execute(
+                "UPDATE jobs SET status = 'queued', locked_at = NULL, last_error = ?, run_at = ?, updated_at = ? "
+                "WHERE id = ? AND status = 'running'",
+                (error[:600], _iso(now + timedelta(seconds=wait)), _iso(now), job_id),
+            )
+            await db.commit()
+            return "queued"
 
     async def release(self, job_id: str, note: str = "worker stopped") -> None:
         """Put a job back without counting the try: the worker stopped (a
