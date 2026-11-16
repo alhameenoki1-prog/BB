@@ -1135,7 +1135,8 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             raise ValueError("Choose a supported message format.")
         subject, body = validate_manual_draft(str(form.get("subject", "")), str(form.get("body", "")),
                                               allow_empty=message_format == "image")
-        address_limit = AZURE_MAX_RECIPIENTS if box["provider"] == "azure_smtp" else 20
+        campaign = str(form.get("delivery_mode", "")) == "campaign"
+        address_limit = 50 if campaign else (AZURE_MAX_RECIPIENTS if box["provider"] == "azure_smtp" else 20)
         to = parse_copy_recipients(str(form.get("to", "")), field_name="To", limit=address_limit)
         cc = parse_copy_recipients(str(form.get("cc", "")), field_name="Cc", limit=address_limit)
         bcc = parse_copy_recipients(str(form.get("bcc", "")), field_name="Bcc", limit=address_limit)
@@ -1150,7 +1151,9 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             raise ValueError("Amazon SES allows up to 50 recipients per message.")
         if box["provider"] == "azure_smtp" and len(to) + len(cc) + len(bcc) > AZURE_MAX_RECIPIENTS:
             raise ValueError(f"Azure Email allows up to {AZURE_MAX_RECIPIENTS} recipients per message.")
-        separate = len(to) > 1 and (form.get("separate") == "1" or has_recipient_tokens(subject, body))
+        if campaign and (cc or bcc):
+            raise ValueError("Leave Cc and Bcc empty for an individual campaign send.")
+        separate = len(to) > 1 and (campaign or form.get("separate") == "1" or has_recipient_tokens(subject, body))
         if separate and (cc or bcc):
             raise ValueError("Leave Cc and Bcc empty to create separate drafts for multiple To recipients.")
         name = str(form.get("to_name", "")).strip() if len(to) == 1 else ""
@@ -1205,6 +1208,18 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                     ids = await _compose_manual(c, box, form)
                 except (ValueError, OSError) as exc:
                     return _redirect("/mail/compose", error=str(exc))
+                if str(form.get("delivery_mode", "")) == "campaign":
+                    ok, why = service.ready_to_send(box, manual=True)
+                    if not ok:
+                        return _redirect("/mail/review", error=why)
+                    queued = 0
+                    jobs = Jobs(c["db"])
+                    for draft_id in ids:
+                        d = await _draft_row(c["db"], draft_id)
+                        queued += await jobs.approve_draft(d, body=d["body"], subject=d["subject"], reply_to=d["reply_to"])
+                    if queued and not c["ws"].mail_worker_running():
+                        c["ws"].start_mail_worker()
+                    return _redirect("/mail/review", msg=f"Queued {queued} individual campaign messages. Check recent activity for delivery status.")
                 if len(ids) > 1:
                     return _redirect("/mail/review", msg=f"Saved {len(ids)} individual drafts for review.")
                 return _redirect(f"/mail/compose?draft={ids[0]}", msg="Draft saved for review.")

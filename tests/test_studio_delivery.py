@@ -54,6 +54,27 @@ def _create(client, mailbox, *, files=None, **values):
     })
 
 
+def test_studio_campaign_queues_one_private_message_per_pasted_address(studio_client):
+    client, db, _, mailbox, _ = studio_client
+    response = _create(client, mailbox, to="john.smith@example.test; ann.lee@example.test, JOHN.SMITH@example.test",
+                       delivery_mode="campaign")
+    assert "Queued%202%20individual" in response.headers["location"]
+    drafts = asyncio.run(db.query("SELECT * FROM drafts ORDER BY rowid"))
+    assert len(drafts) == 2
+    assert [json.loads(d["to_json"])[0]["email"] for d in drafts] == [
+        "john.smith@example.test", "ann.lee@example.test"]
+    assert all(d["status"] == "approved" and len(json.loads(d["to_json"])) == 1 for d in drafts)
+    assert len(asyncio.run(Jobs(db).list())) == 2
+
+
+def test_studio_campaign_rejects_cc_without_creating_drafts(studio_client):
+    client, db, _, mailbox, _ = studio_client
+    response = _create(client, mailbox, to="john.smith@example.test; ann.lee@example.test",
+                       cc="copy@example.test", delivery_mode="campaign")
+    assert "Leave%20Cc%20and%20Bcc%20empty" in response.headers["location"]
+    assert asyncio.run(db.query("SELECT * FROM drafts")) == []
+
+
 async def _work(db, secret):
     queue = Jobs(db)
     job = await queue.claim()
