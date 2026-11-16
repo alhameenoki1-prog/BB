@@ -156,15 +156,27 @@ class Jobs:
     async def complete(self, job_id: str, **result):
         """Mark done; the result is merged into the progress already recorded."""
         now = now_iso()
-        row = await self.db.one("SELECT progress_json FROM jobs WHERE id = ?", (job_id,))
-        try:
-            progress = json.loads((row or {}).get("progress_json") or "{}")
-        except ValueError:
-            progress = {}
-        progress.update(result)
-        await self.db.execute(
-            "UPDATE jobs SET status = 'done', locked_at = NULL, progress_json = ?, updated_at = ?, finished_at = ? "
-            "WHERE id = ? AND status = 'running'", (json.dumps(progress), now, now, job_id))
+        # Serialize the progress read and terminal transition. Otherwise a
+        # concurrent progress callback can land between SELECT and UPDATE,
+        # silently losing its most recent fields in the completed job.
+        async with self.db._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT progress_json FROM jobs WHERE id = ? AND status = 'running'", (job_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                await db.commit()
+                return
+            try:
+                progress = json.loads(row[0] or "{}")
+            except (TypeError, ValueError):
+                progress = {}
+            progress.update(result)
+            await db.execute(
+                "UPDATE jobs SET status = 'done', locked_at = NULL, progress_json = ?, updated_at = ?, finished_at = ? "
+                "WHERE id = ? AND status = 'running'", (json.dumps(progress), now, now, job_id))
+            await db.commit()
 
     async def fail(self, job_id: str, error: str) -> str:
         """Retry with backoff, or mark dead after the last attempt. Returns
