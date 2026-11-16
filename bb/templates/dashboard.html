@@ -1,34 +1,56 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
-{% block title %}Dashboard{% endblock %}
+{% block title %}Dashboard</section>
+{% if problems %}
+<details class="card setup-notice">
+  <summary>Server setup ({{ problems | length }})</summary>
+  <ul>{% for problem in problems %}<li>{{ problem }}</li>{% endfor %}</ul>
+</details>
+{% endif %}
+{% endblock %}
 {% block content %}
 {% set done = (1 if summary.api_key else 0) + (1 if summary.configured else 0) + (1 if summary.gmail else 0) + (1 if summary.recipients else 0) + (1 if summary.worker_running else 0) %}
-<div class="page-head">
-  <div><div class="eyebrow">Overview</div><h1>{{ 'Good to see you' if done == 5 else 'Let’s get you sending' }}</h1>
-    <p class="lead">{% if done == 5 %}Your worker is researching, writing and sending one email per person, and watching for replies.{% else %}{{ 5 - done }} step{{ 's' if 5 - done != 1 else '' }} left before your first email goes out.{% endif %}</p></div>
+<section class="overview-hero" aria-labelledby="overview-title">
+  <h1 id="overview-title">Workspace overview</h1>
   <div class="actions">
-    {% if summary.worker_running %}
-      <form class="inline" method="post" action="/worker/wake" title="Ends the worker's sleep so it works now; a worker that does not answer is restarted"><button type="submit">{{ icon('play', 15) }} Wake up now</button></form>
-      <form class="inline" method="post" action="/worker/pause"><button class="secondary" type="submit">{{ icon('pause', 15) }} Pause for edits</button></form>
-      <form class="inline" method="post" action="/worker/stop"><button class="secondary" type="submit">{{ icon('stop', 15) }} Stop worker</button></form>
-    {% elif summary.worker_paused %}
-      <form class="inline" method="post" action="/worker/resume"><button type="submit">{{ icon('play', 15) }} Resume</button></form>
-    {% else %}
-      <form class="inline" method="post" action="/worker/start"><button type="submit">{{ icon('play', 15) }} Start worker</button></form>
-    {% endif %}
+    <a class="btn" href="/mail/compose">{{ icon('plus', 17) }} New email</a>
+    <a class="btn secondary" href="/mail/studio/calendar">{{ icon('calendar', 17) }} New invitation</a>
   </div>
-</div>
-{% if summary.worker_running %}<p class="small muted" id="worker-doing" style="margin:-6px 0 12px{{ '' if summary.worker_doing else ';display:none' }}"><b>Worker:</b> <span id="worker-doing-text" data-state="{{ summary.worker_doing.state or '' }}" data-until="{{ summary.worker_doing.until or '' }}"{% if summary.worker_doing.state == 'stuck' %} style="color:var(--bad)"{% endif %}>{{ summary.worker_doing.text }}</span></p>{% endif %}
-{% for p in problems %}<div class="card flat" style="border-color:var(--bad);color:var(--bad)">Server setup: {{ p }}</div>{% endfor %}
+</section>
+
+<section class="overview-priorities" aria-labelledby="priority-title">
+  <div class="section-heading"><h2 id="priority-title">Needs attention</h2></div>
+  <div class="task-grid">
+    {% for key, name, path, symbol in [
+      ('drafts', 'Drafts to review', '/mail/review', 'file'),
+      ('replies', 'Threads to answer', '/mail/threads?state=needs_reply', 'chat'),
+      ('jobs', 'Failed jobs', '/mail/jobs?status=dead', 'activity')
+    ] %}
+    <a class="task-card{% if mail_overview[key] %} attention{% endif %}" href="{{ path }}">
+      <span class="task-icon">{{ icon(symbol, 19) }}</span>
+      <span class="task-count">{{ mail_overview[key] }}</span>
+      <span class="task-label">{{ name }}</span>
+      <span class="task-arrow">{{ icon('chevron', 15) }}</span>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="overview-campaign" aria-labelledby="campaign-overview-title">
+  <div class="section-heading">
+    <div><h2 id="campaign-overview-title">Campaign performance</h2><span class="small muted">{{ campaign_nav.name }}</span></div>
+    <a href="/campaigns">All campaigns {{ icon('arrow', 14) }}</a>
+  </div>
+  {% include "_campaign_live.html" %}
 {% if reconnect %}<div class="card flat" style="border-color:var(--bad)"><b style="color:var(--bad)">Your mailbox needs reconnecting.</b> <span class="small">{{ reconnect }}</span> <a href="/mailbox" class="button small" style="margin-left:8px">Reconnect on the Mailbox page</a></div>
 {% elif health and health.alert %}<div class="card flat" style="border-color:var(--bad);color:var(--bad)"><b>Mailbox:</b> {{ health.alert }} <a href="/mailbox">Mailbox page</a></div>{% endif %}
 
 <div class="grid">
-  <div class="stat hero"><div class="l">Replies received</div><div class="n">{{ summary.replies }}</div><div class="sub">{{ summary.open_replies }} open conversation{{ 's' if summary.open_replies != 1 else '' }}</div></div>
-  <div class="stat"><div class="l">Emails sent</div><div class="n">{{ summary.sent }}</div><div class="sub">{{ summary.sent_today }} today</div></div>
-  <div class="stat warn"><div class="l">Not sent yet</div><div class="n">{{ summary.not_sent }}</div><div class="sub">{{ summary.outbox_pending }} need your review</div></div>
-  <a class="stat bad" href="/outbox?status=bounced" style="text-decoration:none;color:inherit"><div class="l">Bounced</div><div class="n">{{ summary.bounced }}</div><div class="sub">{{ 'see why' if summary.bounced else 'invalid addresses' }}</div></a>
-  <div class="stat"><div class="l">Recipients</div><div class="n">{{ summary.recipients }}</div><div class="sub">on your list</div></div>
+  <div class="stat hero"><div class="l">Replies received</div><div class="n" data-k="replies">{{ summary.replies }}</div><div class="sub">{{ summary.open_replies }} open conversation{{ 's' if summary.open_replies != 1 else '' }}</div></div>
+  <div class="stat"><div class="l">Emails sent</div><div class="n" data-k="sent">{{ summary.sent }}</div><div class="sub"><span data-k="sent_today">{{ summary.sent_today }}</span> today</div></div>
+  <div class="stat warn"><div class="l">Not sent yet</div><div class="n" data-k="not_sent">{{ summary.not_sent }}</div><div class="sub"><span data-k="outbox_pending">{{ summary.outbox_pending }}</span> need your review</div></div>
+  <a class="stat bad" href="/outbox?status=bounced" style="text-decoration:none;color:inherit"><div class="l">Bounced</div><div class="n" data-k="bounced">{{ summary.bounced }}</div><div class="sub">{{ 'see why' if summary.bounced else 'invalid addresses' }}</div></a>
+  <div class="stat"><div class="l">Recipients</div><div class="n" data-k="recipients">{{ summary.recipients }}</div><div class="sub">on your list</div></div>
 </div>
 {% if stale %}
 <div class="card" style="margin-top:14px;border-color:var(--warn)">
@@ -49,7 +71,7 @@
 
 <div class="two" style="margin-top:18px">
   <div class="card">
-    <h2>Getting started</h2>
+    <h2>Campaign setup</h2>
     <div class="progress"><i style="width:{{ done * 20 }}%"></i></div>
     <ol class="steps">
       <li class="{{ 'done' if summary.api_key else '' }}"><span class="tick">{{ icon('check', 13) }}</span><div><b><a href="/apikey">Choose your AI provider</a></b><span class="small">Google Gemini and Groq have free tiers; Anthropic and OpenAI are paid. Your own account, your own key.</span></div></li>
@@ -61,7 +83,20 @@
   </div>
   <div>
     <div class="card">
-      <h2>Worker</h2>
+      <h2>Campaign worker</h2>
+  <div class="actions">
+    {% if summary.worker_running %}
+      <form class="inline" method="post" action="/worker/wake" title="Ends the worker's sleep so it works now; a worker that does not answer is restarted"><button type="submit">{{ icon('play', 15) }} Wake up now</button></form>
+      <form class="inline" method="post" action="/worker/pause"><button class="secondary" type="submit">{{ icon('pause', 15) }} Pause for edits</button></form>
+      <form class="inline" method="post" action="/worker/stop"><button class="secondary" type="submit">{{ icon('stop', 15) }} Stop worker</button></form>
+    {% elif summary.worker_paused %}
+      <form class="inline" method="post" action="/worker/resume"><button type="submit">{{ icon('play', 15) }} Resume</button></form>
+    {% else %}
+      <form class="inline" method="post" action="/worker/start"><button type="submit">{{ icon('play', 15) }} Start worker</button></form>
+    {% endif %}
+  </div>
+{% if summary.worker_running %}<p class="small muted" id="worker-doing" style="margin:12px 0 0{{ '' if summary.worker_doing else ';display:none' }}"><b>Worker:</b> <span id="worker-doing-text" data-state="{{ summary.worker_doing.state or '' }}" data-until="{{ summary.worker_doing.until or '' }}"{% if summary.worker_doing.state == 'stuck' %} style="color:var(--bad)"{% endif %}>{{ summary.worker_doing.text }}</span></p>{% endif %}
+
       <p class="muted small">Your personal copy of the engine. Every cycle (1, 2 or 5 minutes, set by the speed on your profile) it writes emails for new recipients, sends what is due inside your sending hours and daily limit, and reads replies. Saving your profile or AI provider restarts a running worker so the change applies at once.</p>
       {% if summary.worker_paused %}<p class="small" style="margin-top:10px;color:var(--warn)"><b>Paused for edits.</b> Change what you need on Profile, Mailbox or AI provider, then press Resume. Queued emails and open conversations are waiting where they were.</p>{% endif %}
       <div class="actions" style="margin-top:14px">

@@ -1293,7 +1293,7 @@ class Workspace:
     async def summary(self) -> dict:
         """The numbers on the banner and the dashboard."""
         out = {
-            "recipients": 0, "waiting": 0, "queued": 0, "sent": 0, "replied": 0, "sent_first": 0, "requeued_waiting": 0,
+            "recipients": 0, "waiting": 0, "queued": 0, "not_sent": 0, "sent": 0, "replied": 0, "sent_first": 0, "requeued_waiting": 0,
             "bounced": 0, "outbox_pending": 0, "outbox_scheduled": 0, "outbox_sent": 0,
             "outbox_failed": 0, "outbox_rejected": 0, "replies": 0, "open_replies": 0,
             "sent_today": 0, "sending_paused": "", "worker_running": bool(self.worker_running()),

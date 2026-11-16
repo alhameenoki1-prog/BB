@@ -414,6 +414,27 @@ async def scoped_mailboxes(db: MailDB) -> list[dict]:
     return boxes if ids is None else [m for m in boxes if m["id"] in ids]
 
 
+async def overview_counts(workspace) -> dict:
+    """Count tasks from the mail workspace independently of campaign totals."""
+    if not workspace.mail_db_path.exists():
+        return {"drafts": 0, "replies": 0, "jobs": 0}
+
+    db = workspace.mail_db()
+    await db.init()
+    ids = await scope(db)
+    # Drafts and threads use the selected mailbox scope. Jobs are workspace-wide.
+    scope_filter = ""
+    if ids is not None:
+        scope_filter = " AND mailbox_id IN (" + ",".join("?" for _ in ids) + ")"
+    return await db.one(
+        "SELECT "
+        "(SELECT COUNT(*) FROM drafts WHERE status='pending_review'" + scope_filter + ") AS drafts, "
+        "(SELECT COUNT(*) FROM threads WHERE state='needs_reply'" + scope_filter + ") AS replies, "
+        "(SELECT COUNT(*) FROM jobs WHERE status='dead') AS jobs",
+        (ids or []) * 2,
+    )
+
+
 # ── migration from the single-mailbox setup ──
 
 async def migrate_from_workspace(db: MailDB, secret: str, ws) -> str | None:

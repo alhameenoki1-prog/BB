@@ -245,7 +245,7 @@ def test_thread_composer_review_and_compose_pages(mail_client, monkeypatch):
                            "VALUES ('p1', ?, ?, 'reply', ?, 'Re: Site visit', 'Pending one.', 'pending_review', 'low', ?, ?)",
                            (mid, tid, json.dumps([{"name": "Ann", "email": "ann@x.example"}]), now, now)))
     page = client.get("/mail/review").text
-    assert "Pending one." in page and "Approve all 1" in page and "Recently sent" in page
+    assert "Pending one." in page and "Approve all 1" in page and "Recent draft activity" in page
     assert "Approved%201" in client.post("/mail/review/approve-all").headers["location"]
     assert (asyncio.run(db.one("SELECT status FROM drafts WHERE id = 'p1'")))["status"] == "approved"
     assert "Nothing waiting" in client.get("/mail/review").text

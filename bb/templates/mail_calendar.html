@@ -1,18 +1,33 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Calendar invitations{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><h1>Calendar invitations</h1><p class="lead">Create an Outlook event or a Teams meeting from a connected Microsoft calendar.</p></div>
-  <div class="actions"><a class="btn secondary" href="/mail/compose">Back to Studio</a><a class="btn secondary" href="/mail/jobs">Jobs</a></div>
+  <div><h1>Calendar invitations</h1><p class="lead">Use a connected Microsoft calendar to draft an Outlook event or Teams meeting.</p></div>
+  <div class="actions">
+    {% if invite %}<a class="btn secondary" href="/mail/studio/calendar">{{ icon('plus', 16) }} New invitation</a>{% endif %}
+    <a class="btn secondary" href="/mail/jobs">Delivery jobs</a>
+  </div>
 </div>
+<div class="form-layout">
 {% if invite %}
-<div class="card">
-  <h2>{{ invite.event.subject }}</h2>
-  <p class="small">{{ invite.organizer }} · {{ invite.display.start }} to {{ invite.display.end }} ({{ invite.display.timezone }})</p>
-  <p class="small"><strong>Attendees</strong> · {{ invite.event.attendees|map(attribute='emailAddress.address')|join(', ') }}</p>
-  <p class="small">{{ 'Teams meeting' if invite.event.isOnlineMeeting else 'Outlook calendar event' }}</p>
+<section class="card">
+  <div class="section-heading">
+    <h2>{{ invite.event.subject }}</h2>
+    {% if invite.status == 'pending_review' %}<span class="tag warn">Pending review</span>{% endif %}
+  </div>
+  <dl class="review-meta">
+    <dt>Organizer</dt><dd>{{ invite.organizer }}</dd>
+    <dt>Starts</dt><dd>{{ invite.display.start }}</dd>
+    <dt>Ends</dt><dd>{{ invite.display.end }} ({{ invite.display.timezone }})</dd>
+    <dt>Attendees</dt><dd>{{ invite.event.attendees | map(attribute='emailAddress.address') | join(', ') }}</dd>
+    <dt>Event type</dt><dd>{{ 'Teams meeting' if invite.event.isOnlineMeeting else 'Outlook calendar event' }}</dd>
+    {% if invite.display.project_url %}
+    <dt>Link</dt><dd><a href="{{ invite.display.project_url }}" target="_blank" rel="noopener noreferrer">Project scope</a>
+      <span class="field-caption">{{ invite.display.project_url }}</span></dd>
+    {% endif %}
+  </dl>
   {% if invite.display.description %}<p style="white-space:pre-wrap">{{ invite.display.description }}</p>{% endif %}
-  {% if invite.display.project_url %}<p><a href="{{ invite.display.project_url }}" target="_blank" rel="noopener noreferrer">Project scope</a></p>{% endif %}
   {% if invite.display.attendee_companies is defined %}
   <h3>Attendee companies</h3>
   <ul>
@@ -27,9 +42,9 @@
   </ul>
   {% endif %}
   {% if invite.status == 'pending_review' %}
-  <div class="actions">
-    <form method="post" action="/mail/studio/calendar/{{ invite.id }}/send"><button type="submit">Create event and invite attendees</button></form>
-    <form method="post" action="/mail/studio/calendar/{{ invite.id }}/discard"><button type="submit" class="secondary">Discard draft</button></form>
+  <div class="actions review-actions">
+    <form method="post" action="/mail/studio/calendar/{{ invite.id }}/discard"><button type="submit" class="secondary danger">Discard draft</button></form>
+    <form method="post" action="/mail/studio/calendar/{{ invite.id }}/send"><button type="submit">{{ icon('calendar', 15) }} Create event and invite attendees</button></form>
   </div>
   {% elif invite.status == 'sent' %}
   <p class="tag good">Created in Outlook</p>
@@ -43,9 +58,9 @@
   {% else %}
   <p class="tag">Queued</p>
   {% endif %}
-</div>
-{% endif %}
-<div class="card">
+</section>
+{% else %}
+<section class="card">
   <h2>New invitation</h2>
   {% if organizers %}
   <form method="post" action="/mail/studio/calendar">
@@ -53,46 +68,63 @@
       <div><label for="invite-mailbox">Organizer</label><select name="mailbox" id="invite-mailbox" required>
         {% for box in organizers %}<option value="{{ box.id }}">{{ box.address }}</option>{% endfor %}
       </select></div>
-      <div><label for="invite-attendees">Attendees</label><input id="invite-attendees" name="attendees" maxlength="4096" required placeholder="Separate addresses with commas"></div>
+      <div><label for="invite-attendees">Attendees</label><input type="text" id="invite-attendees" name="attendees" maxlength="4096" required placeholder="Separate addresses with commas"></div>
     </div>
-    <label for="invite-subject">Subject</label><input id="invite-subject" name="subject" required maxlength="255">
-    <div class="row">
+    <label for="invite-subject">Subject</label><input type="text" id="invite-subject" name="subject" required maxlength="255">
+    <div class="row calendar-time">
       <div><label for="invite-start">Start</label><input type="datetime-local" id="invite-start" name="start" required></div>
       <div><label for="invite-end">End</label><input type="datetime-local" id="invite-end" name="end" required></div>
-      <div><label for="invite-timezone">Time zone</label><input name="timezone" id="invite-timezone" required maxlength="80" value="UTC"></div>
+      <div><label for="invite-timezone">Time zone</label><input type="text" name="timezone" id="invite-timezone" required maxlength="80" value="UTC"></div>
     </div>
     <label for="invite-description">Description</label><textarea id="invite-description" name="description" rows="4" maxlength="10000"></textarea>
-    <label for="invite-project">Project scope link (optional)</label><input type="url" id="invite-project" name="project_url" maxlength="2048">
-    <label class="check"><input type="checkbox" name="company_lookup" value="1" checked> Look up attendee companies</label>
-    <p class="small muted">Company details from saved contacts and public websites will appear in the invitation for review.</p>
+    <label for="invite-project">Project scope link <span class="optional-label">Optional</span></label>
+    <input type="url" id="invite-project" name="project_url" maxlength="2048" placeholder="https://example.test/project" aria-describedby="invite-project-help">
+    <p class="hint" id="invite-project-help">BB adds this link to the invitation description.</p>
     <label class="check"><input type="checkbox" name="teams" value="1"> Include a Microsoft Teams meeting</label>
-    <div class="actions" style="margin-top:12px"><button type="submit">Review invitation</button></div>
+    <details class="form-options">
+      <summary>Attendee options</summary>
+      <label class="check"><input type="checkbox" name="company_lookup" value="1" checked> Look up attendee companies</label>
+      <p class="small muted">Company details from saved contacts and public websites appear in the draft for review.</p>
+    </details>
+    <div class="actions form-pad"><button type="submit">{{ icon('check', 16) }} Review invitation</button></div>
   </form>
   <script>document.getElementById('invite-timezone').value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';</script>
   {% else %}
   <p>Connect a Microsoft mailbox with calendar access to start.</p>
   {% endif %}
-  {% if ms_ready %}
-  <form method="post" action="/mail/microsoft/connect" style="margin-top:12px">
-    <input type="hidden" name="calendar" value="1"><button type="submit" class="secondary">Connect Microsoft calendar</button>
-  </form>
-  {% else %}
-  <p class="small muted">Use a <a href="/mail/accounts">Microsoft 365 app connection</a> with Calendars.ReadWrite granted by its tenant.</p>
-  {% endif %}
-</div>
-{% if invites %}
-<div class="card">
-  <h2>Recent invitations</h2>
-  <table>
-    <thead><tr><th>Invitation</th><th>Organizer</th><th>Status</th></tr></thead>
-    <tbody>
-      {% for row in invites %}<tr>
-        <td><a href="/mail/studio/calendar?draft={{ row.id }}">{{ row.event.subject }}</a></td>
-        <td>{{ row.organizer }}</td>
-        <td>{{ 'Needs review' if row.job_status == 'dead' else ('Created' if row.status == 'sent' else row.status.replace('_', ' ')|capitalize) }}</td>
-      </tr>{% endfor %}
-    </tbody>
-  </table>
-</div>
+</section>
 {% endif %}
+<div>
+  <section class="card" aria-labelledby="invitation-history">
+    <h2 id="invitation-history">Recent invitations</h2>
+    {% if invites %}
+    <ul class="calendar-list">
+      {% for row in invites %}
+      <li><a href="/mail/studio/calendar?draft={{ row.id }}"{% if invite and invite.id == row.id %} aria-current="page"{% endif %}>
+        <strong>{{ row.event.subject }}</strong>
+        <span class="tag {{ 'warn' if row.status == 'pending_review' or row.job_status == 'dead' else ('good' if row.status == 'sent' else '') }}">{{ 'Delivery review' if row.job_status == 'dead' else ('Created' if row.status == 'sent' else row.status | replace('_', ' ') | capitalize) }}</span>
+      </a></li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">Your invitation drafts and created events will appear here.</p>
+    {% endif %}
+  </section>
+  <section class="card" aria-labelledby="calendar-connection">
+    <h2 id="calendar-connection">Microsoft calendar</h2>
+    {% if organizers %}
+    <p class="muted">{{ organizers | length }} organizer account{{ '' if organizers | length == 1 else 's' }} available</p>
+    {% else %}
+    <p class="muted">A Microsoft mailbox with calendar access is required.</p>
+    {% endif %}
+    {% if ms_ready %}
+    <form method="post" action="/mail/microsoft/connect" class="form-pad">
+      <input type="hidden" name="calendar" value="1">
+      <button type="submit" class="secondary">Connect Microsoft calendar</button>
+    </form>
+    {% endif %}
+    <p class="form-pad small"><a href="/mail/accounts">Manage sender accounts</a></p>
+  </section>
+</div>
+</div>
 {% endblock %}

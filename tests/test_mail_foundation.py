@@ -263,7 +263,7 @@ def test_mail_pages_connect_settings_scope_jobs_and_events(mail_client, monkeypa
     monkeypatch.setattr(Workspace, "mail_worker_running", lambda self: None)
 
     page = client.get("/mail").text
-    assert "Command center" in page and "No accounts in view" in page and "Worker stopped" in page
+    assert "Mail status" in page and "No accounts in view" in page and "Worker stopped" in page
     page = client.get("/mail/accounts").text
     assert "Email and password" in page and "no Google OAuth client" in page.lower() or "Not switched on" in page
 

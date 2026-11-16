@@ -881,7 +881,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                          error="" if discarded else "That draft is already queued or closed.")
 
     @app.get("/mail/review", response_class=HTMLResponse)
-    async def mail_review(request: Request, user: dict = Depends(current_user)):
+    async def mail_review(request: Request, user: dict = Depends(current_user), draft: str = ""):
         c = await ctx(user)
         ids = [m["id"] for m in c["selected"]]
         marks = ",".join("?" for _ in ids) or "''"
@@ -889,19 +889,19 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             f"SELECT d.*, t.subject AS thread_subject, t.last_from FROM drafts d LEFT JOIN threads t ON t.id = d.thread_id "
             f"WHERE d.mailbox_id IN ({marks}) AND d.status = 'pending_review' ORDER BY d.created_at DESC", ids)
         boxes = {m["id"]: m for m in c["mailboxes"]}
-        for r in rows:
-            r["to"] = json.loads(r.get("to_json") or "[]")
-            r["qa"] = json.loads(r.get("qa_json") or "{}")
-            r["box"] = boxes.get(r["mailbox_id"])
-            r["ready"], r["ready_why"] = service.ready_to_send(r["box"], manual=bool(r["qa"].get("manual")))
-            await _for_editor(c, r)
-            r["preview"] = await _preview_doc(c, r, r.get("body") or "")
+        for row in rows:
+            row["to"] = json.loads(row.get("to_json") or "[]")
+        selected = next((row for row in rows if row["id"] == draft), rows[0] if rows else None)
+        if selected:
+            selected["qa"] = json.loads(selected.get("qa_json") or "{}")
+            await _prepare_review(c, selected, boxes.get(selected["mailbox_id"]))
         recent = await c["db"].query(
             f"SELECT d.*, t.subject AS thread_subject FROM drafts d LEFT JOIN threads t ON t.id = d.thread_id "
             f"WHERE d.mailbox_id IN ({marks}) AND d.status IN ('sent', 'dry_run', 'approved', 'failed') ORDER BY d.updated_at DESC LIMIT 30", ids)
         for r in recent:
             r["to"] = json.loads(r.get("to_json") or "[]"); r["box"] = boxes.get(r["mailbox_id"])
-        return await render(request, "mail_review.html", user, **page_ctx(c), drafts=rows, recent=recent)
+        return await render(request, "mail_review.html", user, **page_ctx(c), drafts=rows,
+                            draft=selected, recent=recent)
 
     @app.post("/mail/review/approve-all")
     async def mail_review_approve_all(user: dict = Depends(current_user)):
@@ -966,18 +966,26 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         async with request.form(max_files=0, max_fields=5) as form:
             return _fictional_preview(*(str(form.get(field, "")) for field in ("to", "to_name", "sender", "subject", "topic")))
 
+    async def _prepare_review(c: dict, draft: dict, box: dict | None):
+        draft["box"] = box
+        draft["ready"], draft["ready_why"] = (
+            service.ready_to_send(box, manual=bool(draft["qa"].get("manual")))
+            if box else (False, "The sender account is missing.")
+        )
+        await _for_editor(c, draft)
+        draft["preview"] = await _preview_doc(c, draft, draft.get("body") or "")
+
     @app.get("/mail/compose", response_class=HTMLResponse)
     async def mail_compose(request: Request, user: dict = Depends(current_user), draft: str = ""):
         c = await ctx(user)
         d = await _draft_row(c["db"], draft) if draft else None
-        preview = ""
         if d and d["status"] != "pending_review":
             return _redirect("/mail/review", msg="This draft is in your recent activity.")
         if d:
-            await _for_editor(c, d)
-            preview = await _preview_doc(c, d, d.get("body") or "")
+            box = next((box for box in c["mailboxes"] if box["id"] == d["mailbox_id"]), None)
+            await _prepare_review(c, d, box)
         saved_templates = await c["db"].query("SELECT name, subject, body, format FROM studio_templates ORDER BY name")
-        return await render(request, "mail_compose.html", user, **page_ctx(c), draft=d, draft_preview=preview,
+        return await render(request, "mail_compose.html", user, **page_ctx(c), draft=d,
                             ready=[m for m in c["mailboxes"] if m["enabled"]], saved_files=c["ws"].attachments(),
                             saved_templates=saved_templates)
 

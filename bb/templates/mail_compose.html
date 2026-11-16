@@ -1,86 +1,120 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
-{% from "_as_sent.html" import as_sent %}
+{% from "_draft_review.html" import draft_review %}
 {% block title %}Studio{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><h1>BB Studio</h1><p class="lead">Compose and review email from a connected mailbox.</p></div>
-  <div class="actions"><a class="btn secondary" href="/mail/accounts">Sender accounts</a><a class="btn secondary" href="/mail/review">Review queue</a><a class="btn secondary" href="/mail/studio/calendar">Calendar invitations</a></div>
+  <div>
+    <h1>{{ 'Review email' if draft else 'New email' }}</h1>
+    <p class="lead">{{ 'Check this draft before sending.' if draft else 'Write from a connected sender and save a draft for review.' }}</p>
+  </div>
+  <div class="actions">
+    {% if draft %}<a class="btn secondary" href="/mail/compose">{{ icon('plus', 16) }} New email</a>
+    {% else %}<a class="btn secondary" href="/mail/accounts">Sender accounts</a>{% endif %}
+  </div>
 </div>
 {% if draft %}
-<div class="card">
-  <h2>Your draft</h2>
-  {% if not draft.qa.manual %}<div class="actions" style="margin:6px 0 10px"><span class="tag {{ 'good' if draft.confidence == 'high' else ('warn' if draft.confidence == 'low' else '') }}">confidence: {{ draft.confidence }}</span>{% if draft.qa.ok %}<span class="tag good">passed the writing check</span>{% else %}<span class="tag warn">{{ draft.qa.reasons|join('; ') }}</span>{% endif %}</div>{% endif %}
-  {% if draft.error %}<p class="small" style="color:var(--bad)">{{ draft.error }}</p>{% endif %}
-  <form method="post" action="/mail/drafts/{{ draft.id }}/send">
-    <div class="row"><div><label for="review-to">To</label><input id="review-to" type="text" value="{{ draft.to|map(attribute='email')|join(', ') }}" readonly></div>
-      <div><label for="review-subject">Subject</label><input id="review-subject" type="text" name="subject" value="{{ draft.subject }}" maxlength="200" required></div>
-      <div><label for="review-reply-to">Reply-To</label><input id="review-reply-to" type="email" name="reply_to" value="{{ draft.reply_to }}" placeholder="Mailbox default"></div></div>
-    {% if draft.qa.manual and (draft.qa.cc or draft.qa.bcc) %}<div class="row">{% if draft.qa.cc %}<div><label>Cc</label><input readonly value="{{ draft.qa.cc|join(', ') }}"></div>{% endif %}{% if draft.qa.bcc %}<div><label>Bcc (private)</label><input readonly value="{{ draft.qa.bcc|join(', ') }}"></div>{% endif %}</div>{% endif %}
-    <label for="draft-body-{{ draft.id }}">{{ 'HTML source' if draft.qa.studio_format == 'html' else 'Message' }}</label>
-    <textarea name="body" rows="9" id="draft-body-{{ draft.id }}" {% if draft.qa.studio_format not in ['text', 'html'] %}data-rich data-default-link="{{ draft.default_link }}"{% endif %}>{{ draft.body_md }}</textarea>
-    {% if draft.files %}<p class="small"><strong>Files</strong> · {% for file in draft.files %}{{ file.name }}{{ ' (inline image)' if file.content_id else '' }}{{ ', ' if not loop.last else '' }}{% endfor %}</p>{% endif %}
-    {% if not draft.qa.studio_format %}<div class="hint">The mailbox greeting, signature and project link are added at send time.</div>{% endif %}
-    {{ as_sent(draft_preview, '/mail/drafts/' ~ draft.id ~ '/preview', 'draft-body-' ~ draft.id, studio=draft.qa.studio_format) }}
-    <div class="actions" style="margin-top:12px"><button type="submit">{{ icon('send', 15) }} Send</button><button type="submit" name="dry_run" value="1" class="secondary">Dry run</button><button type="submit" formaction="/mail/drafts/{{ draft.id }}/reject" class="secondary danger">Discard</button></div>
-  </form>
-</div>
+{{ draft_review(draft) }}
+{% else %}
+{% if not ready %}
+<div class="card flat"><p><a href="/mail/accounts">Connect a sender account</a> to create a draft.</p></div>
 {% endif %}
-<div class="card">
-  <h2>New email</h2>
-  {% if not ready %}<p class="small"><a href="/mail/accounts">Connect a mailbox</a> to create a draft.</p>{% endif %}
-  <form method="post" action="/mail/compose" enctype="multipart/form-data" id="studio-form">
-    <input type="hidden" name="compose_mode" value="manual">
+<form method="post" action="/mail/compose" enctype="multipart/form-data" id="studio-form" class="form-layout">
+  <input type="hidden" name="compose_mode" value="manual">
+  <section class="card" aria-labelledby="compose-message">
+    <h2 id="compose-message">Message</h2>
     <div class="row">
-      <div><label for="manual-mailbox">From</label><select id="manual-mailbox" name="mailbox" required>{% for m in ready %}<option value="{{ m.id }}" data-sender="{{ m.settings_model.display_name or m.address }}">{{ (m.settings_model.display_name ~ ' · ') if m.settings_model.display_name else '' }}{{ m.address }}{% if m.provider == 'ses' %} · Amazon SES{% elif m.provider == 'azure_smtp' %} · Azure Email SMTP{% endif %}</option>{% endfor %}</select></div>
-      <div><label for="manual-to">To</label><input id="manual-to" type="text" name="to" required maxlength="4096" placeholder="john@example.test, ann@example.test"></div>
-      <div><label for="manual-name">Name (for one To address)</label><input id="manual-name" type="text" name="to_name" maxlength="150"></div>
-      <div><label for="manual-company">Company (for one To address)</label><input id="manual-company" type="text" name="to_company" maxlength="150"></div>
+      <div>
+        <label for="manual-mailbox">From</label>
+        <select id="manual-mailbox" name="mailbox" required>
+          {% for m in ready %}
+          <option value="{{ m.id }}" data-sender="{{ m.settings_model.display_name or m.address }}">
+            {{ m.address }}{{ ' · Azure Email' if m.provider == 'azure_smtp' else (' · Amazon SES' if m.provider == 'ses' else '') }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="manual-to">To</label>
+        <input id="manual-to" type="text" name="to" required maxlength="4096" placeholder="alex@example.test">
+      </div>
     </div>
-    <div class="row"><div><label for="manual-cc">Cc (optional)</label><input id="manual-cc" type="text" name="cc" maxlength="4096" placeholder="colleague@example.test"></div><div><label for="manual-bcc">Bcc (optional)</label><input id="manual-bcc" type="text" name="bcc" maxlength="4096" placeholder="private@example.test"></div></div>
-    <p class="small muted">Separate addresses with commas. Bcc addresses are hidden from recipients.</p>
-    <label class="check"><input type="checkbox" name="separate" value="1"> Create one draft per To address</label>
-    <label for="manual-reply-to">Reply-To (optional)</label><input id="manual-reply-to" type="email" name="reply_to" maxlength="254" placeholder="Use the sender account default">
-    <div class="row">
-      <div><label for="manual-subject">Subject</label><input id="manual-subject" name="subject" required maxlength="200" placeholder="Meeting request"></div>
-      <div><label for="manual-format">Format</label><select id="manual-format" name="message_format">
-        <option value="rich">Rich text</option><option value="text">Plain text</option><option value="html">HTML source</option><option value="image">Inline image</option>
-      </select></div>
-    </div>
-    <div class="actions" role="group" aria-label="Insert recipient details" style="margin:8px 0">
-      <button type="button" class="secondary" data-autograb="&#123;&#123;name&#125;&#125;">Insert name</button>
-      <button type="button" class="secondary" data-autograb="&#123;&#123;first_name&#125;&#125;">Insert first name</button>
-      <button type="button" class="secondary" data-autograb="&#123;&#123;email&#125;&#125;">Insert email</button>
-      <button type="button" class="secondary" data-autograb="&#123;&#123;company&#125;&#125;">Insert company</button>
-    </div>
-    <label for="manual-body">Message</label>
-    <textarea id="manual-body" name="body" rows="10" maxlength="100000" placeholder="Write your message. Add links in the review editor."></textarea>
-    <p class="small muted">Autograb uses names and companies from saved contacts. With multiple To addresses, leave Cc and Bcc empty to create individual drafts.</p>
+    <label for="manual-subject">Subject</label>
+    <input type="text" id="manual-subject" name="subject" required maxlength="200" placeholder="Project kickoff">
+    <label for="manual-body">Body</label>
+    <textarea id="manual-body" name="body" rows="8" maxlength="100000" placeholder="Write your message"></textarea>
     <div class="row" id="studio-image-options">
       <div><label for="manual-image">Inline image</label><input type="file" id="manual-image" name="inline_image" accept="image/png,image/jpeg,image/gif"></div>
       <div><label for="manual-image-link">Image link (optional)</label><input type="url" id="manual-image-link" name="image_link" maxlength="2048" placeholder="https://example.test/project"></div>
     </div>
-    <label for="studio-files">Attachments</label><input type="file" id="studio-files" name="files" multiple>
-    {% if saved_files %}<fieldset style="margin-top:10px"><legend>Saved files</legend>
-      {% for file in saved_files %}<label class="check"><input type="checkbox" name="saved_files" value="{{ file.name }}"> {{ file.name }}</label>{% endfor %}
-    </fieldset>{% endif %}
-    <p class="small muted">Up to 10 files and 15 MB total. Outlook files must each be under 3 MB. Azure Email allows up to 7 MB of files in BB.</p>
-    <div class="actions" style="margin-top:12px"><button type="submit" {{ '' if ready else 'disabled' }}>Save draft for review</button></div>
-    <details style="margin:12px 0">
-      <summary>Saved templates</summary>
-      <div class="row" style="margin-top:8px">
-        {% if saved_templates %}<div><label for="studio-template">Load template</label><select id="studio-template">
-          <option value="">Choose a template</option>{% for template in saved_templates %}<option value="{{ loop.index0 }}">{{ template.name }}</option>{% endfor %}
-        </select></div>{% endif %}
-        <div><label for="studio-template-name">Template name</label><input id="studio-template-name" name="template_name" maxlength="80"></div>
+    <label for="studio-files">Attachments <span class="optional-label">Optional</span></label>
+    <input type="file" id="studio-files" name="files" multiple>
+    {% if saved_files %}
+    <fieldset class="form-options"><legend>Saved files</legend>
+      {% for file in saved_files %}
+      <label class="check"><input type="checkbox" name="saved_files" value="{{ file.name }}"> {{ file.name }}</label>
+      {% endfor %}
+    </fieldset>
+    {% endif %}
+    <p class="hint">Up to 10 files and 15 MB total. Outlook files must each be under 3 MB. Azure Email allows up to 7 MB of files in BB.</p>
+    <div class="actions form-pad">
+      <button type="submit" {{ '' if ready else 'disabled' }}>{{ icon('check', 16) }} Save draft for review</button>
+    </div>
+  </section>
+  <section class="card" aria-labelledby="compose-options">
+    <h2 id="compose-options">Options</h2>
+    <label for="manual-format">Format</label>
+    <select id="manual-format" name="message_format">
+      <option value="rich">Rich text</option>
+      <option value="text">Plain text</option>
+      <option value="html">HTML source</option>
+      <option value="image">Inline image</option>
+    </select>
+    <details class="form-options">
+      <summary>Addressing &amp; Reply-To</summary>
+      <label for="manual-reply-to">Reply-To (optional)</label>
+      <input id="manual-reply-to" type="email" name="reply_to" maxlength="254" placeholder="Use the sender account default">
+      <div class="row">
+        <div><label for="manual-cc">Cc (optional)</label><input id="manual-cc" type="text" name="cc" maxlength="4096"></div>
+        <div><label for="manual-bcc">Bcc (optional)</label><input id="manual-bcc" type="text" name="bcc" maxlength="4096"></div>
       </div>
-      <div class="actions" style="margin-top:8px">
-        <button type="submit" class="secondary" formaction="/mail/studio/templates/save" formnovalidate>Save subject and message</button>
-        {% if saved_templates %}<button type="submit" class="secondary" formaction="/mail/studio/templates/delete" formnovalidate>Delete named template</button>{% endif %}
+      <p class="hint">Separate addresses with commas. Bcc addresses are hidden from recipients.</p>
+      <label class="check"><input type="checkbox" name="separate" value="1"> Create one draft per To address</label>
+    </details>
+    <details class="form-options">
+      <summary>Personalization</summary>
+      <div class="row">
+        <div><label for="manual-name">Name</label><input type="text" id="manual-name" name="to_name" maxlength="150"></div>
+        <div><label for="manual-company">Company</label><input type="text" id="manual-company" name="to_company" maxlength="150"></div>
+      </div>
+      <p class="hint">For one recipient, you can supply their name and company here. With multiple To addresses, leave Cc and Bcc empty to create individual drafts.</p>
+      <div class="actions" role="group" aria-label="Insert recipient details">
+        <button type="button" class="secondary small" data-autograb="&#123;&#123;name&#125;&#125;">Insert name</button>
+        <button type="button" class="secondary small" data-autograb="&#123;&#123;first_name&#125;&#125;">Insert first name</button>
+        <button type="button" class="secondary small" data-autograb="&#123;&#123;email&#125;&#125;">Insert email</button>
+        <button type="button" class="secondary small" data-autograb="&#123;&#123;company&#125;&#125;">Insert company</button>
       </div>
     </details>
-  </form>
-  <details style="margin-top:16px">
+    <details class="form-options">
+      <summary>Saved templates</summary>
+      {% if saved_templates %}
+      <label for="studio-template">Load template</label>
+      <select id="studio-template">
+        <option value="">Choose a template</option>
+        {% for template in saved_templates %}<option value="{{ loop.index0 }}">{{ template.name }}</option>{% endfor %}
+      </select>
+      {% endif %}
+      <label for="studio-template-name">Template name</label>
+      <input id="studio-template-name" name="template_name" maxlength="80">
+      <div class="actions form-pad">
+        <button type="submit" class="secondary small" formaction="/mail/studio/templates/save" formnovalidate>Save subject and message</button>
+        {% if saved_templates %}<button type="submit" class="secondary small" formaction="/mail/studio/templates/delete" formnovalidate>Delete named template</button>{% endif %}
+      </div>
+    </details>
+  </section>
+</form>
+<div class="card studio-advanced">
+  <details>
     <summary>Fictional conversation preview</summary>
     <p class="small muted">Generate an internal example around a topic.</p>
     <label for="fictional-topic">Topic</label><input type="text" id="fictional-topic" maxlength="2000" placeholder="the proposed project scope">
@@ -156,13 +190,13 @@
     })();
     </script>
 </div>
-<div class="card">
-  <h2>{{ 'Another one' if draft else 'Write one' }}</h2>
+<details class="card">
+  <summary>Write with AI</summary>
   <form method="post" action="/mail/compose">
     <div class="row">
-      <div><label>From</label><select name="mailbox">{% for m in ready if m.provider not in send_only_providers %}<option value="{{ m.id }}">{{ m.address }}{{ '' if m.ready else ' (needs signature & link)' }}</option>{% endfor %}</select></div>
-      <div><label>To (email)</label><input type="email" name="to" required placeholder="john@example.com"></div>
-      <div><label>Their name</label><input type="text" name="to_name" placeholder="John"></div>
+      <div><label for="assisted-from">From</label><select id="assisted-from" name="mailbox">{% for m in ready if m.provider not in send_only_providers %}<option value="{{ m.id }}">{{ m.address }}{{ '' if m.ready else ' (needs signature & link)' }}</option>{% endfor %}</select></div>
+      <div><label for="assisted-to">To (email)</label><input type="email" id="assisted-to" name="to" required placeholder="john@example.com"></div>
+      <div><label for="assisted-name">Their name</label><input type="text" id="assisted-name" name="to_name" placeholder="John"></div>
     </div>
     <label for="compose-instruction">What should it say?</label>
     <p class="small muted">Start with a writing guide or describe your own message. Nothing is sent until you review the draft.</p>
@@ -199,5 +233,6 @@
     </script>
     <p class="actions" style="margin-top:10px"><button type="submit">{{ icon('spark', 15) }} Draft it</button></p>
   </form>
-</div>
+</details>
+{% endif %}
 {% endblock %}
