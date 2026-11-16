@@ -186,16 +186,16 @@ class Worker:
         self.long_running += 1 if long else 0
         try:
             result = await self.handlers.run(job)
-            await self.jobs.complete(job["id"], **(result or {}))
+            await self.jobs.complete(job["id"], expected_attempt=job["attempts"], **(result or {}))
         except asyncio.CancelledError:
-            await asyncio.shield(self.jobs.release(job["id"], "worker stopped"))
+            await asyncio.shield(self.jobs.release(job["id"], "worker stopped", expected_attempt=job["attempts"]))
             raise
         except Exception as e:
             if job["kind"] in DELIVERY_KINDS:
-                await self.jobs.release(job["id"], "send failed; delivery status uncertain")
+                await self.jobs.release(job["id"], "send failed; delivery status uncertain", expected_attempt=job["attempts"])
                 status = "dead"
             else:
-                status = await self.jobs.fail(job["id"], f"{type(e).__name__}: {str(e)[:300]}")
+                status = await self.jobs.fail(job["id"], f"{type(e).__name__}: {str(e)[:300]}", expected_attempt=job["attempts"])
             logger.warning("job %s (%s) failed: %s → %s", job["id"], job["kind"], e, status)
             if status == "dead":
                 await self.db.log("warning", f"A background task ({job['kind'].replace('_', ' ')}) needs review "
