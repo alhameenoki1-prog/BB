@@ -75,6 +75,14 @@ def test_studio_campaign_rejects_cc_without_creating_drafts(studio_client):
     assert asyncio.run(db.query("SELECT * FROM drafts")) == []
 
 
+def test_studio_campaign_accepts_more_than_fifty_addresses(studio_client):
+    client, db, _, mailbox, _ = studio_client
+    addresses = ";".join(f"person{i}@example.test" for i in range(60))
+    response = _create(client, mailbox, to=addresses, delivery_mode="campaign")
+    assert "Queued%2060%20individual" in response.headers["location"]
+    assert len(asyncio.run(db.query("SELECT id FROM drafts WHERE status = 'approved'"))) == 60
+
+
 async def _work(db, secret):
     queue = Jobs(db)
     job = await queue.claim()

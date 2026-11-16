@@ -201,6 +201,19 @@ async def test_stage_campaign_renders_and_respects_approval(state):
 
 
 @pytest.mark.asyncio
+async def test_first_campaign_email_carries_selected_profile_files(state):
+    from harvey.config import OutreachConfig
+    pid = await seed_prospect(state)
+    await seed_campaign(state, [pid])
+    sender = make_sender(state, FakeProvider(), require_approval=True)
+    sender.config.outreach = OutreachConfig(reply_attachments=["brief.pdf"], attach_first_email=True)
+    await sender._run_native()
+    rows = await state.get_outbox(status="pending_review")
+    assert __import__("json").loads(next(r for r in rows if r["step"] == 1)["attachments_json"]) == ["brief.pdf"]
+    assert __import__("json").loads(next(r for r in rows if r["step"] == 2)["attachments_json"]) == []
+
+
+@pytest.mark.asyncio
 async def test_stage_skips_unverified(state):
     pid = await seed_prospect(state, email="guess@acme.com", estatus="guess")
     await seed_campaign(state, [pid])

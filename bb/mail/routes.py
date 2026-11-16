@@ -1136,7 +1136,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
         subject, body = validate_manual_draft(str(form.get("subject", "")), str(form.get("body", "")),
                                               allow_empty=message_format == "image")
         campaign = str(form.get("delivery_mode", "")) == "campaign"
-        address_limit = 50 if campaign else (AZURE_MAX_RECIPIENTS if box["provider"] == "azure_smtp" else 20)
+        address_limit = 200 if campaign else (AZURE_MAX_RECIPIENTS if box["provider"] == "azure_smtp" else 20)
         to = parse_copy_recipients(str(form.get("to", "")), field_name="To", limit=address_limit)
         cc = parse_copy_recipients(str(form.get("cc", "")), field_name="Cc", limit=address_limit)
         bcc = parse_copy_recipients(str(form.get("bcc", "")), field_name="Bcc", limit=address_limit)
@@ -1149,7 +1149,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             raise ValueError("A recipient cannot appear in more than one of To, Cc and Bcc.")
         if box["provider"] == "ses" and len(to) + len(cc) + len(bcc) > 50:
             raise ValueError("Amazon SES allows up to 50 recipients per message.")
-        if box["provider"] == "azure_smtp" and len(to) + len(cc) + len(bcc) > AZURE_MAX_RECIPIENTS:
+        if box["provider"] == "azure_smtp" and not campaign and len(to) + len(cc) + len(bcc) > AZURE_MAX_RECIPIENTS:
             raise ValueError(f"Azure Email allows up to {AZURE_MAX_RECIPIENTS} recipients per message.")
         if campaign and (cc or bcc):
             raise ValueError("Leave Cc and Bcc empty for an individual campaign send.")
@@ -1214,9 +1214,22 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                         return _redirect("/mail/review", error=why)
                     queued = 0
                     jobs = Jobs(c["db"])
+                    azure_start = 0
+                    if box["provider"] == "azure_smtp":
+                        from datetime import datetime, timezone
+                        last = await c["db"].one(
+                            "SELECT MAX(run_at) AS last_run FROM jobs WHERE kind = 'send_draft' "
+                            "AND mailbox_id = ? AND status IN ('queued', 'running')", (box["id"],))
+                        if last and last["last_run"]:
+                            next_slot = datetime.fromisoformat(last["last_run"].replace("Z", "+00:00"))
+                            azure_start = max(0, int((next_slot - datetime.now(timezone.utc)).total_seconds()) + 45)
                     for draft_id in ids:
                         d = await _draft_row(c["db"], draft_id)
-                        queued += await jobs.approve_draft(d, body=d["body"], subject=d["subject"], reply_to=d["reply_to"])
+                        # Keep the default Azure custom-domain rate below 100 messages/hour.
+                        # A provider-specific quota increase can be supported by later configuration.
+                        delay = azure_start + queued * 45 if box["provider"] == "azure_smtp" else 0
+                        queued += await jobs.approve_draft(d, body=d["body"], subject=d["subject"],
+                                                           reply_to=d["reply_to"], delay_seconds=delay)
                     if queued and not c["ws"].mail_worker_running():
                         c["ws"].start_mail_worker()
                     return _redirect("/mail/review", msg=f"Queued {queued} individual campaign messages. Check recent activity for delivery status.")

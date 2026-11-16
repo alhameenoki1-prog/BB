@@ -70,7 +70,7 @@ def parse_copy_recipients(raw: str, *, field_name: str, limit: int = 20) -> list
     Addresses are returned in original order and normalized for comparison.
     """
     raw = raw or ""
-    if len(raw) > 4096 or any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+    if len(raw) > (20_000 if field_name == "To" and limit > 50 else 4096) or any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
         raise ValueError(f"{field_name} contains an invalid address list.")
     raw = raw.strip()
     if not raw:

@@ -614,7 +614,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """The posted form over the stored profile, with checkboxes read from
         the form (an unticked box is simply absent from a post)."""
         merged = {**ws.profile(), **form}
-        for box in ("require_approval", "auto_prospect", "warmup_ramp"):
+        for box in ("require_approval", "auto_prospect", "warmup_ramp", "attach_first_email"):
             merged[box] = bool(form.get(box))
         if "quiet_form" in form:
             merged["quiet_enabled"] = bool(form.get("quiet_enabled"))

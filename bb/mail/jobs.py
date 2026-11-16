@@ -68,7 +68,7 @@ class Jobs:
              max_attempts, _iso(now), _iso(now), lane))
 
     async def approve_draft(self, draft: dict, *, body: str, subject: str, reply_to: str,
-                            dry_run: bool = False, saw_thread: bool = False) -> bool:
+                            dry_run: bool = False, saw_thread: bool = False, delay_seconds: int = 0) -> bool:
         """Approve and queue a pending draft in the same transaction."""
         now = datetime.now(timezone.utc)
         async with self.db._connect() as db:
@@ -80,7 +80,7 @@ class Jobs:
             if not changed.rowcount:
                 return False
             payload = {"draft_id": draft["id"], "dry_run": dry_run, "saw_thread": saw_thread}
-            await self._insert(db, new_id(), "send_draft", draft["mailbox_id"], payload, now, 0, 1, "")
+            await self._insert(db, new_id(), "send_draft", draft["mailbox_id"], payload, now, delay_seconds, 1, "")
             await db.commit()
         return True
 

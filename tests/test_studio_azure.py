@@ -40,6 +40,31 @@ def _connect(client, **values):
     return address.path.rsplit("/", 1)[-1]
 
 
+def test_azure_campaign_stages_more_than_fifty_individual_sends_with_spacing(azure_studio, monkeypatch):
+    client, db, _, _, _ = azure_studio
+
+    class MockSmtp:
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def starttls(self, **_kwargs):
+            pass
+        def login(self, *_args):
+            pass
+        def close(self):
+            pass
+
+    monkeypatch.setattr(smtplib, "SMTP", MockSmtp)
+    mailbox = _connect(client)
+    addresses = ";".join(f"person{i}@example.test" for i in range(60))
+    response = _create(client, mailbox, to=addresses, delivery_mode="campaign")
+    assert "Queued%2060%20individual" in response.headers["location"]
+    jobs = asyncio.run(db.query("SELECT run_at FROM jobs WHERE kind = 'send_draft' ORDER BY run_at"))
+    assert len(jobs) == 60
+    from datetime import datetime
+    first, second = (datetime.fromisoformat(jobs[i]["run_at"].replace("Z", "+00:00")) for i in (0, 1))
+    assert (second - first).total_seconds() == 45
+
+
 def test_azure_smtp_coexists_with_inbox_and_retains_reviewed_message(azure_studio, monkeypatch):
     client, db, secret, inbox, _ = azure_studio
     checks = []

@@ -773,6 +773,7 @@ class Workspace:
                 for m in (outreach.get("sector_needs") or []) if isinstance(m, dict)],
             "reply_instructions": outreach.get("reply_instructions", ""),
             "attach_on": outreach.get("attach_on", "first_reply"),
+            "attach_first_email": bool(outreach.get("attach_first_email", False)),
             "writing": ("template" if outreach.get("use_template") else
                         "person" if outreach.get("personalize_each", False) else "segment"),
             "template_subject": outreach.get("template_subject", ""),
@@ -1046,6 +1047,7 @@ class Workspace:
                 "reply_instructions": str(form.get("reply_instructions", "") or "").strip(),
                 "reply_attachments": [a["name"] for a in self.attachments()],
                 "attach_on": text("attach_on") or "first_reply",
+                "attach_first_email": flag("attach_first_email"),
                 # Web default: one email per sector × role segment, sent in bulk.
                 "personalize_each": text("writing") == "person",
                 "use_template": text("writing") == "template",

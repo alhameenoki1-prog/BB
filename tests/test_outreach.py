@@ -68,6 +68,7 @@ class _Brain:
 
 def test_outreach_config_validation():
     assert HarveyConfig(**BASE).outreach == OutreachConfig()
+    assert _config(reply_attachments=["brief.pdf"], attach_first_email=True).outreach.attach_first_email
     cfg = _config(mode="Inquiry", intent="hire an advisor", reply_attachments=["a.pdf", "../x", ".hidden", "b c.docx"])
     assert cfg.outreach.mode == "inquiry"
     assert cfg.outreach.reply_attachments == ["a.pdf", "b c.docx"]  # names only, never paths

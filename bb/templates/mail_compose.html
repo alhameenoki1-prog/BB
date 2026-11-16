@@ -36,7 +36,7 @@
       </div>
       <div>
         <label for="manual-to">To</label>
-        <input id="manual-to" type="text" name="to" required maxlength="4096" placeholder="alex@example.test; jordan@example.test">
+        <input id="manual-to" type="text" name="to" required maxlength="20000" placeholder="alex@example.test; jordan@example.test">
         <p class="hint">Paste addresses separated by commas or semicolons. Duplicates are removed.</p>
       </div>
     </div>
@@ -62,7 +62,7 @@
       <button type="submit" {{ '' if ready else 'disabled' }}>{{ icon('check', 16) }} Save draft for review</button>
       <button type="submit" name="delivery_mode" value="campaign" {{ '' if ready else 'disabled' }} onclick="return confirmCampaignSend()">{{ icon('send', 16) }} Send individually as campaign</button>
     </div>
-    <p class="hint">Campaign sends one private message per address, up to 50 at a time, through the connected sender's queue. Review the subject, body, sender, and recipients before sending. Cc and Bcc must be empty.</p>
+    <p class="hint">Campaign sends one private message per address, up to 200 at a time, through the connected sender's queue. Azure messages are spaced at least 45 seconds apart. Review the subject, body, sender, and recipients before sending. Cc and Bcc must be empty.</p>
   </section>
   <section class="card" aria-labelledby="compose-options">
     <h2 id="compose-options">Options</h2>
