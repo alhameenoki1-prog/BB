@@ -143,14 +143,14 @@ class Jobs:
         job["payload"] = json.loads(job.get("payload_json") or "{}")
         return job
 
-    async def progress(self, job_id: str, **progress):
+    async def progress(self, job_id: str, *, expected_attempt: int | None = None, **progress):
         # Ignore late progress from workers whose jobs were completed,
         # quarantined, or discarded during recovery. Do not alter audit
         # metadata for a settled delivery.
         await self.db.execute(
             "UPDATE jobs SET progress_json = ?, updated_at = ? "
-            "WHERE id = ? AND status = 'running'",
-            (json.dumps(progress), now_iso(), job_id),
+            "WHERE id = ? AND status = 'running' AND (? IS NULL OR attempts = ?)",
+            (json.dumps(progress), now_iso(), job_id, expected_attempt, expected_attempt),
         )
 
     async def complete(self, job_id: str, *, expected_attempt: int | None = None, **result):
