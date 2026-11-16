@@ -48,13 +48,13 @@ class Handlers:
         mailbox = await self.db.mailbox(job["mailbox_id"])
         if not mailbox or not mailbox.get("enabled", 1):
             return {"skipped": "mailbox gone"}
-        return await service.run_sync(self.db, self.secret, mailbox, self.env, self.jobs, job["id"], backfill=True)
+        return await service.run_sync(self.db, self.secret, mailbox, self.env, self.jobs, job["id"], backfill=True, expected_attempt=job["attempts"])
 
     async def sync_incremental(self, job: dict):
         mailbox = await self.db.mailbox(job["mailbox_id"])
         if not mailbox or not mailbox.get("enabled", 1):
             return {"skipped": "mailbox gone"}
-        return await service.run_sync(self.db, self.secret, mailbox, self.env, self.jobs, job["id"], backfill=False)
+        return await service.run_sync(self.db, self.secret, mailbox, self.env, self.jobs, job["id"], backfill=False, expected_attempt=job["attempts"])
 
     async def send_draft(self, job: dict):
         from bb.mail.sending import AnsweredElsewhere, SendRefused, StaleFollowUp, send_draft
