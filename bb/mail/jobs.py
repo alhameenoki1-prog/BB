@@ -153,7 +153,7 @@ class Jobs:
             (json.dumps(progress), now_iso(), job_id),
         )
 
-    async def complete(self, job_id: str, **result):
+    async def complete(self, job_id: str, *, expected_attempt: int | None = None, **result):
         """Mark done; the result is merged into the progress already recorded."""
         now = now_iso()
         # Serialize the progress read and terminal transition. Otherwise a
@@ -162,7 +162,7 @@ class Jobs:
         async with self.db._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
-                "SELECT progress_json FROM jobs WHERE id = ? AND status = 'running'", (job_id,)
+                "SELECT progress_json FROM jobs WHERE id = ? AND status = 'running' AND (? IS NULL OR attempts = ?)", (job_id, expected_attempt, expected_attempt)
             ) as cursor:
                 row = await cursor.fetchone()
             if row is None:
@@ -175,10 +175,10 @@ class Jobs:
             progress.update(result)
             await db.execute(
                 "UPDATE jobs SET status = 'done', locked_at = NULL, progress_json = ?, updated_at = ?, finished_at = ? "
-                "WHERE id = ? AND status = 'running'", (json.dumps(progress), now, now, job_id))
+                "WHERE id = ? AND status = 'running' AND (? IS NULL OR attempts = ?)", (json.dumps(progress), now, now, job_id, expected_attempt, expected_attempt))
             await db.commit()
 
-    async def fail(self, job_id: str, error: str) -> str:
+    async def fail(self, job_id: str, error: str, *, expected_attempt: int | None = None) -> str:
         """Atomically inspect the current attempt and schedule retry/death.
 
         A competing completion or release must not change state between the
@@ -195,27 +195,27 @@ class Jobs:
                 await db.commit()
                 return "missing"
             attempts, max_attempts, status = row
-            if status != "running":
+            if status != "running" or (expected_attempt is not None and attempts != expected_attempt):
                 await db.commit()
-                return status
+                return "stale" if status == "running" else status
             if attempts >= max_attempts:
                 await db.execute(
                     "UPDATE jobs SET status = 'dead', locked_at = NULL, last_error = ?, updated_at = ?, finished_at = ? "
-                    "WHERE id = ? AND status = 'running'",
-                    (error[:600], _iso(now), _iso(now), job_id),
+                    "WHERE id = ? AND status = 'running' AND (? IS NULL OR attempts = ?)",
+                    (error[:600], _iso(now), _iso(now), job_id, expected_attempt, expected_attempt),
                 )
                 await db.commit()
                 return "dead"
             wait = min(BACKOFF_CAP_SECONDS, BACKOFF_BASE_SECONDS * (2 ** (attempts - 1)))
             await db.execute(
                 "UPDATE jobs SET status = 'queued', locked_at = NULL, last_error = ?, run_at = ?, updated_at = ? "
-                "WHERE id = ? AND status = 'running'",
-                (error[:600], _iso(now + timedelta(seconds=wait)), _iso(now), job_id),
+                "WHERE id = ? AND status = 'running' AND (? IS NULL OR attempts = ?)",
+                (error[:600], _iso(now + timedelta(seconds=wait)), _iso(now), job_id, expected_attempt, expected_attempt),
             )
             await db.commit()
             return "queued"
 
-    async def release(self, job_id: str, note: str = "worker stopped") -> None:
+    async def release(self, job_id: str, note: str = "worker stopped", *, expected_attempt: int | None = None) -> None:
         """Put a job back without counting the try: the worker stopped (a
         restart, a new AI key), not the job. It runs again when the worker
         is back."""
@@ -230,12 +230,12 @@ class Jobs:
             await db.execute(
                 "UPDATE jobs SET status = 'dead', locked_at = NULL, last_error = CASE kind WHEN 'calendar_invite' THEN ? ELSE ? END, "
                 "updated_at = ?, finished_at = ? "
-                "WHERE id = ? AND status = 'running' AND kind IN (?, ?)",
-                (UNCERTAIN_INVITE_NOTE, UNCERTAIN_SEND_NOTE, current, current, job_id, *DELIVERY_KINDS))
+                "WHERE id = ? AND status = 'running' AND kind IN (?, ?) AND (? IS NULL OR attempts = ?)",
+                (UNCERTAIN_INVITE_NOTE, UNCERTAIN_SEND_NOTE, current, current, job_id, *DELIVERY_KINDS, expected_attempt, expected_attempt))
             await db.execute(
                 "UPDATE jobs SET status = 'queued', locked_at = NULL, attempts = MAX(0, attempts - 1), last_error = ?, "
-                "updated_at = ? WHERE id = ? AND status = 'running' AND kind NOT IN (?, ?)",
-                (note[:600], current, job_id, *DELIVERY_KINDS))
+                "updated_at = ? WHERE id = ? AND status = 'running' AND kind NOT IN (?, ?) AND (? IS NULL OR attempts = ?)",
+                (note[:600], current, job_id, *DELIVERY_KINDS, expected_attempt, expected_attempt))
             await db.commit()
 
     async def retry(self, job_id: str, *, delivery_reviewed: bool = True) -> bool:
