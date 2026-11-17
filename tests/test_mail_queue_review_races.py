@@ -61,3 +61,24 @@ async def test_unreviewed_retry_cannot_race_reviewed_retry(tmp_path, kind):
     ))["status"] == "queued"
     assert (await jobs.claim())["id"] == job_id
     assert await jobs.claim() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["send_draft", "calendar_invite"])
+async def test_each_reviewed_delivery_retry_grants_only_one_attempt(tmp_path, kind):
+    """A second manual review must not accidentally authorize automatic redelivery."""
+    db = MailDB(tmp_path / "review_budget.db")
+    await db.init()
+    jobs = Jobs(db)
+    job_id = await jobs.enqueue(kind, mailbox_id="sender.test", max_attempts=1)
+    first = await jobs.claim()
+    assert first["attempts"] == 1
+    assert await jobs.fail(job_id, "local mock failure", expected_attempt=1) == "dead"
+
+    for expected in (2, 3):
+        assert await jobs.retry(job_id, delivery_reviewed=True)
+        claimed = await jobs.claim()
+        assert claimed["attempts"] == expected
+        assert claimed["max_attempts"] == expected
+        assert await jobs.fail(job_id, "local mock failure", expected_attempt=expected) == "dead"
+        assert await jobs.claim() is None
