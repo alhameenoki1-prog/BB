@@ -73,7 +73,7 @@ async def test_manual_retry_after_restart_is_explicit_and_single_claim(tmp_path)
 
     claimed = await restarted.claim()
     assert claimed is not None and claimed["id"] == send_id
-    assert claimed["attempts"] == 1
+    assert claimed["attempts"] == 2  # restart must not recycle the previous claim
     assert await restarted.claim() is None
 
 
