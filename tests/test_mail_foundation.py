@@ -91,7 +91,9 @@ async def test_jobs_retry_with_backoff_then_dead_letter(tmp_path):
     assert await jobs.fail(jid, "boom again") == "dead"                      # out of attempts
     counts = await jobs.counts()
     assert counts["dead"] == 1 and counts["running"] == 1
-    assert await jobs.retry(jid) and (await db.one("SELECT attempts, status FROM jobs WHERE id = ?", (jid,)))["attempts"] == 0
+    assert await jobs.retry(jid)
+    retried = await db.one("SELECT attempts, status, max_attempts FROM jobs WHERE id = ?", (jid,))
+    assert retried["status"] == "queued" and retried["attempts"] == 2 and retried["max_attempts"] > 2
     assert await jobs.discard(jid) and not await jobs.retry(other)           # running jobs can't be retried
     await jobs.complete(other, synced=5)
     assert (await jobs.list("done"))[0]["progress"] == {"synced": 5}
