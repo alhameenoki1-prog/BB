@@ -239,10 +239,14 @@ class Jobs:
             await db.commit()
 
     async def retry(self, job_id: str, *, delivery_reviewed: bool = True) -> bool:
-        """Retry one selected job. Web callers supply the user's delivery confirmation."""
+        """Retry one selected job after review, granting a fresh attempt budget.
+
+        Keep attempts monotonic: resetting it would let an old worker with
+        expected_attempt=1 acknowledge a newly claimed attempt 1.
+        """
         now = now_iso()
         n = await self.db.execute(
-            "UPDATE jobs SET status = 'queued', attempts = 0, last_error = CASE WHEN kind IN (?, ?) "
+            "UPDATE jobs SET status = 'queued', max_attempts = max_attempts + attempts, last_error = CASE WHEN kind IN (?, ?) "
             "THEN 'Retry queued after delivery review.' ELSE '' END, run_at = ?, updated_at = ?, "
             "finished_at = NULL WHERE id = ? AND status IN ('dead', 'cancelled') "
             "AND (kind NOT IN (?, ?) OR (? AND status = 'dead'))",
