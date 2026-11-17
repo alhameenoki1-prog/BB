@@ -138,7 +138,7 @@ async def test_uncertain_send_requires_explicit_retry_before_reclaim(tmp_path):
     assert await jobs.retry(job_id) is True
     claimed = await jobs.claim()
     assert claimed is not None and claimed["id"] == job_id
-    assert claimed["attempts"] == 1
+    assert claimed["attempts"] == 2  # explicit retry advances the claim generation
 
 
 @pytest.mark.asyncio
