@@ -241,16 +241,16 @@ class Jobs:
     async def retry(self, job_id: str, *, delivery_reviewed: bool = True) -> bool:
         """Retry one selected job after review, granting a fresh attempt budget.
 
-        Keep attempts monotonic: resetting it would let an old worker with
+        Delivery retries receive exactly one new attempt; safe jobs retain\n        their existing retry-budget extension. Keep attempts monotonic:\n        resetting it would let an old worker with
         expected_attempt=1 acknowledge a newly claimed attempt 1.
         """
         now = now_iso()
         n = await self.db.execute(
-            "UPDATE jobs SET status = 'queued', max_attempts = max_attempts + attempts, last_error = CASE WHEN kind IN (?, ?) "
+            "UPDATE jobs SET status = 'queued', max_attempts = CASE WHEN kind IN (?, ?) THEN attempts + 1 ELSE max_attempts + attempts END, last_error = CASE WHEN kind IN (?, ?) "
             "THEN 'Retry queued after delivery review.' ELSE '' END, run_at = ?, updated_at = ?, "
             "finished_at = NULL WHERE id = ? AND status IN ('dead', 'cancelled') "
             "AND (kind NOT IN (?, ?) OR (? AND status = 'dead'))",
-            (*DELIVERY_KINDS, now, now, job_id, *DELIVERY_KINDS, delivery_reviewed))
+            (*DELIVERY_KINDS, *DELIVERY_KINDS, now, now, job_id, *DELIVERY_KINDS, delivery_reviewed))
         return n > 0
 
     async def discard(self, job_id: str) -> bool:
