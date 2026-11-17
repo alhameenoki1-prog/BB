@@ -57,7 +57,7 @@ async def test_reviewed_delivery_retry_is_explicit_and_single_claim(tmp_path):
     assert await jobs.retry(job_id, delivery_reviewed=True)
     row = await db.one("SELECT status, attempts, last_error, finished_at FROM jobs WHERE id = ?", (job_id,))
     assert row["status"] == "queued"
-    assert row["attempts"] == 0
+    assert row["attempts"] == 1  # retain claim generation for stale-worker fencing
     assert row["last_error"] == "Retry queued after delivery review."
     assert row["finished_at"] is None
     assert (await jobs.claim())["id"] == job_id
