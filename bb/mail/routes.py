@@ -756,7 +756,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             box = next(m for m in c["mailboxes"] if m["id"] == draft["mailbox_id"])
             to = draft["to"]
             recipient = to[0] if len(to) == 1 else {}
-            display_name = box["settings_model"].display_name if box["provider"] != "graph" else ""
+            display_name = (draft["qa"].get("from_name") or box["settings_model"].display_name) if box["provider"] != "graph" else ""
             sender = f"{display_name} <{box['address']}>" if display_name else box["address"]
             return preview_document(
                 html, client=client, sender=sender, to=", ".join(row["email"] for row in to),
@@ -1130,6 +1130,11 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
 
         if not box or not box.get("enabled"):
             raise ValueError("Select an enabled sending mailbox.")
+        from_name = str(form.get("from_name", "")).strip()
+        if len(from_name) > 150 or any(ord(ch) < 32 or ord(ch) == 127 for ch in from_name):
+            raise ValueError("From name must be at most 150 characters on one line.")
+        if from_name and box["provider"] == "graph":
+            raise ValueError("Outlook uses the mailbox display name set in Microsoft 365. Leave From name empty for this account.")
         message_format = form.get("message_format", "rich")
         if message_format not in studio.FORMATS:
             raise ValueError("Choose a supported message format.")
@@ -1192,7 +1197,7 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
             raise ValueError("Enter some visible HTML content for the message.")
         files = await studio.collect_attachments(form, c["ws"], box["provider"], message_format)
         options = {"ok": True, "reasons": [], "manual": True, "cc": cc, "bcc": bcc,
-                   "studio_format": message_format, "image_link": image_link}
+                   "studio_format": message_format, "image_link": image_link, "from_name": from_name}
         return await c["db"].save_studio_drafts(box["id"], groups, reply_to=reply_to,
                                                 subject=subject, body=body, options=options, files=files)
 

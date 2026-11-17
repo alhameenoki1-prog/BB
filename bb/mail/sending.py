@@ -336,7 +336,7 @@ async def send_draft(db: MailDB, secret: str, env: dict, draft: dict, *, dry_run
         message_id, provider_id, thread_key = await account.send(
             to=[row["email"] for row in to], subject=subject, body_text=plain, body_html=html,
             in_reply_to=draft.get("in_reply_to") or "", references=draft.get("references_text") or "",
-            reply_to=reply_to, from_name=settings.display_name, attachments=attachments or None,
+            reply_to=reply_to, from_name=options.get("from_name") or settings.display_name, attachments=attachments or None,
             cc=cc, bcc=bcc,
         )
     except PermanentError as e:

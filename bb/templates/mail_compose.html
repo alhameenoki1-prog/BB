@@ -34,16 +34,19 @@
           {% endfor %}
         </select>
       </div>
+      <div><label for="manual-from-name">From name (optional)</label><input id="manual-from-name" type="text" name="from_name" maxlength="150" placeholder="Use sender account name"></div>
       <div>
         <label for="manual-to">To</label>
         <input id="manual-to" type="text" name="to" required maxlength="20000" placeholder="alex@example.test; jordan@example.test">
         <p class="hint">Paste addresses separated by commas or semicolons. Duplicates are removed.</p>
       </div>
     </div>
+    <p class="hint">The From address stays with the connected account. Outlook uses the display name set in Microsoft 365.</p>
     <label for="manual-subject">Subject</label>
     <input type="text" id="manual-subject" name="subject" required maxlength="200" placeholder="Project kickoff">
     <label for="manual-body">Body</label>
     <textarea id="manual-body" name="body" rows="8" maxlength="100000" placeholder="Write your message"></textarea>
+
     <div class="row" id="studio-image-options">
       <div><label for="manual-image">Inline image</label><input type="file" id="manual-image" name="inline_image" accept="image/png,image/jpeg,image/gif"></div>
       <div><label for="manual-image-link">Image link (optional)</label><input type="url" id="manual-image-link" name="image_link" maxlength="2048" placeholder="https://example.test/project"></div>
@@ -173,7 +176,7 @@
         const fields = {
           to: to || 'john.smith@example.test',
           to_name: document.getElementById('manual-name').value,
-          sender: document.getElementById('manual-mailbox').selectedOptions[0]?.dataset.sender || 'Project Team',
+          sender: document.getElementById('manual-from-name').value.trim() || document.getElementById('manual-mailbox').selectedOptions[0]?.dataset.sender || 'Project Team',
           subject: subject.value,
           topic: document.getElementById('fictional-topic').value,
         };

@@ -132,6 +132,7 @@ def test_studio_uploads_and_saved_files_survive_the_review_queue(studio_client, 
         client, mailbox, files=[("files", ("uploaded.pdf", b"Test PDF bytes", "application/pdf"))],
         to="john.smith@example.test, ann.lee@example.test", cc="cc@example.test", bcc="bcc@example.test",
         saved_files="saved.txt", body='<p style="color: red" onclick="unsafe()">Hi team</p><script>bad()</script>',
+        from_name="Project Outreach",
     )
     url = response.headers["location"]
     assert "/mail/compose?draft=" in url
@@ -159,7 +160,8 @@ def test_studio_uploads_and_saved_files_survive_the_review_queue(studio_client, 
     raw, envelope = sent[0]
     message = BytesParser(policy=policy.default).parsebytes(raw)
     assert envelope == ["john.smith@example.test", "ann.lee@example.test", "cc@example.test", "bcc@example.test"]
-    assert message["From"].addresses[0].display_name == "BB, Studio"
+    assert message["From"].addresses[0].display_name == "Project Outreach"
+    assert message["From"].addresses[0].addr_spec == ADDRESS
     assert "bcc@example.test" not in raw.decode() and message["Cc"] == "cc@example.test"
     html = message.get_body(("html",)).get_content()
     assert "Hi team" in html and "onclick" not in html and "bad()" not in html

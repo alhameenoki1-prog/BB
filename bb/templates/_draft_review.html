@@ -8,7 +8,7 @@
     <span class="tag warn">Pending review</span>
   </div>
   <dl class="review-meta">
-    <dt>From</dt><dd>{% if d.box %}{{ d.box.address }}
+    <dt>From</dt><dd>{% if d.box %}{% if d.qa.from_name %}{{ d.qa.from_name }} &lt;{{ d.box.address }}&gt;{% else %}{{ d.box.address }}{% endif %}
       {% if d.box.provider == 'azure_smtp' %}<span class="tag accent">Azure Email SMTP</span>
       {% elif d.box.provider == 'ses' %}<span class="tag accent">Amazon SES</span>{% endif %}
       {% else %}Sender unavailable{% endif %}</dd>
