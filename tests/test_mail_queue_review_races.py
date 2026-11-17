@@ -31,10 +31,13 @@ async def test_concurrent_reviewed_retries_enqueue_only_once(tmp_path, kind):
     )
     assert row == {
         "status": "queued",
-        "attempts": 0,
+        "attempts": 1,
         "last_error": "Retry queued after delivery review.",
     }
-    assert (await jobs.claim())["id"] == job_id
+    reclaimed = await jobs.claim()
+    assert reclaimed["id"] == job_id
+    # A reviewed retry must advance the fencing generation, not reuse attempt 1.
+    assert reclaimed["attempts"] == 2
     assert await jobs.claim() is None
 
 
