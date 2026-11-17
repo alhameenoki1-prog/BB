@@ -71,4 +71,4 @@ async def test_uncertain_send_requires_manual_retry_even_when_due(tmp_path):
     assert await jobs.retry(send_id) is True
     retried = await jobs.claim()
     assert retried is not None and retried["id"] == send_id
-    assert retried["attempts"] == 1
+    assert retried["attempts"] == 2  # manual retry must not reuse a stale worker claim
