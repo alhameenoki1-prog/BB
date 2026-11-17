@@ -125,7 +125,7 @@ async def test_release_interrupted_send_requires_manual_retry(tmp_path):
     assert await jobs.retry(send_id) is True
     retried = await jobs.claim()
     assert retried is not None and retried["id"] == send_id
-    assert retried["attempts"] == 1
+    assert retried["attempts"] == 2  # preserve fencing across reviewed retry
 
 
 @pytest.mark.asyncio
