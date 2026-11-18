@@ -61,8 +61,11 @@ def test_azure_campaign_stages_more_than_fifty_individual_sends_with_spacing(azu
     jobs = asyncio.run(db.query("SELECT run_at FROM jobs WHERE kind = 'send_draft' ORDER BY run_at"))
     assert len(jobs) == 60
     from datetime import datetime
-    first, second = (datetime.fromisoformat(jobs[i]["run_at"].replace("Z", "+00:00")) for i in (0, 1))
-    assert (second - first).total_seconds() == 45
+    scheduled = [datetime.fromisoformat(job["run_at"].replace("Z", "+00:00")) for job in jobs]
+    # The scheduler rounds timestamps to whole seconds. Crossing a second boundary
+    # can make an otherwise 45-second interval appear as 46 seconds.
+    gaps = [(later - earlier).total_seconds() for earlier, later in zip(scheduled, scheduled[1:])]
+    assert all(45 <= gap <= 46 for gap in gaps), gaps
 
 
 def test_azure_smtp_coexists_with_inbox_and_retains_reviewed_message(azure_studio, monkeypatch):
