@@ -45,3 +45,21 @@ async def test_recovered_safe_job_rejects_old_worker_callbacks(tmp_path):
     assert row["status"] == "done"
     assert row["attempts"] == 2
     assert json.loads(row["progress_json"]) == {"recovered": True, "outcome": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_safe_manual_retry_grants_only_one_new_attempt(tmp_path):
+    db = MailDB(tmp_path / "safe_retry_budget.db")
+    await db.init()
+    jobs = Jobs(db)
+    job_id = await jobs.enqueue("check_mailbox", mailbox_id="sender.test", max_attempts=1)
+    for expected_attempt in (1, 2, 3):
+        claimed = await jobs.claim()
+        assert claimed is not None
+        assert claimed["attempts"] == expected_attempt
+        assert await jobs.fail(job_id, "local test failure", expected_attempt=expected_attempt) == "dead"
+        assert await jobs.retry(job_id)
+        row = await db.one("SELECT attempts, max_attempts, status FROM jobs WHERE id = ?", (job_id,))
+        assert row["attempts"] == expected_attempt
+        assert row["max_attempts"] == expected_attempt + 1
+        assert row["status"] == "queued"
