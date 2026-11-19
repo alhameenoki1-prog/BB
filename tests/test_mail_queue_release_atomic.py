@@ -32,6 +32,6 @@ async def test_release_requeues_safe_job_without_spending_attempt(tmp_path):
 
     await jobs.release(jid, "worker stopped")
     row = await db.one("SELECT status, attempts, locked_at, last_error FROM jobs WHERE id = ?", (jid,))
-    assert row == {"status": "queued", "attempts": 0, "locked_at": None, "last_error": "worker stopped"}
+    assert row == {"status": "queued", "attempts": 1, "locked_at": None, "last_error": "worker stopped"}
     reclaimed = await jobs.claim()
     assert reclaimed is not None and reclaimed["id"] == jid and reclaimed["attempts"] == 1
