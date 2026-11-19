@@ -68,8 +68,8 @@ async def test_cancelled_running_send_requires_manual_review(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_cancelled_safe_job_can_be_reclaimed_without_extra_attempt(tmp_path):
-    """A read-only job may resume after cancellation without burning a retry."""
+async def test_cancelled_safe_job_reclaim_advances_worker_generation(tmp_path):
+    """A cancelled read-only job may resume with a fresh fencing generation."""
     db = MailDB(tmp_path / "cancelled-safe.db")
     await db.init()
     jobs = Jobs(db)
@@ -86,7 +86,7 @@ async def test_cancelled_safe_job_can_be_reclaimed_without_extra_attempt(tmp_pat
     assert queued["locked_at"] is None
     reclaimed = await jobs.claim()
     assert reclaimed is not None and reclaimed["id"] == job_id
-    assert reclaimed["attempts"] == 1
+    assert reclaimed["attempts"] == 2
 
 
 @pytest.mark.asyncio
