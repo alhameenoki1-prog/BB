@@ -24,13 +24,18 @@ def test_sendgrid_sender_appears_in_studio_only_after_authentication(studio_clie
             pass
 
     monkeypatch.setattr(smtplib, "SMTP", SMTP)
-    response = client.post("/mail/accounts/sendgrid", data={"email": "updates@example.test",
+    response = client.post("/mail/accounts/sendgrid", data={"email": "studio-sender@example.test",
                                                         "api_key": "SG.local-test-key"})
     assert response.status_code == 303
     assert response.headers["location"].startswith("/mail/accounts/")
-    mailbox = asyncio.run(db.mailbox_by_address("updates@example.test"))
+    mailbox = asyncio.run(db.mailbox_by_address("studio-sender@example.test", sendgrid=True))
     assert mailbox["provider"] == "sendgrid" and mailbox["mode"] == "send_only"
+    assert asyncio.run(db.mailbox_by_address("studio-sender@example.test"))["provider"] == "imap"
     assert service.open_creds(secret, mailbox)["password"] == "SG.local-test-key"
-    assert "updates@example.test" in client.get("/mail/compose").text
+    assert "studio-sender@example.test" in client.get("/mail/compose").text
     draft_response = _create(client, mailbox["id"])
     assert "/mail/compose?draft=" in draft_response.headers["location"]
+    reconnect = client.post("/mail/accounts/sendgrid", data={"email": "studio-sender@example.test",
+                                                          "api_key": "SG.local-test-key"})
+    assert mailbox["id"] in reconnect.headers["location"]
+    assert len(asyncio.run(db.mailboxes())) == 2

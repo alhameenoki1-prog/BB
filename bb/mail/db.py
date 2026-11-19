@@ -264,6 +264,13 @@ MIGRATIONS = [
         WHERE provider NOT IN ('ses', 'azure_smtp');
     CREATE UNIQUE INDEX mailboxes_azure_smtp_address ON mailboxes(lower(address)) WHERE provider = 'azure_smtp';
     """,
+    """
+    -- A verified From address can use both its inbox provider and SendGrid.
+    DROP INDEX mailboxes_inbox_address;
+    CREATE UNIQUE INDEX mailboxes_inbox_address ON mailboxes(lower(address))
+        WHERE provider NOT IN ('ses', 'azure_smtp', 'sendgrid');
+    CREATE UNIQUE INDEX mailboxes_sendgrid_address ON mailboxes(lower(address)) WHERE provider = 'sendgrid';
+    """,
 ]
 
 
@@ -455,8 +462,9 @@ class MailDB:
     async def mailbox(self, mailbox_id: str) -> dict | None:
         return self._mailbox(await self.one("SELECT * FROM mailboxes WHERE id = ?", (mailbox_id,)))
 
-    async def mailbox_by_address(self, address: str, *, ses: bool = False) -> dict | None:
-        provider = "provider = 'ses'" if ses else "provider NOT IN ('ses', 'azure_smtp')"
+    async def mailbox_by_address(self, address: str, *, ses: bool = False, sendgrid: bool = False) -> dict | None:
+        provider = ("provider = 'ses'" if ses else "provider = 'sendgrid'" if sendgrid
+                    else "provider NOT IN ('ses', 'azure_smtp', 'sendgrid')")
         return self._mailbox(await self.one(f"SELECT * FROM mailboxes WHERE lower(address) = ? AND {provider}",
                                             ((address or "").strip().lower(),)))
 

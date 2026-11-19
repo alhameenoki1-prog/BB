@@ -163,9 +163,7 @@ async def connect_sendgrid(db: MailDB, secret: str, *, address: str, api_key: st
     if not addresses or not api_key or len(api_key) > 512 or any(ord(ch) < 33 or ord(ch) == 127 for ch in api_key):
         raise ValueError("Enter a verified From address and the complete SendGrid API key on one line.")
     address = addresses[0]
-    existing = await db.mailbox_by_address(address)
-    if existing and existing["provider"] != "sendgrid":
-        raise ValueError("This address is already connected through another sending method.")
+    existing = await db.mailbox_by_address(address, sendgrid=True)
     account = account_for({"address": address, "provider": "sendgrid"}, {"password": api_key}, env)
     note = await account.test()
     sealed = crypto.seal_json(secret, {"password": api_key})
