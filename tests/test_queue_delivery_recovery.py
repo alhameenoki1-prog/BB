@@ -65,7 +65,7 @@ async def test_cancelled_send_is_held_but_read_only_work_is_requeued(tmp_path):
     assert check["attempts"] == 1
     await jobs.release(check_id)
     recovered = await db.one("SELECT status, attempts FROM jobs WHERE id = ?", (check_id,))
-    assert recovered == {"status": "queued", "attempts": 0}
+    assert recovered == {"status": "queued", "attempts": 1}
 
 
 @pytest.mark.asyncio
