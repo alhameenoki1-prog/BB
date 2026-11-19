@@ -22,7 +22,7 @@ async def test_release_quarantines_uncertain_delivery(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_release_requeues_safe_job_without_spending_attempt(tmp_path):
+async def test_release_requeues_safe_job_with_new_claim_generation(tmp_path):
     db = MailDB(tmp_path / "release_safe.db")
     await db.init()
     jobs = Jobs(db)
@@ -34,4 +34,4 @@ async def test_release_requeues_safe_job_without_spending_attempt(tmp_path):
     row = await db.one("SELECT status, attempts, locked_at, last_error FROM jobs WHERE id = ?", (jid,))
     assert row == {"status": "queued", "attempts": 1, "locked_at": None, "last_error": "worker stopped"}
     reclaimed = await jobs.claim()
-    assert reclaimed is not None and reclaimed["id"] == jid and reclaimed["attempts"] == 1
+    assert reclaimed is not None and reclaimed["id"] == jid and reclaimed["attempts"] == 2
