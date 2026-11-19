@@ -64,6 +64,16 @@
     <form method="post" action="/mail/accounts/imap" style="margin-top:8px"><input type="hidden" name="email" value="{{ box.address }}"><div class="row"><div><label>New password / app password</label><input type="password" name="password" required></div><div style="display:flex;align-items:flex-end"><button class="secondary" type="submit">Reconnect</button></div></div></form>
   </details>
   {% endif %}
+  {% if box.provider == 'sendgrid' %}
+  <details style="margin-top:10px" {{ 'open' if box.status == 'reconnect' else '' }}>
+    <summary class="small muted">Reconnect SendGrid sender</summary>
+    <form method="post" action="/mail/accounts/sendgrid" style="margin-top:8px">
+      <input type="hidden" name="email" value="{{ box.address }}">
+      <label for="sendgrid-reconnect-key">New SendGrid API key</label><input id="sendgrid-reconnect-key" type="password" name="api_key" required maxlength="512" autocomplete="new-password">
+      <div class="actions" style="margin-top:8px"><button class="secondary" type="submit">Reconnect</button></div>
+    </form>
+  </details>
+  {% endif %}
   {% if box.provider == 'azure_smtp' %}
   <details style="margin-top:10px" {{ 'open' if box.status == 'reconnect' else '' }}>
     <summary class="small muted">Reconnect Azure sender</summary>

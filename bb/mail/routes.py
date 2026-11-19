@@ -232,6 +232,19 @@ def register_mail_routes(app, settings, current_user, workspace_for, render, _re
                 return _redirect("/mail/accounts", error=str(exc))
         return _redirect(f"/mail/accounts/{mailbox_id}", msg=note)
 
+    @app.post("/mail/accounts/sendgrid")
+    async def mail_connect_sendgrid(request: Request, user: dict = Depends(current_user)):
+        c = await ctx(user)
+        async with request.form(max_files=0, max_fields=2) as form:
+            try:
+                mailbox_id, note = await service.connect_sendgrid(
+                    c["db"], settings.secret_key(), address=str(form.get("email", "")),
+                    api_key=str(form.get("api_key", "")), env=settings.worker_env(),
+                )
+            except (AuthError, TransientError, ValueError) as exc:
+                return _redirect("/mail/accounts", error=str(exc))
+        return _redirect(f"/mail/accounts/{mailbox_id}", msg=note)
+
     @app.post("/mail/accounts/graph")
     async def mail_connect_graph(request: Request, user: dict = Depends(current_user)):
         """Microsoft 365 through an app registration: tenant, client id, secret."""

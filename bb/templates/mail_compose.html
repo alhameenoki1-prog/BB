@@ -29,7 +29,7 @@
         <select id="manual-mailbox" name="mailbox" required>
           {% for m in ready %}
           <option value="{{ m.id }}" data-sender="{{ m.settings_model.display_name or m.address }}">
-            {{ m.address }}{{ ' · Azure Email' if m.provider == 'azure_smtp' else (' · Amazon SES' if m.provider == 'ses' else '') }}
+            {{ m.address }}{{ ' · Azure Email' if m.provider == 'azure_smtp' else (' · Amazon SES' if m.provider == 'ses' else (' · SendGrid' if m.provider == 'sendgrid' else '')) }}
           </option>
           {% endfor %}
         </select>

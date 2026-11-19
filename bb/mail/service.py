@@ -154,6 +154,34 @@ async def connect_azure_smtp(db: MailDB, secret: str, *, address: str, username:
     return mailbox_id, note
 
 
+async def connect_sendgrid(db: MailDB, secret: str, *, address: str, api_key: str, env: dict) -> tuple[str, str]:
+    """Authenticate a verified sender's SendGrid relay for Studio."""
+    from bb.mail.composer import parse_copy_recipients
+
+    addresses = parse_copy_recipients(address, field_name="From address", limit=1)
+    api_key = api_key.strip()
+    if not addresses or not api_key or len(api_key) > 512 or any(ord(ch) < 33 or ord(ch) == 127 for ch in api_key):
+        raise ValueError("Enter a verified From address and the complete SendGrid API key on one line.")
+    address = addresses[0]
+    existing = await db.mailbox_by_address(address)
+    if existing and existing["provider"] != "sendgrid":
+        raise ValueError("This address is already connected through another sending method.")
+    account = account_for({"address": address, "provider": "sendgrid"}, {"password": api_key}, env)
+    note = await account.test()
+    sealed = crypto.seal_json(secret, {"password": api_key})
+    if existing:
+        await db.update_mailbox(existing["id"], creds=sealed, status="ok", status_detail=note,
+                                last_checked_at=now_iso(), enabled=1)
+        mid = existing["id"]
+    else:
+        mid = await db.add_mailbox(address=address, provider="sendgrid", creds=sealed, mode="send_only",
+                                   settings=MailboxSettings(color=_next_color(await db.mailboxes())).model_dump(),
+                                   status="ok")
+        await db.update_mailbox(mid, status_detail=note, last_checked_at=now_iso())
+    await db.log("connected", f"Connected {address} through SendGrid SMTP.", mid)
+    return mid, note
+
+
 async def connect_gmail(db: MailDB, secret: str, *, address: str, refresh_token: str, env: dict) -> tuple[str, str]:
     """Store a Gmail mailbox from a completed OAuth exchange and verify it."""
     address = (address or "").strip().lower()

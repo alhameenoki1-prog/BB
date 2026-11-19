@@ -104,3 +104,19 @@ class AzureSmtpAccount(SmtpAccount):
             raise AuthError("Enter the Azure SMTP username and Microsoft Entra client secret.")
         await asyncio.to_thread(self._smtp_check)
         return "Azure SMTP authentication passed. Azure checks the MailFrom address when the first message is submitted."
+
+
+class SendGridAccount(SmtpAccount):
+    """Authenticated SendGrid SMTP relay; replies require another inbox."""
+    name = "sendgrid"
+    authentication_required = True
+
+    def __init__(self, mailbox: dict, creds: dict, env: dict):
+        super().__init__(mailbox, {**creds, "smtp_host": "smtp.sendgrid.net", "smtp_port": 587,
+                                   "username": "apikey"}, env)
+
+    async def test(self) -> str:
+        if not self.creds.get("password"):
+            raise AuthError("Enter a SendGrid API key with Mail Send permission.")
+        await asyncio.to_thread(self._smtp_check)
+        return "SendGrid SMTP authentication passed. The From address must be verified in SendGrid."

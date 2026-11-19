@@ -21,4 +21,7 @@ def account_for(mailbox: dict, creds: dict, env: dict) -> "MailAccount":
     if provider == "azure_smtp":
         from bb.mail.providers.smtp import AzureSmtpAccount
         return AzureSmtpAccount(mailbox, creds, env)
+    if provider == "sendgrid":
+        from bb.mail.providers.smtp import SendGridAccount
+        return SendGridAccount(mailbox, creds, env)
     raise ValueError(f"unknown provider {provider!r}")
