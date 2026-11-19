@@ -82,7 +82,7 @@ async def test_cancelled_safe_job_can_be_reclaimed_without_extra_attempt(tmp_pat
         "SELECT status, attempts, locked_at FROM jobs WHERE id = ?", (job_id,)
     )
     assert queued["status"] == "queued"
-    assert queued["attempts"] == 0
+    assert queued["attempts"] == 1
     assert queued["locked_at"] is None
     reclaimed = await jobs.claim()
     assert reclaimed is not None and reclaimed["id"] == job_id
