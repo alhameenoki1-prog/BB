@@ -76,3 +76,45 @@ async def test_dedupe_allows_new_job_after_dead_letter_or_discard(tmp_path):
         (replacement_id, "cancelled"),
         (final_id, "queued"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_dedupe_preserves_backoff_job_and_reuses_requeued_attempt(tmp_path):
+    """A scheduled retry is still active; enqueuers must not bypass its backoff."""
+    path = tmp_path / "dedupe_backoff.db"
+    await MailDB(path).init()
+    worker = Jobs(MailDB(path))
+    other = Jobs(MailDB(path))
+    kwargs = dict(kind="check_mailbox", mailbox_id="sender.test", lane="inbox",
+                  dedupe=True, max_attempts=3)
+
+    original_id = await worker.enqueue(**kwargs)
+    first = await worker.claim()
+    assert first is not None and first["id"] == original_id
+    assert await worker.fail(original_id, "mock transient failure",
+                             expected_attempt=first["attempts"]) == "queued"
+
+    # A delayed retry must not be replaced by a new immediately runnable job.
+    assert await other.enqueue(**kwargs) == original_id
+    assert await other.claim() is None
+    rows = await MailDB(path).query(
+        "SELECT id, status, attempts, run_at FROM jobs WHERE mailbox_id = ?",
+        ("sender.test",),
+    )
+    assert len(rows) == 1
+    assert rows[0]["id"] == original_id
+    assert rows[0]["status"] == "queued"
+    assert rows[0]["attempts"] == 1
+
+    # Make the existing retry due locally; it must retain its identity and
+    # advance its attempt token rather than creating a second queued job.
+    await MailDB(path).execute(
+        "UPDATE jobs SET run_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+        (original_id,),
+    )
+    second = await other.claim()
+    assert second is not None and second["id"] == original_id
+    assert second["attempts"] == 2
+    assert await worker.enqueue(**kwargs) == original_id
+    await other.complete(original_id, expected_attempt=second["attempts"])
+    assert await worker.enqueue(**kwargs) != original_id
