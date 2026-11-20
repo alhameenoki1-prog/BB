@@ -375,11 +375,15 @@ async def test_a_send_cut_off_while_its_slot_is_taken_gives_it_back(tmp_path, mo
     sender = make_sender(sm, FakeProvider(), require_approval=False)
     led = sender.ledger
     release = threading.Event()
+    reserve_finished = threading.Event()
     real_reserve = Ledger.reserve
 
     def slow_reserve(self, *a, **k):
-        release.wait(5)                                   # another process holds the file
-        return real_reserve(self, *a, **k)
+        try:
+            release.wait(5)                               # another process holds the file
+            return real_reserve(self, *a, **k)
+        finally:
+            reserve_finished.set()
     monkeypatch.setattr(Ledger, "reserve", slow_reserve)
     pid = await seed_prospect(sm, email="jo@recipient.test")
     now = "2026-01-01T00:00:00"
@@ -392,9 +396,11 @@ async def test_a_send_cut_off_while_its_slot_is_taken_gives_it_back(tmp_path, mo
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    # On Windows, the reservation runs in a separate thread and may finish
-    # after cancellation. Its callback releases the slot asynchronously.
-    # Wait for the observable cleanup instead of relying on a fixed sleep.
+    # The reservation thread can still be waiting when cancellation returns.
+    # First observe its completion; otherwise an initial zero count can pass
+    # the poll before reserve() increments the ledger (especially on macOS).
+    assert await asyncio.to_thread(reserve_finished.wait, 10), "reservation thread did not finish"
+    # Its done callback may release the slot asynchronously after completion.
     deadline = asyncio.get_running_loop().time() + 10
     while led.used_by("c-1") != 0 and asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.05)
