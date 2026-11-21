@@ -119,7 +119,8 @@ class Handlers:
         run = await self.db.one("SELECT * FROM reply_runs WHERE id = ?", (job["payload"].get("run_id", ""),))
         env, scope = await self._run_env(run, await self.db.mailbox(job["mailbox_id"]))
         return await runs.process_mailbox(self.db, self.secret, env, brain, self.jobs, job["id"],
-                                          job["payload"].get("run_id", ""), job["mailbox_id"], scope=scope)
+                                          job["payload"].get("run_id", ""), job["mailbox_id"], scope=scope,
+                                          expected_attempt=job["attempts"])
 
     async def reply_campaign(self, job: dict):
         """One tick of a reply campaign: take in what arrived, answer it,
@@ -143,7 +144,8 @@ class Handlers:
             if led is not None and run["mode"] != "dry_run":
                 led.join(mailbox["address"], run_id, "reply", runs.run_label(run, mailbox["address"]))
             added = await runs.collect_campaign_threads(self.db, run, mailbox)
-            out = await runs.process_mailbox(self.db, self.secret, env, brain, self.jobs, job["id"], run_id, mailbox["id"], scope=scope)
+            out = await runs.process_mailbox(self.db, self.secret, env, brain, self.jobs, job["id"], run_id, mailbox["id"], scope=scope,
+                                             expected_attempt=job["attempts"])
             out["added"] = added
             if not out.get("waiting") and run.get("detail"):
                 await self.db.execute("UPDATE reply_runs SET detail = '' WHERE id = ? AND detail NOT LIKE 'waiting%'", (run_id,))
