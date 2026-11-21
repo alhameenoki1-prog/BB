@@ -737,7 +737,8 @@ async def _finish_if_done(db: MailDB, run_id: str):
 
 
 async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs | None, job_id: str,
-                          run_id: str, mailbox_id: str, scope: dict | None = None) -> dict:
+                          run_id: str, mailbox_id: str, scope: dict | None = None,
+                          expected_attempt: int | None = None) -> dict:
     """The worker's job: every queued item of this run for this mailbox,
     in order. Drafts, routes by mode and confidence, sends with pacing."""
     from bb.mail.brain import BrainError, BrainRefusal
@@ -784,7 +785,7 @@ async def process_mailbox(db: MailDB, secret: str, env: dict, brain, jobs: Jobs 
         if jobs is not None:
             done_all = (await run_summary(db, run_id))
             done_n = sum(v for k, v in done_all.items() if k not in ("queued", "drafting"))
-            await jobs.progress(job_id, phase="replying", done=done_n, total=total_all, run_id=run_id,
+            await jobs.progress(job_id, expected_attempt=expected_attempt, phase="replying", done=done_n, total=total_all, run_id=run_id,
                                 current=item.get("subject", ""))
 
     for item in items:
