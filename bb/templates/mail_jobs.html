@@ -2,8 +2,8 @@
 {% from "_icons.html" import icon %}
 {% block title %}Jobs{% endblock %}
 {% block content %}
-<div class="page-head"><div><div class="eyebrow">Mail</div><h1>Background jobs</h1><p class="lead">Sync, drafting and sending run as jobs with retries. A job that fails every attempt is kept here, never dropped, until you retry or discard it.</p></div>
-  <div class="actions">{% if counts.dead %}<form class="inline" method="post" action="/mail/jobs/retry-all"><button class="small" type="submit">{{ icon('play', 13) }} Retry all {{ counts.dead }} failed</button></form>{% endif %}</div></div>
+<div class="page-head"><div><h1>Background jobs</h1><p class="lead">Track mailbox work and review uncertain deliveries.</p></div>
+  <div class="actions">{% if retryable_count %}<form class="inline" method="post" action="/mail/jobs/retry-all"><button class="small" type="submit">{{ icon('play', 13) }} Retry all {{ retryable_count }} failed background tasks</button></form>{% endif %}</div></div>
 <div class="segs" style="margin-bottom:18px">
   {% for s, label in [('', 'All'), ('queued', 'Queued'), ('running', 'Running'), ('dead', 'Failed and waiting'), ('done', 'Done'), ('cancelled', 'Discarded')] %}
   <a class="{{ 'on' if s == status else '' }}" href="/mail/jobs?status={{ s }}">{{ label }}{% if s and counts[s] %} ({{ counts[s] }}){% endif %}</a>
@@ -14,9 +14,13 @@
   <table><thead><tr><th>Job</th><th>Mailbox</th><th>Status</th><th>Attempts</th><th>Last error</th><th></th></tr></thead><tbody>
   {% for j in jobs %}
   <tr><td>{{ j.kind.replace('_', ' ') }}<div class="tiny">{{ j.updated_at }}</div></td><td class="small">{{ j.mailbox }}</td>
-    <td>{% if j.status == 'dead' %}<span class="tag bad">failed</span>{% elif j.status == 'running' %}<span class="tag accent">running</span>{% elif j.status == 'queued' %}<span class="tag">queued · {{ j.run_at }}</span>{% elif j.status == 'done' %}<span class="tag good">done</span>{% else %}<span class="tag">{{ j.status }}</span>{% endif %}</td>
-    <td>{{ j.attempts }}/{{ j.max_attempts }}</td><td class="small" style="color:var(--bad)">{{ j.last_error }}</td>
-    <td style="text-align:right">{% if j.status in ('dead', 'cancelled') %}<form class="inline" method="post" action="/mail/jobs/{{ j.id }}/retry"><button class="small secondary" type="submit">Retry</button></form>{% endif %}
+    <td>{% if j.status == 'dead' %}<span class="tag bad">{{ 'needs review' if j.kind in delivery_kinds else 'failed' }}</span>{% elif j.status == 'running' %}<span class="tag accent">running</span>{% elif j.status == 'queued' %}<span class="tag">queued · {{ j.run_at }}</span>{% elif j.status == 'done' %}<span class="tag {{ 'warn' if j.progress.status in ('held', 'failed') else 'good' }}">{{ 'provider accepted' if j.progress.status == 'sent' else (j.progress.status|replace('_', ' ') if j.progress.status else 'done') }}</span>{% else %}<span class="tag">{{ j.status }}</span>{% endif %}</td>
+    <td>{{ j.attempts }}{% if j.kind not in delivery_kinds %}/{{ j.max_attempts }}{% endif %}</td><td class="small" style="color:var(--bad)">{{ j.last_error or j.progress.reason or '' }}</td>
+    <td style="text-align:right">{% if j.status == 'dead' and j.kind in delivery_kinds %}
+      <form class="inline" method="post" action="/mail/jobs/{{ j.id }}/retry" onsubmit="return confirm('I checked the provider for prior delivery. Retry this job?')">
+        <input type="hidden" name="delivery_reviewed" value="1"><button class="small secondary" type="submit">Retry after review</button>
+      </form>
+      {% elif j.status in ('dead', 'cancelled') and j.kind not in delivery_kinds %}<form class="inline" method="post" action="/mail/jobs/{{ j.id }}/retry"><button class="small secondary" type="submit">Retry</button></form>{% endif %}
       {% if j.status in ('dead', 'queued') %}<form class="inline" method="post" action="/mail/jobs/{{ j.id }}/discard"><button class="small danger" type="submit">Discard</button></form>{% endif %}</td></tr>
   {% endfor %}</tbody></table>
   {% else %}<div class="empty">{{ icon('clock') }}<div>Nothing here.</div></div>{% endif %}

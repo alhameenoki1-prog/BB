@@ -234,7 +234,7 @@ def test_thread_composer_review_and_compose_pages(mail_client, monkeypatch):
     assert "Sending" in r.headers["location"]
     d = asyncio.run(db.one("SELECT * FROM drafts WHERE id = ?", (draft["id"],)))
     assert d["status"] == "approved" and d["body"].endswith("Edited by hand.") and d["reply_to"] == "inbox@mine.example"
-    jobs = [j for j in asyncio.run(Jobs(db).list("queued")) if j["kind"] == "send_draft"]   # a backfill job may sit beside it
+    jobs = [j for j in asyncio.run(Jobs(db).list()) if j["kind"] == "send_draft"]  # worker may already claim the job
     assert jobs and jobs[0]["payload"] == {"draft_id": draft["id"], "dry_run": False, "saw_thread": False}
     assert "Sending…" in client.get(f"/mail/threads/{tid}").text
     assert "already%20sent" not in client.post(f"/mail/drafts/{draft['id']}/send", data={}).headers["location"]
@@ -245,7 +245,7 @@ def test_thread_composer_review_and_compose_pages(mail_client, monkeypatch):
                            "VALUES ('p1', ?, ?, 'reply', ?, 'Re: Site visit', 'Pending one.', 'pending_review', 'low', ?, ?)",
                            (mid, tid, json.dumps([{"name": "Ann", "email": "ann@x.example"}]), now, now)))
     page = client.get("/mail/review").text
-    assert "Pending one." in page and "Approve all 1" in page and "Recently sent" in page
+    assert "Pending one." in page and "Approve all 1" in page and "Recent draft activity" in page
     assert "Approved%201" in client.post("/mail/review/approve-all").headers["location"]
     assert (asyncio.run(db.one("SELECT status FROM drafts WHERE id = 'p1'")))["status"] == "approved"
     assert "Nothing waiting" in client.get("/mail/review").text

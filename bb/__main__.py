@@ -59,7 +59,8 @@ def _password(args) -> str:
         return args.password
     if not sys.stdin.isatty():
         return sys.stdin.readline().rstrip("\n")
-    first = getpass.getpass("Password (10+ characters): ")
+    from bb.accounts import MIN_PASSWORD
+    first = getpass.getpass(f"Password ({MIN_PASSWORD}+ characters): ")
     if getpass.getpass("Again: ") != first:
         print("The two passwords don't match.")
         raise SystemExit(2)

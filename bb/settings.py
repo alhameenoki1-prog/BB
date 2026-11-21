@@ -43,6 +43,7 @@ class Settings:
         self.ms_client_id = get("MS_CLIENT_ID").strip()
         self.ms_client_secret = get("MS_CLIENT_SECRET").strip()
         self.ms_tenant = get("MS_TENANT", "common").strip() or "common"
+        self.ses_principal_arn = get("BB_SES_PRINCIPAL_ARN").strip()
         # The mailbox that sends users their mailbox alerts: any SMTP account
         # the operator owns, never a user's own mailbox (it may be the very
         # thing that stopped working).

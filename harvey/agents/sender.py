@@ -557,6 +557,9 @@ class Sender:
                     send_at=send_at.isoformat(),
                     status=status,
                     provider=self.provider.name,
+                    attachments=(list(getattr(getattr(self.config, "outreach", None), "reply_attachments", []) or [])
+                                 if getattr(getattr(self.config, "outreach", None), "attach_first_email", False)
+                                 and int(step.step) == 1 else []),
                 )
                 if item_id:
                     staged += 1

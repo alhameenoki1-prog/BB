@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}BB account security{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Two-factor authentication</h1></div></div>
+<div class="card" style="max-width:720px">
+{% if mfa_enabled %}
+  <h2>Authenticator enabled</h2>
+  <p>Your BB login requires your account password and an authenticator code.</p>
+  <form method="post" action="/security/mfa/disable">
+    <label for="totp-disable">Code from your authenticator to disable MFA</label>
+    <input id="totp-disable" type="text" name="code" inputmode="numeric" autocomplete="one-time-code"
+           pattern="[0-9]{6}" maxlength="6" required>
+    <p><button class="secondary" type="submit">Disable MFA and sign out</button></p>
+  </form>
+{% else %}
+  <h2>Set up an authenticator</h2>
+  <p>Open an authenticator app (Microsoft Authenticator, Google Authenticator or another TOTP app) and add a new account using this setup key. Do not share the key.</p>
+  <label for="mfa-key">BB authenticator setup key</label>
+  <input id="mfa-key" type="text" value="{{ mfa_secret }}" readonly style="font-family:monospace;width:100%">
+  <details><summary>Alternative authenticator setup URI</summary><code style="overflow-wrap:anywhere">{{ mfa_uri }}</code></details>
+  <form action="/security/mfa/confirm" method="post">
+    <label for="totp-confirm">Confirm with the current six-digit code</label>
+    <input id="totp-confirm" type="text" name="code" inputmode="numeric" autocomplete="one-time-code"
+           pattern="[0-9]{6}" maxlength="6" required>
+    <p><button type="submit">Enable MFA</button></p>
+  </form>
+  <p class="muted small">Setup expires in 10 minutes. Refresh this page to start a new enrollment.</p>
+{% endif %}
+</div>
+{% endblock %}

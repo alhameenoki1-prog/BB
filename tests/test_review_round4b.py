@@ -175,7 +175,7 @@ def test_a_form_acts_on_the_campaign_its_page_showed(client):
     other = main.campaign_workspaces()[0]
     main.select(other.campaign_id)                       # another tab switched to the new campaign
     page = client.get("/").text
-    assert "u.searchParams.set('c'" in page
+    assert f"searchParams.set('c', \"{other.campaign_id}\")" in page
     r = client.post("/recipients?c=main", data={"pasted": "lead@x.example"})     # this tab still showed the main campaign
     assert "Added%201" in r.headers["location"]
     assert [p.email for p in asyncio.run(main.state().get_prospects_by_status("new"))] == ["lead@x.example"]

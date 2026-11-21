@@ -1,0 +1,83 @@
+# Isolated local email transport test. No real recipient addresses and no relay
+# host are configured. Only the BB existing transport is being exercised here.
+name: BB sender evaluation (local SMTP sink)
+
+on:
+  pull_request:
+    paths:
+      - 'bb/mail/**'
+      - 'tests/test_mailpit_transport_integration.py'
+      - 'tests/test_smtp_failure_classification.py'
+      - 'tests/test_studio_delivery.py'
+      - 'tests/test_studio_azure.py'
+      - 'tests/test_kumo_eval.py'
+      - 'tests/evaluation/**'
+      - '.github/workflows/sender-evaluation.yml'
+      - 'pyproject.toml'
+      - 'requirements.txt'
+  workflow_dispatch:
+
+# Keep only the latest validation run for a pull request while editing BB.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  local-smtp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install BB and test dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Test SMTP and Azure submission with authenticated local Mailpit
+        env:
+          BB_MAILPIT_TEST: '1'
+        run: |
+          test_sink="$(mktemp -d)"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout "$test_sink/key.pem" -out "$test_sink/cert.pem" -subj /CN=localhost \
+            -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' > "$test_sink/openssl.log" 2>&1
+          chmod 755 "$test_sink"
+          chmod 644 "$test_sink/key.pem"
+          docker run --rm -d --name bb-test-mailpit \
+            -p 127.0.0.1:1025:1025 -p 127.0.0.1:8025:8025 \
+            -v "$test_sink:/test-tls:ro" \
+            -e MP_SMTP_TLS_CERT=/test-tls/cert.pem -e MP_SMTP_TLS_KEY=/test-tls/key.pem \
+            -e MP_SMTP_REQUIRE_STARTTLS=1 -e 'MP_SMTP_ALLOWED_RECIPIENTS=@example\.test$' \
+            -e 'MP_SMTP_AUTH=bb-local-test:local-only-test-password bb-test:local-test' \
+            -e MP_MAX_MESSAGES=500 axllent/mailpit:v1.33.0
+          trap 'docker stop bb-test-mailpit >/dev/null' EXIT
+          SSL_CERT_FILE="$test_sink/cert.pem" python -m pytest -q -s \
+            tests/test_mailpit_transport_integration.py tests/test_smtp_failure_classification.py \
+            tests/test_studio_delivery.py tests/test_studio_azure.py tests/test_kumo_eval.py
+
+  kumo-null-queue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Start official KumoMTA image in null-queue sink mode
+        run: |
+          docker run -d --name bb-kumo-local --pull=always \
+            -p 127.0.0.1:2025:25 -p 127.0.0.1:8005:8005 \
+            -v "$PWD/tests/evaluation/kumo-sink:/opt/kumomta/etc/policy:ro" \
+            ghcr.io/kumocorp/kumomta:latest
+      - name: Install BB dependencies and pytest
+        run: python -m pip install -e '.[dev]'
+      - name: Exercise KumoMTA's real localhost SMTP listener
+        env:
+          BB_KUMO_TEST: '1'
+        run: python -m pytest -q -s tests/evaluation/test_kumo_sink.py
+      - name: KumoMTA diagnostics
+        if: always()
+        run: |
+          docker logs --tail=70 bb-kumo-local || true
+          docker rm -f bb-kumo-local || true

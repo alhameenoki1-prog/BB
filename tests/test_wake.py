@@ -294,8 +294,12 @@ async def test_a_frozen_mail_worker_is_restarted_and_a_reused_pid_is_not_it(clie
     ws.user_data_dir.mkdir(parents=True, exist_ok=True)
     ws.mail_pid_file.write_text(str(os.getpid()))                   # this test process: not a mail worker
     assert ws.mail_worker_running() is None and not ws.mail_pid_file.exists()
-    monkeypatch.setattr(ws_mod, "_is_harvey_process", lambda pid: True)
-    ws.mail_pid_file.write_text(str(os.getpid()))
+    # Model a separate live mail-worker PID without creating/signalling
+    # a real child. The BB/pytest PID itself must never be adopted.
+    fake_worker_pid = 424242
+    monkeypatch.setattr(ws_mod, "_process_gone", lambda pid: pid != fake_worker_pid)
+    monkeypatch.setattr(ws_mod, "_is_harvey_process", lambda pid: pid == fake_worker_pid)
+    ws.mail_pid_file.write_text(str(fake_worker_pid))
     old = time.time() - 3600
     os.utime(ws.mail_pid_file, (old, old))
     (ws.user_data_dir / "mailworker.heartbeat").write_text(str(int(time.time() - 900)))
@@ -332,7 +336,7 @@ def test_the_site_keeps_a_mac_awake_and_the_service_is_not_throttled(monkeypatch
     monkeypatch.setattr("subprocess.Popen", lambda cmd, **k: seen.append(cmd))
     monkeypatch.setattr(cli.Path, "exists", lambda self: True)
     assert "Keeping this Mac awake" in cli.keep_mac_awake(pid=123, platform="darwin")
-    assert seen == [["/usr/bin/caffeinate", "-i", "-w", "123"]]
+    # The test simulates macOS even on Windows, whose Path stringification\n    # uses backslashes. Assert the intended executable without assuming the\n    # host runner uses POSIX path separators.\n    assert [[str(part).replace("\\\\", "/") for part in cmd] for cmd in seen] == [\n        ["/usr/bin/caffeinate", "-i", "-w", "123"]\n    ]
     assert cli.keep_mac_awake(pid=123, platform="linux") == ""
     monkeypatch.setenv("BB_ALLOW_SLEEP", "1")
     assert cli.keep_mac_awake(pid=123, platform="darwin") == ""
@@ -365,21 +369,25 @@ async def test_a_send_cut_off_while_its_slot_is_taken_gives_it_back(tmp_path, mo
     from harvey.state import StateManager
     from tests.test_outbox_native import FakeProvider, make_sender, seed_prospect
     monkeypatch.setenv("HARVEY_LEDGER", str(tmp_path / "sendlog.db"))
-    monkeypatch.setenv("HARVEY_LEDGER_ACCOUNT", "harvey@x.co")
+    monkeypatch.setenv("HARVEY_LEDGER_ACCOUNT", "harvey@sender.test")
     monkeypatch.setenv("HARVEY_LEDGER_CAMPAIGN", "c-1")
     sm = StateManager(str(tmp_path / "h.db")); await sm.init_db()
     sender = make_sender(sm, FakeProvider(), require_approval=False)
     led = sender.ledger
     release = threading.Event()
+    reserve_finished = threading.Event()
     real_reserve = Ledger.reserve
 
     def slow_reserve(self, *a, **k):
-        release.wait(5)                                   # another process holds the file
-        return real_reserve(self, *a, **k)
+        try:
+            release.wait(5)                               # another process holds the file
+            return real_reserve(self, *a, **k)
+        finally:
+            reserve_finished.set()
     monkeypatch.setattr(Ledger, "reserve", slow_reserve)
-    pid = await seed_prospect(sm, email="jo@acme.com")
+    pid = await seed_prospect(sm, email="jo@recipient.test")
     now = "2026-01-01T00:00:00"
-    iid = await sm.add_outbox_item(prospect_id=pid, to_email="jo@acme.com", subject="s", body="b", send_at=now,
+    iid = await sm.add_outbox_item(prospect_id=pid, to_email="jo@recipient.test", subject="s", body="b", send_at=now,
                                    status="approved", kind="reply")
     item = await sm.get_outbox_item(iid)
     task = asyncio.create_task(sender._send_one(item, await sm.get_prospect(pid), ""))
@@ -388,7 +396,14 @@ async def test_a_send_cut_off_while_its_slot_is_taken_gives_it_back(tmp_path, mo
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    await asyncio.sleep(0.5)
+    # The reservation thread can still be waiting when cancellation returns.
+    # First observe its completion; otherwise an initial zero count can pass
+    # the poll before reserve() increments the ledger (especially on macOS).
+    assert await asyncio.to_thread(reserve_finished.wait, 10), "reservation thread did not finish"
+    # Its done callback may release the slot asynchronously after completion.
+    deadline = asyncio.get_running_loop().time() + 10
+    while led.used_by("c-1") != 0 and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
     assert (await sm.get_outbox_item(iid))["status"] == "approved"
     assert led.used_by("c-1") == 0                        # the slot went back
 

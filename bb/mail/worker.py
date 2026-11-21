@@ -17,7 +17,7 @@ from pathlib import Path
 
 from bb.mail import service
 from bb.mail.db import MailDB
-from bb.mail.jobs import Jobs
+from bb.mail.jobs import DELIVERY_KINDS, Jobs
 
 logger = logging.getLogger("bb.mailworker")
 
@@ -48,13 +48,13 @@ class Handlers:
         mailbox = await self.db.mailbox(job["mailbox_id"])
         if not mailbox or not mailbox.get("enabled", 1):
             return {"skipped": "mailbox gone"}
-        return await service.run_sync(self.db, self.secret, mailbox, self.env, self.jobs, job["id"], backfill=True)
+        return await service.run_sync(self.db, self.secret, mailbox, self.env, self.jobs, job["id"], backfill=True, expected_attempt=job["attempts"])
 
     async def sync_incremental(self, job: dict):
         mailbox = await self.db.mailbox(job["mailbox_id"])
         if not mailbox or not mailbox.get("enabled", 1):
             return {"skipped": "mailbox gone"}
-        return await service.run_sync(self.db, self.secret, mailbox, self.env, self.jobs, job["id"], backfill=False)
+        return await service.run_sync(self.db, self.secret, mailbox, self.env, self.jobs, job["id"], backfill=False, expected_attempt=job["attempts"])
 
     async def send_draft(self, job: dict):
         from bb.mail.sending import AnsweredElsewhere, SendRefused, StaleFollowUp, send_draft
@@ -79,6 +79,19 @@ class Handlers:
                                   (f"Not sent: {e}", service.now_iso(), draft["id"]))
             await self.db.log("review", f"Held a reply to {draft['to_json'][:60]}: {e}", draft["mailbox_id"], draft_id=draft["id"])
             return {"status": "held", "reason": str(e)}
+
+    async def calendar_invite(self, job: dict):
+        from bb.mail.teams_calendar import send_invitation
+
+        return await send_invitation(self.db, self.secret, self.env, job["payload"].get("invite_id", ""), job["id"])
+
+    async def ses_feedback(self, job: dict):
+        from bb.mail.ses import poll_feedback
+
+        mailbox = await self.db.mailbox(job["mailbox_id"])
+        if not mailbox or not mailbox["enabled"] or mailbox["provider"] != "ses":
+            return {"status": "skipped"}
+        return await poll_feedback(self.db, self.secret, self.env, mailbox)
 
     async def _run_env(self, run: dict | None, mailbox: dict | None = None) -> tuple[dict, dict | None]:
         """The env and the profile (goal, brief, files) a run writes with on
@@ -106,7 +119,8 @@ class Handlers:
         run = await self.db.one("SELECT * FROM reply_runs WHERE id = ?", (job["payload"].get("run_id", ""),))
         env, scope = await self._run_env(run, await self.db.mailbox(job["mailbox_id"]))
         return await runs.process_mailbox(self.db, self.secret, env, brain, self.jobs, job["id"],
-                                          job["payload"].get("run_id", ""), job["mailbox_id"], scope=scope)
+                                          job["payload"].get("run_id", ""), job["mailbox_id"], scope=scope,
+                                          expected_attempt=job["attempts"])
 
     async def reply_campaign(self, job: dict):
         """One tick of a reply campaign: take in what arrived, answer it,
@@ -130,7 +144,8 @@ class Handlers:
             if led is not None and run["mode"] != "dry_run":
                 led.join(mailbox["address"], run_id, "reply", runs.run_label(run, mailbox["address"]))
             added = await runs.collect_campaign_threads(self.db, run, mailbox)
-            out = await runs.process_mailbox(self.db, self.secret, env, brain, self.jobs, job["id"], run_id, mailbox["id"], scope=scope)
+            out = await runs.process_mailbox(self.db, self.secret, env, brain, self.jobs, job["id"], run_id, mailbox["id"], scope=scope,
+                                             expected_attempt=job["attempts"])
             out["added"] = added
             if not out.get("waiting") and run.get("detail"):
                 await self.db.execute("UPDATE reply_runs SET detail = '' WHERE id = ? AND detail NOT LIKE 'waiting%'", (run_id,))
@@ -173,16 +188,20 @@ class Worker:
         self.long_running += 1 if long else 0
         try:
             result = await self.handlers.run(job)
-            await self.jobs.complete(job["id"], **(result or {}))
+            await self.jobs.complete(job["id"], expected_attempt=job["attempts"], **(result or {}))
         except asyncio.CancelledError:
-            await asyncio.shield(self.jobs.release(job["id"], "worker stopped"))
+            await asyncio.shield(self.jobs.release(job["id"], "worker stopped", expected_attempt=job["attempts"]))
             raise
         except Exception as e:
-            status = await self.jobs.fail(job["id"], f"{type(e).__name__}: {str(e)[:300]}")
+            if job["kind"] in DELIVERY_KINDS:
+                await self.jobs.release(job["id"], "send failed; delivery status uncertain", expected_attempt=job["attempts"])
+                status = "dead"
+            else:
+                status = await self.jobs.fail(job["id"], f"{type(e).__name__}: {str(e)[:300]}", expected_attempt=job["attempts"])
             logger.warning("job %s (%s) failed: %s → %s", job["id"], job["kind"], e, status)
             if status == "dead":
-                await self.db.log("warning", f"A background task ({job['kind'].replace('_', ' ')}) failed "
-                                             "repeatedly and is waiting on the Jobs page.", job["mailbox_id"])
+                await self.db.log("warning", f"A background task ({job['kind'].replace('_', ' ')}) needs review "
+                                             "on the Jobs page.", job["mailbox_id"])
                 if job["kind"] in ("reply_run", "reply_campaign"):
                     from bb.mail import runs
                     await runs.job_died(self.db, job["payload"].get("run_id", ""), job["mailbox_id"], f"{type(e).__name__}: {e}")
@@ -201,8 +220,11 @@ class Worker:
                 pass
             if time.time() - last_schedule > SCHEDULE_EVERY:
                 try:
-                    await service.schedule_checks(self.db, self.jobs)
                     await service.schedule_syncs(self.db, self.jobs)
+                    await service.schedule_checks(self.db, self.jobs)
+                    for box in await self.db.mailboxes(include_disabled=False):
+                        if box["provider"] == "ses" and box["status"] == "ok" and box["sync"].get("ses_feedback"):
+                            await self.jobs.enqueue("ses_feedback", box["id"], dedupe=True)
                     from bb.mail import runs
                     await runs.reconcile(self.db, self.jobs)
                     await self.jobs.prune()

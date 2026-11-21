@@ -2,9 +2,18 @@
    it, the greeting and the signature. It follows the editor when there is
    one (data-source = the textarea's id, data-preview-url = where to ask). #}
 {% from "_icons.html" import icon %}
-{% macro as_sent(doc, preview_url='', source='', plain=False) %}
+{% macro as_sent(doc, preview_url='', source='', plain=False, studio=False) %}
 <div class="as-sent" data-preview-url="{{ preview_url }}" data-source="{{ source }}">
+  {% if studio %}
+  <div class="row" style="align-items:end">
+    <div><label for="preview-client-{{ source }}">Preview layout</label><select id="preview-client-{{ source }}" data-preview-client>
+      <option value="gmail">Gmail-style</option><option value="outlook">Outlook-style</option>
+    </select></div>
+    <p class="small muted">Approximate layouts. External images are hidden in preview.</p>
+  </div>
+  {% else %}
   <div class="tiny muted as-sent-head">{{ icon('mail', 13) }} How it looks when sent{% if preview_url and not plain %} <span class="as-sent-note">(follows your edits; the links can be clicked to check them)</span>{% endif %}</div>
+  {% endif %}
   {% if plain %}
   <p class="tiny muted" style="margin:4px 0 0">A first email goes as plain text (it lands in the inbox more often), so a web address in it shows as written. Follow-ups and replies carry each link on its words. The switch is on the profile, under sending.</p>
   {% else %}

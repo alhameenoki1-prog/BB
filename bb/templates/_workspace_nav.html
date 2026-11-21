@@ -1,0 +1,29 @@
+{% from "_icons.html" import icon %}
+{% macro brand() %}
+<a class="brand" href="/"><span class="mark" aria-hidden="true">BB</span><span class="brand-name">BB Workspace</span></a>
+{% endmacro %}
+{% macro section_link(section) %}
+  <a href="{{ section.path }}"{% if section == workspace_nav.section %} class="active" aria-current="{{ 'page' if request.url.path == section.path else 'location' }}"{% endif %}>
+    {{ icon(section.icon, 18) }}<span>{{ section.label }}</span>
+  </a>
+{% endmacro %}
+{% macro navigation() %}
+  <nav class="nav" aria-label="Workspace">
+    {% for section in workspace_nav.sections %}{{ section_link(section) }}{% endfor %}
+  </nav>
+  <nav class="nav setup-nav" aria-label="Workspace settings">
+    {% for section in workspace_nav.settings %}{{ section_link(section) }}{% endfor %}
+  </nav>
+{% endmacro %}
+{% macro account() %}
+<div class="workspace-account">
+  <span class="account-avatar" aria-hidden="true">{{ user.email[0] | upper }}</span>
+  <span class="account-name" title="{{ user.email }}">{{ user.email }}</span>
+  <form method="post" action="/logout"><button class="icon-button" type="submit" aria-label="Sign out" title="Sign out">{{ icon('logout', 17) }}</button></form>
+</div>
+{% endmacro %}
+<aside class="side">
+  {{ brand() }}
+  {{ navigation() }}
+  {{ account() }}
+</aside>
