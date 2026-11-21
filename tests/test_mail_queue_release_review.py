@@ -18,9 +18,10 @@ async def test_worker_release_quarantines_uncertain_delivery(tmp_path, kind, not
     await db.init()
     jobs = Jobs(db)
     job_id = await jobs.enqueue(kind, mailbox_id="sender.test", max_attempts=1)
-    assert (await jobs.claim())["id"] == job_id
+    claimed = await jobs.claim()
+    assert claimed["id"] == job_id
 
-    await jobs.release(job_id)
+    await jobs.release(job_id, expected_attempt=claimed["attempts"])
     row = await db.one("SELECT status, attempts, last_error, finished_at FROM jobs WHERE id = ?", (job_id,))
     assert row["status"] == "dead"
     assert row["attempts"] == 1
@@ -37,8 +38,9 @@ async def test_safe_worker_release_requeues_with_new_claim_generation(tmp_path):
     await db.init()
     jobs = Jobs(db)
     job_id = await jobs.enqueue("check_mailbox", mailbox_id="sender.test")
-    assert (await jobs.claim())["attempts"] == 1
-    await jobs.release(job_id)
+    claimed = await jobs.claim()
+    assert claimed["attempts"] == 1
+    await jobs.release(job_id, expected_attempt=claimed["attempts"])
     row = await db.one("SELECT status, attempts, last_error FROM jobs WHERE id = ?", (job_id,))
     assert row == {"status": "queued", "attempts": 1, "last_error": "worker stopped"}
     claimed = await jobs.claim()
@@ -53,7 +55,7 @@ async def test_reviewed_delivery_retry_is_explicit_and_single_claim(tmp_path):
     jobs = Jobs(db)
     job_id = await jobs.enqueue("send_draft", mailbox_id="sender.test", max_attempts=1)
     assert (await jobs.claim())["id"] == job_id
-    await jobs.release(job_id)
+    await jobs.release(job_id, expected_attempt=claimed["attempts"])
     assert await jobs.retry(job_id, delivery_reviewed=True)
     row = await db.one("SELECT status, attempts, last_error, finished_at FROM jobs WHERE id = ?", (job_id,))
     assert row["status"] == "queued"
