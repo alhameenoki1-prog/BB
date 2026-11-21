@@ -144,6 +144,8 @@ class Jobs:
         return job
 
     async def progress(self, job_id: str, *, expected_attempt: int | None = None, **progress):
+        if expected_attempt is None:
+            return  # Unfenced worker callbacks must not mutate a claimed job.
         # Ignore late progress from workers whose jobs were completed,
         # quarantined, or discarded during recovery. Do not alter audit
         # metadata for a settled delivery.
@@ -155,6 +157,8 @@ class Jobs:
 
     async def complete(self, job_id: str, *, expected_attempt: int | None = None, **result):
         """Mark done; the result is merged into the progress already recorded."""
+        if expected_attempt is None:
+            return  # Fail closed on missing worker attempt.
         now = now_iso()
         # Serialize the progress read and terminal transition. Otherwise a
         # concurrent progress callback can land between SELECT and UPDATE,
@@ -184,6 +188,8 @@ class Jobs:
         A competing completion or release must not change state between the
         attempt-count read and this transition.
         """
+        if expected_attempt is None:
+            return "stale"  # Unfenced failure cannot transition a running job.
         now = datetime.now(timezone.utc)
         async with self.db._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -219,6 +225,8 @@ class Jobs:
         """Put a job back without counting the try: the worker stopped (a
         restart, a new AI key), not the job. It runs again when the worker
         is back."""
+        if expected_attempt is None:
+            return  # Missing worker attempt must not release a claimed job.
         # A cancelled send could have already been accepted remotely.
         # Keep it in the dead-letter review instead of silently resending.
         current = now_iso()
