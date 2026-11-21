@@ -54,7 +54,8 @@ async def test_reviewed_delivery_retry_is_explicit_and_single_claim(tmp_path):
     await db.init()
     jobs = Jobs(db)
     job_id = await jobs.enqueue("send_draft", mailbox_id="sender.test", max_attempts=1)
-    assert (await jobs.claim())["id"] == job_id
+    claimed = await jobs.claim()
+    assert claimed["id"] == job_id
     await jobs.release(job_id, expected_attempt=claimed["attempts"])
     assert await jobs.retry(job_id, delivery_reviewed=True)
     row = await db.one("SELECT status, attempts, last_error, finished_at FROM jobs WHERE id = ?", (job_id,))
