@@ -52,7 +52,7 @@ async def test_cancelled_send_is_held_but_read_only_work_is_requeued(tmp_path):
     send_id = await jobs.enqueue("send_draft", "box-a", {"draft_id": "d1"})
     claimed = await jobs.claim()
     assert claimed and claimed["id"] == send_id
-    await jobs.release(send_id, "worker stopped")
+    await jobs.release(send_id, "worker stopped", expected_attempt=claimed["attempts"])
 
     held = await db.one("SELECT status, last_error FROM jobs WHERE id = ?", (send_id,))
     assert held["status"] == "dead"
@@ -63,7 +63,7 @@ async def test_cancelled_send_is_held_but_read_only_work_is_requeued(tmp_path):
     check = await jobs.claim()
     assert check and check["id"] == check_id
     assert check["attempts"] == 1
-    await jobs.release(check_id)
+    await jobs.release(check_id, expected_attempt=check["attempts"])
     recovered = await db.one("SELECT status, attempts FROM jobs WHERE id = ?", (check_id,))
     assert recovered == {"status": "queued", "attempts": 1}
 
@@ -76,7 +76,7 @@ async def test_normal_pending_send_can_still_be_claimed(tmp_path):
     send_id = await jobs.enqueue("send_draft", "box-a", {"draft_id": "d1"})
     claim = await jobs.claim()
     assert claim and claim["id"] == send_id and claim["payload"]["draft_id"] == "d1"
-    await jobs.complete(send_id, status="sent")
+    await jobs.complete(send_id, status="sent", expected_attempt=claim["attempts"])
     assert (await db.one("SELECT status FROM jobs WHERE id = ?", (send_id,)))["status"] == "done"
 
 
