@@ -16,16 +16,16 @@ async def test_fail_retry_and_terminal_state_are_consistent(tmp_path):
     jid = await jobs.enqueue("check_mailbox", mailbox_id="worker.test", max_attempts=2)
     first = await jobs.claim()
     assert first["id"] == jid and first["attempts"] == 1
-    assert await jobs.fail(jid, "transient") == "queued"
+    assert await jobs.fail(jid, "transient", expected_attempt=first["attempts"]) == "queued"
     row = await db.one("SELECT status, attempts, last_error FROM jobs WHERE id = ?", (jid,))
     assert row == {"status": "queued", "attempts": 1, "last_error": "transient"}
-    assert await jobs.fail(jid, "stale callback") == "queued"
+    assert await jobs.fail(jid, "stale callback", expected_attempt=first["attempts"]) == "queued"
     assert (await db.one("SELECT last_error FROM jobs WHERE id = ?", (jid,)))["last_error"] == "transient"
     await db.execute("UPDATE jobs SET run_at = '2000-01-01T00:00:00Z' WHERE id = ?", (jid,))
     second = await jobs.claim()
     assert second["id"] == jid and second["attempts"] == 2
-    assert await jobs.fail(jid, "permanent") == "dead"
-    assert await jobs.fail(jid, "late failure") == "dead"
+    assert await jobs.fail(jid, "permanent", expected_attempt=second["attempts"]) == "dead"
+    assert await jobs.fail(jid, "late failure", expected_attempt=second["attempts"]) == "dead"
     assert (await db.one("SELECT last_error FROM jobs WHERE id = ?", (jid,)))["last_error"] == "permanent"
 
 
@@ -35,10 +35,11 @@ async def test_parallel_failures_only_transition_running_job_once(tmp_path):
     await db.init()
     jobs = Jobs(db)
     jid = await jobs.enqueue("check_mailbox", mailbox_id="worker.test", max_attempts=3)
-    assert (await jobs.claim())["id"] == jid
+    claimed = await jobs.claim()
+    assert claimed["id"] == jid and claimed["attempts"] == 1
     outcomes = await asyncio.gather(
-        Jobs(MailDB(db.path)).fail(jid, "failure-a"),
-        Jobs(MailDB(db.path)).fail(jid, "failure-b"),
+        Jobs(MailDB(db.path)).fail(jid, "failure-a", expected_attempt=claimed["attempts"]),
+        Jobs(MailDB(db.path)).fail(jid, "failure-b", expected_attempt=claimed["attempts"]),
     )
     assert outcomes == ["queued", "queued"]
     row = await db.one("SELECT status, attempts, last_error FROM jobs WHERE id = ?", (jid,))
