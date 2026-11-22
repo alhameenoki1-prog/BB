@@ -111,8 +111,9 @@ async def test_completed_send_is_not_replayed_after_restart(tmp_path):
     send_id = await worker.enqueue(
         "send_draft", "sender.test", {"draft_id": "completed.test"}
     )
-    assert (await worker.claim())["id"] == send_id
-    await worker.complete(send_id, status="sent")
+    claimed = await worker.claim()
+    assert claimed is not None and claimed["id"] == send_id
+    await worker.complete(send_id, status="sent", expected_attempt=claimed["attempts"])
     restarted = Jobs(MailDB(path))
     assert await restarted.claim() is None
     row = await restarted.db.one(
