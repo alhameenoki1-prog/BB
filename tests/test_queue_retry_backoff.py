@@ -24,7 +24,7 @@ async def test_retry_backoff_doubles_and_caps_without_early_claim(tmp_path):
         assert claimed is not None and claimed["id"] == job_id
         assert claimed["attempts"] == attempt
         before = datetime.now(timezone.utc)
-        assert await jobs.fail(job_id, "transient local test failure") == "queued"
+        assert await jobs.fail(job_id, "transient local test failure", expected_attempt=claimed["attempts"]) == "queued"
         after = datetime.now(timezone.utc)
         row = await db.one(
             "SELECT status, attempts, run_at, locked_at, last_error FROM jobs WHERE id = ?",
@@ -46,7 +46,7 @@ async def test_retry_backoff_doubles_and_caps_without_early_claim(tmp_path):
 
     claimed = await jobs.claim()
     assert claimed is not None and claimed["attempts"] == 9
-    assert await jobs.fail(job_id, "permanent local test failure") == "dead"
+    assert await jobs.fail(job_id, "permanent local test failure", expected_attempt=claimed["attempts"]) == "dead"
     dead = await db.one(
         "SELECT status, attempts, locked_at, finished_at, last_error FROM jobs WHERE id = ?",
         (job_id,),
@@ -65,8 +65,9 @@ async def test_cancelled_job_requires_explicit_retry(tmp_path):
     await db.init()
     jobs = Jobs(db)
     job_id = await jobs.enqueue("check_mailbox", "reader.test", max_attempts=1)
-    assert (await jobs.claim())["id"] == job_id
-    assert await jobs.fail(job_id, "local test error") == "dead"
+    claimed = await jobs.claim()
+    assert claimed["id"] == job_id
+    assert await jobs.fail(job_id, "local test error", expected_attempt=claimed["attempts"]) == "dead"
     assert await jobs.discard(job_id) is True
     assert await jobs.retry(job_id) is True  # explicit manual retry of cancelled work
     assert (await jobs.claim())["id"] == job_id
@@ -110,8 +111,9 @@ async def test_release_interrupted_send_requires_manual_retry(tmp_path):
     await db.init()
     jobs = Jobs(db)
     send_id = await jobs.enqueue("send_draft", "sender.test")
-    assert (await jobs.claim())["id"] == send_id
-    await jobs.release(send_id)
+    claimed = await jobs.claim()
+    assert claimed["id"] == send_id
+    await jobs.release(send_id, expected_attempt=claimed["attempts"])
     row = await db.one(
         "SELECT status, attempts, locked_at, finished_at, last_error FROM jobs WHERE id = ?",
         (send_id,),
@@ -136,13 +138,14 @@ async def test_late_worker_failure_cannot_requeue_settled_job(tmp_path, settled)
     await db.init()
     jobs = Jobs(db)
     job_id = await jobs.enqueue("send_draft", "sender.test", {"draft_id": "local.test"})
-    assert (await jobs.claim())["id"] == job_id
+    claimed = await jobs.claim()
+    assert claimed["id"] == job_id
     if settled == "done":
-        await jobs.complete(job_id, status="sent")
+        await jobs.complete(job_id, expected_attempt=claimed["attempts"], status="sent")
     elif settled == "dead":
-        await jobs.release(job_id)
+        await jobs.release(job_id, expected_attempt=claimed["attempts"])
     else:
-        await jobs.release(job_id)
+        await jobs.release(job_id, expected_attempt=claimed["attempts"])
         assert await jobs.discard(job_id) is True
 
     before = await db.one(
@@ -150,7 +153,7 @@ async def test_late_worker_failure_cannot_requeue_settled_job(tmp_path, settled)
         (job_id,),
     )
     assert before["status"] == settled
-    assert await jobs.fail(job_id, "late mock transport timeout") == settled
+    assert await jobs.fail(job_id, "late mock transport timeout", expected_attempt=claimed["attempts"]) == settled
     after = await db.one(
         "SELECT status, attempts, finished_at, last_error FROM jobs WHERE id = ?",
         (job_id,),
@@ -169,12 +172,13 @@ async def test_late_progress_cannot_mutate_settled_send(tmp_path, settled):
     job_id = await jobs.enqueue(
         "send_draft", "sender@example.test", {"draft_id": "local-only.test"}
     )
-    assert (await jobs.claim())["id"] == job_id
-    await jobs.progress(job_id, phase="smtp-submission")
+    claimed = await jobs.claim()
+    assert claimed["id"] == job_id
+    await jobs.progress(job_id, expected_attempt=claimed["attempts"], phase="smtp-submission")
     if settled == "done":
-        await jobs.complete(job_id, status="sent")
+        await jobs.complete(job_id, expected_attempt=claimed["attempts"], status="sent")
     else:
-        await jobs.release(job_id)
+        await jobs.release(job_id, expected_attempt=claimed["attempts"])
         if settled == "cancelled":
             assert await jobs.discard(job_id) is True
 
@@ -183,7 +187,7 @@ async def test_late_progress_cannot_mutate_settled_send(tmp_path, settled):
         (job_id,),
     )
     assert before["status"] == settled
-    await jobs.progress(job_id, phase="late-worker-callback")
+    await jobs.progress(job_id, expected_attempt=claimed["attempts"], phase="late-worker-callback")
     after = await db.one(
         "SELECT status, progress_json, updated_at, finished_at FROM jobs WHERE id = ?",
         (job_id,),
@@ -200,8 +204,9 @@ async def test_progress_updates_running_job(tmp_path):
     await db.init()
     jobs = Jobs(db)
     job_id = await jobs.enqueue("check_mailbox", "reader@example.test")
-    assert (await jobs.claim())["id"] == job_id
-    await jobs.progress(job_id, scanned=12)
+    claimed = await jobs.claim()
+    assert claimed["id"] == job_id
+    await jobs.progress(job_id, expected_attempt=claimed["attempts"], scanned=12)
     row = await db.one(
         "SELECT status, progress_json FROM jobs WHERE id = ?", (job_id,)
     )
