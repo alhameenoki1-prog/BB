@@ -40,9 +40,9 @@ async def test_stale_delivery_is_quarantined_and_late_worker_cannot_complete(
     assert row["finished_at"]
     previous_progress = row["progress_json"]
 
-    await jobs.progress(job_id, phase="late")
-    await jobs.complete(job_id, delivered=True)
-    assert await jobs.fail(job_id, "late error") == "dead"
+    await jobs.progress(job_id, phase="late", expected_attempt=claimed["attempts"])
+    await jobs.complete(job_id, delivered=True, expected_attempt=claimed["attempts"])
+    assert await jobs.fail(job_id, "late error", expected_attempt=claimed["attempts"]) == "stale"
     row = await db.one("SELECT * FROM jobs WHERE id = ?", (job_id,))
     assert row["status"] == "dead"
     assert row["progress_json"] == previous_progress
@@ -62,7 +62,7 @@ async def test_stale_read_job_recovers_without_resending_delivery(tmp_path):
     assert recovered is not None and recovered["id"] == read_id
     assert recovered["kind"] == "check_mailbox"
     assert recovered["attempts"] == 2
-    await jobs.complete(read_id, recovered=True)
+    await jobs.complete(read_id, recovered=True, expected_attempt=recovered["attempts"])
     row = await db.one("SELECT * FROM jobs WHERE id = ?", (read_id,))
     assert row["status"] == "done"
 
@@ -82,7 +82,7 @@ async def test_failed_read_job_uses_exponential_backoff_and_attempt_limit(tmp_pa
         assert claimed is not None and claimed["id"] == job_id
         assert claimed["attempts"] == attempt
         before = datetime.now(timezone.utc)
-        status = await jobs.fail(job_id, "temporary failure")
+        status = await jobs.fail(job_id, "temporary failure", expected_attempt=claimed["attempts"])
         row = await db.one("SELECT * FROM jobs WHERE id = ?", (job_id,))
         if attempt == 8:
             assert status == "dead"
@@ -109,9 +109,10 @@ async def test_release_of_running_delivery_requires_manual_review(tmp_path, kind
     await db.init()
     jobs = Jobs(db)
     job_id = await jobs.enqueue(kind, mailbox_id="mailbox-1")
-    assert (await jobs.claim())["id"] == job_id
+    claimed = await jobs.claim()
+    assert claimed["id"] == job_id
 
-    await jobs.release(job_id)
+    await jobs.release(job_id, expected_attempt=claimed["attempts"])
     row = await db.one("SELECT * FROM jobs WHERE id = ?", (job_id,))
     assert row["status"] == "dead"
     assert row["locked_at"] is None
