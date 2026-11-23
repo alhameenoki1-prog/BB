@@ -15,16 +15,18 @@ async def test_late_worker_callbacks_cannot_change_quarantined_delivery(tmp_path
     await db.init()
     jobs = Jobs(db)
     job_id = await jobs.enqueue(kind, mailbox_id="sender.test", max_attempts=1)
-    assert (await jobs.claim())["id"] == job_id
-    await jobs.release(job_id)
+    claimed = await jobs.claim()
+    assert claimed["id"] == job_id
+    attempt = claimed["attempts"]
+    await jobs.release(job_id, expected_attempt=attempt)
     before = await db.one(
         "SELECT status, attempts, last_error, finished_at, progress_json FROM jobs WHERE id = ?",
         (job_id,),
     )
     assert before["status"] == "dead"
-    await jobs.progress(job_id, submitted=True)
-    await jobs.complete(job_id, accepted=True)
-    assert await jobs.fail(job_id, "late transport error") == "dead"
+    await jobs.progress(job_id, expected_attempt=attempt, submitted=True)
+    await jobs.complete(job_id, expected_attempt=attempt, accepted=True)
+    assert await jobs.fail(job_id, "late transport error", expected_attempt=attempt) == "dead"
     after = await db.one(
         "SELECT status, attempts, last_error, finished_at, progress_json FROM jobs WHERE id = ?",
         (job_id,),
