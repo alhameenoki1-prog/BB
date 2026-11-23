@@ -54,7 +54,7 @@ async def test_cancelled_running_send_requires_manual_review(tmp_path):
     send_id = await jobs.enqueue("send_draft", "sender-a", {"draft_id": "local.test"})
     claimed = await jobs.claim()
     assert claimed is not None and claimed["id"] == send_id
-    await jobs.release(send_id)
+    await jobs.release(send_id, expected_attempt=claimed["attempts"])
     row = await db.one(
         "SELECT status, attempts, locked_at, finished_at, last_error FROM jobs WHERE id = ?",
         (send_id,),
@@ -77,7 +77,7 @@ async def test_cancelled_safe_job_reclaim_advances_worker_generation(tmp_path):
     claimed = await jobs.claim()
     assert claimed is not None and claimed["id"] == job_id
     assert claimed["attempts"] == 1
-    await jobs.release(job_id)
+    await jobs.release(job_id, expected_attempt=claimed["attempts"])
     queued = await db.one(
         "SELECT status, attempts, locked_at FROM jobs WHERE id = ?", (job_id,)
     )
@@ -105,7 +105,7 @@ async def test_stale_read_only_job_recovers_and_can_finish(tmp_path):
     assert claimed is not None and claimed["id"] == job_id
     assert claimed["attempts"] == 2
     assert claimed["status"] == "running"
-    await jobs.complete(job_id, scanned=0)
+    await jobs.complete(job_id, expected_attempt=claimed["attempts"], scanned=0)
     row = await db.one(
         "SELECT status, attempts, locked_at, finished_at, last_error FROM jobs WHERE id = ?",
         (job_id,),
