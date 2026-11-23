@@ -18,8 +18,8 @@ async def test_completed_send_is_not_reclaimed_after_stale_lock(tmp_path):
     claimed = await jobs.claim()
     assert claimed is not None and claimed["id"] == send_id
     assert claimed["attempts"] == 1
-    await jobs.progress(send_id, transport="mock", accepted=True)
-    await jobs.complete(send_id, acknowledged=True)
+    await jobs.progress(send_id, expected_attempt=claimed["attempts"], transport="mock", accepted=True)
+    await jobs.complete(send_id, expected_attempt=claimed["attempts"], acknowledged=True)
 
     # Simulate an old lock timestamp: recovery must be status-gated.
     await db.execute(
