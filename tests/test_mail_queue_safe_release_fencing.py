@@ -15,9 +15,15 @@ async def test_safe_release_without_attempt_keeps_fencing_token(tmp_path):
     first = await jobs.claim()
     assert first["attempts"] == 1
 
-    # A legacy caller may omit expected_attempt. Releasing must never
-    # rewind the token and let that worker acknowledge the next claim.
+    # Missing attempt tokens must fail closed, not unlock a claimed job.
     await jobs.release(job_id)
+    unfenced = await db.one("SELECT status, attempts FROM jobs WHERE id = ?", (job_id,))
+    assert unfenced["status"] == "running"
+    assert unfenced["attempts"] == 1
+
+    # An authenticated worker attempt may release a safe, non-delivery job.
+    # The next claim must receive a new token, fencing off the old worker.
+    await jobs.release(job_id, expected_attempt=first["attempts"])
     queued = await db.one("SELECT status, attempts FROM jobs WHERE id = ?", (job_id,))
     assert queued["status"] == "queued"
     assert queued["attempts"] == 1
