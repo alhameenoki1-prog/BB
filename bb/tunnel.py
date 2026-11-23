@@ -24,6 +24,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -62,9 +63,24 @@ def _command_of(pid: int) -> str:
     except OSError:
         pass
     try:
-        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5)
-        return out.stdout.strip()
-    except Exception:
+        if sys.platform == "win32":
+            # Windows has no /proc or ps. Query the actual process command
+            # line before trusting a persisted PID (which may be reused).
+            command = [
+                "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {int(pid)}').CommandLine",
+            ]
+        else:
+            command = ["ps", "-p", str(pid), "-o", "command="]
+        out = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        if out.returncode != 0:
+            logger.debug("tunnel: process command lookup for pid %s failed: %s", pid, out.stderr.strip())
+            return ""
+        value = out.stdout.strip()
+        if not value:
+            logger.debug("tunnel: no process command returned for pid %s", pid)
+        return value
+    except (OSError, subprocess.TimeoutExpired, ValueError):
         return ""
 
 
@@ -149,6 +165,13 @@ class Tunnel:
         started, from the state file; alive only if it is still cloudflared."""
         st = self.read_state()
         pid = int(st.get("pid") or 0)
+        # A stale or tampered state file must never identify BB itself as
+        # the tunnel. On Windows a command line may contain the fake tunnel
+        # path as an argument, making the substring check below misleading.
+        if pid == os.getpid():
+            return {"pid": pid, "url": st.get("url", ""), "alive": False,
+                    "started_at": st.get("started_at", 0), "mode": st.get("mode", ""),
+                    "port": st.get("port"), "token": st.get("token", "")}
         cmd = _command_of(pid) if _alive(pid) else ""
         # Only a process that can be seen to be cloudflared counts: a pid
         # with no readable command line may be anything (after a reboot).
@@ -165,15 +188,28 @@ class Tunnel:
             return False
         pid = rec["pid"]
         try:
-            os.kill(pid, signal.SIGTERM)
-            for _ in range(50):
-                if not _alive(pid):
-                    break
-                time.sleep(0.1)
-            if _alive(pid):
-                os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass           # gone already, or someone else's now: either way, not ours
+            if sys.platform == "win32":
+                # Windows has no SIGKILL. Terminate the validated recorded
+                # process *and its children* (cmd wrappers may own the tunnel).
+                # Avoid console control events that can interrupt BB itself.
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if result.returncode != 0 and _alive(pid):
+                    logger.warning("tunnel: taskkill failed for pid %s: %s", pid, result.stderr.strip())
+                    return False
+            else:
+                os.kill(pid, signal.SIGTERM)
+                for _ in range(50):
+                    if not _alive(pid):
+                        break
+                    time.sleep(0.1)
+                if _alive(pid):
+                    os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError, subprocess.TimeoutExpired) as e:
+            logger.warning("tunnel: could not stop recorded pid %s: %s", pid, e)
+            return False
         self._clear_state()
         return True
 
@@ -228,8 +264,16 @@ class Tunnel:
             with open(self.log_file, "ab") as log:
                 # Its own session: a stop or restart of the site (Ctrl+C, launchd,
                 # systemd with KillMode=process) does not take the tunnel with it.
-                self._proc = subprocess.Popen(self.command(), stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                              start_new_session=True)
+                # POSIX uses a new session; Windows needs explicit process-group
+                # isolation. Without it, terminating a cmd-based tunnel child
+                # can deliver console control events to BB/pytest as well.
+                isolation = (
+                    {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+                    if sys.platform == "win32" else {"start_new_session": True}
+                )
+                self._proc = subprocess.Popen(
+                    self.command(), stdin=subprocess.DEVNULL, stdout=log, stderr=log, **isolation
+                )
         except (OSError, ValueError) as e:
             self.status, self.detail = "error", f"could not start {self.binary}: {e}"
             logger.warning("tunnel: %s", self.detail)

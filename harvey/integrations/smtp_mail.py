@@ -433,18 +433,33 @@ class SmtpImapProvider(MailProvider):
     async def test_connection(self) -> tuple[bool, str]:
         if not self.is_configured():
             return False, "SMTP_HOST / SMTP_USERNAME / SMTP_PASSWORD missing from .env"
-        # SMTP handshake
+        # Keep a stalled SMTP relay from holding the form open indefinitely.
+        smtp = None
         try:
             smtp = aiosmtplib.SMTP(
                 hostname=self.smtp_host, port=self.smtp_port,
                 start_tls=self._start_tls(),
                 use_tls=self._use_tls(), timeout=15,
             )
-            await smtp.connect()
-            await smtp.login(self.smtp_user, self.smtp_pass)
-            await smtp.quit()
+            async def authenticate():
+                await smtp.connect()
+                await smtp.login(self.smtp_user, self.smtp_pass)
+
+            await asyncio.wait_for(authenticate(), timeout=20)
+        except asyncio.TimeoutError:
+            return False, f"SMTP connection timed out at {self.smtp_host}:{self.smtp_port}. Check the server, port and network."
         except Exception as e:
-            return False, f"SMTP login failed: {str(e)[:200]}"
+            detail = str(e)[:200]
+            if "Connection lost" in detail:
+                return False, (f"SMTP server closed the connection at {self.smtp_host}:{self.smtp_port}. "
+                               "Check the server, port, TLS mode and SMTP credentials.")
+            return False, f"SMTP connection or login failed: {detail}"
+        finally:
+            if smtp is not None and smtp.is_connected:
+                try:
+                    await asyncio.wait_for(smtp.quit(), timeout=2)
+                except Exception:
+                    smtp.close()
         if self._no_inbox():
             return True, f"SMTP connected as {self.smtp_user}; {self.imap_host} is a sending relay, so replies are not read from it"
         # IMAP handshake

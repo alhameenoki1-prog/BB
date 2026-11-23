@@ -91,7 +91,9 @@ async def test_jobs_retry_with_backoff_then_dead_letter(tmp_path):
     assert await jobs.fail(jid, "boom again") == "dead"                      # out of attempts
     counts = await jobs.counts()
     assert counts["dead"] == 1 and counts["running"] == 1
-    assert await jobs.retry(jid) and (await db.one("SELECT attempts, status FROM jobs WHERE id = ?", (jid,)))["attempts"] == 0
+    assert await jobs.retry(jid)
+    retried = await db.one("SELECT attempts, status, max_attempts FROM jobs WHERE id = ?", (jid,))
+    assert retried["status"] == "queued" and retried["attempts"] == 2 and retried["max_attempts"] > 2
     assert await jobs.discard(jid) and not await jobs.retry(other)           # running jobs can't be retried
     await jobs.complete(other, synced=5)
     assert (await jobs.list("done"))[0]["progress"] == {"synced": 5}
@@ -166,7 +168,10 @@ async def test_connect_check_scope_and_migration(tmp_path, monkeypatch):
     mid, note = await service.connect_imap(db, "sec", address="Me@X.com", smtp=smtp, env={})
     m = await db.mailbox(mid)
     assert m["address"] == "me@x.com" and m["mode"] == "limited" and m["status"] == "ok"
-    assert service.open_creds("sec", m)["password"] == "pw" and "pw" not in m["creds"]
+    assert service.open_creds("sec", m)["password"] == "pw"
+    # A two-letter test password can occur by chance in random base64 ciphertext.
+    # Assert authenticated decryptability and the sealed envelope format instead.
+    assert m["creds"].startswith("v1:") and m["creds"] != "pw"
     assert service.masked_creds("sec", m)["password"] != "pw"
     assert service.ready_to_send(m) == (False, "Set a signature and the project link in this mailbox's settings before sending from it.")
     with pytest.raises(ValueError):
@@ -237,6 +242,13 @@ def test_mailbox_settings_validation():
 def mail_client(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "account_for", lambda m, c, e: _FakeAccount(m, c, e))
     monkeypatch.setattr("bb.app.check_domain", lambda d: asyncio.sleep(0, result=None))
+    # Some page tests simulate a running worker with a synthetic PID. Keep
+    # both worker lifecycle actions inside the fixture.
+    async def stop_mail_worker(_workspace):
+        return True, "Test mail worker stub"
+
+    monkeypatch.setattr(Workspace, "start_mail_worker", lambda self: (True, "Test mail worker stub"))
+    monkeypatch.setattr(Workspace, "stop_mail_worker", stop_mail_worker)
     settings = _settings(tmp_path, GMAIL_CLIENT_ID="", GMAIL_CLIENT_SECRET="")
     with TestClient(create_app(settings), follow_redirects=False) as c:
         c.settings = settings
@@ -253,7 +265,7 @@ def test_mail_pages_connect_settings_scope_jobs_and_events(mail_client, monkeypa
     monkeypatch.setattr(Workspace, "mail_worker_running", lambda self: None)
 
     page = client.get("/mail").text
-    assert "Command center" in page and "No accounts in view" in page and "Worker stopped" in page
+    assert "Mail status" in page and "No accounts in view" in page and "Worker stopped" in page
     page = client.get("/mail/accounts").text
     assert "Email and password" in page and "no Google OAuth client" in page.lower() or "Not switched on" in page
 
@@ -339,9 +351,12 @@ def test_mail_worker_process_starts_and_heartbeats(tmp_path, monkeypatch):
     try:
         for _ in range(80):
             time.sleep(0.25)
-            if (ws.data_dir / "mailworker.heartbeat").exists():
+            if ws.mail_worker_alive():
                 break
-        assert ws.mail_worker_alive()
+        assert ws.mail_worker_alive(), (
+            f"worker did not become healthy; pid_record={ws.mail_pid_file.read_text() if ws.mail_pid_file.exists() else 'missing'}, "
+            f"heartbeat={ws.user_data_dir / 'mailworker.heartbeat'}"
+        )
         db = ws.mail_db()
         asyncio.run(db.init())
         assert any("Background worker started" in r["text"] for r in asyncio.run(db.activity()))

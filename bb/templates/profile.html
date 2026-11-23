@@ -254,6 +254,8 @@
   <textarea name="reply_instructions" placeholder="e.g. Thank them, say I'm available for a call Tuesday to Thursday afternoons, ask what they'd need from me to put a proposal together, and mention the attached brochure. Never discuss budget by email.">{{ profile.reply_instructions }}</textarea>
   <label>Send my attachments</label>
   <select name="attach_on">{% for k, v in policies.items() %}<option value="{{ k }}" {{ 'selected' if k == profile.attach_on else '' }}>{{ v }}</option>{% endfor %}</select>
+  <label class="check"><input type="checkbox" name="attach_first_email" {{ 'checked' if profile.attach_first_email else '' }}> Attach my uploaded files to first campaign emails</label>
+  <p class="hint">Applies to new campaign messages after saving. Provider file size limits still apply; use small files for Microsoft and Azure senders.</p>
 </div>
 <div class="card">
   <h2>Email signature</h2>
@@ -281,8 +283,8 @@
 </div>
 
 <div class="card">
-  <h2>Attachments for replies</h2>
-  <p class="muted small">Documents to send when someone responds: a brochure, a brief, a CV, a project outline. Up to 20 MB in total. They are attached according to the setting above, and the reply mentions them.</p>
+  <h2>Campaign and reply attachments</h2>
+  <p class="muted small">Upload a brochure, brief or project outline here. These files are attached to replies according to the policy above, and optionally to first campaign emails. Up to 20 MB in total; provider message limits may be lower.</p>
   {% if attachments %}
   <table>
     <thead><tr><th>File</th><th>Size</th><th></th></tr></thead>

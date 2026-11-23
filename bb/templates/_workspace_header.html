@@ -1,0 +1,61 @@
+{% from "_icons.html" import icon %}
+{% from "_workspace_nav.html" import brand, navigation, account with context %}
+<header class="workspace-header">
+  <div class="header-inner">
+    <div class="mobile-brand">{{ brand() }}</div>
+    {% if workspace_nav.section %}
+      <div class="breadcrumb">
+        <a href="{{ workspace_nav.section.path }}">{{ workspace_nav.section.label }}</a>
+        {% if workspace_nav.page.label != workspace_nav.section.label and workspace_nav.section.pages | length > 1 %}
+          {{ icon('chevron', 13) }}<span>{{ workspace_nav.page.label }}</span>
+        {% endif %}
+      </div>
+    {% endif %}
+    <div class="header-end">
+      {% if campaign_nav and workspace_nav.page and workspace_nav.page.campaign_scoped %}
+        <div class="campaign-context">
+          {% if campaign_nav.options | length > 1 %}
+            <form method="post" action="/campaigns/select" class="campaign-switch">
+              <input type="hidden" name="next" value="{{ request.url.path }}">
+              <label for="selected-campaign">Campaign</label>
+              <select name="campaign" onchange="this.form.submit()" id="selected-campaign">
+                {% for cid, cname in campaign_nav.options %}<option value="{{ cid }}" {{ 'selected' if cid == campaign_nav.current else '' }}>{{ cname }}</option>{% endfor %}
+              </select>
+            </form>
+          {% else %}
+            <a href="/campaigns" title="View campaigns">Campaign <strong>{{ campaign_nav.name }}</strong></a>
+          {% endif %}
+        </div>
+      {% endif %}
+      <label class="theme-control" title="Appearance">
+        {{ icon('sun', 16) }}
+        <span class="visually-hidden">Appearance</span>
+        <select id="workspace-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+      </label>
+      <details class="mobile-nav">
+        <summary>{{ icon('menu', 19) }} Menu</summary>
+        <div class="mobile-menu">{{ navigation() }}{{ account() }}</div>
+      </details>
+    </div>
+  </div>
+  {% if workspace_nav.section and workspace_nav.section.pages | length > 1 %}
+    <nav class="subnav" aria-label="{{ workspace_nav.section.label }} pages">
+      {% for page in workspace_nav.section.pages %}
+        <a href="{{ page.path }}"{% if page == workspace_nav.page %} aria-current="{{ 'page' if request.url.path == page.path else 'location' }}"{% endif %}>{{ page.label }}</a>
+      {% endfor %}
+    </nav>
+  {% endif %}
+</header>
+{% if campaign_nav %}
+<script>
+  // Pin campaign forms to the campaign open in this tab.
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('form[method=post], form[method=POST]').forEach(form => {
+      const url = new URL(form.getAttribute('action') || location.pathname, location.href);
+      if (url.origin !== location.origin || url.searchParams.has('c')) return;
+      url.searchParams.set('c', {{ campaign_nav.current | tojson }});
+      form.setAttribute('action', url.pathname + url.search);
+    });
+  });
+</script>
+{% endif %}

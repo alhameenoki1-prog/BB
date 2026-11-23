@@ -9,6 +9,7 @@ import json
 import logging
 import shutil
 import time
+from urllib.parse import urlsplit
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, Request
@@ -20,6 +21,31 @@ from bb import recipients as recipients_mod
 logger = logging.getLogger("bb.campaigns")
 
 FEATURE_LABELS = {"outreach": "Outreach", "reply": "Reply campaign", "scan": "Mailbox scan", "reply-run": "Reply run"}
+
+
+def validated_booking_url(value: str) -> str:
+    """Validate an optional user-owned HTTPS scheduling link before campaign creation.
+
+    Do not accept credentials, fragments, non-HTTPS protocols or URLs without
+    a DNS hostname. This is a link to the user's existing calendar, not an
+    invitation or a redirect controlled by BB.
+    """
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if len(value) > 2048 or any(ch.isspace() or ord(ch) < 32 for ch in value):
+        raise ValueError("Calendar link must be a valid HTTPS URL.")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Calendar link must be a valid HTTPS URL.") from exc
+    if (parsed.scheme != "https" or not parsed.hostname or
+            parsed.username is not None or parsed.password is not None or
+            parsed.fragment or port not in (None, 443) or
+            "." not in parsed.hostname or parsed.hostname.endswith(".")):
+        raise ValueError("Use an HTTPS booking link from your existing calendar (no credentials or fragments).")
+    return value
 
 
 def split_leads(rows: list[dict], campaigns: list, how: str) -> tuple[dict, int]:
@@ -239,6 +265,10 @@ def register_campaign_routes(app, settings, current_user, base_workspace, render
         uploaded leads dealt out between them."""
         source = base.campaign(str(form.get("profile_id", "") or "")) or base.main()
         goal = str(form.get("goal", "") or "").strip()
+        try:
+            booking_url = validated_booking_url(str(form.get("booking_url", "") or ""))
+        except ValueError as exc:
+            return _redirect("/campaigns", error=str(exc))
         # The leads are read first: a bad file never leaves campaigns half made.
         upload = form.get("leads")
         text = str(form.get("pasted", "") or "")
@@ -275,6 +305,8 @@ def register_campaign_routes(app, settings, current_user, base_workspace, render
                     values = _profile_form(source.profile())
                     if goal:
                         values["campaign_goal"] = goal
+                    if booking_url:
+                        values["booking_url"] = booking_url
                     for f in source.attachments():
                         shutil.copy2(source.attachments_dir / f["name"], ws.attachments_dir / f["name"])
                     if source.signature_image():

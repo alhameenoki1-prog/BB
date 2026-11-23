@@ -1,0 +1,58 @@
+{% from "_icons.html" import icon %}
+{% from "_as_sent.html" import as_sent %}
+
+{% macro draft_review(d) %}
+<div class="card review-panel">
+  <div class="section-heading">
+    <h2>{{ d.subject or d.thread_subject or '(No subject)' }}</h2>
+    <span class="tag warn">Pending review</span>
+  </div>
+  <dl class="review-meta">
+    <dt>From</dt><dd>{% if d.box %}{% if d.qa.from_name %}{{ d.qa.from_name }} &lt;{{ d.box.address }}&gt;{% else %}{{ d.box.address }}{% endif %}
+      {% if d.box.provider == 'azure_smtp' %}<span class="tag accent">Azure Email SMTP</span>
+      {% elif d.box.provider == 'ses' %}<span class="tag accent">Amazon SES</span>{% endif %}
+      {% else %}Sender unavailable{% endif %}</dd>
+    <dt>To</dt><dd>{{ d.to | map(attribute='email') | join(', ') }}</dd>
+    {% if d.qa.cc %}<dt>Cc</dt><dd>{{ d.qa.cc | join(', ') }}</dd>{% endif %}
+    {% if d.qa.bcc %}<dt>Bcc</dt><dd>{{ d.qa.bcc | join(', ') }}</dd>{% endif %}
+  </dl>
+  {% if not d.qa.manual %}
+  <div class="actions">
+    <span class="tag {{ 'good' if d.confidence == 'high' else ('warn' if d.confidence == 'low' else '') }}">Confidence {{ d.confidence }}</span>
+    {% if not d.qa.ok and d.qa.reasons %}<span class="tag warn">{{ d.qa.reasons | join(', ') }}</span>{% endif %}
+    {% if d.thread_id %}<a href="/mail/threads/{{ d.thread_id }}?draft={{ d.id }}">Open thread</a>{% endif %}
+    {% if d.run_id %}<a href="/mail/runs/{{ d.run_id }}">Open reply run</a>{% endif %}
+  </div>
+  {% endif %}
+  {% if d.error %}<p class="small" role="alert" style="color:var(--bad)">{{ d.error }}</p>{% endif %}
+  {% set body_id = 'draft-body-' ~ d.id %}
+  <form method="post" action="/mail/drafts/{{ d.id }}/send">
+    <div class="row">
+      <div><label for="review-subject">Subject</label><input type="text" id="review-subject" name="subject" value="{{ d.subject }}" maxlength="200" required></div>
+      <div><label for="review-reply-to">Reply-To <span class="optional-label">Optional</span></label><input type="email" id="review-reply-to" name="reply_to" value="{{ d.reply_to }}" placeholder="Sender account default"></div>
+    </div>
+    <div class="draft-content">
+      <div>
+        <label for="{{ body_id }}">{{ 'HTML source' if d.qa.studio_format == 'html' else 'Message' }}</label>
+        <textarea name="body" rows="8" id="{{ body_id }}" {% if d.qa.studio_format not in ['text', 'html'] %}data-rich data-default-link="{{ d.default_link }}"{% endif %}>{{ d.body_md }}</textarea>
+        {% if d.files %}
+        <p class="files-summary small">{{ icon('file', 15) }}
+          {% for file in d.files %}{{ file.name }}{{ ' (inline image)' if file.content_id else '' }}{{ ', ' if not loop.last else '' }}{% endfor %}
+        </p>
+        {% endif %}
+        {% if not d.qa.studio_format %}<p class="hint">Your mailbox signature and project link appear in the preview.</p>{% endif %}
+      </div>
+      <div class="draft-preview">
+        <h3>Message preview</h3>
+        {{ as_sent(d.preview, '/mail/drafts/' ~ d.id ~ '/preview', body_id, studio=d.qa.studio_format) }}
+      </div>
+    </div>
+    {% if not d.ready %}<p class="tag warn form-pad" role="status">{{ d.ready_why }}</p>{% endif %}
+    <div class="actions review-actions">
+      <button type="submit" formaction="/mail/drafts/{{ d.id }}/reject" formnovalidate class="secondary danger">Discard</button>
+      <button type="submit" name="dry_run" value="1" class="secondary" {{ '' if d.ready else 'disabled' }}>Dry run</button>
+      <button type="submit" {{ '' if d.ready else 'disabled' }}>{{ icon('send', 15) }} Send email</button>
+    </div>
+  </form>
+</div>
+{% endmacro %}

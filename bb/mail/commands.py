@@ -237,8 +237,8 @@ class CommandCenter:
         d = await self.db.one("SELECT * FROM drafts WHERE id = ?", (draft_id,))
         if not d:
             return {"error": "no such draft"}
-        if d["status"] in ("sent", "dry_run"):
-            return {"error": "that draft was already sent"}
+        if d["status"] != "pending_review":
+            return {"error": "that draft is no longer pending review"}
         box = await self.db.mailbox(d["mailbox_id"])
         ok, why = service.ready_to_send(box) if box else (False, "mailbox missing")
         if not ok:
@@ -251,10 +251,15 @@ class CommandCenter:
 
     async def _do_send_reply(self, args: dict) -> dict:
         d = await self.db.one("SELECT * FROM drafts WHERE id = ?", (args["draft_id"],))
-        if not d or d["status"] in ("sent", "dry_run"):
-            raise BrainError("That draft is gone or already sent.")
-        await self.db.execute("UPDATE drafts SET status = 'approved', error = '', updated_at = ? WHERE id = ?", (now_iso(), d["id"]))
-        await Jobs(self.db).enqueue("send_draft", d["mailbox_id"], {"draft_id": d["id"]}, max_attempts=4)
+        if not d or d["status"] != "pending_review":
+            raise BrainError("That draft is no longer pending review.")
+        box = await self.db.mailbox(d["mailbox_id"])
+        ok, why = service.ready_to_send(box) if box else (False, "Mailbox missing.")
+        if not ok:
+            raise BrainError(why)
+        queued = await Jobs(self.db).approve_draft(d, body=d["body"], subject=d["subject"], reply_to=d["reply_to"])
+        if not queued:
+            raise BrainError("That draft is no longer pending review.")
         if self.on_worker_needed:
             self.on_worker_needed()
         return {"queued": True}

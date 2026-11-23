@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-MIN_PASSWORD = 10
+MIN_PASSWORD = 14
 ROLES = ("admin", "user")
 
 _SCHEMA = """
@@ -36,6 +36,19 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS totp_settings (
+    user_id TEXT PRIMARY KEY REFERENCES users(id),
+    encrypted_secret TEXT NOT NULL,
+    confirmed INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mfa_challenges (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_mfa_challenges_user ON mfa_challenges(user_id);
 """
 
 
@@ -130,6 +143,7 @@ class Accounts:
         with self._connect() as db:
             db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(password), user_id))
             db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM mfa_challenges WHERE user_id = ?", (user_id,))
 
     def set_role(self, user_id: str, role: str):
         if role not in ROLES:
@@ -142,6 +156,105 @@ class Accounts:
             db.execute("UPDATE users SET disabled = ? WHERE id = ?", (1 if disabled else 0, user_id))
             if disabled:
                 db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+                db.execute("DELETE FROM mfa_challenges WHERE user_id = ?", (user_id,))
+
+    # ── TOTP security ──
+
+    def totp_enabled(self, user_id: str) -> bool:
+        with self._connect() as db:
+            row = db.execute("SELECT confirmed FROM totp_settings WHERE user_id=?", (user_id,)).fetchone()
+            return bool(row and row["confirmed"])
+
+    def totp_secret(self, user_id: str, key: str, *, confirmed_only=True) -> str:
+        from bb.mail.crypto import open_sealed
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT encrypted_secret, confirmed, created_at FROM totp_settings WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+        if not row or (confirmed_only and not row["confirmed"]):
+            return ""
+        if not row["confirmed"] and row["created_at"] < int(time.time()) - 600:
+            return ""
+        return open_sealed(key, row["encrypted_secret"])
+
+    def begin_totp_enrollment(self, user_id: str, key: str) -> str:
+        from bb.mail.crypto import seal
+        from bb.totp import generate_secret
+        secret = generate_secret()
+        with self._connect() as db:
+            changed = db.execute(
+                "INSERT INTO totp_settings(user_id, encrypted_secret, confirmed, created_at) "
+                "VALUES(?,?,0,?) ON CONFLICT(user_id) DO UPDATE SET "
+                "encrypted_secret=excluded.encrypted_secret, created_at=excluded.created_at "
+                "WHERE totp_settings.confirmed=0",
+                (user_id, seal(key, secret), int(time.time())),
+            )
+            if not changed.rowcount:
+                raise ValueError("MFA is already enabled.")
+        return secret
+
+    def confirm_totp(self, user_id: str, key: str, code: str) -> bool:
+        from bb.totp import verify
+        from bb.mail.crypto import open_sealed
+
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT encrypted_secret FROM totp_settings WHERE user_id=? AND confirmed=0 AND created_at>=?",
+                (user_id, int(time.time()) - 600),
+            ).fetchone()
+            if not row or not verify(open_sealed(key, row["encrypted_secret"]), code):
+                return False
+            db.execute("UPDATE totp_settings SET confirmed=1 WHERE user_id=?", (user_id,))
+            db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        return True
+
+    def verify_totp(self, user_id: str, key: str, code: str) -> bool:
+        from bb.totp import verify
+        secret = self.totp_secret(user_id, key, confirmed_only=True)
+        return bool(secret and verify(secret, code))
+
+    def new_mfa_challenge(self, user_id: str) -> str:
+        ticket = secrets.token_urlsafe(32)
+        stamp = int(time.time())
+        with self._connect() as db:
+            db.execute("DELETE FROM mfa_challenges WHERE expires_at<?", (stamp,))
+            db.execute("DELETE FROM mfa_challenges WHERE user_id=?", (user_id,))
+            db.execute(
+                "INSERT INTO mfa_challenges(token_hash,user_id,expires_at) VALUES(?,?,?)",
+                (self._hash_token(ticket), user_id, stamp + 300),
+            )
+        return ticket
+
+    def complete_mfa_challenge(self, ticket: str, key: str, code: str) -> dict | None:
+        if not ticket:
+            return None
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT user_id, attempts FROM mfa_challenges WHERE token_hash=? AND expires_at>?",
+                (self._hash_token(ticket), int(time.time())),
+            ).fetchone()
+            if not row or row["attempts"] >= 5:
+                return None
+            db.execute("UPDATE mfa_challenges SET attempts=attempts+1 WHERE token_hash=?",
+                       (self._hash_token(ticket),))
+            user_id = row["user_id"]
+            if not self.verify_totp(user_id, key, code):
+                return None
+            db.execute("DELETE FROM mfa_challenges WHERE token_hash=?", (self._hash_token(ticket),))
+        user = self.get_user(user_id)
+        return user if user and not user["disabled"] else None
+
+    def disable_totp(self, user_id: str, key: str, code: str) -> bool:
+        if not self.verify_totp(user_id, key, code):
+            return False
+        with self._connect() as db:
+            db.execute("DELETE FROM totp_settings WHERE user_id=?", (user_id,))
+            db.execute("DELETE FROM mfa_challenges WHERE user_id=?", (user_id,))
+            db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        return True
 
     # ── sessions ──
 

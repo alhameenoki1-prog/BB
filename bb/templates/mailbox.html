@@ -196,7 +196,9 @@ async function testMicrosoftGraph() {
       <button type="button" class="secondary small smtp-preset" data-smtp="smtp.mail.me.com" data-sport="587" data-imap="imap.mail.me.com" data-iport="993">iCloud</button>
       <button type="button" class="secondary small smtp-preset" data-smtp="smtp.zoho.com" data-sport="465" data-imap="imap.zoho.com" data-iport="993">Zoho</button>
       <button type="button" class="secondary small smtp-preset" data-smtp="smtp.fastmail.com" data-sport="465" data-imap="imap.fastmail.com" data-iport="993">Fastmail</button>
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.sendgrid.net" data-sport="587" data-imap="" data-iport="993" data-username="apikey">SendGrid</button>
     </div>
+    <p class="hint">SendGrid: username is <code>apikey</code>, password is the complete SendGrid API key, and From must be a verified sender. It sends email only; replies need a separate inbox.</p>
     <details class="howto"><summary><b>How to connect Gmail or Google Workspace</b> <span class="muted small">(about two minutes)</span></summary>
       <ol class="small">
         <li>Click <b>Gmail / Google Workspace</b> above to fill in the servers.</li>
@@ -254,7 +256,9 @@ async function testMicrosoftGraph() {
       <button type="button" class="secondary small smtp-preset" data-smtp="smtp.mail.me.com" data-sport="587" data-imap="imap.mail.me.com" data-iport="993">iCloud</button>
       <button type="button" class="secondary small smtp-preset" data-smtp="smtp.zoho.com" data-sport="465" data-imap="imap.zoho.com" data-iport="993">Zoho</button>
       <button type="button" class="secondary small smtp-preset" data-smtp="smtp.fastmail.com" data-sport="465" data-imap="imap.fastmail.com" data-iport="993">Fastmail</button>
+      <button type="button" class="secondary small smtp-preset" data-smtp="smtp.sendgrid.net" data-sport="587" data-imap="" data-iport="993" data-username="apikey">SendGrid</button>
     </div>
+    <p class="hint">SendGrid: username is <code>apikey</code>, password is the complete SendGrid API key, and From must be a verified sender. It sends email only; replies need a separate inbox.</p>
     <details class="howto"><summary><b>How to connect Gmail or Google Workspace</b> <span class="muted small">(about two minutes)</span></summary>
       <ol class="small">
         <li>Click <b>Gmail / Google Workspace</b> above to fill in the servers.</li>
@@ -420,6 +424,10 @@ async function testMicrosoftGraph() {
     const set = (name, value) => { const el = form.querySelector('[name=' + name + ']'); if (el) el.value = value; };
     set('smtp_host', btn.dataset.smtp); set('smtp_port', btn.dataset.sport);
     set('imap_host', btn.dataset.imap); set('imap_port', btn.dataset.iport);
+    if (btn.dataset.username) {
+      set('smtp_username', btn.dataset.username);
+      set('imap_username', '');
+    }
     form.querySelector('[name=smtp_username]').focus();
   }));
 </script>

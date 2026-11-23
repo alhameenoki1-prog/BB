@@ -173,11 +173,11 @@ async def test_a_run_never_sticks(tmp_path):
     b = await db.add_mailbox(address="b@mine.example", provider="imap", creds="", status="ok")
     tid = await _seed_thread(db, a)
     run = await runs.create_run(db, [await db.mailbox(a), await db.mailbox(b)], [tid], mode="review")
-    # The worker stops mid-job: the try is not counted.
+    # A stopped worker releases the job, but its fencing token remains spent.
     job = await jobs.claim()
     await jobs.release(job["id"])
     again = await db.one("SELECT status, attempts FROM jobs WHERE id = ?", (job["id"],))
-    assert again["status"] == "queued" and again["attempts"] == 0
+    assert again["status"] == "queued" and again["attempts"] == 1
     # Its job is lost altogether: reconcile gives it a new one.
     await db.execute("UPDATE jobs SET status = 'dead'")
     await runs.reconcile(db, jobs)

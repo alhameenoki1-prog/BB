@@ -341,6 +341,7 @@ class OutreachConfig(BaseModel):
     # File names under HARVEY_HOME/attachments sent with replies.
     reply_attachments: list[str] = []
     attach_on: str = "first_reply"  # first_reply | every_reply | never
+    attach_first_email: bool = False
     # True: one model-written email per person (slower, most personal).
     # False: contacts are sorted into sector × role segments and one email
     # is written per segment, then sent to everyone in it with merge fields.

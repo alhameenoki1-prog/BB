@@ -30,6 +30,12 @@ from harvey.integrations.microsoft import LOGIN, SCOPE
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 STATE_TTL_SECONDS = 600
+CALENDAR_PERMISSION = "https://graph.microsoft.com/Calendars.ReadWrite"
+CALENDAR_SCOPE = f"{SCOPE} {CALENDAR_PERMISSION}"
+
+
+def has_calendar_access(scopes: str) -> bool:
+    return any(scope.rsplit("/", 1)[-1].lower() == "calendars.readwrite" for scope in scopes.split())
 
 
 def redirect_uri(settings) -> str:
@@ -57,13 +63,13 @@ def authority(settings) -> str:
     return f"{LOGIN}/{settings.ms_tenant or 'common'}"
 
 
-def auth_url(settings, state: str, login_hint: str = "", redirect: str = "") -> str:
+def auth_url(settings, state: str, login_hint: str = "", redirect: str = "", *, calendar: bool = False) -> str:
     params = {
         "client_id": settings.ms_client_id,
         "redirect_uri": redirect or redirect_uri(settings),
         "response_type": "code",
         "response_mode": "query",
-        "scope": SCOPE,
+        "scope": CALENDAR_SCOPE if calendar else SCOPE,
         "state": state,
         "prompt": "select_account",
     }
@@ -79,13 +85,13 @@ def _why(resp) -> str:
         return resp.text[:200]
 
 
-async def exchange_code(settings, code: str, redirect: str = "") -> dict:
+async def exchange_code(settings, code: str, redirect: str = "", *, calendar: bool = False) -> dict:
     data = {
         "client_id": settings.ms_client_id,
         "code": code,
         "grant_type": "authorization_code",
         "redirect_uri": redirect or redirect_uri(settings),
-        "scope": SCOPE,
+        "scope": CALENDAR_SCOPE if calendar else SCOPE,
     }
     if settings.ms_client_secret:
         data["client_secret"] = settings.ms_client_secret
